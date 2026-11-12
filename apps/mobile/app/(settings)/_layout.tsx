@@ -70,6 +70,7 @@ export default function SettingsLayout() {
       <Stack.Screen name="change-password" options={{ title: t("Change password") }} />
       <Stack.Screen name="mcp" options={glassHeaderOptions(t("MCP servers"))} />
       <Stack.Screen name="space-settings" options={glassHeaderOptions(t("Settings"))} />
+      <Stack.Screen name="space-credentials" options={glassHeaderOptions(t("Credentials"))} />
       <Stack.Screen name="models" options={glassHeaderOptions(t("Models"))} />
       <Stack.Screen name="voice" options={glassHeaderOptions(t("Voice"))} />
       <Stack.Screen name="integrations" options={glassHeaderOptions(t("Integrations"))} />

@@ -12,6 +12,8 @@ const settingsScreens = new Set([
   "integrations",
   "models",
   "plugins",
+  "space-credentials",
+
   "space-settings",
   "mcp",
   "voice",

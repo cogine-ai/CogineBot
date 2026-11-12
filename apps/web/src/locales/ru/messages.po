@@ -7462,3 +7462,36 @@ msgstr "Видно"
 #: src/components/AskCard.tsx
 msgid "These login values are too long together. Shorten one or more fields."
 msgstr "Общая длина данных для входа слишком велика. Сократите значения в одном или нескольких полях."
+
+msgid "Add field"
+msgstr "Добавить поле"
+
+msgid "Choose a Bot"
+msgstr "Выберите бота"
+
+msgid "Confirm it's you"
+msgstr "Подтвердите личность"
+
+msgid "Could not show the credential"
+msgstr "Не удалось показать учётные данные"
+
+msgid "Email me a code"
+msgstr "Отправить код по почте"
+
+msgid "Field label"
+msgstr "Название поля"
+
+msgid "Hide value"
+msgstr "Скрыть значение"
+
+msgid "No credentials saved in this Space."
+msgstr "В этом пространстве нет сохранённых учётных данных."
+
+msgid "Remove field"
+msgstr "Удалить поле"
+
+msgid "Show value"
+msgstr "Показать значение"
+
+msgid "Give each field a different label"
+msgstr "Задайте уникальное название для каждого поля"

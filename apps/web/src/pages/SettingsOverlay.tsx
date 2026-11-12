@@ -7,6 +7,7 @@ import {
   Cpu,
   CreditCard,
   Gauge,
+  KeyRound,
   MessagesSquare,
   Monitor,
   Settings,
@@ -32,6 +33,7 @@ import {
 import { BillingSettingsPanel } from "./BillingSettingsPanel";
 import { MemorySettingsOverlay } from "./MemorySettingsOverlay";
 import { ModelSettingsOverlay } from "./ModelSettingsOverlay";
+import { BotCredentialsSection } from "./shell/bot-credentials";
 import { VoiceSettingsOverlay } from "./VoiceSettingsOverlay";
 
 export type SettingsSection =
@@ -41,6 +43,7 @@ export type SettingsSection =
   | "voice"
   | "confirmations"
   | "collaboration"
+  | "credentials"
   | "usage"
   | "computer"
   | "billing"
@@ -56,6 +59,7 @@ export function SettingsOverlay({
   space,
   spaces = [],
   currentSpaceId,
+  currentBotId,
   onSpaceChange,
   ownerKey,
   email,
@@ -80,6 +84,7 @@ export function SettingsOverlay({
   space?: { id: string; name: string } | null;
   spaces?: { id: string; name: string }[];
   currentSpaceId?: string | null;
+  currentBotId?: string;
   onSpaceChange?: (spaceId: string) => void;
   ownerKey?: string;
   email?: string | null;
@@ -203,6 +208,7 @@ export function SettingsOverlay({
     { id: "memory", label: t`Memory`, icon: Brain },
     { id: "voice", label: t`Voice`, icon: Volume2 },
     { id: "confirmations", label: t`Confirmations`, icon: ShieldCheck },
+    { id: "credentials", label: t`Credentials`, icon: KeyRound },
     { id: "collaboration", label: t`Bot collaboration`, icon: MessagesSquare },
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
@@ -304,10 +310,10 @@ export function SettingsOverlay({
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex items-start justify-between gap-4 px-6 pt-6 sm:px-8 sm:pt-7">
-              <DialogTitle className="text-2xl font-medium text-foreground">
+              <DialogTitle className="min-w-0 wrap-anywhere text-2xl font-medium text-foreground">
                 {sectionTitle}
               </DialogTitle>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                 {SPACE_SECTIONS.has(section) && space && spaces.length > 0 ? (
                   <ListboxSelect
                     options={spaces.map((entry) => ({ value: entry.id, label: entry.name }))}
@@ -315,7 +321,7 @@ export function SettingsOverlay({
                     label={t`Space`}
                     testId="settings-space"
                     disabled={panelBusy}
-                    className="w-40"
+                    className="w-28 sm:w-40"
                     onChange={(id) => {
                       if (!panelBusy && targetCurrent()) {
                         leaveRevision.current++;
@@ -409,6 +415,9 @@ export function SettingsOverlay({
                       />
                     ) : null}
                     {section === "confirmations" ? <ApprovalRulesSettings /> : null}
+                    {section === "credentials" ? (
+                      <BotCredentialsSection defaultBotId={currentBotId} />
+                    ) : null}
                     {section === "collaboration" ? (
                       <SpaceCollaborationSettings onBusyChange={handleCollaborationBusy} />
                     ) : null}
@@ -432,6 +441,7 @@ const SPACE_SECTIONS = new Set<SettingsSection>([
   "memory",
   "voice",
   "confirmations",
+  "credentials",
   "collaboration",
 ]);
 function TargetMemorySettings({

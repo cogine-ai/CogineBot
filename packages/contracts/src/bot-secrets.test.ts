@@ -6,9 +6,11 @@ import {
   commandVariableName,
   commandVariableProblem,
   decodeLoginSecret,
+  encodeEditedLoginSecret,
   encodeLoginSecret,
   isCloudMetadataHost,
   isPrivateNetworkHost,
+  loginFieldAutocomplete,
   loginSecretFields,
   parseLoginSecretWrite,
   SecretHttpRequest,
@@ -380,5 +382,52 @@ describe("command variables", () => {
       BotSecretDestinationInput.safeParse({ name: "api", origin: "", auth: { type: "bearer" } })
         .success,
     ).toBe(false);
+  });
+});
+
+it("preserves an unchanged legacy login layout during value replacement", () => {
+  const fields = [
+    { label: "Username", value: "fixture-account", hidden: false },
+    { label: "Password", value: "fixture-value", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({
+    username: "fixture-account",
+    password: "fixture-value",
+  });
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, false))).toEqual({ fields });
+  const changed = [fields[0]!, { ...fields[1]!, label: "Access phrase" }];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields: changed }, true))).toEqual({
+    fields: changed,
+  });
+});
+
+it("uses named storage when a valid edited field exceeds legacy pair limits", () => {
+  const fields = [
+    { label: "Username", value: "a".repeat(513), hidden: false },
+    { label: "Password", value: "fixture-value", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({ fields });
+});
+
+it("suggests autofill only for a matching label and visibility", () => {
+  const labels = { username: "用户名", email: "邮箱", password: "密码" };
+  expect(loginFieldAutocomplete({ label: labels.username, hidden: false }, labels)).toBe(
+    "username",
+  );
+  expect(loginFieldAutocomplete({ label: labels.email, hidden: false }, labels)).toBe("email");
+  expect(loginFieldAutocomplete({ label: labels.password, hidden: true }, labels)).toBe(
+    "new-password",
+  );
+  expect(loginFieldAutocomplete({ label: labels.email, hidden: true }, labels)).toBeUndefined();
+});
+
+it("normalizes labels and visible values before preserving a legacy pair", () => {
+  const fields = [
+    { label: "Username ", value: ` ${"a".repeat(512)} `, hidden: false },
+    { label: "Password", value: " hidden value ", hidden: true },
+  ];
+  expect(JSON.parse(encodeEditedLoginSecret({ fields }, true))).toEqual({
+    username: "a".repeat(512),
+    password: " hidden value ",
   });
 });

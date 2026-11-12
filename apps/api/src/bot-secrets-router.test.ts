@@ -32,8 +32,23 @@ function pick(row: Row, select?: Record<string, boolean>) {
 function botSecretDeps(seed: Row[] = []) {
   const now = new Date("2026-09-01T00:00:00.000Z");
   const bots: Row[] = [
-    { id: "bot-1", userId: "user-1", spaceId: "space-1", archivedAt: null },
-    { id: "bot-other", userId: "user-2", spaceId: "space-1", archivedAt: null },
+    { id: "bot-1", name: "Primary bot", userId: "user-1", spaceId: "space-1", archivedAt: null },
+    { id: "bot-other", name: "Peer bot", userId: "user-2", spaceId: "space-1", archivedAt: null },
+    { id: "bot-2", name: "Second bot", userId: "user-1", spaceId: "space-1", archivedAt: null },
+    {
+      id: "bot-remote",
+      name: "Remote bot",
+      userId: "user-1",
+      spaceId: "space-2",
+      archivedAt: null,
+    },
+    {
+      id: "bot-archived",
+      name: "Archived bot",
+      userId: "user-1",
+      spaceId: "space-1",
+      archivedAt: now,
+    },
   ];
   let nextRevision = 0;
   const revision = () => `revision-${++nextRevision}`;
@@ -46,7 +61,15 @@ function botSecretDeps(seed: Row[] = []) {
         .map((row) => pick(row, args.select)),
     ),
     findFirst: vi.fn(async (args: { where: Row; select?: Record<string, boolean> }) => {
-      const row = rows.find((entry) => matches(entry, args.where));
+      const { bot, ...where } = args.where;
+      const row = rows.find(
+        (entry) =>
+          matches(entry, where) &&
+          (!bot ||
+            bots.some(
+              (candidate) => candidate.id === entry.botId && matches(candidate, bot as Row),
+            )),
+      );
       return row ? pick(row, args.select) : null;
     }),
     count: vi.fn(
@@ -72,6 +95,21 @@ function botSecretDeps(seed: Row[] = []) {
   };
   const prisma = {
     bot: {
+      findMany: vi.fn(
+        async (args: {
+          where: Row;
+          select: { botSecrets: { where: Row; select: Record<string, boolean> } };
+        }) =>
+          bots
+            .filter((bot) => matches(bot, args.where))
+            .map((bot) => ({
+              id: bot.id,
+              name: bot.name,
+              botSecrets: rows
+                .filter((row) => row.botId === bot.id && matches(row, args.select.botSecrets.where))
+                .map((row) => pick(row, args.select.botSecrets.select)),
+            })),
+      ),
       findFirst: vi.fn(async (args: { where: Row }) => {
         const bot = bots.find((entry) => matches(entry, args.where));
         return bot ? { ...bot, thread: null, computer: null } : null;
@@ -106,7 +144,9 @@ function botSecretDeps(seed: Row[] = []) {
     }),
     load: vi.fn(async (ciphertext: string) => plaintexts.get(ciphertext)),
   };
+  const auth = { identityConfirmationExpiry: vi.fn(async (): Promise<number | null> => null) };
   const deps = {
+    auth,
     prisma: prisma as unknown as PrismaClient,
     secrets,
     env: {
@@ -120,8 +160,18 @@ function botSecretDeps(seed: Row[] = []) {
   } as unknown as RouterDeps;
   const handler = new RPCHandler(createRouter(deps));
   async function call(
-    path: "list" | "listForEdit" | "put" | "putForEdit" | "remove" | "removeForEdit",
+    path:
+      | "list"
+      | "listForEdit"
+      | "put"
+      | "putForEdit"
+      | "remove"
+      | "removeForEdit"
+      | "listForSpace"
+      | "reveal"
+      | "loginFieldsForEdit",
     input: unknown,
+    context?: { sessionId?: string; stillAuthorized?: () => Promise<boolean> },
   ) {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/botSecrets/${path}`, {
@@ -129,13 +179,13 @@ function botSecretDeps(seed: Row[] = []) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ json: input }),
       }),
-      { prefix: "/rpc", context: { actor } },
+      { prefix: "/rpc", context: { actor, ...context } },
     );
     if (!response) throw new Error("Procedure did not match");
     const text = await response.text();
     return { status: response.status, text, body: JSON.parse(text) as { json: unknown } };
   }
-  return { prisma, secrets, rows, call };
+  return { prisma, secrets, auth, rows, call };
 }
 
 function putInput(origin: string, botId = "bot-1") {
@@ -570,5 +620,141 @@ describe("botSecrets router", () => {
     });
     expect(result.status).toBe(400);
     expect(secrets.put).not.toHaveBeenCalled();
+  });
+});
+
+describe("Space credential management", () => {
+  it("returns only active owned Bot metadata and keeps equal names independent", async () => {
+    const { call, rows, secrets } = botSecretDeps();
+    for (const botId of ["bot-1", "bot-2"])
+      expect(
+        (
+          await call("putForEdit", {
+            ...putInput("https://api.example.test", botId),
+            expectedRevision: null,
+          })
+        ).status,
+      ).toBe(200);
+    const original = rows[0]!;
+    rows.push(
+      { ...original, botId: "bot-other", userId: "user-2" },
+      { ...original, botId: "bot-remote", spaceId: "space-2" },
+      { ...original, botId: "bot-archived" },
+      { ...original, botId: "bot-1", userId: "user-2", name: "peer-credential" },
+      { ...original, botId: "bot-1", spaceId: "space-2", name: "other-space" },
+    );
+    const listed = await call("listForSpace", {});
+    expect(listed.status).toBe(200);
+    expect(listed.body.json).toEqual(
+      ["bot-1", "bot-2"].map((botId) =>
+        expect.objectContaining({
+          botId,
+          credentials: [expect.objectContaining({ name: "router" })],
+        }),
+      ),
+    );
+    expect(listed.text).not.toContain(FAKE_VALUE);
+    expect(listed.text).not.toContain("ciphertext");
+    expect(secrets.load).not.toHaveBeenCalled();
+  });
+
+  it("reveals only the exact current revision after confirming the calling session", async () => {
+    const { auth, call, rows, secrets } = botSecretDeps();
+    await call("putForEdit", { ...putInput("https://api.example.test"), expectedRevision: null });
+    const input = { botId: "bot-1", name: "router", expectedRevision: rows[0]!.revision };
+    const context = { sessionId: "session-1" };
+    const refused = await call("reveal", input, context);
+    expect(refused.status).toBe(403);
+    expect(refused.text).toContain("IDENTITY_CONFIRMATION_REQUIRED");
+    expect(refused.text).not.toContain(FAKE_VALUE);
+    expect(auth.identityConfirmationExpiry).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      userId: actor.userId,
+    });
+    expect(secrets.load).not.toHaveBeenCalled();
+    auth.identityConfirmationExpiry.mockResolvedValue(Date.now() + 60_000);
+    for (const botId of ["bot-2", "bot-other", "bot-archived", "bot-remote"]) {
+      const attempt = await call("reveal", { ...input, botId }, context);
+      expect(attempt.status).toBe(404);
+      expect(attempt.text).not.toContain(FAKE_VALUE);
+    }
+    const stale = await call("reveal", { ...input, expectedRevision: "stale" }, context);
+    expect(stale.status).toBe(404);
+    expect(secrets.load).not.toHaveBeenCalled();
+    const actual = await call("reveal", input, context);
+    expect(actual.body.json).toEqual({ value: FAKE_VALUE });
+
+    const expiry = Date.now() + 30_000;
+    auth.identityConfirmationExpiry.mockResolvedValueOnce(expiry);
+    const clock = vi.spyOn(Date, "now");
+    secrets.load.mockImplementationOnce(async () => {
+      clock.mockReturnValue(expiry + 1);
+      return FAKE_VALUE;
+    });
+    try {
+      const expiredDuringRead = await call("reveal", input, context);
+      expect(expiredDuringRead.status).toBe(403);
+      expect(expiredDuringRead.text).not.toContain(FAKE_VALUE);
+    } finally {
+      clock.mockRestore();
+    }
+
+    secrets.load.mockImplementationOnce(async () => {
+      rows[0]!.revision = "updated-during-read";
+      return FAKE_VALUE;
+    });
+    const raced = await call("reveal", input, context);
+    expect(raced.status).toBe(404);
+    expect(raced.text).not.toContain(FAKE_VALUE);
+
+    secrets.load.mockRejectedValueOnce(new Error(FAKE_VALUE));
+    const storageFailure = await call(
+      "reveal",
+      { ...input, expectedRevision: "updated-during-read" },
+      context,
+    );
+    expect(storageFailure.status).toBe(503);
+    expect(storageFailure.text).not.toContain(FAKE_VALUE);
+    const revoked = await call(
+      "reveal",
+      { ...input, expectedRevision: "updated-during-read" },
+      {
+        ...context,
+        stillAuthorized: async () => false,
+      },
+    );
+    expect(revoked.status).toBe(404);
+    expect(revoked.text).not.toContain(FAKE_VALUE);
+  });
+
+  it("loads only labels and visibility for editing a login", async () => {
+    const { call, rows } = botSecretDeps();
+    await call("putForEdit", {
+      botId: "bot-1",
+      destination: {
+        name: "portal",
+        origin: "https://login.example.test",
+        auth: { type: "login" },
+      },
+      expectedRevision: null,
+      value: encodeLoginSecret({
+        fields: [
+          { label: "Account", value: "identifier-fixture", hidden: false },
+          { label: "Access phrase", value: FAKE_VALUE, hidden: true },
+        ],
+      }),
+    });
+    const result = await call("loginFieldsForEdit", {
+      botId: "bot-1",
+      name: "portal",
+      expectedRevision: rows[0]!.revision,
+    });
+    expect(result.status).toBe(200);
+    expect(result.body.json).toEqual([
+      { label: "Account", hidden: false },
+      { label: "Access phrase", hidden: true },
+    ]);
+    expect(result.text).not.toContain(FAKE_VALUE);
+    expect(result.text).not.toContain("identifier-fixture");
   });
 });

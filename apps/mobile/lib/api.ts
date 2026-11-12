@@ -824,6 +824,9 @@ export async function fetchMobileJson<T>(
   invalidJsonFallback?: T,
 ): Promise<{ response: Response; body: T }> {
   const controller = new AbortController();
+  const cancel = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) cancel();
+  else init.signal?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(new Error("Request timed out")), RPC_TIMEOUT_MS);
   try {
     const response = await withAbort(
@@ -847,6 +850,7 @@ export async function fetchMobileJson<T>(
     }
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener("abort", cancel);
   }
 }
 
@@ -2006,10 +2010,10 @@ export {
 } from "./endpoint";
 export { loadSessionToken };
 
-export async function fetchAccountSecurity(): Promise<AccountSecurity> {
+export async function fetchAccountSecurity(context?: ApiRequestContext): Promise<AccountSecurity> {
   const { response, body } = await fetchMobileJson<unknown>(
-    `${currentApiBase()}/api/auth/account-security`,
-    { headers: { origin: "coginebot://", ...(await authHeaders()) } },
+    `${context?.apiBase ?? currentApiBase()}/api/auth/account-security`,
+    { headers: { origin: "coginebot://", ...(context?.headers ?? (await authHeaders())) } },
     null,
   );
   // Older servers support password accounts and the original change/delete endpoints.
@@ -2022,19 +2026,34 @@ export async function fetchAccountSecurity(): Promise<AccountSecurity> {
   }
 }
 
-export async function requestAccountDeletionCode(): Promise<void> {
+async function postAccountAuth(
+  path: string,
+  input: object,
+  context?: ApiRequestContext,
+  signal?: AbortSignal,
+): Promise<void> {
   const { response, body } = await fetchMobileJson<unknown>(
-    `${currentApiBase()}/api/auth/request-account-deletion`,
+    `${context?.apiBase ?? currentApiBase()}/api/auth/${path}`,
     {
       method: "POST",
       headers: {
         "content-type": "application/json",
         origin: "coginebot://",
-        ...(await authHeaders()),
+        ...(context?.headers ?? (await authHeaders())),
       },
-      body: "{}",
+      body: JSON.stringify(input),
+      signal,
     },
     null,
   );
   if (!response.ok) throw new Error(authErrorText(body, t("Could not continue")));
 }
+
+export const requestAccountDeletionCode = () => postAccountAuth("request-account-deletion", {});
+export const requestIdentityCode = (context: ApiRequestContext, signal?: AbortSignal) =>
+  postAccountAuth("request-identity-code", {}, context, signal);
+export const confirmIdentity = (
+  input: { password: string } | { code: string },
+  context: ApiRequestContext,
+  signal?: AbortSignal,
+) => postAccountAuth("confirm-identity", input, context, signal);

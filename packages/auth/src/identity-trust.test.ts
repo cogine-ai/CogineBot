@@ -1,7 +1,10 @@
+import { createHmac } from "node:crypto";
 import type { TransactionalEmail } from "@rakazo/adapter-kit";
 import { bootstrapUserSpace } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuth } from "./index.js";
+
+const AUTH_FIXTURE_SECRET = "offline-auth-secret-at-least-32-characters";
 
 // Exercise Better Auth's real routing, password hashing, verification and
 // session hooks with its official offline adapter. Only persistence is faked.
@@ -47,7 +50,24 @@ function fixture({
     ownerUserId: null,
   };
   const messages: TransactionalEmail[] = [];
+  const sendEmail = vi.fn(async (message: TransactionalEmail) => {
+    messages.push(message);
+  });
   const members = new Set<string>();
+  type VerificationWhere = {
+    id?: string;
+    identifier?: string;
+    value?: string;
+    expiresAt?: { lte?: Date; gt?: Date };
+  };
+  const matchesVerification = (row: Record<string, unknown>, where: VerificationWhere) => {
+    const { expiresAt, ...fields } = where;
+    return (
+      Object.entries(fields).every(([key, value]) => row[key] === value) &&
+      (!expiresAt?.lte || new Date(row.expiresAt as Date) <= expiresAt.lte) &&
+      (!expiresAt?.gt || new Date(row.expiresAt as Date) > expiresAt.gt)
+    );
+  };
   const prisma = {
     authData: data,
     $executeRaw: vi.fn(async () => 0),
@@ -104,6 +124,38 @@ function fixture({
         },
       ),
     },
+    verification: {
+      findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
+        const row = data.verification!.find((entry) => entry.id === id);
+        return row ? { ...row } : null;
+      }),
+      createMany: vi.fn(async ({ data: entry }: { data: Record<string, unknown> }) => {
+        if (data.verification!.some((row) => row.id === entry.id)) return { count: 0 };
+        data.verification!.push(entry);
+        return { count: 1 };
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data: patch,
+        }: {
+          where: VerificationWhere;
+          data: Record<string, unknown>;
+        }) => {
+          const row = data.verification!.find((entry) => matchesVerification(entry, where));
+          if (!row) return { count: 0 };
+          Object.assign(row, patch);
+          return { count: 1 };
+        },
+      ),
+      deleteMany: vi.fn(async ({ where }: { where: VerificationWhere }) => {
+        const before = data.verification!.length;
+        for (let i = before - 1; i >= 0; i--) {
+          if (matchesVerification(data.verification![i]!, where)) data.verification!.splice(i, 1);
+        }
+        return { count: before - data.verification!.length };
+      }),
+    },
     member: { findMany: vi.fn(async () => []) },
     messagingIdentity: { deleteMany: vi.fn(async () => ({ count: 0 })) },
     organization: { deleteMany: vi.fn(async () => ({ count: 0 })) },
@@ -118,7 +170,7 @@ function fixture({
     return { spaceId: "space-1" };
   });
   const auth = createAuth(prisma as never, {
-    secret: "offline-auth-secret-at-least-32-characters",
+    secret: AUTH_FIXTURE_SECRET,
     baseURL,
     webOrigin,
     signupsEnabled: "true",
@@ -131,9 +183,7 @@ function fixture({
             adapterVersion: "1",
             capabilities: { transactional: true },
           }),
-          send: async (message) => {
-            messages.push(message);
-          },
+          send: sendEmail,
         }
       : undefined,
   });
@@ -166,7 +216,19 @@ function fixture({
     const url = new URL(messages.at(-1)!.text.match(/http:\/\/\S+/)![0]);
     return request(`${url.pathname.replace("/api/auth", "")}${url.search}`);
   };
-  return { auth, request, signup, signin, verify, data, policy, messages, members };
+  return {
+    auth,
+    request,
+    signup,
+    signin,
+    verify,
+    data,
+    policy,
+    messages,
+    members,
+    verification: prisma.verification,
+    sendEmail,
+  };
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -485,5 +547,330 @@ describe("session credentials", () => {
     const deleted = await f.request("/delete-user", { password: "offline-password12" }, token);
     expect(deleted.status).toBe(200);
     expect(f.data.user).toHaveLength(0);
+  });
+});
+
+describe("confirmation for protected reads", () => {
+  function endDeliveryCooldown(f: ReturnType<typeof fixture>) {
+    const held = f.data.verification!.find((row) =>
+      String(row.identifier).startsWith("identity-email-window-"),
+    );
+    expect(held).toBeDefined();
+    held!.expiresAt = new Date(0);
+  }
+
+  it("requires an authenticated session and binds password confirmation to one session and user", async () => {
+    const f = fixture({ delivery: false });
+    const signup = await f.signup();
+    const first = (await signup.json()) as { token: string };
+    const second = (await (await f.signin()).json()) as { token: string };
+    expect(first.token).toBeTruthy();
+    expect(second.token).not.toBe(first.token);
+    const session = (token: string) =>
+      f.auth.api.getSession({
+        headers: new Headers({ authorization: `Bearer ${token}` }),
+      });
+    const firstSession = (await session(first.token))!;
+    const secondSession = (await session(second.token))!;
+    const scope = { sessionId: firstSession.session.id, userId: firstSession.user.id };
+    expect((await f.request("/confirm-identity", { password: "offline-password12" })).status).toBe(
+      401,
+    );
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
+    expect(
+      (await f.request("/confirm-identity", { password: "wrong-fixture" }, first.token)).status,
+    ).toBe(400);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
+    expect(
+      (await f.request("/confirm-identity", { password: "offline-password12" }, first.token))
+        .status,
+    ).toBe(200);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeGreaterThan(Date.now());
+    expect(
+      await f.auth.identityConfirmationExpiry({ ...scope, userId: "other-fixture" }),
+    ).toBeNull();
+    expect(
+      await f.auth.identityConfirmationExpiry({ ...scope, sessionId: secondSession.session.id }),
+    ).toBeNull();
+    const proof = f.data.verification!.find(
+      (entry) => entry.identifier === `identity-confirmed-${scope.sessionId}`,
+    )!;
+    expect(proof.value).toBe(scope.userId);
+    proof.expiresAt = new Date(0);
+    expect(await f.auth.identityConfirmationExpiry(scope)).toBeNull();
+  });
+
+  it("rejects a wrong email code and consumes a correct code once", async () => {
+    const f = fixture();
+    const signup = await f.signup();
+    const { token } = (await signup.json()) as { token: string };
+    expect(token).toBeTruthy();
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(400);
+    // A passwordless sign-in has a session but no credential password.
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect(code).toMatch(/^\d{6}$/);
+    const current = await f.auth.api.getSession({
+      headers: new Headers({ authorization: `Bearer ${token}` }),
+    });
+    const challenge = f.data.verification!.find(
+      (row) => row.identifier === `identity-code-${current?.session.id}`,
+    );
+    const { active } = JSON.parse(String(challenge?.value));
+    const expectedVerifier = createHmac("sha256", AUTH_FIXTURE_SECRET)
+      .update(
+        JSON.stringify([
+          "identity-email-code/v1",
+          current?.session.id,
+          current?.user.id,
+          active.version,
+          code,
+        ]),
+      )
+      .digest("hex");
+    expect(active).toMatchObject({ verifier: expectedVerifier });
+    expect(active).not.toHaveProperty("hash");
+    const wrongCode = code === "000000" ? "111111" : "000000";
+    expect((await f.request("/confirm-identity", { code: wrongCode }, token)).status).toBe(400);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+  });
+
+  it("expires old verifier records and lets the user request a fresh code", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const oldCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    const challenge = f.data.verification!.find((row) =>
+      String(row.identifier).startsWith("identity-code-"),
+    )!;
+    const { active, userId } = JSON.parse(String(challenge.value));
+    const legacy = {
+      hash: "0".repeat(64),
+      version: active.version,
+      expiresAt: active.expiresAt,
+      failures: 0,
+    };
+    challenge.value = JSON.stringify({ userId, active: legacy, pending: legacy });
+    const rejected = await f.request("/confirm-identity", { code: oldCode }, token);
+    expect(rejected.status).toBe(400);
+    await expect(rejected.json()).resolves.toMatchObject({ code: "OTP_EXPIRED" });
+    endDeliveryCooldown(f);
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+  });
+  it("keeps the new emailed challenge when a previous attempt returns after resending", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const originalCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    const wrongCode = originalCode === "000000" ? "111111" : "000000";
+
+    let resume!: () => void;
+    let loaded!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const read = new Promise<void>((resolve) => {
+      loaded = resolve;
+    });
+    const original = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const previous = await original(args);
+      loaded();
+      await blocked;
+      return previous;
+    });
+
+    const pending = f.request("/confirm-identity", { code: wrongCode }, token);
+    await read;
+    endDeliveryCooldown(f);
+    try {
+      expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    } finally {
+      resume();
+    }
+    expect((await pending).status).toBe(400);
+    const latest = f.data.verification!.find((entry) =>
+      String(entry.identifier).startsWith("identity-code-"),
+    );
+    expect(JSON.parse(String(latest?.value)).active.failures).toBe(0);
+    const latestCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code: latestCode }, token)).status).toBe(200);
+  });
+  it("keeps the previously delivered code when the email provider rejects a resend", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const previous = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    const wrong = previous === "000000" ? "111111" : "000000";
+    expect((await f.request("/confirm-identity", { code: wrong }, token)).status).toBe(400);
+    endDeliveryCooldown(f);
+    f.sendEmail.mockRejectedValueOnce(new Error("fixture-mail-private-diagnostic"));
+    const rejected = await f.request("/request-identity-code", {}, token);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.text()).not.toContain("fixture-mail-private-diagnostic");
+    const saved = f.data.verification!.find((entry) =>
+      String(entry.identifier).startsWith("identity-code-"),
+    );
+    expect(JSON.parse(String(saved?.value)).active.failures).toBe(1);
+    expect((await f.request("/confirm-identity", { code: previous }, token)).status).toBe(200);
+  });
+  it("serializes resends and can verify a staged code before the provider acknowledges delivery", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    let accepted!: () => void;
+    let delivered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      accepted = resolve;
+    });
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    const pending = f.request("/request-identity-code", {}, token);
+    await sent;
+    try {
+      endDeliveryCooldown(f);
+      expect((await f.request("/request-identity-code", {}, token)).status).toBe(429);
+      const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+      expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+      expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+    } finally {
+      accepted();
+    }
+    expect((await pending).status).toBe(200);
+  });
+
+  it("does not strand a delivered code when activating it fails", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    f.verification.updateMany.mockRejectedValueOnce(new Error("Fixture database outage"));
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(200);
+  });
+  it("verifies the same code when delivery promotes it during confirmation", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    let acknowledge!: () => void;
+    let delivered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    endDeliveryCooldown(f);
+    const sending = f.request("/request-identity-code", {}, token);
+    await sent;
+    const code = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    let read!: () => void;
+    let resume!: () => void;
+    const readSnapshot = new Promise<void>((resolve) => {
+      read = resolve;
+    });
+    const allowCommit = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const find = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const snapshot = await find(args);
+      read();
+      await allowCommit;
+      return snapshot;
+    });
+    const confirming = f.request("/confirm-identity", { code }, token);
+    await readSnapshot;
+    acknowledge();
+    try {
+      expect((await sending).status).toBe(200);
+    } finally {
+      resume();
+    }
+    expect((await confirming).status).toBe(200);
+    expect((await f.request("/confirm-identity", { code }, token)).status).toBe(400);
+  });
+  it("does not consume a replacement code that was issued after confirmation read its snapshot", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const oldCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    let read!: () => void;
+    let resume!: () => void;
+    const readSnapshot = new Promise<void>((resolve) => {
+      read = resolve;
+    });
+    const allowCommit = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const find = f.verification.findUnique.getMockImplementation()!;
+    f.verification.findUnique.mockImplementationOnce(async (args) => {
+      const snapshot = await find(args);
+      read();
+      await allowCommit;
+      return snapshot;
+    });
+    const confirming = f.request("/confirm-identity", { code: oldCode }, token);
+    await readSnapshot;
+    let delivered!: () => void;
+    let acknowledge!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      delivered = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    f.sendEmail.mockImplementationOnce(async (message) => {
+      f.messages.push(message);
+      delivered();
+      await waiting;
+    });
+    endDeliveryCooldown(f);
+    const sending = f.request("/request-identity-code", {}, token);
+    await sent;
+    try {
+      resume();
+      expect((await confirming).status).toBe(200);
+    } finally {
+      acknowledge();
+    }
+    expect((await sending).status).toBe(200);
+    const nextCode = f.messages.at(-1)?.text.match(/\b\d{6}\b/)?.[0];
+    expect((await f.request("/confirm-identity", { code: nextCode }, token)).status).toBe(200);
+  });
+  it("rate limits sequential delivery across sessions of the same account", async () => {
+    const f = fixture();
+    const { token } = (await (await f.signup()).json()) as { token: string };
+    const second = (await (await f.signin()).json()) as { token: string };
+    expect(second.token).not.toBe(token);
+    for (const account of f.data.account!) delete account.password;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(200);
+    const sent = f.messages.length;
+    expect((await f.request("/request-identity-code", {}, token)).status).toBe(429);
+    expect((await f.request("/request-identity-code", {}, second.token)).status).toBe(429);
+    expect(f.messages).toHaveLength(sent);
+    endDeliveryCooldown(f);
+    expect((await f.request("/request-identity-code", {}, second.token)).status).toBe(200);
+    expect(f.messages).toHaveLength(sent + 1);
   });
 });

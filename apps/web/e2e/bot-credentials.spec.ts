@@ -144,3 +144,108 @@ async function expectNoLeakedInputValue(page: Page, value: string) {
   }, value);
   expect(leaked).toBe(false);
 }
+
+test("Space credentials preserve Bot identity and reveal only after confirmation", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  const password = "password12";
+  await signup(page, `space-credentials-${stamp}@example.test`, password, "Credential fixture");
+  await completeOnboarding(page);
+  const firstName = `First Bot ${stamp}`;
+  const secondName = `Second Bot ${stamp}`;
+  const first = await createNamedBot(page, firstName);
+  const second = await createNamedBot(page, secondName);
+  const name = "portal";
+  const destination = { name, origin: "https://login.example.test", auth: { type: "login" } };
+  for (const [botId, value] of [
+    [first, SENTINEL],
+    [second, REPLACEMENT],
+  ] as const) {
+    await rpc(page, "botSecrets/putForEdit", {
+      botId,
+      destination,
+      expectedRevision: null,
+      value: JSON.stringify({
+        fields: [
+          { label: "Account ID", value: "fixture-account", hidden: false },
+          { label: "Access phrase", value, hidden: true },
+        ],
+      }),
+    });
+  }
+
+  await page.getByTestId("user-menu-trigger").click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const settings = page.getByTestId("user-settings");
+  await settings.getByTestId("settings-nav-credentials").click();
+  const panel = settings.getByTestId("space-credentials");
+  const rows = panel.getByTestId("bot-credential-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: firstName })).toContainText(destination.origin);
+  await expect(rows.filter({ hasText: secondName })).toContainText(destination.origin);
+  await expect(panel).not.toContainText(SENTINEL);
+  await expect(panel).not.toContainText(REPLACEMENT);
+  await captureScreenshot(page, testInfo, "space-credentials-list");
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(rows).toHaveCount(2);
+  const narrowSettings = (await settings.boundingBox())!;
+  const narrowClose = (await settings
+    .getByRole("button", { name: "Close user settings" })
+    .boundingBox())!;
+  expect(narrowClose.x + narrowClose.width).toBeLessThanOrEqual(
+    narrowSettings.x + narrowSettings.width,
+  );
+  await captureScreenshot(page, testInfo, "space-credentials-narrow");
+  await page.setViewportSize(viewport);
+
+  const firstRow = rows.filter({ hasText: firstName });
+  const secondRow = rows.filter({ hasText: secondName });
+  await firstRow.getByRole("button", { name: "Show value" }).click();
+  const confirm = page.getByRole("dialog", { name: "Confirm it's you" });
+  await expect(confirm.getByLabel("Password")).toBeVisible();
+  await captureScreenshot(page, testInfo, "space-credentials-confirm");
+  await confirm.getByLabel("Password").fill("incorrect-fixture-password");
+  await confirm.getByRole("button", { name: "Continue" }).click();
+  await expect(confirm.getByRole("alert")).toBeVisible();
+  await expect(confirm.getByLabel("Password")).toHaveValue("");
+  await expect(page.getByText(SENTINEL, { exact: true })).toHaveCount(0);
+  const successfulReveal = page.waitForResponse(
+    (response) => response.url().endsWith("/rpc/botSecrets/reveal") && response.ok(),
+  );
+  await confirm.getByLabel("Password").fill(password);
+  await confirm.getByRole("button", { name: "Continue" }).click();
+  expect((await successfulReveal).headers()["cache-control"]).toBe("no-store");
+  const shown = page.getByRole("dialog", { name: destination.origin });
+  await expect(shown).toContainText(SENTINEL);
+  await expect(shown).not.toContainText(REPLACEMENT);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await expect(shown).toHaveCount(0);
+  await expect(page.getByText(SENTINEL, { exact: true })).toHaveCount(0);
+
+  await secondRow.getByRole("button", { name: "Replace value" }).click();
+  await expect(secondRow.getByLabel("Access phrase", { exact: true })).toHaveValue("");
+  await expect(secondRow.getByLabel("Access phrase", { exact: true })).toHaveAttribute(
+    "type",
+    "password",
+  );
+  await secondRow.getByLabel("Account ID", { exact: true }).fill("updated-fixture-account");
+  await secondRow.getByLabel("Access phrase", { exact: true }).fill("new-synthetic-access-phrase");
+  const lastLabel = secondRow.getByLabel("Field label").last();
+  await lastLabel.fill("Account ID");
+  await expect(secondRow.getByRole("alert")).toHaveText("Give each field a different label");
+  await expect(secondRow.getByRole("button", { name: "Save new value" })).toBeDisabled();
+  await lastLabel.fill("Access phrase");
+  await secondRow.getByRole("button", { name: "Save new value" }).click();
+  await expect(secondRow.getByLabel("Access phrase", { exact: true })).toHaveCount(0);
+  await secondRow.getByRole("button", { name: "Show value" }).click();
+  await expect(shown).toContainText("new-synthetic-access-phrase");
+  await expect(shown).not.toContainText(SENTINEL);
+  await shown.getByRole("button", { name: "Done" }).click();
+
+  await firstRow.getByRole("button", { name: "Remove", exact: true }).click();
+  await firstRow.getByTestId("credential-remove-confirm-portal").click();
+  await expect(firstRow).toHaveCount(0);
+  await expect(secondRow).toBeVisible();
+});

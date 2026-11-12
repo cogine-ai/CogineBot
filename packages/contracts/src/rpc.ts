@@ -33,12 +33,15 @@ import {
   BotPackageRecentReceiptSchema,
 } from "./bot-package.js";
 import {
+  BotLoginFieldMetadata,
   BotSecretMetadata,
   BotSecretPutForEditInput,
   BotSecretPutInput,
   BotSecretRemoveForEditInput,
   BotSecretRemoveInput,
   EditableBotSecretMetadata,
+  RevealedBotCredential,
+  SpaceBotCredentials,
   WebsiteLoginAnswer,
 } from "./bot-secrets.js";
 import {
@@ -1321,6 +1324,9 @@ export const appContract = {
     remove: oc.input(z.object({ id: Id })).output(z.object({ ok: z.literal(true) })),
   },
   botSecrets: {
+    listForSpace: oc.input(z.object({})).output(z.array(SpaceBotCredentials)),
+    loginFieldsForEdit: oc.input(BotSecretRemoveForEditInput).output(BotLoginFieldMetadata),
+    reveal: oc.input(BotSecretRemoveForEditInput).output(RevealedBotCredential),
     list: oc.input(z.object({ botId: Id })).output(z.array(BotSecretMetadata)),
     listForEdit: oc.input(z.object({ botId: Id })).output(z.array(EditableBotSecretMetadata)),
     put: oc.input(BotSecretPutInput).output(BotSecretMetadata),

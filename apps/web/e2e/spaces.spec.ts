@@ -49,7 +49,7 @@ test("Space menu and chat creation keep the existing approval and switching flow
 
   const supportSpace = sidebar
     .locator('[data-sidebar-group^="space:"]')
-    .filter({ hasText: "Customer support" });
+    .filter({ has: page.getByRole("button", { name: "Customer support", exact: true }) });
   const supportSpaceGroup = await supportSpace.getAttribute("data-sidebar-group");
   const supportSpaceId = supportSpaceGroup?.split(":")[1];
   expect(supportSpaceId).toBeTruthy();

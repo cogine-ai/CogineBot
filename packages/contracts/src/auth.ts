@@ -40,3 +40,15 @@ export const legacyAccountSecurity: AccountSecurity = {
   emailDeletion: false,
   sso: null,
 };
+
+/** A sensitive read requires a recent confirmation from the same signed-in session. */
+export const IDENTITY_CONFIRMATION_REQUIRED = "IDENTITY_CONFIRMATION_REQUIRED";
+
+export function isIdentityConfirmationRequired(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === IDENTITY_CONFIRMATION_REQUIRED
+  );
+}

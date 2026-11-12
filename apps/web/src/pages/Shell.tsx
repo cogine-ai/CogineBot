@@ -7209,6 +7209,7 @@ export function ShellPage() {
             space={settingsSpace}
             spaces={spaces}
             currentSpaceId={settingsCurrentSpaceId}
+            currentBotId={activeBotId.current}
             ownerKey={settingsOwnerKey}
             onSpaceChange={setSettingsSpaceId}
             name={userName}

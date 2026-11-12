@@ -356,13 +356,14 @@ export const LOGIN_FIELD_LIMIT = 8;
 export const LoginFieldLabel = z.string().trim().min(1).max(64);
 export const DEFAULT_LOGIN_FIELD_LABELS = ["Username", "Password"] as const;
 export const WEBSITE_LOGIN_CARD_HEADER = "x-coginebot-website-login-card";
+export const LOGIN_FIELD_LABEL_DUPLICATE = "Give each field a different label";
 export const LoginFieldLabels = z
   .array(LoginFieldLabel)
   .min(1)
   .max(LOGIN_FIELD_LIMIT)
   .refine(
     (labels) => new Set(labels.map((label) => label.toLowerCase())).size === labels.length,
-    "Give each field a different label",
+    LOGIN_FIELD_LABEL_DUPLICATE,
   );
 const NamedLoginField = z
   .object({
@@ -379,7 +380,7 @@ export const NamedLoginSecretValue = z
   .strictObject({ fields: z.array(NamedLoginField).min(1).max(LOGIN_FIELD_LIMIT) })
   .refine(
     ({ fields }) => new Set(fields.map(({ label }) => label.toLowerCase())).size === fields.length,
-    "Give each field a different label",
+    LOGIN_FIELD_LABEL_DUPLICATE,
   )
   .refine(
     (login) => JSON.stringify(login).length <= BOT_SECRET_VALUE_MAX_LENGTH,
@@ -449,6 +450,49 @@ export function encodeLoginSecret(value: StoredLoginSecretValue): string {
   return JSON.stringify(
     "fields" in value ? NamedLoginSecretValue.parse(value) : LoginSecretValue.parse(value),
   );
+}
+
+/** A value-only edit preserves legacy compatibility when the two-field layout is unchanged. */
+export function encodeEditedLoginSecret(
+  login: NamedLoginSecretValue,
+  keepLegacyPair: boolean,
+): string {
+  const normalized = NamedLoginSecretValue.parse(login);
+  const [username, password] = normalized.fields;
+  if (
+    keepLegacyPair &&
+    normalized.fields.length === 2 &&
+    username?.label === DEFAULT_LOGIN_FIELD_LABELS[0] &&
+    !username.hidden &&
+    password?.label === DEFAULT_LOGIN_FIELD_LABELS[1] &&
+    password.hidden
+  ) {
+    const pair = LoginSecretValue.safeParse({ username: username.value, password: password.value });
+    if (pair.success) return encodeLoginSecret(pair.data);
+  }
+  return JSON.stringify(normalized);
+}
+
+/** Browser and native autofill hints for conventional and translated login labels. */
+export function loginFieldAutocomplete(
+  field: Pick<NamedLoginField, "label" | "hidden">,
+  localLabels: { username: string; email: string; password: string },
+): "new-password" | "username" | "email" | undefined {
+  const normalize = (label: string) => label.trim().toLowerCase();
+  const label = normalize(field.label);
+  if (field.hidden)
+    return label === "password" || label === normalize(localLabels.password)
+      ? "new-password"
+      : undefined;
+  if (label === "username" || label === "user name" || label === normalize(localLabels.username))
+    return "username";
+  if (
+    label === "email" ||
+    label === "e-mail" ||
+    label === "email address" ||
+    label === normalize(localLabels.email)
+  )
+    return "email";
 }
 
 export function parseLoginSecretWrite(plaintext: string): StoredLoginSecretValue {
@@ -547,6 +591,27 @@ export type BotSecretMetadata = z.infer<typeof BotSecretMetadata>;
 export const EditableBotSecretMetadata = BotSecretMetadata.extend({
   revision: BotSecretRevision,
 });
+
+export const SpaceBotCredentials = z.object({
+  botId: Id,
+  botName: z.string(),
+  credentials: z.array(EditableBotSecretMetadata),
+});
+export type SpaceBotCredentials = z.infer<typeof SpaceBotCredentials>;
+
+export const BotLoginFieldMetadata = z.array(
+  z.object({ label: LoginFieldLabel, hidden: z.boolean() }),
+);
+export type BotLoginFieldMetadata = z.infer<typeof BotLoginFieldMetadata>;
+
+export const RevealedBotCredential = z.union([
+  z.object({ value: z.string() }),
+  z.object({
+    fields: z.array(z.object({ label: LoginFieldLabel, hidden: z.boolean(), value: z.string() })),
+  }),
+]);
+export type RevealedBotCredential = z.infer<typeof RevealedBotCredential>;
+export type BotCredentialRevisionInput = z.infer<typeof BotSecretRemoveForEditInput>;
 
 export const SecretHttpRequest = z
   .object({

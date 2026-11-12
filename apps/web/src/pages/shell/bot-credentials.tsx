@@ -1,18 +1,57 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { BotSecretMetadata } from "@rakazo/contracts";
+import type {
+  BotSecretMetadata,
+  NamedLoginSecretValue,
+  RevealedBotCredential,
+  SpaceBotCredentials,
+} from "@rakazo/contracts";
 import {
   BotSecretName,
   commandVariableName,
   commandVariableProblem,
+  encodeEditedLoginSecret,
   encodeLoginSecret,
+  isIdentityConfirmationRequired,
+  LOGIN_FIELD_LABEL_DUPLICATE,
+  LOGIN_FIELD_LIMIT,
+  LOGIN_VALUE_TOO_LONG,
+  NamedLoginSecretValue as LoginFieldsSchema,
+  loginFieldAutocomplete,
 } from "@rakazo/contracts";
-import { Button, Input, NativeSelect, NativeSelectOption } from "@rakazo/ui-web";
-import { useEffect, useId, useState } from "react";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Input,
+  NativeSelect,
+  NativeSelectOption,
+} from "@rakazo/ui-web";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { ConfirmIdentityDialog } from "../../components/ConfirmIdentityDialog";
 import { rpc } from "../../lib/rpc";
+import { useSpaceRpc, useSpaceRpcCurrent } from "../../lib/space-rpc";
 import { errorCode, errorText } from "../../lib/user-error";
 
 type ReadableCredentialAuth = NonNullable<BotSecretMetadata["auth"]>;
 type CredentialAuthType = ReadableCredentialAuth["type"];
+type CredentialRow = BotSecretMetadata & { botId: string; botName?: string };
+type EditorProps =
+  | { botId: string; defaultBotId?: never }
+  | { botId?: never; defaultBotId?: string };
+
+function credentialKey(credential: CredentialRow) {
+  return JSON.stringify([credential.botId, credential.name]);
+}
+
+function byDestination(left: CredentialRow, right: CredentialRow) {
+  return (left.origin || left.name).localeCompare(right.origin || right.name);
+}
+
+function credentialRevisionKey(credential: CredentialRow) {
+  return JSON.stringify([credential.botId, credential.name, credential.revision]);
+}
 
 const fieldLabelClass = "mt-3 block text-[13px] text-muted-foreground";
 
@@ -35,10 +74,25 @@ async function readCredentials(botId: string) {
   }
 }
 
-export function BotCredentialsSection({ botId }: { botId: string }) {
+export function BotCredentialsSection({ botId, defaultBotId }: EditorProps) {
   const { t } = useLingui();
   const ids = useId();
-  const [secrets, setSecrets] = useState<BotSecretMetadata[] | null>(null);
+  const spaceView = botId === undefined;
+  const spaceRpc = useSpaceRpc();
+  const scopeCurrent = useSpaceRpcCurrent();
+  const client = spaceView ? spaceRpc : rpc;
+  const [secrets, setSecrets] = useState<CredentialRow[] | null>(null);
+  const [bots, setBots] = useState<SpaceBotCredentials[]>([]);
+  const [addBot, setAddBot] = useState("");
+  const [fields, setFields] = useState<NamedLoginSecretValue["fields"]>([]);
+  const [challenge, setChallenge] = useState<CredentialRow | null>(null);
+  const [shown, setShown] = useState<{
+    row: CredentialRow;
+    credential: RevealedBotCredential;
+  } | null>(null);
+  const revealAttempt = useRef(0);
+  const listRequest = useRef(0);
+  const revealTimer = useRef<number | undefined>(undefined);
   const [editable, setEditable] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,40 +109,165 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   const [loginUsername, setLoginUsername] = useState("");
   const [value, setValue] = useState("");
 
+  const load = useCallback(async () => {
+    if (!spaceView) {
+      const { rows, editable } = await readCredentials(botId);
+      return { rows: rows.map((row) => ({ ...row, botId })), editable, bots: [] };
+    }
+    const groups = await client.botSecrets.listForSpace({});
+    return {
+      rows: groups
+        .flatMap(({ botId, botName, credentials }) =>
+          credentials.map((row) => ({ ...row, botId, botName })),
+        )
+        .sort((left, right) =>
+          (left.origin || left.name).localeCompare(right.origin || right.name),
+        ),
+      editable: true,
+      bots: groups,
+    };
+  }, [spaceView, botId, client]);
+
+  function receive(latest: Awaited<ReturnType<typeof load>>) {
+    setSecrets(latest.rows);
+    setBots(latest.bots);
+    setEditable(latest.editable);
+    setLoadFailed(false);
+  }
+
   useEffect(() => {
-    let active = true;
-    readCredentials(botId)
-      .then(({ rows, editable }) => {
-        if (!active) return;
-        setSecrets(rows);
-        setEditable(editable);
-        setLoadFailed(false);
+    const request = ++listRequest.current;
+    const current = () => scopeCurrent() && request === listRequest.current;
+    void load()
+      .then((latest) => {
+        if (current()) receive(latest);
       })
       .catch(() => {
-        if (active) setLoadFailed(true);
+        if (current()) setLoadFailed(true);
       });
     return () => {
-      active = false;
+      listRequest.current++;
+      revealAttempt.current++;
+      window.clearTimeout(revealTimer.current);
     };
-  }, [botId]);
+  }, [load, scopeCurrent]);
 
   async function refresh() {
+    const request = ++listRequest.current;
+    const current = () => scopeCurrent() && request === listRequest.current;
     try {
-      const latest = await readCredentials(botId);
-      setSecrets(latest.rows);
-      setEditable(latest.editable);
-      setLoadFailed(false);
+      const latest = await load();
+      if (!current()) return false;
+      receive(latest);
       return true;
     } catch {
-      setLoadFailed(true);
+      if (current()) setLoadFailed(true);
       return false;
     }
   }
 
+  const clearReveal = useCallback(() => {
+    revealAttempt.current++;
+    window.clearTimeout(revealTimer.current);
+    setShown(null);
+  }, []);
+
+  const hide = useCallback(() => {
+    clearReveal();
+    setChallenge(null);
+  }, [clearReveal]);
+
+  useEffect(() => {
+    if (!spaceView) return;
+    // Reading an email code often blurs the window. Keep the confirmation flow open.
+    const hideWhenHidden = () => {
+      if (document.hidden) clearReveal();
+    };
+    document.addEventListener("visibilitychange", hideWhenHidden);
+    window.addEventListener("blur", clearReveal);
+    return () => {
+      document.removeEventListener("visibilitychange", hideWhenHidden);
+      window.removeEventListener("blur", clearReveal);
+    };
+  }, [clearReveal, spaceView]);
+
   function clearProtectedFields() {
     setValue("");
     setLoginUsername("");
+    setFields([]);
+    hide();
   }
+
+  async function reveal(row: CredentialRow, afterConfirmation = false) {
+    if (!row.revision || busy || !scopeCurrent() || document.hidden || !document.hasFocus()) return;
+    clearProtectedFields();
+    setAdding(false);
+    setReplacing(null);
+    setConfirmingRemove(null);
+    setError(null);
+    const attempt = revealAttempt.current;
+    const current = () =>
+      scopeCurrent() &&
+      revealAttempt.current === attempt &&
+      !document.hidden &&
+      document.hasFocus();
+    try {
+      const credential = await client.botSecrets.reveal({
+        botId: row.botId,
+        name: row.name,
+        expectedRevision: row.revision,
+      });
+      if (!current()) return;
+      setShown({ row, credential });
+      revealTimer.current = window.setTimeout(hide, 30_000);
+    } catch (cause) {
+      if (!current()) return;
+      if (!afterConfirmation && isIdentityConfirmationRequired(cause)) setChallenge(row);
+      else setError(t`Could not show the credential`);
+    }
+  }
+
+  async function beginReplace(row: CredentialRow) {
+    if (busy || !scopeCurrent()) return;
+    clearProtectedFields();
+    setReplacing(null);
+    setConfirmingRemove(null);
+    setAdding(false);
+    setError(null);
+    if (spaceView && row.auth?.type === "login" && row.revision) {
+      setBusy(true);
+      try {
+        const layout = await client.botSecrets.loginFieldsForEdit({
+          botId: row.botId,
+          name: row.name,
+          expectedRevision: row.revision,
+        });
+        if (!scopeCurrent()) return;
+        setFields(layout.map((field) => ({ ...field, value: "" })));
+      } catch {
+        if (scopeCurrent()) setError(t`Could not load credentials.`);
+        return;
+      } finally {
+        if (scopeCurrent()) setBusy(false);
+      }
+    }
+    if (scopeCurrent()) setReplacing(credentialRevisionKey(row));
+  }
+
+  useEffect(() => {
+    if (replacing && secrets && !secrets.some((row) => credentialRevisionKey(row) === replacing)) {
+      setReplacing(null);
+      setValue("");
+      setLoginUsername("");
+      setFields([]);
+    }
+    if (
+      confirmingRemove &&
+      secrets &&
+      !secrets.some((row) => credentialRevisionKey(row) === confirmingRemove)
+    )
+      setConfirmingRemove(null);
+  }, [confirmingRemove, replacing, secrets]);
 
   function authLabel(auth: ReadableCredentialAuth) {
     if (auth.type === "header") {
@@ -113,29 +292,54 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   }
 
   async function save(
+    targetBotId: string,
     destination: { name: string; origin?: string; auth: ReadableCredentialAuth },
     expectedRevision: string | null,
+    keepLegacyPair = false,
   ) {
+    if (!scopeCurrent()) return false;
     const username = loginUsername.trim();
     const secretValue = value;
+    const loginFields = fields;
     clearProtectedFields();
+    if (spaceView) setFields(loginFields.map((field) => ({ ...field, value: "" })));
     setError(null);
     let plaintext: string;
     try {
-      plaintext = credentialPlaintext(destination.auth.type, username, secretValue);
+      plaintext =
+        spaceView && destination.auth.type === "login"
+          ? encodeEditedLoginSecret({ fields: loginFields }, keepLegacyPair)
+          : credentialPlaintext(destination.auth.type, username, secretValue);
     } catch {
       setError(t`Enter a username and password`);
       return false;
     }
+    listRequest.current++;
     setBusy(true);
     try {
-      await rpc.botSecrets.putForEdit({ botId, destination, value: plaintext, expectedRevision });
-      if (!(await refresh())) {
+      const saved = await client.botSecrets.putForEdit({
+        botId: targetBotId,
+        destination,
+        value: plaintext,
+        expectedRevision,
+      });
+      if (!scopeCurrent()) return false;
+      if (await refresh()) return true;
+      if (!spaceView || !scopeCurrent()) {
         setError(t`Could not load credentials.`);
         return false;
       }
+      const botName = bots.find((entry) => entry.botId === targetBotId)?.botName;
+      const row = { ...saved, botId: targetBotId, botName };
+      setSecrets((current) =>
+        [
+          ...(current ?? []).filter((entry) => credentialKey(entry) !== credentialKey(row)),
+          row,
+        ].sort(byDestination),
+      );
       return true;
     } catch (err) {
+      if (!scopeCurrent()) return false;
       setError(errorText(err, t`Could not save the credential`));
       const code = errorCode(err);
       if (code === "CONFLICT" || code === "NOT_FOUND") {
@@ -149,8 +353,12 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   }
 
   async function submitAdd() {
-    if (busy || !canAdd) return;
-    const saved = await save(credentialDestination(name.trim(), origin.trim(), newAuth()), null);
+    if (busy || !canAdd || !targetBot) return;
+    const saved = await save(
+      targetBot,
+      credentialDestination(name.trim(), origin.trim(), newAuth()),
+      null,
+    );
     if (!saved) return;
     setAdding(false);
     setName("");
@@ -160,31 +368,39 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     setBasicUsername("");
   }
 
-  async function submitReplace(secret: BotSecretMetadata) {
-    if (busy || !editable || !secret.auth || !secret.revision || secret.namedLogin) return;
+  async function submitReplace(secret: CredentialRow) {
+    if (busy || !editable || !secret.auth || !secret.revision || (!spaceView && secret.namedLogin))
+      return;
     const saved = await save(
+      secret.botId,
       credentialDestination(secret.name, secret.origin, secret.auth),
       secret.revision,
+      !secret.namedLogin,
     );
     if (saved) setReplacing(null);
   }
 
-  async function confirmRemove(secret: BotSecretMetadata) {
-    if (busy || !editable || !secret.revision) return;
+  async function confirmRemove(secret: CredentialRow) {
+    if (busy || !editable || !secret.revision || !scopeCurrent()) return;
     setError(null);
+    listRequest.current++;
     setBusy(true);
     try {
-      await rpc.botSecrets.removeForEdit({
-        botId,
+      await client.botSecrets.removeForEdit({
+        botId: secret.botId,
         name: secret.name,
         expectedRevision: secret.revision,
       });
+      if (!scopeCurrent()) return;
       setConfirmingRemove(null);
       if (!(await refresh())) {
-        setSecrets((prev) => prev?.filter((row) => row.name !== secret.name) ?? null);
+        setSecrets(
+          (prev) => prev?.filter((row) => credentialKey(row) !== credentialKey(secret)) ?? null,
+        );
         setError(t`Could not load credentials.`);
       }
     } catch (err) {
+      if (!scopeCurrent()) return;
       setError(errorText(err, t`Could not remove the credential`));
       const code = errorCode(err);
       if (code === "CONFLICT" || code === "NOT_FOUND") {
@@ -196,41 +412,133 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     }
   }
 
-  const loginFields = (type: CredentialAuthType, testIdPrefix: string) => (
-    <>
-      {type === "login" ? (
-        <label htmlFor={`${ids}-${testIdPrefix}-username`} className={fieldLabelClass}>
-          <Trans>Username</Trans>
+  const login = LoginFieldsSchema.safeParse({ fields });
+  const loginIssues = login.success ? [] : login.error.issues.map((issue) => issue.message);
+  const fieldError = loginIssues.includes(LOGIN_FIELD_LABEL_DUPLICATE)
+    ? t`Give each field a different label`
+    : loginIssues.includes(LOGIN_VALUE_TOO_LONG)
+      ? t`These login values are too long together. Shorten one or more fields.`
+      : null;
+
+  const loginFields = (type: CredentialAuthType, testIdPrefix: string) =>
+    spaceView && type === "login" ? (
+      <div className="mt-3 space-y-2">
+        {fields.map((field, index) => {
+          const change = (next: Partial<typeof field>) =>
+            setFields((old) =>
+              old.map((entry, i) => (i === index ? { ...entry, ...next } : entry)),
+            );
+          return (
+            <fieldset className="space-y-2 rounded-md border border-border p-2" key={index}>
+              <Input
+                aria-label={t`Field label`}
+                value={field.label}
+                maxLength={64}
+                onChange={(event) => change({ label: event.target.value })}
+              />
+              <Input
+                aria-label={field.label || t`Value`}
+                value={field.value}
+                maxLength={4096}
+                type={field.hidden ? "password" : "text"}
+                autoComplete={
+                  loginFieldAutocomplete(field, {
+                    username: t`Username`,
+                    email: t`Email`,
+                    password: t`Password`,
+                  }) ?? (field.hidden ? "new-password" : "off")
+                }
+                spellCheck={false}
+                onChange={(event) => change({ value: event.target.value })}
+              />
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor={`${ids}-hide-field-${index}`}
+                  className="flex items-center gap-2 text-sm"
+                >
+                  <Checkbox
+                    id={`${ids}-hide-field-${index}`}
+                    checked={field.hidden}
+                    onCheckedChange={(hidden) => change({ hidden })}
+                  />
+                  <Trans>Hide value</Trans>
+                </label>
+                {fields.length > 1 ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    type="button"
+                    onClick={() => setFields((old) => old.filter((_, i) => i !== index))}
+                  >
+                    <Trans>Remove field</Trans>
+                  </Button>
+                ) : null}
+              </div>
+            </fieldset>
+          );
+        })}
+        {fieldError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {fieldError}
+          </p>
+        ) : null}
+        {fields.length < LOGIN_FIELD_LIMIT ? (
+          <Button
+            variant="outline"
+            size="sm"
+            type="button"
+            onClick={() => setFields((old) => [...old, { label: "", value: "", hidden: true }])}
+          >
+            <Trans>Add field</Trans>
+          </Button>
+        ) : null}
+      </div>
+    ) : (
+      <>
+        {type === "login" ? (
+          <label htmlFor={`${ids}-${testIdPrefix}-username`} className={fieldLabelClass}>
+            <Trans>Username</Trans>
+            <Input
+              id={`${ids}-${testIdPrefix}-username`}
+              data-testid={`${testIdPrefix}-username`}
+              // "off" is ignored for username fields; this stops browsers saving the pair.
+              autoComplete="new-password"
+              spellCheck={false}
+              value={loginUsername}
+              onChange={(event) => setLoginUsername(event.target.value)}
+              className="mt-1.5"
+            />
+          </label>
+        ) : null}
+        <label htmlFor={`${ids}-${testIdPrefix}-value`} className={fieldLabelClass}>
+          {type === "login" ? <Trans>Password</Trans> : <Trans>Value</Trans>}
           <Input
-            id={`${ids}-${testIdPrefix}-username`}
-            data-testid={`${testIdPrefix}-username`}
-            // "off" is ignored for username fields; this stops browsers saving the pair.
+            id={`${ids}-${testIdPrefix}-value`}
+            data-testid={`${testIdPrefix}-value`}
+            type="password"
             autoComplete="new-password"
             spellCheck={false}
-            value={loginUsername}
-            onChange={(event) => setLoginUsername(event.target.value)}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
             className="mt-1.5"
           />
         </label>
-      ) : null}
-      <label htmlFor={`${ids}-${testIdPrefix}-value`} className={fieldLabelClass}>
-        {type === "login" ? <Trans>Password</Trans> : <Trans>Value</Trans>}
-        <Input
-          id={`${ids}-${testIdPrefix}-value`}
-          data-testid={`${testIdPrefix}-value`}
-          type="password"
-          autoComplete="new-password"
-          spellCheck={false}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-          className="mt-1.5"
-        />
-      </label>
-    </>
-  );
+      </>
+    );
 
   const valueReady = (type: CredentialAuthType) =>
-    value.length > 0 && (type !== "login" || loginUsername.trim().length > 0);
+    spaceView && type === "login"
+      ? login.success
+      : value.length > 0 && (type !== "login" || loginUsername.trim().length > 0);
+
+  const targetBot =
+    botId ??
+    (addBot ||
+      (bots.some((bot) => bot.botId === defaultBotId)
+        ? defaultBotId
+        : bots.length === 1
+          ? bots[0]?.botId
+          : undefined));
 
   const nameValid = BotSecretName.safeParse(name.trim()).success;
   // Shown live while a command variable is named, so a reserved name is caught before saving.
@@ -244,6 +552,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
   const canAdd =
     editable &&
     !busy &&
+    !!targetBot &&
     nameValid &&
     (authType === "command" ? !commandVariableError : origin.trim().length > 0) &&
     (authType !== "header" || headerName.trim().length > 0) &&
@@ -251,16 +560,29 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
     valueReady(authType);
 
   return (
-    <section data-testid="bot-credentials" className="mt-5 border-t border-border/20 pt-4">
-      <div className="text-[13.5px] font-medium text-foreground">
-        <Trans>Credentials</Trans>
-      </div>
-      <p className="mt-0.5 text-[12px] text-muted-foreground/70">
-        <Trans>Values are encrypted and never shown again.</Trans>
-      </p>
+    <section
+      data-testid={spaceView ? "space-credentials" : "bot-credentials"}
+      className={spaceView ? undefined : "mt-5 border-t border-border/20 pt-4"}
+    >
+      {spaceView ? null : (
+        <div className="text-[13.5px] font-medium text-foreground">
+          <Trans>Credentials</Trans>
+        </div>
+      )}
       {loadFailed ? (
-        <p className="mt-3 text-[13px] text-destructive">
-          <Trans>Could not load credentials.</Trans>
+        <div className="space-y-2">
+          <p role="alert" className="mt-3 text-[13px] text-destructive">
+            <Trans>Could not load credentials.</Trans>
+          </p>
+          {spaceView ? (
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()}>
+              <Trans>Retry</Trans>
+            </Button>
+          ) : null}
+        </div>
+      ) : secrets === null && spaceView ? (
+        <p>
+          <Trans>Loading…</Trans>
         </p>
       ) : null}
       {secrets && !editable && !loadFailed ? (
@@ -270,13 +592,19 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
       ) : null}
       {secrets && secrets.length === 0 ? (
         <p data-testid="bot-credentials-empty" className="mt-3 text-[13px] text-muted-foreground">
-          <Trans>No credentials saved for this bot.</Trans>
+          {spaceView ? (
+            <Trans>No credentials saved in this Space.</Trans>
+          ) : (
+            <Trans>No credentials saved for this bot.</Trans>
+          )}
         </p>
       ) : null}
       {secrets?.length ? (
         <ul className="mt-3 space-y-2">
           {secrets.map((secret) => {
             const secretName = secret.name;
+            const key = credentialKey(secret);
+            const revisionKey = credentialRevisionKey(secret);
             const updated = new Date(secret.updatedAt).toLocaleDateString();
             // A readable auth on a name outside the current pattern cannot be replaced:
             // only the loose remove input accepts it, so show the unreadable row instead.
@@ -284,17 +612,22 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
               secret.auth !== null && BotSecretName.safeParse(secret.name).success
                 ? secret.auth
                 : null;
-            const canReplace = editable && !secret.namedLogin ? readableAuth : null;
+            const canReplace = editable && (spaceView || !secret.namedLogin) ? readableAuth : null;
             return (
               <li
-                key={secret.name}
+                key={key}
                 data-testid="bot-credential-row"
                 className="rounded-lg border border-border/40 px-3 py-2.5"
               >
                 <div className="truncate text-[13.5px] font-medium text-foreground">
-                  {secret.name}
+                  {spaceView && secret.origin ? secret.origin : secret.name}
                 </div>
-                {secret.origin ? (
+                {spaceView && secret.botName ? (
+                  <div className="break-all text-[12.5px] text-muted-foreground">
+                    {secret.origin ? `${secret.name} · ` : ""}
+                    {secret.botName}
+                  </div>
+                ) : secret.origin ? (
                   <div className="break-all text-[12.5px] text-muted-foreground">
                     {secret.origin}
                   </div>
@@ -313,12 +646,12 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                     · {t`Updated ${updated}`}
                   </div>
                 )}
-                {secret.namedLogin ? (
+                {secret.namedLogin && !spaceView ? (
                   <div className="text-[12px] text-muted-foreground">
                     <Trans>This form can't edit named fields.</Trans>
                   </div>
                 ) : null}
-                {canReplace !== null && replacing === secret.name ? (
+                {canReplace !== null && replacing === revisionKey ? (
                   <form
                     className="mt-1"
                     onSubmit={(event) => {
@@ -349,7 +682,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       </Button>
                     </div>
                   </form>
-                ) : editable && confirmingRemove === secret.name ? (
+                ) : editable && confirmingRemove === revisionKey ? (
                   <div className="mt-2">
                     <p className="text-[13px] text-foreground">
                       <Trans>Remove {secretName}? This bot will no longer be able to use it.</Trans>
@@ -377,7 +710,18 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                     </div>
                   </div>
                 ) : editable ? (
-                  <div className="mt-1.5 flex gap-1">
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {spaceView && readableAuth ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void reveal(secret)}
+                      >
+                        <Trans>Show value</Trans>
+                      </Button>
+                    ) : null}
                     {canReplace !== null ? (
                       <Button
                         type="button"
@@ -386,12 +730,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                         className="-ms-2.5"
                         data-testid={`credential-replace-${secret.name}`}
                         disabled={busy}
-                        onClick={() => {
-                          clearProtectedFields();
-                          setConfirmingRemove(null);
-                          setAdding(false);
-                          setReplacing(secret.name);
-                        }}
+                        onClick={() => void beginReplace(secret)}
                       >
                         <Trans>Replace value</Trans>
                       </Button>
@@ -406,7 +745,7 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
                       onClick={() => {
                         clearProtectedFields();
                         setReplacing(null);
-                        setConfirmingRemove(secret.name);
+                        setConfirmingRemove(revisionKey);
                       }}
                     >
                       <Trans>Remove</Trans>
@@ -432,6 +771,28 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
             void submitAdd();
           }}
         >
+          {spaceView ? (
+            <label htmlFor={`${ids}-bot`} className={fieldLabelClass}>
+              <Trans>Bot</Trans>
+              <NativeSelect
+                id={`${ids}-bot`}
+                value={targetBot ?? ""}
+                className="mt-1.5 w-full"
+                onChange={(event) => {
+                  setValue("");
+                  setFields((current) => current.map((field) => ({ ...field, value: "" })));
+                  setAddBot(event.target.value);
+                }}
+              >
+                <NativeSelectOption value="" disabled>{t`Choose a Bot`}</NativeSelectOption>
+                {bots.map((bot) => (
+                  <NativeSelectOption key={bot.botId} value={bot.botId}>
+                    {bot.botName}
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </label>
+          ) : null}
           <label htmlFor={`${ids}-name`} className={fieldLabelClass}>
             <Trans>Name</Trans>
             <Input
@@ -488,7 +849,16 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
               data-testid="credential-auth-type"
               className="mt-1.5 w-full"
               value={authType}
-              onChange={(event) => setAuthType(event.target.value as CredentialAuthType)}
+              onChange={(event) => {
+                const type = event.target.value as CredentialAuthType;
+                if (spaceView) clearProtectedFields();
+                setAuthType(type);
+                if (spaceView && type === "login")
+                  setFields([
+                    { label: t`Username`, value: "", hidden: false },
+                    { label: t`Password`, value: "", hidden: true },
+                  ]);
+              }}
             >
               <NativeSelectOption value="bearer">{t`Bearer token`}</NativeSelectOption>
               <NativeSelectOption value="header">{t`Custom header`}</NativeSelectOption>
@@ -544,22 +914,66 @@ export function BotCredentialsSection({ botId }: { botId: string }) {
             </Button>
           </div>
         </form>
-      ) : editable ? (
+      ) : editable && (!spaceView || bots.length > 0) ? (
         <Button
           type="button"
           size="sm"
           variant="outline"
           className="mt-3"
           data-testid="credential-add"
+          disabled={busy}
           onClick={() => {
             clearProtectedFields();
             setReplacing(null);
             setConfirmingRemove(null);
             setAdding(true);
+            if (spaceView && authType === "login")
+              setFields([
+                { label: t`Username`, value: "", hidden: false },
+                { label: t`Password`, value: "", hidden: true },
+              ]);
           }}
         >
           <Trans>Add credential</Trans>
         </Button>
+      ) : null}
+      {challenge ? (
+        <ConfirmIdentityDialog
+          open
+          onDone={(confirmed) => {
+            if (confirmed && !document.hidden && document.hasFocus()) void reveal(challenge, true);
+            else hide();
+          }}
+        />
+      ) : null}
+      {shown ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) hide();
+          }}
+        >
+          <DialogContent className="sm:max-w-sm">
+            <DialogTitle>{shown.row.origin || shown.row.name}</DialogTitle>
+            <p className="text-sm text-muted-foreground">{shown.row.botName}</p>
+            <dl className="max-h-64 space-y-2 overflow-auto">
+              {("value" in shown.credential
+                ? [{ label: t`Value`, value: shown.credential.value }]
+                : shown.credential.fields
+              ).map(({ label, value }) => (
+                <div key={label}>
+                  <dt className="text-sm text-muted-foreground">{label}</dt>
+                  <dd className="break-all whitespace-pre-wrap font-mono text-sm select-text">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <Button type="button" variant="outline" onClick={hide}>
+              <Trans>Done</Trans>
+            </Button>
+          </DialogContent>
+        </Dialog>
       ) : null}
     </section>
   );
