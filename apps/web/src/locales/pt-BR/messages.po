@@ -6680,6 +6680,26 @@ msgstr "Verificar habilidades importadas"
 msgid "Choose package file"
 msgstr "Escolher arquivo do pacote"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "Backup do agente selecionado"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "Não foi possível ler este pacote. Use um arquivo JSON ou um backup de agente de até 4 MiB."
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "Backup do OpenClaw ou do Hermes"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "Esta importação inclui somente o texto compatível."
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "Usar JSON"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "Limpar seleção"
@@ -6711,10 +6731,6 @@ msgstr "Não foi possível carregar as habilidades."
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "Não foi possível visualizar este pacote."
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "Não foi possível ler este pacote. Use um arquivo JSON UTF-8 de até 4 MiB."
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

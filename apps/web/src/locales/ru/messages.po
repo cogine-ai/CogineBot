@@ -6680,6 +6680,26 @@ msgstr "Проверить импортированные навыки"
 msgid "Choose package file"
 msgstr "Выбрать файл пакета"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "Выбрана резервная копия агента"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "Не удалось прочитать пакет. Выберите файл JSON или резервную копию агента размером до 4 МиБ."
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "Резервная копия OpenClaw или Hermes"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "Импортируются только поддерживаемые текстовые данные."
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "Использовать JSON"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "Снять выбор"
@@ -6711,10 +6731,6 @@ msgstr "Не удалось загрузить навыки."
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "Не удалось открыть предпросмотр пакета."
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "Не удалось прочитать пакет. Используйте JSON-файл в UTF-8 размером до 4 МиБ."
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

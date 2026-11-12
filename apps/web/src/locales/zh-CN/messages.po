@@ -6680,6 +6680,26 @@ msgstr "检查导入的技能"
 msgid "Choose package file"
 msgstr "选择包文件"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "已选择 Agent 备份"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "无法读取此包。请选择不超过 4 MiB 的 JSON 文件或 Agent 备份。"
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "OpenClaw 或 Hermes 备份"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "仅导入受支持的文本内容。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "改用 JSON"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "清空选择"
@@ -6711,10 +6731,6 @@ msgstr "无法加载技能。"
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "无法预览此包。"
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "无法读取此包，请使用不超过 4 MiB 的 UTF-8 JSON 文件。"
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

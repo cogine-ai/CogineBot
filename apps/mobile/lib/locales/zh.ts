@@ -1288,8 +1288,12 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "无法加载最近的导入。",
   "Could not load skills.": "无法加载技能。",
   "Could not preview this package.": "无法预览此包。",
-  "Could not read this package. Use a UTF-8 JSON file up to 4 MiB.":
-    "无法读取此包，请使用不超过 4 MiB 的 UTF-8 JSON 文件。",
+  "Agent backup selected": "已选择 Agent 备份",
+  "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
+    "无法读取此包。请选择不超过 4 MiB 的 JSON 文件或 Agent 备份。",
+  "OpenClaw or Hermes backup": "OpenClaw 或 Hermes 备份",
+  "This import includes supported text only.": "仅导入受支持的文本内容。",
+  "Use JSON instead": "改用 JSON",
   "Could not open package editor.": "无法打开包编辑器。",
   "Enable shared skill": "启用共享技能",
   "Enabling a skill shares it with your bots in this space.":
