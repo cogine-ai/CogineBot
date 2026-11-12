@@ -788,7 +788,15 @@ describe("createMessagingInboundHandler DM routing", () => {
       deps,
       { spaceId: "ws-1", userId: "user-1", botId: "bot-1", threadId: "thread-1" },
       { ...dmEvent, provider: "slack", handle: "Ev-owned", from: "U123" },
-      { deliveryProvider: "slack", externalMessageId: "external-agent-owned" },
+      {
+        deliveryProvider: "slack",
+        teamChatClaim: {
+          id: "external-agent-owned",
+          route: "routine",
+          competingNonce: "fixture",
+          verifySender: async () => true,
+        },
+      },
     );
 
     expect(woken).toBe(false);
@@ -820,7 +828,15 @@ describe("createMessagingInboundHandler DM routing", () => {
       deps,
       { spaceId: "ws-1", userId: "user-1", botId: "bot-1", threadId: "thread-1" },
       { ...dmEvent, provider: "slack", handle: "Ev-reserve", from: "U123" },
-      { deliveryProvider: "slack", externalMessageId: "external-deferred" },
+      {
+        deliveryProvider: "slack",
+        teamChatClaim: {
+          id: "external-deferred",
+          route: "routine",
+          competingNonce: "fixture",
+          verifySender: async () => true,
+        },
+      },
     );
 
     expect(woken).toBe(true);
@@ -1838,6 +1854,16 @@ describe("createMessagingInboundHandler linking", () => {
 });
 
 describe("teamChatSenderCanWakeMessageRoutines", () => {
+  const senderCanWake = (
+    deps: Parameters<typeof teamChatSenderCanWakeMessageRoutines>[0],
+    event: Parameters<typeof teamChatSenderCanWakeMessageRoutines>[1],
+  ) =>
+    teamChatSenderCanWakeMessageRoutines(deps, event, {
+      userId: "user-1",
+      spaceId: "ws-1",
+      botId: "bot-1",
+    });
+
   it("allows linked DM senders and rejects strangers", async () => {
     const linked = createDeps({
       identity: {
@@ -1850,7 +1876,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
       },
     });
     await expect(
-      teamChatSenderCanWakeMessageRoutines(linked, {
+      senderCanWake(linked, {
         ...dmEvent,
         provider: "slack",
         from: "U123",
@@ -1860,7 +1886,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
 
     const stranger = createDeps({ identity: null });
     await expect(
-      teamChatSenderCanWakeMessageRoutines(stranger, {
+      senderCanWake(stranger, {
         ...dmEvent,
         provider: "slack",
         from: "U999",
@@ -1895,7 +1921,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
         hasLedger ? ({ id: "ch-1" } as never) : null,
       );
       await expect(
-        teamChatSenderCanWakeMessageRoutines(deps, {
+        senderCanWake(deps, {
           ...groupEvent,
           provider: "slack",
           threadId: "slack:fixture-room:later",
@@ -1912,7 +1938,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
       expect(deps.prisma.messagingChannelMember.findFirst).toHaveBeenCalledWith({
         where: { address: groupEvent.from, channel: roomWhere },
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-        select: { status: true, identityId: true },
+        select: { id: true, status: true, identityId: true },
       });
       if (!member) {
         expect(deps.prisma.messagingChannel.findFirst).toHaveBeenCalledWith({
@@ -1944,7 +1970,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
       ],
     });
     await expect(
-      teamChatSenderCanWakeMessageRoutines(approved, {
+      senderCanWake(approved, {
         ...groupEvent,
         provider: "slack",
         from: "U123",
@@ -1972,7 +1998,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
       ],
     });
     await expect(
-      teamChatSenderCanWakeMessageRoutines(invited, {
+      senderCanWake(invited, {
         ...groupEvent,
         provider: "slack",
         from: "U123",
@@ -1993,7 +2019,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
     });
     linkedRoom.prisma.messagingChannel.findUnique = vi.fn(async () => null);
     await expect(
-      teamChatSenderCanWakeMessageRoutines(linkedRoom, {
+      senderCanWake(linkedRoom, {
         ...groupEvent,
         provider: "slack",
         from: "U222",
@@ -2004,7 +2030,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
     const strangerRoom = createDeps({ identity: null });
     strangerRoom.prisma.messagingChannel.findUnique = vi.fn(async () => null);
     await expect(
-      teamChatSenderCanWakeMessageRoutines(strangerRoom, {
+      senderCanWake(strangerRoom, {
         ...groupEvent,
         provider: "slack",
         from: "U999",
@@ -2013,7 +2039,7 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
     ).resolves.toBe(false);
 
     await expect(
-      teamChatSenderCanWakeMessageRoutines(strangerRoom, {
+      senderCanWake(strangerRoom, {
         ...groupEvent,
         provider: "slack",
         from: "B123",

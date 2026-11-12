@@ -11,6 +11,18 @@ import {
 } from "./team-chat-bridge.js";
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
 
+const installedSlack = {
+  acceptAfter: new Date(0),
+  isAvailable: async () => true,
+  grant: {
+    id: "fixture",
+    workspaceId: "TFIXTURE",
+    clientId: "fixture",
+    installerId: "UFIXTURE",
+    revision: 1,
+  },
+};
+
 describe("team chat bridge", () => {
   it.each(["accepted", "rate-limited", "expired"] as const)(
     "keeps a late Slack result scoped to its own lease (%s)",
@@ -44,7 +56,7 @@ describe("team chat bridge", () => {
         send,
         providerId: "slack~fixture",
         botId: "fixture-bot",
-        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+        installedSlack,
       }) as unknown as {
         reserveDelivery(id: string): Promise<Date>;
         sendReserved(
@@ -116,7 +128,7 @@ describe("team chat bridge", () => {
         send: vi.fn(),
         providerId: "slack~fixture",
         botId: "fixture-bot",
-        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+        installedSlack,
       });
       const at = Date.now();
       const retry = bridge as unknown as {
@@ -351,7 +363,10 @@ describe("team chat bridge", () => {
     expect(updateMany).toHaveBeenLastCalledWith({
       where: {
         id: "external-deferred",
-        status: { in: ["deferred", "received", "observed"] },
+        OR: [
+          { status: { in: ["deferred", "received", "observed"] } },
+          { status: "ignored", engagementReason: "message_routine_wake" },
+        ],
         externalConversation: { provider: "slack", botId: "bot-1" },
       },
       data: {
@@ -638,7 +653,10 @@ describe("team chat bridge", () => {
     expect(updateMany).toHaveBeenCalledWith({
       where: {
         id: "external-raced",
-        status: { in: ["deferred", "received", "observed"] },
+        OR: [
+          { status: { in: ["deferred", "received", "observed"] } },
+          { status: "ignored", engagementReason: "message_routine_wake" },
+        ],
         externalConversation: { provider: "slack", botId: "bot-1" },
       },
       data: {

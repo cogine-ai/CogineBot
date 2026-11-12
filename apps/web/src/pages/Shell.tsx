@@ -1069,6 +1069,31 @@ export function ShellPage() {
     JSON.stringify([settingsOwnerKey, bootstrapMe?.spaceId, currentSpaceSelectionGeneration()]),
   );
   const creationSpaceId = userId && bootstrapMe?.userId === userId ? bootstrapMe.spaceId : null;
+  const routineMessagingBot = panel === "routine" && !inGroup ? active?.id : undefined;
+  const routineMessagingScope =
+    routineMessagingBot && creationSpaceId && creationSpaceId === settingsCurrentSpaceId
+      ? JSON.stringify([settingsOwnerKey, creationSpaceId, routineMessagingBot])
+      : null;
+  const [routineSlackScope, setRoutineSlackScope] = useState<string | null>(null);
+  useEffect(() => {
+    setRoutineSlackScope(null);
+    if (!routineMessagingScope || !creationSpaceId || messagingSettingsOpen) return;
+    const controller = new AbortController();
+    void createSpaceRpc(creationSpaceId)
+      .messaging.installations.list(undefined, { signal: controller.signal })
+      .then(({ available, workspaces }) => {
+        if (
+          !controller.signal.aborted &&
+          available &&
+          workspaces.some(
+            ({ botId, status }) => botId === routineMessagingBot && status === "active",
+          )
+        )
+          setRoutineSlackScope(routineMessagingScope);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [creationSpaceId, messagingSettingsOpen, routineMessagingBot, routineMessagingScope]);
   useEffect(() => {
     if (!slackEntrySpaceId || !creationSpaceId || !initialBotsLoaded) return;
     setSlackEntrySpaceId(null);
@@ -6644,6 +6669,9 @@ export function ShellPage() {
                     : `/api/v1/bots/${active.id}/github`
                 }
                 messageProviders={messagingProviders}
+                installedSlack={Boolean(
+                  routineMessagingScope && routineSlackScope === routineMessagingScope,
+                )}
                 connectionsRevision={connectionsRevision}
                 scopeKey={active.id}
                 onOpenApplications={() => setPluginsOpen(true)}

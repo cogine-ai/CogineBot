@@ -9,10 +9,10 @@ import {
   toTeamChatInbound,
 } from "@rakazo/adapters";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { runAsSystem } from "@rakazo/db";
+import { installedSlackProviderId, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { prepareTeamChatInboundContent } from "./messaging-inbound.js";
 import { TeamChatBridge } from "./team-chat-bridge.js";
+import { routeTeamChatMessage } from "./team-chat-inbound.js";
 import { settleWithTimeout, TEAM_CHAT_STARTUP_SHUTDOWN_MS } from "./team-chat-startup.js";
 
 const MAX_CACHED_WORKSPACES = 128;
@@ -171,13 +171,20 @@ export class SlackWorkspaceMessaging {
           await this.installations.revokeRejectedCredential(row);
       });
       const send = createMessagingTeamChatSender(surface, current);
+      const grant = {
+        id: row.id,
+        workspaceId: row.workspaceId,
+        clientId: row.clientId,
+        installerId: row.installerId,
+        revision: row.revision,
+      };
       const bridge = new TeamChatBridge({
         prisma: this.deps.prisma,
         jobs: this.deps.jobs,
         events: this.deps.events,
         botId: row.botId,
-        providerId: `slack~${row.id}`,
-        installedSlack: { acceptAfter: row.acceptAfter, isAvailable: current },
+        providerId: installedSlackProviderId(row.id),
+        installedSlack: { acceptAfter: row.acceptAfter, isAvailable: current, grant },
         reconcileIntervalMs: 0,
         send: async (request) => {
           try {
@@ -204,12 +211,7 @@ export class SlackWorkspaceMessaging {
           return;
         const mapped = toTeamChatInbound(event);
         if (!mapped) return;
-        await bridge.receive(mapped, {
-          eventAt,
-          prepareTranscript: event.attachments?.length
-            ? (scope) => prepareTeamChatInboundContent(this.deps, scope, event)
-            : undefined,
-        });
+        await routeTeamChatMessage(this.deps, bridge, event, mapped, { ...grant, eventAt });
       });
       entry = {
         revision: row.revision,

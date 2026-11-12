@@ -245,6 +245,7 @@ export function RoutineEditor({
   webhook,
   githubPath,
   messageProviders,
+  installedSlack,
   connectionsRevision,
   scopeKey,
   onOpenApplications,
@@ -266,6 +267,7 @@ export function RoutineEditor({
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
   messageProviders: string[];
+  installedSlack?: boolean;
   connectionsRevision: number;
   scopeKey: string;
   onOpenApplications: () => void;
@@ -313,7 +315,7 @@ export function RoutineEditor({
     selectedEntry?.thinkingLevels ??
     []
   ).filter((level) => level !== "off");
-  const slackAvailable = messageProviders.includes("slack");
+  const slackAvailable = installedSlack || messageProviders.includes("slack");
   const slackDisabledReasonId = `${fieldId}-slack-disabled-reason`;
   const hasTriggers =
     draft.schedules.length > 0 ||
@@ -503,6 +505,7 @@ export function RoutineEditor({
           {draft.messageProvider ? (
             <MessageTriggerCard
               provider={draft.messageProvider}
+              installedSlack={installedSlack && draft.messageProvider === "slack"}
               onRemove={() => onChange({ ...draft, messageProvider: null })}
             />
           ) : null}
@@ -695,7 +698,15 @@ export function RoutineEditor({
   );
 }
 
-function MessageTriggerCard({ provider, onRemove }: { provider: string; onRemove: () => void }) {
+function MessageTriggerCard({
+  provider,
+  installedSlack,
+  onRemove,
+}: {
+  provider: string;
+  installedSlack?: boolean;
+  onRemove: () => void;
+}) {
   const { t } = useLingui();
   const label =
     provider === "slack"
@@ -719,7 +730,14 @@ function MessageTriggerCard({ provider, onRemove }: { provider: string; onRemove
         </Button>
       </div>
       <p className="mt-2.5 text-[13.5px] text-muted-foreground/70">
-        <Trans>Runs when this bot receives a verified message from this provider.</Trans>
+        {installedSlack ? (
+          <Trans>
+            For workspace connections, runs on direct messages or eligible channel mentions from the
+            linked account.
+          </Trans>
+        ) : (
+          <Trans>Runs when this bot receives a verified message from this provider.</Trans>
+        )}
       </p>
     </div>
   );
