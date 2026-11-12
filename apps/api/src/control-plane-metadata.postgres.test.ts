@@ -243,7 +243,7 @@ postgres("control-plane metadata with complete row policies", () => {
     });
     const status = await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
     expect(status).toMatchObject({
-      expectedTables: 86,
+      expectedTables: 89,
       connectionEnforced: true,
       deploymentEnforced: false,
     });
@@ -286,7 +286,7 @@ postgres("control-plane metadata with complete row policies", () => {
   it("uses a restricted runtime and keeps direct metadata reads hidden", async () => {
     const state = await describeRowSecurityPolicies(runtime.prisma);
     expect(state).toMatchObject({
-      expectedTables: 86,
+      expectedTables: 89,
       connectionEnforced: true,
       deploymentEnforced: false,
     });
