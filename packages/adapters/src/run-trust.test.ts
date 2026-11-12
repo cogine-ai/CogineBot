@@ -40,6 +40,31 @@ describe("cross-chat history provenance", () => {
     }
   });
 
+  it("keeps provider labels untrusted for other actions while allowing a settings proposal", async () => {
+    const steering = { findFirst: vi.fn().mockResolvedValue(null) };
+    const trust = createRunTrust(
+      {
+        steeringMessage: steering,
+        attempt: { count: vi.fn().mockResolvedValue(1) },
+      } as never,
+      {
+        run: { ...run, id: "run", spaceId: "space" },
+        sourceMessage: source,
+        ownerStartedRun: true,
+        messagingChannelRun: false,
+        restored: false,
+        connectedProviders: [],
+        catalogApprovalMarker: "fixture",
+      },
+    );
+    trust.recordSettingsCatalogRead();
+    expect(await trust.isTainted()).toBe(true);
+    expect(await trust.isOwnSettingsTainted(false)).toBe(false);
+    expect(await trust.isOwnSettingsTainted(true)).toBe(false);
+    trust.recordSteering([{ id: "outside", messageId: "outside-message", text: "", blocks: [] }]);
+    expect(await trust.isOwnSettingsTainted(true)).toBe(true);
+  });
+
   it("separates action taint from receipt of an outside message", async () => {
     const steering = { findFirst: vi.fn().mockResolvedValue(null) };
     const trust = createRunTrust({ steeringMessage: steering } as never, {

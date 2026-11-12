@@ -114,6 +114,13 @@ export function BotSettingsCardDetails({
             <Trans>Applies to new runs.</Trans>
           </div>
         ) : null}
+        {settings.playback && !conflict ? (
+          <div>
+            <Trans>
+              Web and desktop need a working voice provider. Device voice applies where enabled.
+            </Trans>
+          </div>
+        ) : null}
         {playbackChange ? (
           <div>
             <Trans>Applies to new playback.</Trans>
@@ -181,7 +188,9 @@ export function BotSettingsCardDetails({
             ) : (
               <p key={field}>
                 {labels[field]} · <bdi>{after}</bdi>{" "}
-                <span className="text-muted-foreground">· {sources[source]}</span>
+                {!(source === "model" && after === "Model default") ? (
+                  <span className="text-muted-foreground">· {sources[source]}</span>
+                ) : null}
               </p>
             ),
           )}

@@ -63,7 +63,7 @@ const modelBinding = z.object({
   revision: z.number(),
   label: z.string(),
   usesSpaceDefault: z.boolean(),
-  model: z.string(),
+  spaceDefaultModel: z.string().nullable().optional(),
 });
 
 const voiceBinding = z.object({
@@ -87,6 +87,7 @@ const settingsRequestSchema = z.strictObject({
   previousModelConnection: z.string().optional(),
   voiceConnection: voiceBinding.optional(),
   voiceLabel: z.string().optional(),
+  playback: z.literal("device_if_enabled").optional(),
 });
 
 export type OwnSettingsRequest = z.infer<typeof settingsRequestSchema>;
@@ -424,7 +425,7 @@ export async function prepareOwnBotSettings(
         revision: active.credential.connectionRevision,
         label: active.credential.label,
         usesSpaceDefault: active.source === "space",
-        model: active.id,
+        ...(active.source === "space" && { spaceDefaultModel: active.credential.defaultModel }),
       };
     const { allowed } = await thinkingSettings(
       deps,
@@ -446,11 +447,16 @@ export async function prepareOwnBotSettings(
       patch.thinkingLevel = null;
   }
   if (args.voice?.toLowerCase() === "default") patch.voiceId = null;
-  if (args.voice && patch.voiceId !== null) {
-    const loaded = await spaceVoices(deps, scope, context).catch(() => null);
-    if (!loaded) return { error: "Connect an available voice provider in Voice settings first." };
-    const { credential, voices } = loaded;
-    const matches = resolveOwnVoice(voices, args.voice);
+  const explicitVoice = args.voice && patch.voiceId !== null ? args.voice : undefined;
+  const loadedVoice =
+    explicitVoice || args.readAloud === true
+      ? await spaceVoices(deps, scope, context).catch(() => null)
+      : null;
+  if (explicitVoice) {
+    if (!loadedVoice)
+      return { error: "Connect an available voice provider in Voice settings first." };
+    const { voices } = loadedVoice;
+    const matches = resolveOwnVoice(voices, explicitVoice);
     const [voice] = matches;
     if (!voice || matches.length !== 1)
       return {
@@ -459,6 +465,13 @@ export async function prepareOwnBotSettings(
       };
     patch.voiceId = voice.id;
     voiceLabel = voice.label;
+  }
+  const effectiveVoice = patch.voiceId === undefined ? bot.voiceId : patch.voiceId;
+  const hostedPlayback = loadedVoice?.voices.some(
+    ({ id }) => id === (effectiveVoice ?? loadedVoice.credential.voiceId),
+  );
+  if (loadedVoice && (explicitVoice || hostedPlayback)) {
+    const { credential } = loadedVoice;
     voiceConnection = {
       id: credential.id,
       provider: credential.provider,
@@ -481,6 +494,7 @@ export async function prepareOwnBotSettings(
       ...(previousModelConnection && { previousModelConnection }),
       ...(voiceConnection && { voiceConnection }),
       ...(voiceLabel && { voiceLabel }),
+      ...(version.after.autoSpeak && !hostedPlayback && { playback: "device_if_enabled" }),
     }),
   };
 }
@@ -504,7 +518,7 @@ export async function ownSettingsBindingsCurrent(
       model.label !== modelConnection.label ||
       (modelConnection.usesSpaceDefault &&
         "defaultModel" in model &&
-        model.defaultModel !== modelConnection.model)
+        model.defaultModel !== modelConnection.spaceDefaultModel)
     )
       return false;
   }

@@ -153,7 +153,12 @@ export function BotSettingsCard({
       ) : null}
       {!conflict && settings.changes.some(({ field }) => field === "voice") ? (
         <Text style={{ color: tokens.mutedForeground }}>
-          {t("Provider voice applies to new playback.")}
+          {t("Device voice, when enabled, uses this device’s voice.")}
+        </Text>
+      ) : null}
+      {settings.playback && !conflict ? (
+        <Text style={{ color: tokens.mutedForeground }}>
+          {t("Read aloud requires device voice or a working voice provider.")}
         </Text>
       ) : null}
       {proposal ? (
@@ -237,7 +242,8 @@ export function BotSettingsCard({
               />
             ) : (
               <Text key={field} style={{ color: tokens.foreground }}>
-                {labels[field]} · {after} · {sources[source]}
+                {labels[field]} · {after}
+                {source === "model" && after === "Model default" ? "" : ` · ${sources[source]}`}
               </Text>
             ),
           )}

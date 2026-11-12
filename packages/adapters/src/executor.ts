@@ -4899,8 +4899,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             sourceMessage,
             Boolean(thread.externalConversationId || messagingChannelRun || channelId),
           );
+        const firstSettingsModelAttempt =
+          fence === 1 ||
+          (run.attemptModel === null &&
+            run.firstResponseAt === null &&
+            run.checkpoint === null &&
+            run.scriptedState === null);
         const initialSettingsSnapshot =
-          !settingsSnapshot && fence === 1 && typeof bot.settingsRevision === "number"
+          !settingsSnapshot && firstSettingsModelAttempt && typeof bot.settingsRevision === "number"
             ? {
                 instructions: bot.instructions,
                 revision: bot.settingsRevision,
@@ -6477,7 +6483,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 !directOwner ||
                 trust.state.pageInput ||
                 (await trust.receivedOutsideMessage()) ||
-                (changesSettings && !continuingSettings && (await trust.isTainted()))
+                (changesSettings &&
+                  !continuingSettings &&
+                  (await trust.isOwnSettingsTainted(Boolean(initialSettingsSnapshot))))
               )
                 return {
                   error: "Bot settings are available from the owner's direct chat.",
@@ -6525,7 +6533,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   runSecrets,
                 );
                 if (!("request" in prepared)) {
-                  if ("voices" in prepared && prepared.voices?.length) trust.state.tainted = true;
+                  if ("voices" in prepared && prepared.voices?.length)
+                    trust.recordSettingsCatalogRead();
                   return prepared;
                 }
                 ownSettings = prepared.request;
@@ -6544,7 +6553,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   options.data.modelQuery,
                   options.data.connection,
                 );
-                if ("voice" in result && result.voice?.choices.length) trust.state.tainted = true;
+                if ("voice" in result && result.voice?.choices.length)
+                  trust.recordSettingsCatalogRead();
                 return redactConnectorPayload(result, runSecrets);
               }
               if (ownSettings) effectRequest = ownSettings;
@@ -6554,7 +6564,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               thread.groupId ||
               thread.externalConversationId ||
               !(
-                (directOwner && !(await trust.isTainted())) ||
+                (directOwner &&
+                  !trust.state.pageInput &&
+                  !(await trust.receivedOutsideMessage()) &&
+                  (nextApprovedTool === name || !(await trust.isTainted()))) ||
                 (run.trigger === "created" && run.origin === "human")
               )
             ) {
@@ -10560,7 +10573,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().warn("Backup models could not be loaded", { runId, error });
           }
         }
-        const fallbackConnectionRevisions = new Map<string, number | null>();
+        const fallbackBindings = new Map<
+          string,
+          Pick<AgentRunRequest["model"], "quotaConnectionRevision" | "thinkingLevel">
+        >();
         const fallbackModelKeys = new Set(
           fallbackModels
             .filter(
@@ -10716,10 +10732,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       true,
                       modelCredentialId ?? null,
                     );
-                    fallbackConnectionRevisions.set(
-                      key,
-                      resolvedFallback.quotaConnectionRevision ?? null,
-                    );
+                    fallbackBindings.set(key, resolvedFallback);
                     return resolvedFallback;
                   }
                 : undefined,
@@ -10731,6 +10744,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ) {
                   throw new Error("Backup model is not selected");
                 }
+                const binding = fallbackBindings.get(
+                  JSON.stringify([provider, modelId, modelCredentialId ?? null]),
+                );
                 const updated = await deps.prisma.run.updateMany({
                   where: {
                     id: runId,
@@ -10747,10 +10763,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                             modelProvider: provider,
                             modelId,
                             modelCredentialId: modelCredentialId ?? null,
-                            connectionRevision:
-                              fallbackConnectionRevisions.get(
-                                JSON.stringify([provider, modelId, modelCredentialId ?? null]),
-                              ) ?? null,
+                            connectionRevision: binding?.quotaConnectionRevision ?? null,
+                            thinkingLevel: binding?.thinkingLevel ?? null,
                           },
                         }
                       : {}),

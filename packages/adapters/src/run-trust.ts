@@ -248,7 +248,9 @@ export function createRunTrust(
     );
   const receivedOutsideMessage = async () =>
     (outsideMessageReceived ||= await receivedOutsideSteering(prisma));
-  const isTainted = async (tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">) => {
+  const hasOutsideInput = async (
+    tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">,
+  ) => {
     if (state.tainted) return true;
     const store = tx ?? prisma;
     const checkEarlierAttempt = () =>
@@ -258,6 +260,13 @@ export function createRunTrust(
     if (hasEarlierAttempt || (await receivedOutsideSteering(store))) state.tainted = true;
     return state.tainted;
   };
+  // A provider's voice labels may inform the settings picker. They grant no
+  // authority for other tools, and a settings write still requires the owner card.
+  let settingsCatalogRead = false;
+  const isTainted = async (tx?: Pick<Prisma.TransactionClient, "attempt" | "steeringMessage">) =>
+    settingsCatalogRead || (await hasOutsideInput(tx));
+  const isOwnSettingsTainted = async (firstModelAttempt: boolean) =>
+    firstModelAttempt ? state.tainted || (await receivedOutsideMessage()) : hasOutsideInput();
   let ownerWords: Promise<string> | undefined;
   const loadInitialOwnerWords = () =>
     (ownerWords ??= (async () => {
@@ -384,6 +393,10 @@ export function createRunTrust(
   return {
     state,
     isTainted,
+    isOwnSettingsTainted,
+    recordSettingsCatalogRead() {
+      settingsCatalogRead = true;
+    },
     receivedOutsideMessage,
     recordPageInput,
     recordSteering,

@@ -292,6 +292,30 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           },
           response: { type: "text", text: "Saved for the next run." },
         },
+        {
+          expect(request) {
+            expect(request.messages.find(({ role }) => role === "system")?.content).toContain(
+              before,
+            );
+          },
+          response: {
+            type: "tool",
+            id: "profile-notify",
+            name: "update_bot",
+            arguments: { notifyOnFinish: true },
+          },
+        },
+        {
+          expect(request) {
+            const tool = request.messages.findLast(({ role }) => role === "tool");
+            expect(tool?.tool_call_id).toBe("profile-notify");
+            expect(JSON.parse(String(tool?.content))).toMatchObject({
+              ok: true,
+              notifyOnFinish: true,
+            });
+          },
+          response: { type: "text", text: "Notifications enabled." },
+        },
       ],
     });
     const dataDir = await mkdtemp(path.join(tmpdir(), "bot-settings-product-"));
@@ -385,7 +409,6 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         answer: "allow",
       });
       await wait(runId, "completed");
-      initial.assertComplete();
       const nextId = await send("Check the active settings.");
       await wait(nextId, "completed");
       replacement.assertComplete();
@@ -414,6 +437,29 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       expect(await handles.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
         instructions: before,
         modelCredentialId: oldModel.id,
+        settingsRevision: history.revision + 1,
+      });
+      await rpc(handles.app, cookie, "approvalRules/set", {
+        effect: "require_approval",
+        matchKind: "tool",
+        matchValue: "update_bot",
+      });
+      const profileRun = await send("Turn on finish notifications.");
+      await wait(profileRun, "waiting_input");
+      const profileCard = await handles.prisma.message.findFirstOrThrow({
+        where: { runId: profileRun, role: "bot" },
+        orderBy: { seq: "desc" },
+      });
+      await rpc(handles.app, cookie, "threads/answer", {
+        botId,
+        runId: profileRun,
+        messageId: profileCard.id,
+        answer: "allow",
+      });
+      await wait(profileRun, "completed");
+      initial.assertComplete();
+      expect(await handles.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+        notifyOnFinish: true,
         settingsRevision: history.revision + 1,
       });
     } finally {

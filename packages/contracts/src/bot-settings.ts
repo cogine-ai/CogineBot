@@ -40,6 +40,7 @@ export const BotSettingsCardSchema = z.object({
   changes: z.array(BotSettingsChangeSchema).min(1).max(5),
   versionId: Id.optional(),
   revision: BotSettingsRevisionSchema.optional(),
+  playback: z.literal("device_if_enabled").optional(),
 });
 
 export const BotSettingsHistorySchema = z.object({

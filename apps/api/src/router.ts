@@ -215,7 +215,13 @@ import {
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
 } from "@rakazo/core";
-import type { BoardEvents, Board as BoardRow, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type {
+  BoardEvents,
+  Board as BoardRow,
+  BotSettingsRow,
+  PrismaClient,
+  ThreadEvents,
+} from "@rakazo/db";
 import {
   appendEventInTransaction,
   assertManagedPluginActive,
@@ -2405,61 +2411,13 @@ export function createRouter(deps: RouterDeps) {
         await repos.reorderBots(context.actor, input.botIds);
         return { ok: true as const };
       }),
-      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) => {
-        const actor = context.actor;
-        const bot = await repos.getBot(actor, input.botId);
-        const [setup, voice, bound] = await Promise.all([
-          modelSetup(deps, actor),
-          findDefaultVoiceCredential(deps.prisma, actor),
-          bot.modelProvider && bot.modelId && bot.modelCredentialId
-            ? findBoundModelCredential(deps.prisma, actor, {
-                provider: bot.modelProvider,
-                modelId: bot.modelId,
-                modelCredentialId: bot.modelCredentialId,
-              })
-            : null,
-        ]);
-        const defaultProvider =
-          setup.credential?.provider ??
-          (setup.platformAllowed || setup.hasLocal
-            ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
-            : null);
-        const defaultModel =
-          setup.credential?.defaultModel ??
-          (setup.credential
-            ? defaultCatalogModelId(setup.credential.provider)
-            : setup.platformAllowed || setup.hasLocal
-              ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
-              : null);
-        const provider = bot.modelProvider ?? defaultProvider;
-        const modelId = bot.modelId ?? defaultModel;
-        const label = (bot.modelId ? bound : setup.credential)?.label;
-        const inherited = bound ?? setup.credential;
-        return botSettingsHistory(bot, {
-          model: {
-            after:
-              provider && modelId
-                ? `${provider}/${modelId}${label ? ` · ${label}` : ""}`
-                : "Unavailable",
-            source: bot.modelId ? "bot" : setup.credential ? "space" : "system",
-          },
-          thinkingLevel: {
-            after:
-              bot.thinkingLevel ??
-              (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
-              "Model default",
-            source: bot.thinkingLevel
-              ? "bot"
-              : inherited?.defaultModel === modelId && inherited?.thinkingLevel
-                ? "space"
-                : "model",
-          },
-          voice: {
-            after: bot.voiceId ?? voice?.voiceId ?? "Unavailable",
-            source: bot.voiceId ? "bot" : voice ? "space" : "system",
-          },
-        });
-      }),
+      settingsHistory: authed.bots.settingsHistory.handler(async ({ context, input }) =>
+        effectiveBotSettingsHistory(
+          deps,
+          context.actor,
+          await repos.getBot(context.actor, input.botId),
+        ),
+      ),
       undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
         const actor = context.actor;
         const bot = await repos.getBot(actor, input.botId);
@@ -2494,7 +2452,7 @@ export function createRouter(deps: RouterDeps) {
               choices.some(({ id }) => id === (restoreVoiceId ?? voice.cred.voiceId)),
             )
             .catch(() => false));
-        return undoBotSettings({
+        const result = await undoBotSettings({
           prisma: deps.prisma,
           actor,
           threadId: bot.thread.id,
@@ -2568,6 +2526,15 @@ export function createRouter(deps: RouterDeps) {
             return true;
           },
         });
+        if (result.status === "updated") return result;
+        return {
+          ...result,
+          history: await effectiveBotSettingsHistory(
+            deps,
+            actor,
+            await repos.getBot(actor, input.botId),
+          ),
+        };
       }),
       update: authed.bots.update.handler(async ({ context, input }) => {
         const existing = await repos.getBot(context.actor, input.botId);
@@ -8652,6 +8619,58 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
       !hasDeployment &&
       !(hasLocal && deps.env.deploymentModelConfigured),
   };
+}
+
+async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: BotSettingsRow) {
+  const [setup, voice, bound] = await Promise.all([
+    modelSetup(deps, actor),
+    findDefaultVoiceCredential(deps.prisma, actor),
+    bot.modelProvider && bot.modelId && bot.modelCredentialId
+      ? findBoundModelCredential(deps.prisma, actor, {
+          provider: bot.modelProvider,
+          modelId: bot.modelId,
+          modelCredentialId: bot.modelCredentialId,
+        })
+      : null,
+  ]);
+  const defaultProvider =
+    setup.credential?.provider ??
+    (setup.platformAllowed || setup.hasLocal
+      ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
+      : null);
+  const defaultModel =
+    setup.credential?.defaultModel ??
+    (setup.credential
+      ? defaultCatalogModelId(setup.credential.provider)
+      : setup.platformAllowed || setup.hasLocal
+        ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
+        : null);
+  const provider = bot.modelProvider ?? defaultProvider;
+  const modelId = bot.modelId ?? defaultModel;
+  const label = (bot.modelId ? bound : setup.credential)?.label;
+  const inherited = bound ?? setup.credential;
+  return botSettingsHistory(bot, {
+    model: {
+      after:
+        provider && modelId ? `${provider}/${modelId}${label ? ` · ${label}` : ""}` : "Unavailable",
+      source: bot.modelId ? "bot" : setup.credential ? "space" : "system",
+    },
+    thinkingLevel: {
+      after:
+        bot.thinkingLevel ??
+        (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
+        "Model default",
+      source: bot.thinkingLevel
+        ? "bot"
+        : inherited?.defaultModel === modelId && inherited?.thinkingLevel
+          ? "space"
+          : "model",
+    },
+    voice: {
+      after: bot.voiceId ?? voice?.voiceId ?? "Unavailable",
+      source: bot.voiceId ? "bot" : voice ? "space" : "system",
+    },
+  });
 }
 
 /**

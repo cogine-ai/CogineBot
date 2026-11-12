@@ -62,11 +62,15 @@ export function ownSettingsApprovalBlock(
       ...(changes.some(({ field }) => field === "voice" || field === "readAloud")
         ? ["Applies to new playback."]
         : []),
+      ...(request.playback
+        ? ["Web and desktop need a working voice provider. Device voice applies where enabled."]
+        : []),
     ].join("\n\n"),
     botSettings: {
       botId: request.botId,
       botName: clean(request.botName),
       changes,
+      ...(request.playback && { playback: request.playback }),
     },
     actions: [
       { id: "allow", label: "Confirm" },
