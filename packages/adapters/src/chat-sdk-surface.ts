@@ -566,7 +566,10 @@ function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
  * trustworthy Content-Length) is cut off at the cap instead of being
  * buffered whole. Returns null once the cap is exceeded.
  */
-async function readBoundedText(request: Request, maxBytes: number): Promise<string | null> {
+export async function readBoundedText(
+  request: Pick<Request, "body">,
+  maxBytes: number,
+): Promise<string | null> {
   const reader = request.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];

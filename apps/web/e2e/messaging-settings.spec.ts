@@ -283,7 +283,9 @@ test("team conversation settings open from messaging overlay", async ({ page }, 
     messagingSettings.getByRole("heading", { name: "Team conversations" }),
   ).toBeVisible();
   await expect(messagingSettings.getByText("#launch")).toBeVisible();
-  await expect(messagingSettings.getByText("Slack", { exact: true })).toBeVisible();
+  await expect(
+    messagingSettings.getByRole("listitem").getByText("Slack", { exact: true }),
+  ).toBeVisible();
   await messagingSettings.getByRole("button", { name: "Settings", exact: true }).click();
   const conversationSettings = page.getByTestId("external-conversation-settings");
   await expect(conversationSettings).toBeVisible();
@@ -347,4 +349,111 @@ test("shows channel acceptance and delivery uncertainty beside bot replies", asy
   await partial.getByText("Partially sent to channel").click();
   await expect(partial.getByText("An attachment could not be sent.")).toBeVisible();
   await captureScreenshot(page, testInfo, "messaging-channel-delivery");
+});
+
+test("Slack workspace installation uses a chosen bot and manages the confirmed connection", async ({
+  page,
+}, testInfo) => {
+  let workspace: {
+    id: string;
+    botId: string;
+    workspaceName: string;
+    status: string;
+    revision: number;
+  } | null = null;
+  let selectedBot: string | undefined;
+  let reconnect: { id: string; expectedRevision: number } | undefined;
+  await page.addInitScript(() => {
+    window.open = () => null;
+  });
+  await page.route("**/rpc/messaging/installations/list", (route) =>
+    route.fulfill({
+      json: { json: { available: true, workspaces: workspace ? [workspace] : [] } },
+    }),
+  );
+  await page.route("**/rpc/messaging/installations/start", (route) => {
+    const input = route.request().postDataJSON().json;
+    selectedBot = input.botId;
+    reconnect = input.reconnect;
+    return route.fulfill({
+      json: {
+        json: {
+          url: "https://slack.com/oauth/v2/authorize?state=synthetic",
+          attemptId: "1".repeat(64),
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        },
+      },
+    });
+  });
+  await page.route("**/rpc/messaging/installations/cancel", (route) => {
+    expect(route.request().postDataJSON().json.attemptId).toBe("1".repeat(64));
+    return route.fulfill({ json: { json: { ok: true } } });
+  });
+  await page.route("**/rpc/messaging/installations/pause", (route) => {
+    const input = route.request().postDataJSON().json;
+    expect(input).toEqual({
+      id: "slack-fixture",
+      expectedRevision: workspace?.revision,
+      paused: workspace?.status === "active",
+    });
+    if (workspace)
+      workspace = {
+        ...workspace,
+        revision: workspace.revision + 1,
+        status: input.paused ? "paused" : "active",
+      };
+    return route.fulfill({ json: { json: { ok: true } } });
+  });
+  await page.route("**/rpc/messaging/installations/remove", (route) => {
+    expect(route.request().postDataJSON().json).toEqual({
+      id: "slack-fixture",
+      expectedRevision: workspace?.revision,
+    });
+    workspace = null;
+    return route.fulfill({ json: { json: { ok: true } } });
+  });
+  const stamp = Date.now();
+  await signup(page, `slack-workspace-${stamp}@example.test`, "password12", `Workspace ${stamp}`);
+  await completeOnboarding(page);
+  await page.goto("/app?slackInstallation=settings");
+  const settings = page.getByTestId("messaging-settings");
+  const slack = settings.getByRole("region", { name: "Slack" });
+  const select = slack.getByLabel("Bot for Slack");
+  await expect(slack.getByRole("button", { name: "Connect Slack" })).toBeDisabled();
+  await select.selectOption({ index: 1 });
+  await slack.getByRole("button", { name: "Connect Slack" }).click();
+  await expect(slack.getByText("Waiting for Slack authorization")).toBeVisible();
+  expect(selectedBot).toBeTruthy();
+  await expect(slack.getByRole("link", { name: "Open Slack" })).toHaveAttribute(
+    "href",
+    /slack\.com\/oauth\/v2\/authorize/,
+  );
+  await slack.getByRole("button", { name: "Cancel" }).click();
+  await expect(slack.getByText("Waiting for Slack authorization")).toHaveCount(0);
+  await slack.getByRole("button", { name: "Connect Slack" }).click();
+  await expect(slack.getByText("Waiting for Slack authorization")).toBeVisible();
+  workspace = {
+    id: "slack-fixture",
+    botId: selectedBot!,
+    workspaceName: "Design Studio",
+    status: "active",
+    revision: 1,
+  };
+  await expect(slack.getByText("Design Studio")).toBeVisible();
+  await expect(slack.getByText("Connected", { exact: true })).toBeVisible();
+  await slack.getByRole("button", { name: "Reconnect" }).click();
+  await expect(slack.getByText("Waiting for Slack authorization")).toBeVisible();
+  expect(reconnect).toEqual({ id: "slack-fixture", expectedRevision: 1 });
+  workspace = { ...workspace, revision: 2 };
+  await expect(slack.getByText("Waiting for Slack authorization")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "slack-workspace-settings");
+  await slack.getByRole("button", { name: "Pause" }).click();
+  await expect(slack.getByText("Paused", { exact: true })).toBeVisible();
+  await slack.getByRole("button", { name: "Resume" }).click();
+  await expect(slack.getByText("Connected", { exact: true })).toBeVisible();
+  await slack.getByRole("button", { name: "Disconnect" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Disconnect Slack?" });
+  await expect(confirm).toContainText("Conversation history stays in CogineBot.");
+  await confirm.getByRole("button", { name: "Disconnect" }).click();
+  await expect(slack.getByText("Design Studio")).toHaveCount(0);
 });

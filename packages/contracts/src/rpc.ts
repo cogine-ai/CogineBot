@@ -1123,6 +1123,53 @@ export const appContract = {
   /** External messaging surface: link state, group channels, agent connections. */
   messaging: {
     status: oc.output(MessagingStatusSchema),
+    installations: {
+      list: oc.output(
+        z.object({
+          available: z.boolean(),
+          managementUrl: z.url().optional(),
+          workspaces: z.array(
+            z.object({
+              id: Id,
+              botId: Id,
+              workspaceName: z.string(),
+              status: z.enum(["active", "paused", "revoked"]),
+              revision: z.number().int().positive(),
+            }),
+          ),
+        }),
+      ),
+      start: oc
+        .input(
+          z.object({
+            botId: Id,
+            reconnect: z
+              .object({ id: Id, expectedRevision: z.number().int().positive() })
+              .optional(),
+          }),
+        )
+        .output(z.object({ url: z.url(), attemptId: Id, expiresAt: IsoDate })),
+      cancel: oc
+        .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
+        .output(z.object({ ok: z.literal(true) })),
+      pause: oc
+        .input(
+          z.object({
+            id: Id,
+            expectedRevision: z.number().int().positive(),
+            paused: z.boolean(),
+          }),
+        )
+        .output(z.object({ ok: z.literal(true) })),
+      remove: oc
+        .input(
+          z.object({
+            id: Id,
+            expectedRevision: z.number().int().positive(),
+          }),
+        )
+        .output(z.object({ ok: z.literal(true) })),
+    },
     link: {
       /** Issue a short-lived code the user sends to the line from a chat app. */
       start: oc

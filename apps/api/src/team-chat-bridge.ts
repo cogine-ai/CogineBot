@@ -58,6 +58,8 @@ interface TeamChatBridgeDeps {
   send: (request: TeamChatSendRequest) => Promise<TeamChatSendResult>;
   providerId: string;
   botId: string;
+  acceptAfter?: Date;
+  isAvailable?: () => Promise<boolean>;
   judge?: TeamChatEngagementJudge;
   reconcileIntervalMs?: number;
   ambientDebounceMs?: number;
@@ -204,11 +206,13 @@ export class TeamChatBridge {
     throwIfStopped();
     await this.reconcileOnce();
     throwIfStopped();
-    this.timer = setInterval(
-      () => void this.reconcileSafely(),
-      this.deps.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS,
-    );
-    this.timer.unref?.();
+    if (this.deps.reconcileIntervalMs !== 0) {
+      this.timer = setInterval(
+        () => void this.reconcileSafely(),
+        this.deps.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS,
+      );
+      this.timer.unref?.();
+    }
   }
 
   async stop(): Promise<void> {
@@ -222,15 +226,15 @@ export class TeamChatBridge {
 
   async receive(
     message: TeamChatInboundMessage,
-    options: { queueAgent: false; prepareTranscript?: PrepareTranscript },
+    options: { queueAgent: false; prepareTranscript?: PrepareTranscript; eventAt?: Date },
   ): Promise<DeferredTeamChatInboundTarget>;
   async receive(
     message: TeamChatInboundMessage,
-    options?: { queueAgent?: true; prepareTranscript?: PrepareTranscript },
+    options?: { queueAgent?: true; prepareTranscript?: PrepareTranscript; eventAt?: Date },
   ): Promise<TeamChatInboundTarget>;
   async receive(
     message: TeamChatInboundMessage,
-    options?: { queueAgent?: boolean; prepareTranscript?: PrepareTranscript },
+    options?: { queueAgent?: boolean; prepareTranscript?: PrepareTranscript; eventAt?: Date },
   ): Promise<TeamChatInboundTarget | DeferredTeamChatInboundTarget> {
     const target = this.target;
     if (!target) throw new Error("Team chat bridge is not started");
@@ -321,6 +325,7 @@ export class TeamChatBridge {
         create: {
           externalConversationId: conversation.id,
           providerEventId: message.eventId,
+          ...(options?.eventAt && { createdAt: options.eventAt }),
           kind: message.kind,
           senderId: message.senderId,
           senderName: message.senderName,
@@ -708,7 +713,9 @@ export class TeamChatBridge {
 
   private async reconcile(): Promise<void> {
     const target = this.target;
-    if (!target) return;
+    if (!target || (this.deps.isAvailable && !(await this.deps.isAvailable()))) return;
+    const acceptAfter = this.deps.acceptAfter;
+    const currentWindow = acceptAfter ? { createdAt: { gt: acceptAfter } } : {};
     const now = new Date();
     await this.recoverExpiredDeferredMessages(target, now);
     await this.deps.prisma.externalMessage.updateMany({
@@ -726,6 +733,7 @@ export class TeamChatBridge {
     const received = await this.deps.prisma.externalMessage.findMany({
       where: {
         status: "received",
+        ...currentWindow,
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
         externalConversation: {
           provider: this.deps.providerId,
@@ -745,6 +753,7 @@ export class TeamChatBridge {
     const running = await this.deps.prisma.externalMessage.findMany({
       where: {
         status: { in: ["running", "delivering"] },
+        ...currentWindow,
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
         externalConversation: {
           provider: this.deps.providerId,
@@ -762,7 +771,7 @@ export class TeamChatBridge {
         await this.deliverFailure(message).catch((error) => this.retry(message, error));
       }
     }
-    await this.deliverDelegatedReplies(target);
+    if (!this.deps.acceptAfter) await this.deliverDelegatedReplies(target);
   }
 
   private async deliverDelegatedReplies(target: TargetBot): Promise<void> {
@@ -1134,12 +1143,17 @@ export class TeamChatBridge {
     }
     const text =
       message.batchContext ??
-      teamChatPrompt(this.deps.providerId, message.senderName, message.content);
+      teamChatPrompt(
+        this.deps.acceptAfter ? "slack" : this.deps.providerId,
+        message.senderName,
+        message.content,
+      );
     const attachments = message.threadMessage
       ? transcriptAttachments(message.threadMessage, thread.id)
       : [];
     const files = attachments.filter((block) => block.kind === "file");
     const prompt = files.length ? promptTextForAttachments(text, files) : text;
+    if (this.deps.isAvailable && !(await this.deps.isAvailable())) return;
     const sent = await this.deps.events.sendUserMessage({
       spaceId: message.externalConversation.spaceId,
       threadId: thread.id,

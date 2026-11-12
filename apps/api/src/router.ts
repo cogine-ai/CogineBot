@@ -32,6 +32,7 @@ import type {
   IntegrationProviderSettings,
   McpConnector,
   MemoryProviderResolver,
+  MessagingInstallations,
   NativeConnectorProvider,
   PiOAuthLogins,
   PluginRead,
@@ -821,6 +822,7 @@ export interface RouterDeps {
   artifacts: ArtifactStore;
   dataDir: string;
   /** Present when the external messaging surface is enabled. */
+  messagingInstallations?: MessagingInstallations;
   messaging?: { enabled: boolean; providers: string[]; openSignup: boolean };
   /** Present only when the deployment bills; self-hosted installs leave it unset. */
   billing?: BillingService;
@@ -7411,6 +7413,66 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     messaging: {
+      installations: {
+        list: authed.messaging.installations.list.handler(async ({ context }) => ({
+          available: Boolean(deps.messagingInstallations),
+          ...(deps.messagingInstallations && {
+            managementUrl: new URL(
+              "/app?slackInstallation=settings",
+              deps.env.webOrigin,
+            ).toString(),
+          }),
+          workspaces: ((await deps.messagingInstallations?.list(context.actor)) ?? [])
+            .filter(
+              (row) =>
+                row.status === "active" || row.status === "paused" || row.status === "revoked",
+            )
+            .map((row) => ({
+              ...row,
+              status:
+                row.status === "active"
+                  ? ("active" as const)
+                  : row.status === "paused"
+                    ? ("paused" as const)
+                    : ("revoked" as const),
+            })),
+        })),
+        start: authed.messaging.installations.start.handler(async ({ context, input }) => {
+          if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
+          try {
+            return await deps.messagingInstallations.start(
+              context.actor,
+              input.botId,
+              input.reconnect,
+            );
+          } catch {
+            throw new ORPCError("BAD_REQUEST", { message: "Slack authorization could not start." });
+          }
+        }),
+        cancel: authed.messaging.installations.cancel.handler(async ({ context, input }) => {
+          if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
+          await deps.messagingInstallations.cancel(context.actor, input.attemptId);
+          return { ok: true as const };
+        }),
+        pause: authed.messaging.installations.pause.handler(async ({ context, input }) => {
+          if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
+          try {
+            await deps.messagingInstallations.pause(context.actor, input);
+          } catch {
+            throw new ORPCError("CONFLICT", { message: "Slack connection changed." });
+          }
+          return { ok: true as const };
+        }),
+        remove: authed.messaging.installations.remove.handler(async ({ context, input }) => {
+          if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
+          try {
+            await deps.messagingInstallations.remove(context.actor, input);
+          } catch {
+            throw new ORPCError("CONFLICT", { message: "Slack connection changed." });
+          }
+          return { ok: true as const };
+        }),
+      },
       status: authed.messaging.status.handler(async ({ context }) => {
         const identities = await runAsSystem(
           "list the authenticated user messaging identities",

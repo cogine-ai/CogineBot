@@ -22,6 +22,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { providerLabel } from "../lib/messaging";
 import { createSpaceRpc, currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
 import { ExternalConversationSettings } from "./ExternalConversationSettings";
+import { SlackWorkspaceSettings } from "./SlackWorkspaceSettings";
 
 function hasRequestVersion({ requestVersion }: MessagingAgentConnection): boolean {
   return Number.isInteger(requestVersion) && requestVersion >= 1 && requestVersion <= 2_147_483_647;
@@ -31,10 +32,12 @@ export function MessagingSettingsOverlay({
   onClose,
   ownerKey,
   spaceId,
+  slackOutcome,
 }: {
   onClose: () => void;
   ownerKey: string | null;
   spaceId: string | null;
+  slackOutcome?: string;
 }) {
   const { t } = useLingui();
   const [loaded, setLoaded] = useState<{
@@ -285,6 +288,13 @@ export function MessagingSettingsOverlay({
         </div>
 
         {error ? <p className="mt-4 text-[13px] text-destructive">{error}</p> : null}
+        <SlackWorkspaceSettings
+          key={`${ownerKey}:${spaceId}:${generation}`}
+          api={rpc.messaging.installations}
+          bots={bots}
+          current={isCurrent}
+          outcome={slackOutcome}
+        />
 
         <section className="mt-8 rounded-xl border border-border px-4 py-4">
           <h3 className="text-[15px] font-medium text-foreground">

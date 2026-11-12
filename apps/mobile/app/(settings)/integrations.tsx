@@ -114,6 +114,30 @@ export default function Integrations() {
   const [query, setQuery] = useState("");
   const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
   const [notice, setNotice] = useState<string | null>(null);
+  const [messagingUrl, setMessagingUrl] = useState<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      const scope = captureMobileScope();
+      const controller = new AbortController();
+      setMessagingUrl(null);
+      void rpc<{ available: boolean; managementUrl?: string }>(
+        "messaging/installations/list",
+        {},
+        { signal: controller.signal },
+      )
+        .then(({ available, managementUrl }) => {
+          if (
+            !controller.signal.aborted &&
+            isMobileScopeCurrent(scope) &&
+            available &&
+            managementUrl
+          )
+            setMessagingUrl(managementUrl);
+        })
+        .catch(() => undefined);
+      return () => controller.abort();
+    }, []),
+  );
   const [unconfirmedRemovalId, setUnconfirmedRemovalId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(CONNECTION_CATALOG_PAGE_SIZE);
   const [sources, setSources] = useState<CapabilityInstall[]>([]);
@@ -1309,6 +1333,15 @@ export default function Integrations() {
             autoCorrect={false}
             returnKeyType="search"
             style={styles.input}
+          />
+        ) : null}
+
+        {!detailItem && messagingUrl ? (
+          <NativeActionButton
+            label={t("Manage Slack messaging in browser")}
+            fill={false}
+            prominence="secondary"
+            onPress={() => void Linking.openURL(messagingUrl)}
           />
         ) : null}
 

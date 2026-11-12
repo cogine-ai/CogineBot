@@ -678,7 +678,14 @@ export function ShellPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [settingsSpaceId, setSettingsSpaceId] = useState<string | null>(null);
-  const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(false);
+  const [slackOutcome] = useState(() => searchParams.get("slackInstallation") ?? undefined);
+  const [messagingSettingsOpen, setMessagingSettingsOpen] = useState(Boolean(slackOutcome));
+  useEffect(() => {
+    if (!slackOutcome) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("slackInstallation");
+    window.history.replaceState(window.history.state, "", url);
+  }, [slackOutcome]);
   const [messagingSurfaceEnabled, setMessagingSurfaceEnabled] = useState(false);
   const [messagingProviders, setMessagingProviders] = useState<string[]>([]);
   const [memoryProviderConfig, setMemoryProviderConfig] = useState<
@@ -7199,6 +7206,7 @@ export function ShellPage() {
         {mcpOpen ? <McpServersOverlay onClose={() => setMcpOpen(false)} /> : null}
         {messagingSettingsOpen ? (
           <MessagingSettingsOverlay
+            slackOutcome={slackOutcome}
             key={`${settingsOwnerKey}:${creationSpaceId}:${currentSpaceSelectionGeneration()}`}
             ownerKey={userId ? settingsOwnerKey : null}
             spaceId={creationSpaceId}
