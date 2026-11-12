@@ -135,6 +135,7 @@ function createDeps(
       ),
     },
     thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
+    message: { findUnique: vi.fn(async () => null) },
     messagingChannel: {
       findUnique: vi.fn(async () => channel),
       upsert: vi.fn(async () => channel),
@@ -272,7 +273,7 @@ function createDeps(
     notify,
     enqueue,
     get outboundRows() {
-      return outboundRows.filter((row) => row.kind !== "inbound_command");
+      return outboundRows.filter((row) => row.kind !== "inbound_command" && row.kind !== "inbound");
     },
     members,
     txMock,
@@ -345,6 +346,46 @@ describe("createMessagingInboundHandler DM routing", () => {
     await handle(event);
     expect(deps.outboundRows).toHaveLength(1);
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a provider redelivery of a pre-upgrade Slack message in the original Run", async () => {
+    const deps = createDeps({
+      identity: {
+        id: "mi-1",
+        provider: "slack",
+        address: dmEvent.from,
+        userId: "user-1",
+        spaceId: "ws-1",
+        botId: "bot-1",
+      },
+    });
+    vi.mocked(deps.prisma.message.findUnique).mockResolvedValueOnce({
+      blocks: [{ kind: "text", text: dmEvent.content }],
+    } as never);
+    await createMessagingInboundHandler(deps)({
+      ...dmEvent,
+      provider: "slack",
+      threadId: "slack:fixture",
+      handle: "13",
+    });
+    expect(deps.prisma.message.findUnique).toHaveBeenCalledWith({
+      where: {
+        threadId_clientNonce: { threadId: "thread-1", clientNonce: "messaging:slack:13" },
+      },
+      select: { blocks: true },
+    });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not replay an event into a different Bot after the same identity relinks", async () => {
+    const deps = createDeps();
+    const handle = createMessagingInboundHandler(deps);
+    await handle(dmEvent);
+    vi.mocked(deps.prisma.thread.findFirst).mockResolvedValueOnce({
+      id: "relinked-thread",
+    } as never);
+    await handle(dmEvent);
+    expect(deps.sendUserMessage).toHaveBeenCalledOnce();
   });
 
   it("delivers a known sender's message into their bot's existing thread", async () => {

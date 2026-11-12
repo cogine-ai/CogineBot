@@ -37,6 +37,7 @@ export const MESSAGING_OUTBOUND_MAX_ATTEMPTS = 5;
 export const MESSAGING_CLAIM_TTL_MS = 2 * 60_000;
 export const MESSAGING_PENDING_STATUSES = ["pending", "file_pending"];
 const receiptRetentionMs = 15 * 60_000;
+const maxConcurrentConversations = 8;
 
 type OutboundRow = Prisma.MessagingOutboundGetPayload<Record<string, never>>;
 type Route = { kind: "dm" | "group"; identityId?: string; threadId?: string; provider: string };
@@ -415,7 +416,7 @@ async function sendConnectInvite(
           );
           return "delivered";
         } catch (error) {
-          if (error instanceof MessagingSendError && error.disposition !== "unknown") throw error;
+          if (error instanceof MessagingSendError) throw error;
           // Provider error or lost response is ambiguous without an
           // idempotency key. Do not ask drain to retry.
           return "held";
@@ -424,7 +425,7 @@ async function sendConnectInvite(
       { maxWait: 5_000, timeout: 20_000 },
     );
   } catch (error) {
-    if (error instanceof MessagingSendError && error.disposition !== "unknown") throw error;
+    if (error instanceof MessagingSendError) throw error;
     // Lock/timeout after a possible accept: keep the outer claim as sent.
     return "held";
   }
@@ -446,7 +447,12 @@ function conversationOf(row: Pick<OutboundRow, "identityId" | "threadId">) {
 async function drain(deps: MessagingDeliveryDeps, context: AdapterContext): Promise<void> {
   const staleBefore = new Date(Date.now() - MESSAGING_CLAIM_TTL_MS);
   const stale = await deps.prisma.messagingOutbound.updateManyAndReturn({
-    where: { status: "sent", deliveryState: "sending", claimStartedAt: { lte: staleBefore } },
+    where: {
+      status: "sent",
+      deliveryState: { in: ["sending", "unknown"] },
+      claimStartedAt: { not: null },
+      updatedAt: { lte: staleBefore },
+    },
     data: { deliveryState: "unknown", lastErrorClass: "outcome_unknown", claimStartedAt: null },
     select: { sourceMessageId: true },
   });
@@ -460,7 +466,10 @@ async function drain(deps: MessagingDeliveryDeps, context: AdapterContext): Prom
     where: { status: "receipt", createdAt: { lte: new Date(Date.now() - receiptRetentionMs) } },
   });
   const pending = await deps.prisma.messagingOutbound.findMany({
-    where: { status: { in: MESSAGING_PENDING_STATUSES } },
+    where: {
+      status: { in: MESSAGING_PENDING_STATUSES },
+      OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }],
+    },
     orderBy: [...laneOrder],
   });
   const heads = new Map<string, OutboundRow>();
@@ -468,11 +477,20 @@ async function drain(deps: MessagingDeliveryDeps, context: AdapterContext): Prom
     const lane = row.identityId ? `dm:${row.identityId}` : `thread:${row.threadId ?? row.id}`;
     if (!heads.has(lane)) heads.set(lane, row);
   }
-  const lanes = await Promise.allSettled(
-    [...heads.values()].map((head) => deliverLane(deps, context, head)),
+  const next = heads.values();
+  const errors: unknown[] = [];
+  await Promise.all(
+    Array.from({ length: Math.min(maxConcurrentConversations, heads.size) }, async () => {
+      for (const head of next) {
+        try {
+          await deliverLane(deps, context, head);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }),
   );
-  const failed = lanes.find((lane) => lane.status === "rejected");
-  if (failed?.status === "rejected") throw failed.reason;
+  if (errors.length) throw errors[0];
 }
 
 async function deliverLane(
@@ -493,7 +511,11 @@ async function deliverLane(
             {
               OR: [
                 { status: { in: MESSAGING_PENDING_STATUSES } },
-                { status: "sent", deliveryState: "sending" },
+                {
+                  status: "sent",
+                  deliveryState: { in: ["sending", "unknown"] },
+                  claimStartedAt: { not: null },
+                },
               ],
             },
             {
@@ -634,6 +656,14 @@ async function deliverRow(
         ? error
         : new MessagingSendError("retryable", "rejected", undefined, error);
     if (failure.disposition === "unknown") {
+      if (failure.inFlight && provider) {
+        try {
+          await markUnknown(deps, row, claimStartedAt, provider, true);
+        } finally {
+          void finishInFlight(deps, row, claimStartedAt, provider, failure.inFlight);
+        }
+        return false;
+      }
       await markUnknown(deps, row, claimStartedAt, provider);
       return true;
     }
@@ -666,6 +696,7 @@ async function markUnknown(
   row: OutboundRow,
   claimStartedAt: Date,
   provider: string | null,
+  inFlight = false,
 ) {
   await deps.prisma.messagingOutbound.updateMany({
     where: claimFilter(row, claimStartedAt),
@@ -673,9 +704,50 @@ async function markUnknown(
       provider,
       deliveryState: "unknown",
       lastErrorClass: "outcome_unknown",
-      claimStartedAt: null,
+      claimStartedAt: inFlight ? claimStartedAt : null,
     },
   });
+}
+
+async function finishInFlight(
+  deps: MessagingDeliveryDeps,
+  row: OutboundRow,
+  claimStartedAt: Date,
+  provider: string,
+  inFlight: Promise<{ handle: string }>,
+): Promise<void> {
+  const where = {
+    id: row.id,
+    status: "sent",
+    deliveryState: { in: ["sending", "unknown"] },
+    claimStartedAt,
+  };
+  // Renew only while this process still owns a live SDK request.
+  const keepClaim = setInterval(() => {
+    void deps.prisma.messagingOutbound
+      .updateMany({ where, data: { updatedAt: new Date() } })
+      .catch(() => undefined);
+  }, MESSAGING_CLAIM_TTL_MS / 4);
+  keepClaim.unref();
+  try {
+    const result = await inFlight.catch(() => null);
+    if (result?.handle) {
+      await deps.prisma.$transaction((tx) => recordAcceptance(tx, where, provider, result.handle));
+      if (row.identityId) await countDirectSend(deps, row.identityId);
+    } else {
+      await deps.prisma.messagingOutbound.updateMany({
+        where,
+        data: { deliveryState: "unknown", lastErrorClass: "outcome_unknown", claimStartedAt: null },
+      });
+    }
+    await publishMessagingDelivery(deps.prisma, deps.events, [row.sourceMessageId]);
+    await deps.jobs.enqueue(messagingDeliverJob());
+  } catch (error) {
+    // The durable stale-claim sweep releases an interrupted finalizer.
+    getLogger().error("messaging late acceptance bookkeeping", error);
+  } finally {
+    clearInterval(keepClaim);
+  }
 }
 
 async function loadOutboundAttachment(
@@ -752,7 +824,7 @@ async function recordRejectedSend(
       await tx.messagingOutbound.createMany({
         data: [
           {
-            idempotencyKey: `${row.idempotencyKey}:notice`,
+            idempotencyKey: `msg:${row.sourceMessageId}:attachment-notice`,
             kind: "attachment_notice",
             identityId: row.identityId,
             threadId: row.threadId,
@@ -760,7 +832,7 @@ async function recordRejectedSend(
             body: "An attachment could not be sent.",
             sourceMessageId: row.sourceMessageId,
             createdAt: row.createdAt,
-            partIndex: row.partIndex + 1,
+            partIndex: 2_147_483_647,
           },
         ],
         skipDuplicates: true,
@@ -991,7 +1063,12 @@ export async function applyMessagingOutboundStatus(
     // A webhook can arrive before the sender has saved its handle. Keep it
     // briefly for an in-flight send, without guessing a recipient or message.
     const sending = await tx.messagingOutbound.findFirst({
-      where: { provider: event.provider, status: "sent", deliveryState: "sending" },
+      where: {
+        provider: event.provider,
+        status: "sent",
+        deliveryState: { in: ["sending", "unknown"] },
+        claimStartedAt: { not: null },
+      },
       select: { id: true },
     });
     if (!sending) return;

@@ -637,8 +637,9 @@ describe("createJobReconciler", () => {
           },
           {
             status: "sent",
-            deliveryState: "sending",
-            claimStartedAt: { lte: expect.any(Date) },
+            deliveryState: { in: ["sending", "unknown"] },
+            claimStartedAt: { not: null },
+            updatedAt: { lte: expect.any(Date) },
           },
         ],
       },

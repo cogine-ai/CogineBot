@@ -82,16 +82,10 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
   constructor(platforms: MessagingPlatform[], options: { userName?: string } = {}) {
     if (platforms.length === 0) throw new Error("ChatSdkMessagingSurface needs >=1 platform");
     for (const platform of platforms) this.byProvider.set(platform.provider, platform);
-    const state = createMemoryState();
-    const setIfNotExists = state.setIfNotExists.bind(state);
-    // Telegram message ids are unique within a chat. The SDK's global
-    // Telegram key would discard distinct messages before durable routing.
-    state.setIfNotExists = (key, value, ttl) =>
-      key.startsWith("dedupe:telegram:") ? Promise.resolve(true) : setIfNotExists(key, value, ttl);
     this.chat = new Chat({
       userName: options.userName ?? "rakazo",
       adapters: Object.fromEntries(platforms.map((p) => [p.provider, p.adapter])),
-      state,
+      state: createMemoryState(),
       // The SDK default ("drop") takes a per-conversation lock and discards
       // any message that arrives while it is held — and the LockError is
       // swallowed into waitUntil, so the webhook still ACKs 200 and the
@@ -190,10 +184,20 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       : markdown
         ? { markdown: request.body }
         : request.body;
+    const submitted = this.chat
+      .thread(request.threadId)
+      .post(message)
+      .then((sent) => ({
+        handle: "id" in sent && typeof sent.id === "string" ? sent.id : "",
+      }));
     try {
-      const sent = await raceWithSignal(this.chat.thread(request.threadId).post(message), signal);
-      return { handle: "id" in sent && typeof sent.id === "string" ? sent.id : "" };
+      return await raceWithSignal(submitted, signal);
     } catch (error) {
+      if (signal.aborted && error === signal.reason) {
+        // The SDK can outlive the caller's deadline. Expose its completion
+        // so the outbox can keep the conversation ordered and save a late handle.
+        throw new MessagingSendError("unknown", "outcome_unknown", undefined, error, submitted);
+      }
       throw classifySendError(platform, error);
     }
   }
@@ -344,7 +348,10 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     if (!isDirect && !platform.capabilities.groups) return null;
     const fromLabel = message.author.fullName || message.author.userName || null;
     const transport = platform.transport?.(message.raw) ?? null;
-    const attachments = inboundAttachments(message);
+    // Use authenticated file APIs. Some adapters expose only a webhook URL
+    // wrapped in fetchData, which is still a link for the conversation.
+    const canDownload = provider === "telegram" || provider === "whatsapp" || provider === "slack";
+    const attachments = canDownload ? inboundAttachments(message, provider) : [];
     const base: MessagingInboundMessage = {
       type: "message",
       provider,
@@ -353,14 +360,15 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       threadId: thread.id,
       isDirect,
       from: message.author.userId,
-      ...(message.author.isBot && { senderIsBot: true }),
+      ...(message.author.isBot === true && { senderIsBot: true }),
       fromLabel: fromLabel === message.author.userId ? null : fromLabel,
       channelName: isDirect ? null : (platform.channelName?.(message.raw) ?? null),
       participants: isDirect ? [] : (platform.participants?.(message.raw) ?? []),
       content: plainTextWithLinks(message, provider === "lark"),
       mediaUrl:
-        message.attachments.find((attachment) => !attachment.fetchData && attachment.url)?.url ??
-        null,
+        message.attachments.find(
+          (attachment) => (!canDownload || !attachment.fetchData) && attachment.url,
+        )?.url ?? null,
       ...(attachments.length ? { attachments } : {}),
     };
     const payload = webhookDrain.getStore()?.payload;
@@ -392,10 +400,10 @@ function attachmentMessage(
   return { markdown: body, files: [{ data, filename: file.name, mimeType: file.mimeType }] };
 }
 
-function inboundAttachments(message: Message): MessagingInboundAttachment[] {
+function inboundAttachments(message: Message, provider: string): MessagingInboundAttachment[] {
   return message.attachments.flatMap((attachment) => {
     const fetchData = attachment.fetchData;
-    if (!fetchData) return [];
+    if (!fetchData || (provider === "slack" && !slackFileUrl(attachment.url))) return [];
     return [
       {
         name: attachment.name || attachment.type,
@@ -405,6 +413,23 @@ function inboundAttachments(message: Message): MessagingInboundAttachment[] {
       },
     ];
   });
+}
+
+function slackFileUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const target = new URL(url);
+    return (
+      target.protocol === "https:" &&
+      !target.username &&
+      !target.password &&
+      (target.hostname === "files.slack.com" ||
+        target.hostname === "slack-files.com" ||
+        target.hostname.endsWith(".slack-files.com"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -537,14 +562,13 @@ export class MessagingSendError extends Error {
     readonly reason: MessagingFailureReason,
     readonly retryAfterMs?: number,
     cause?: unknown,
+    readonly inFlight?: Promise<MessagingSendResult>,
   ) {
     super(reason, { cause });
   }
 }
 
 function classifySendError(platform: MessagingPlatform, error: unknown): MessagingSendError {
-  const rejection = platform.classifyRejection?.(error);
-  if (rejection) return new MessagingSendError("permanent", rejection, undefined, error);
   const failure = error as {
     retryAfter?: unknown;
     status?: unknown;
@@ -557,12 +581,19 @@ function classifySendError(platform: MessagingPlatform, error: unknown): Messagi
     failure?.code === "slack_webapi_rate_limited_error"
   ) {
     const rawRetry = failure?.retryAfter ?? failure?.headers?.get?.("retry-after");
-    const delay = Number(rawRetry) * 1000;
+    const seconds = Number(rawRetry);
+    const delay = Number.isFinite(seconds)
+      ? seconds * 1000
+      : typeof rawRetry === "string"
+        ? Date.parse(rawRetry) - Date.now()
+        : NaN;
     const retryAfterMs =
       Number.isFinite(delay) && delay > 0 && delay < 8_640_000_000_000_000 - Date.now()
         ? delay
         : undefined;
     return new MessagingSendError("retryable", "rate_limited", retryAfterMs, error);
   }
+  const rejection = platform.classifyRejection?.(error);
+  if (rejection) return new MessagingSendError("permanent", rejection, undefined, error);
   return new MessagingSendError("unknown", "outcome_unknown", undefined, error);
 }

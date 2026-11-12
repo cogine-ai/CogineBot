@@ -672,6 +672,7 @@ export function reduceThreadSnapshot(
       seq: messageSeq,
       role,
       blocks,
+      messagingDelivery: known?.messagingDelivery,
       botId: event.botId,
       runId: event.runId,
       callId: typeof event.payload.callId === "string" ? event.payload.callId : known?.callId,

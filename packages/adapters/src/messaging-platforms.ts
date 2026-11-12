@@ -1,15 +1,6 @@
 import { createSlackAdapter } from "@chat-adapter/slack";
-import {
-  createTelegramAdapter,
-  escapeMarkdownV2,
-  TelegramFormatConverter,
-} from "@chat-adapter/telegram";
-import {
-  createWhatsAppAdapter,
-  splitMessage,
-  WhatsAppAdapter,
-  WhatsAppApiError,
-} from "@chat-adapter/whatsapp";
+import { escapeMarkdownV2, TelegramAdapter, TelegramFormatConverter } from "@chat-adapter/telegram";
+import { splitMessage, WhatsAppAdapter, WhatsAppApiError } from "@chat-adapter/whatsapp";
 import type { HttpInstance } from "@larksuiteoapi/node-sdk";
 import type { MessagingInboundMessage, MessagingOutboundStatus } from "@rakazo/adapter-kit";
 import type { Adapter } from "chat";
@@ -229,11 +220,14 @@ export function messagingPlatformsFromEnv(
     env.whatsappAppSecret &&
     env.whatsappVerifyToken
   ) {
-    const adapter = createWhatsAppAdapter({
+    const adapter = new WhatsAppDeliveryAdapter({
       accessToken: env.whatsappAccessToken,
       phoneNumberId: env.whatsappPhoneNumberId,
       appSecret: env.whatsappAppSecret,
       verifyToken: env.whatsappVerifyToken,
+      apiUrl: process.env.WHATSAPP_API_URL,
+      userName: process.env.WHATSAPP_BOT_USERNAME ?? "whatsapp-bot",
+      logger: new ConsoleLogger("info").child("whatsapp"),
     });
     platforms.push({
       provider: "whatsapp",
@@ -267,13 +261,15 @@ export function messagingPlatformsFromEnv(
       // and Telegram allows only one live getUpdates connection per bot —
       // a second poller elsewhere would just steal that slot and drop
       // every message into the void.
-      adapter: createTelegramAdapter({
+      adapter: new TelegramDeliveryAdapter({
         botToken: env.telegramBotToken,
         secretToken: env.telegramWebhookSecret,
         mode: options.pollInboundMessages ? "auto" : "webhook",
       }),
       classifyRejection: (error) =>
-        error instanceof Error && error.name === "PermissionError" ? "rejected" : undefined,
+        error instanceof Error && TELEGRAM_PERMANENT_ERRORS.has(error.name)
+          ? "rejected"
+          : undefined,
     });
   }
 
@@ -319,6 +315,48 @@ export function isMessagingSurfaceEnabled(
   if (!isMessagingEnabled(platforms)) return false;
   return options.openSignup ? options.deploymentModelConfigured : true;
 }
+
+class TelegramDeliveryAdapter extends TelegramAdapter {
+  protected override telegramFetch<T>(
+    method: string,
+    payload?: Record<string, unknown> | FormData,
+    request?: { signal?: AbortSignal },
+  ): Promise<T> {
+    if (!method.startsWith("send")) return super.telegramFetch<T>(method, payload, request);
+    const timeout = AbortSignal.timeout(MESSAGING_SEND_TIMEOUT_MS);
+    const signal = request?.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+    return super.telegramFetch<T>(method, payload, { signal });
+  }
+}
+
+class WhatsAppDeliveryAdapter extends WhatsAppAdapter {
+  protected override async graphApiRequest<T = unknown>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.graphApiUrl}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(MESSAGING_SEND_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // Preserve the SDK's typed rejection and the response's retry hint.
+      const error = new WhatsAppApiError(
+        "WhatsApp API error",
+        response.status,
+        await response.text(),
+      );
+      throw Object.assign(error, { headers: response.headers });
+    }
+    return (await response.json()) as T;
+  }
+}
+
+const TELEGRAM_PERMANENT_ERRORS = new Set([
+  "AuthenticationError",
+  "PermissionError",
+  "ResourceNotFoundError",
+  "ValidationError",
+]);
 
 /** WhatsApp and Telegram both cap a text message at 4096 UTF-16 units. */
 const MESSAGE_PART_LIMIT = 4096;

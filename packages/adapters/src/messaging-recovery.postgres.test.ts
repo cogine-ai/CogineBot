@@ -397,9 +397,75 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
     ).toEqual({ state: "unknown" });
   });
 
+  it("holds the next part during a timed-out provider call and records a late acceptance once", async () => {
+    const saved = (await terminalRun("completed", "messaging", "Saved reply")).message!;
+    await prisma.messagingOutbound.createMany({
+      data: ["first", "second"].map((body, index) => ({
+        sourceMessageId: saved.id,
+        body,
+        kind: "group",
+        provider: "sendblue",
+        threadId: "sendblue:fixture-in-flight",
+        idempotencyKey: `fixture:${saved.id}:${index}`,
+        partIndex: index,
+        createdAt: new Date(0),
+      })),
+    });
+    let acceptLate!: (result: { handle: string }) => void;
+    const late = new Promise<{ handle: string }>((resolve) => {
+      acceptLate = resolve;
+    });
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => {
+      if (body === "first")
+        throw new MessagingSendError("unknown", "outcome_unknown", undefined, undefined, late);
+      return { handle: "fixture-second" };
+    });
+    const deps = outboundDeps(send);
+    const drain = () => deliverMessagingOutbound(deps, {}, deliveryContext());
+    await drain();
+    await drain();
+    expect(send.mock.calls.map(([request]) => request.body)).toEqual(["first"]);
+    expect(
+      await prisma.messagingOutbound.findFirstOrThrow({
+        where: { sourceMessageId: saved.id, partIndex: 0 },
+      }),
+    ).toMatchObject({ deliveryState: "unknown", claimStartedAt: expect.any(Date) });
+
+    acceptLate({ handle: "fixture-late-first" });
+    await vi.waitFor(async () => {
+      expect(
+        await prisma.messagingOutbound.findFirstOrThrow({
+          where: { sourceMessageId: saved.id, partIndex: 0 },
+        }),
+      ).toMatchObject({
+        providerHandle: "fixture-late-first",
+        deliveryState: "accepted",
+        claimStartedAt: null,
+      });
+    });
+    await drain();
+    expect(send.mock.calls.map(([request]) => request.body)).toEqual(["first", "second"]);
+  });
+
   it("retains successful text and sends one notice in the original conversation on file rejection", async () => {
     const saved = await terminalRun("completed", "messaging", "Text survived");
     const id = saved.message!.id;
+    await prisma.messagingIdentity.update({
+      where: { botId: scope.botId },
+      data: { provider: "telegram", dmThreadId: "telegram:fixture" },
+    });
+    const file = await prisma.artifact.create({
+      data: {
+        spaceId: scope.spaceId,
+        userId: scope.userId,
+        botId: scope.botId,
+        name: "fixture.pdf",
+        mimeType: "application/pdf",
+        size: 1,
+        hash: "fixture-hash",
+        storageKey: "fixture-bytes",
+      },
+    });
     await prisma.message.update({
       where: { id },
       data: {
@@ -407,21 +473,46 @@ describePostgres("failed messaging recovery (PostgreSQL)", () => {
           { kind: "text", text: "Text survived" },
           {
             kind: "file",
-            artifactId: "missing-fixture-artifact",
+            artifactId: file.id,
             name: "fixture.pdf",
+            mimeType: "application/pdf",
+            size: 1,
+          },
+          {
+            kind: "file",
+            artifactId: "second-missing-fixture-artifact",
+            name: "second.pdf",
             mimeType: "application/pdf",
             size: 1,
           },
         ],
       },
     });
-    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body }) => ({ handle: body }));
-    const deps = outboundDeps(send);
+    const send = vi.fn<MessagingSurface["sendToThread"]>(async ({ body, attachment }) => {
+      if (attachment) throw new MessagingSendError("permanent", "rejected");
+      return { handle: body };
+    });
+    const get = vi.fn(async () => new Uint8Array([1]));
+    const deps = { ...outboundDeps(send), artifacts: { get } };
     await deliverMessagingOutbound(deps, { runId: saved.run.id }, deliveryContext());
     await deliverMessagingOutbound(deps, { runId: saved.run.id }, deliveryContext());
-    expect(send.mock.calls.map(([request]) => [request.threadId, request.body])).toEqual([
-      ["slack:synthetic-recovery", "Text survived"],
-      ["slack:synthetic-recovery", "An attachment could not be sent."],
+    expect(get).toHaveBeenCalledExactlyOnceWith(
+      "fixture-bytes",
+      expect.objectContaining({
+        spaceId: scope.spaceId,
+        userId: scope.userId,
+        botId: scope.botId,
+      }),
+    );
+    expect(
+      send.mock.calls.map(([request]) => [
+        request.threadId,
+        request.attachment?.name ?? request.body,
+      ]),
+    ).toEqual([
+      ["telegram:fixture", "Text survived"],
+      ["telegram:fixture", "fixture.pdf"],
+      ["telegram:fixture", "An attachment could not be sent."],
     ]);
     expect((await readMessagingDelivery(prisma, [id])).get(id)).toEqual({
       state: "partial_failure",

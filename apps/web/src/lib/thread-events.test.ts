@@ -36,8 +36,21 @@ describe("thread event reduction", () => {
       type: "thread.message.delivery",
       payload: { messageId: "saved", delivery: { state: "delivered" } },
     });
-    expect(reduceThreadSnapshot(before, receipt)?.messages).toMatchObject([
+    const delivered = reduceThreadSnapshot(before, receipt);
+    expect(delivered?.messages).toMatchObject([
       { id: "saved", blocks: reply.blocks, messagingDelivery: { state: "delivered" } },
+    ]);
+    const blocks = [{ kind: "text", text: "Edited reply" }];
+    const updated = reduceThreadSnapshot(
+      delivered,
+      event({
+        seq: 3,
+        type: "thread.message.updated",
+        payload: { messageId: "saved", messageSeq: 1, role: "bot", blocks },
+      }),
+    );
+    expect(updated?.messages).toMatchObject([
+      { id: "saved", blocks, messagingDelivery: { state: "delivered" } },
     ]);
     const cleared = reduceThreadSnapshot(
       before,

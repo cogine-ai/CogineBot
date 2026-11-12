@@ -376,6 +376,53 @@ describe("provider delivery limits and authenticated receipts", () => {
     expect(parts.join("").match(/😀/g)).toHaveLength(2050);
   });
 
+  it("retries a structured WhatsApp rate rejection with its response delay", async () => {
+    const [platform] = messagingPlatformsFromEnv({
+      whatsappAccessToken: "fixture-token",
+      whatsappPhoneNumberId: "number-one",
+      whatsappAppSecret: "fixture-signing-secret",
+      whatsappVerifyToken: "fixture-verify",
+    });
+    const surface = new ChatSdkMessagingSurface([platform!]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, options?: RequestInit) =>
+        options?.method === "POST"
+          ? Response.json(
+              { error: { code: 130429, message: "Fixture rate limit" } },
+              {
+                status: 400,
+                headers: { "Retry-After": "37" },
+              },
+            )
+          : Response.json({ verified_name: "Fixture" }),
+      ),
+    );
+    try {
+      await expect(
+        surface.sendToThread(
+          {
+            threadId: "whatsapp:number-one:fixture-contact",
+            body: "Reply",
+          },
+          {
+            operationId: "fixture",
+            traceId: "fixture",
+            spaceId: "fixture",
+            userId: "fixture",
+            signal: new AbortController().signal,
+          },
+        ),
+      ).rejects.toMatchObject({
+        disposition: "retryable",
+        reason: "rate_limited",
+        retryAfterMs: 37_000,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("applies only signed WhatsApp statuses addressed to the configured number", async () => {
     const [platform] = messagingPlatformsFromEnv({
       whatsappAccessToken: "fixture-token",

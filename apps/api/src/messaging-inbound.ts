@@ -88,11 +88,34 @@ export function createMessagingInboundHandler(deps: MessagingInboundDeps) {
 }
 
 function inboundNonce(event: MessagingInboundMessage): string {
-  // Telegram ids are per chat. Slack timestamps are per conversation.
-  if (event.provider !== "telegram" && event.provider !== "slack")
-    return `messaging:${event.provider}:${event.handle}`;
+  // The Telegram SDK already includes the chat in its handle. Slack
+  // timestamps need the conversation added here.
+  if (event.provider !== "slack") return `messaging:${event.provider}:${event.handle}`;
   const scoped = JSON.stringify([event.workspaceId, event.threadId, event.handle]);
   return `messaging:${event.provider}:${createHash("sha256").update(scoped).digest("hex")}`;
+}
+
+async function isLegacyMessagingReplay(
+  prisma: PrismaClient,
+  event: MessagingInboundMessage,
+  threadId: string,
+  channelId?: string,
+): Promise<boolean> {
+  if (event.provider !== "slack") return false;
+  const legacy = await prisma.message.findUnique({
+    where: {
+      threadId_clientNonce: {
+        threadId,
+        clientNonce: `messaging:${event.provider}:${event.handle}`,
+      },
+    },
+    select: { blocks: true },
+  });
+  if (!legacy) return false;
+  const channel = (legacy.blocks as MessageBlock[]).find(
+    (block) => block.kind === "channel_message",
+  );
+  return channel?.channelId === channelId;
 }
 
 function inboundCommandKey(event: MessagingInboundMessage): string {
@@ -104,6 +127,36 @@ function inboundCommandKey(event: MessagingInboundMessage): string {
     event.handle,
   ]);
   return `inbound-command:${createHash("sha256").update(key).digest("hex")}`;
+}
+
+function inboundReceiptKey(event: MessagingInboundMessage, memberId?: string): string {
+  const key = JSON.stringify([
+    event.provider,
+    event.workspaceId,
+    event.threadId,
+    event.from,
+    event.handle,
+    memberId,
+  ]);
+  return `inbound:${createHash("sha256").update(key).digest("hex")}`;
+}
+
+/** Keep a redelivery pinned to the original local thread across relinking. */
+async function bindInboundTarget(
+  prisma: PrismaClient,
+  key: string,
+  target: { identityId: string; threadId: string; provider: string },
+): Promise<boolean> {
+  const { count } = await prisma.messagingOutbound.createMany({
+    data: [{ idempotencyKey: key, kind: "inbound", status: "inbound", body: "", ...target }],
+    skipDuplicates: true,
+  });
+  if (count === 1) return true;
+  const prior = await prisma.messagingOutbound.findUnique({
+    where: { idempotencyKey: key },
+    select: { threadId: true, identityId: true },
+  });
+  return prior?.threadId === target.threadId && prior.identityId === target.identityId;
 }
 
 async function activeIdentity(
@@ -147,15 +200,19 @@ async function inboundContent(
         continue;
       }
       if (!bytes.byteLength || bytes.byteLength > ATTACHMENT_MAX_BYTES) continue;
-      artifacts.push(
-        await createOwnedArtifact({ prisma: deps.prisma, artifacts: deps.artifacts }, target, {
-          botId: target.botId,
-          name,
-          mimeType,
-          contentBase64: Buffer.from(bytes).toString("base64"),
-          clientNonce: `${inboundNonce(event)}:${target.botId}:attachment:${index}`,
-        }),
-      );
+      try {
+        artifacts.push(
+          await createOwnedArtifact({ prisma: deps.prisma, artifacts: deps.artifacts }, target, {
+            botId: target.botId,
+            name,
+            mimeType,
+            contentBase64: Buffer.from(bytes).toString("base64"),
+            clientNonce: `${inboundNonce(event)}:${target.botId}:attachment:${index}`,
+          }),
+        );
+      } catch {
+        getLogger().warn("messaging inbound attachment could not be stored");
+      }
     }
   }
   const unavailable = attachments.length > artifacts.length;
@@ -215,8 +272,13 @@ async function handleDirectEvent(
   event: MessagingInboundMessage,
 ): Promise<void> {
   const hasContent = Boolean(event.content || event.mediaUrl || event.attachments?.length);
-  const command = parseMessagingCommand(event.content);
-  const code = normalizeMessagingLinkCode(event.content);
+  const deliveryKey = inboundReceiptKey(event);
+  const prior = await deps.prisma.messagingOutbound.findUnique({
+    where: { idempotencyKey: deliveryKey },
+    select: { identityId: true },
+  });
+  const command = prior ? null : parseMessagingCommand(event.content);
+  const code = prior ? null : normalizeMessagingLinkCode(event.content);
   const commandKey = command || code ? inboundCommandKey(event) : null;
   if (
     commandKey &&
@@ -229,6 +291,7 @@ async function handleDirectEvent(
 
   const where = { provider_address: { provider: event.provider, address: event.from } } as const;
   const existing = await deps.prisma.messagingIdentity.findUnique({ where });
+  if (prior && prior.identityId !== existing?.id) return;
   if (existing) {
     if (!(await activeIdentity(deps.prisma, existing))) return;
     // Any reply — even a content-free reaction — ends the consecutive-
@@ -281,6 +344,25 @@ async function handleDirectEvent(
       deps.signupPolicy,
     );
   }
+
+  if (await isLegacyMessagingReplay(deps.prisma, event, ids.threadId)) return;
+  const owner = existing ?? (await deps.prisma.messagingIdentity.findUnique({ where }));
+  if (
+    owner &&
+    !(await bindInboundTarget(deps.prisma, deliveryKey, {
+      identityId: owner.id,
+      threadId: ids.threadId,
+      provider: event.provider,
+    }))
+  )
+    return;
+  if (
+    await deps.prisma.message.findUnique({
+      where: { threadId_clientNonce: { threadId: ids.threadId, clientNonce: inboundNonce(event) } },
+      select: { id: true },
+    })
+  )
+    return;
 
   // Message-trigger routines own the delivery when configured. Do not also
   // start a normal messaging continue for the same inbound handle.
@@ -404,9 +486,7 @@ export async function wakeMessageRoutines(
       messageProvider: event.provider,
       idempotencyKey: messagingWakeIdempotencyKey(
         options?.deliveryProvider ?? event.provider,
-        options?.externalMessageId
-          ? event.handle
-          : inboundNonce(event).split(":").slice(2).join(":"),
+        event.handle,
       ),
       // TeamChat channel wakes may share a live thread with an active chat run.
       allowParallelRun: true,
@@ -484,12 +564,12 @@ async function tryRedeemLinkCode(
         { id: link.identityId },
         link.confirmationKey,
         `Linked. Messages here now reach "${bot?.name ?? "your agent"}".`,
-      ).catch((error: unknown) => {
-        if (error instanceof InactiveMessagingIdentity) return null;
-        throw error;
-      });
+      );
     },
-  );
+  ).catch((error: unknown) => {
+    if (error instanceof InactiveMessagingIdentity) return null;
+    throw error;
+  });
   if (!redeemed) {
     return Boolean(
       await deps.prisma.messagingOutbound.findUnique({
@@ -797,6 +877,22 @@ async function handleChannelEvent(
       botId: identity.botId,
       threadId: thread.id,
     };
+    if (await isLegacyMessagingReplay(deps.prisma, event, thread.id, channel.id)) continue;
+    if (
+      !(await bindInboundTarget(deps.prisma, inboundReceiptKey(event, member.id), {
+        identityId: identity.id,
+        threadId: thread.id,
+        provider: event.provider,
+      }))
+    )
+      continue;
+    if (
+      await deps.prisma.message.findUnique({
+        where: { threadId_clientNonce: { threadId: thread.id, clientNonce: inboundNonce(event) } },
+        select: { id: true },
+      })
+    )
+      continue;
     if (await wakeMessageRoutines(deps, target, event)) continue;
 
     const { blocks, caption, prompt } = await inboundContent(deps, target, event);

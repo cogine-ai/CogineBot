@@ -293,8 +293,9 @@ export function createJobReconciler(
               },
               {
                 status: "sent",
-                deliveryState: "sending",
-                claimStartedAt: { lte: new Date(now.getTime() - MESSAGING_CLAIM_TTL_MS) },
+                deliveryState: { in: ["sending", "unknown"] },
+                claimStartedAt: { not: null },
+                updatedAt: { lte: new Date(now.getTime() - MESSAGING_CLAIM_TTL_MS) },
               },
             ],
           },

@@ -3,6 +3,15 @@ import { vi } from "vitest";
 type Row = Record<string, unknown>;
 type Filter = Record<string, unknown>;
 
+function compare(value: unknown, boundary: string | number | Date): number {
+  if (value instanceof Date && boundary instanceof Date)
+    return value.getTime() - boundary.getTime();
+  if (typeof value === "number" && typeof boundary === "number") return value - boundary;
+  if (typeof value === "string" && typeof boundary === "string")
+    return value.localeCompare(boundary);
+  return Infinity;
+}
+
 function matches(row: Row, where: Filter): boolean {
   for (const [field, value] of Object.entries(where)) {
     if (value === undefined) continue;
@@ -26,10 +35,8 @@ function matches(row: Row, where: Filter): boolean {
       };
       if (predicate.in && !predicate.in.includes(actual)) return false;
       if ("not" in predicate && predicate.not === actual) return false;
-      if (predicate.lt !== undefined && (actual === null || (actual as number) >= predicate.lt))
-        return false;
-      if (predicate.lte !== undefined && (actual === null || (actual as number) > predicate.lte))
-        return false;
+      if (predicate.lt !== undefined && compare(actual, predicate.lt) >= 0) return false;
+      if (predicate.lte !== undefined && compare(actual, predicate.lte) > 0) return false;
       continue;
     }
     if (value instanceof Date) {
