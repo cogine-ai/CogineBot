@@ -56,8 +56,13 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
   await completeOnboarding(page);
   const botId = activeBotId(page);
   let paused = true;
-  await page.route("**/rpc/messaging/installations/list", (route) =>
-    route.fulfill({
+  let failNextLookup = false;
+  await page.route("**/rpc/messaging/installations/list", (route) => {
+    if (failNextLookup) {
+      failNextLookup = false;
+      return route.fulfill({ status: 503 });
+    }
+    return route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         json: {
@@ -82,12 +87,14 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
           ],
         },
       }),
-    }),
-  );
+    });
+  });
   await page.getByTitle("Agent computer").click();
-  const openEditor = async () => {
+  const openEditor = async (status = 200) => {
     const loaded = page.waitForResponse(
-      (response) => response.url().includes("/rpc/messaging/installations/list") && response.ok(),
+      (response) =>
+        response.url().includes("/rpc/messaging/installations/list") &&
+        response.status() === status,
     );
     await page.getByRole("button", { name: "Create Routine" }).click();
     await loaded;
@@ -100,7 +107,16 @@ test("Slack Routine uses an active workspace connection for the selected bot", a
   await panel.getByRole("button", { name: "Back", exact: true }).click();
 
   paused = false;
-  await openEditor();
+  failNextLookup = true;
+  await openEditor(503);
+  await page.getByRole("button", { name: "Add trigger" }).click();
+  const retry = page.getByRole("menuitem", { name: "Retry Slack connection check" });
+  await expect(retry).toHaveAccessibleDescription("Could not check Slack connection");
+  const reloaded = page.waitForResponse(
+    (response) => response.url().includes("/rpc/messaging/installations/list") && response.ok(),
+  );
+  await retry.click();
+  await reloaded;
   await page.getByPlaceholder("Name this routine").fill("Triage Slack updates");
   await page
     .getByPlaceholder("What should this routine do each time it runs?")

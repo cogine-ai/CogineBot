@@ -455,7 +455,7 @@ export class TeamChatBridge {
         })
         .catch((error) => {
           getLogger().error("team chat deferred reservation renewal failed", error);
-          fail(error instanceof Error ? error : new Error(String(error)));
+          fail(new Error(DEFERRED_RESERVATION_LOST, { cause: error }));
         })
         .finally(() => {
           renewing = false;

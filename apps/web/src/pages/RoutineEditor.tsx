@@ -245,7 +245,8 @@ export function RoutineEditor({
   webhook,
   githubPath,
   messageProviders,
-  installedSlack,
+  installedSlack = "unavailable",
+  onRetrySlack,
   connectionsRevision,
   scopeKey,
   onOpenApplications,
@@ -267,7 +268,8 @@ export function RoutineEditor({
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
   messageProviders: string[];
-  installedSlack?: boolean;
+  installedSlack?: "available" | "unavailable" | "checking" | "error";
+  onRetrySlack?: () => void;
   connectionsRevision: number;
   scopeKey: string;
   onOpenApplications: () => void;
@@ -315,7 +317,14 @@ export function RoutineEditor({
     selectedEntry?.thinkingLevels ??
     []
   ).filter((level) => level !== "off");
-  const slackAvailable = installedSlack || messageProviders.includes("slack");
+  const slackAvailable = installedSlack === "available" || messageProviders.includes("slack");
+  const retrySlack = !slackAvailable && installedSlack === "error" ? onRetrySlack : undefined;
+  const slackUnavailableReason =
+    installedSlack === "checking"
+      ? t`Checking Slack connection…`
+      : installedSlack === "error"
+        ? t`Could not check Slack connection`
+        : t`Slack not enabled`;
   const slackDisabledReasonId = `${fieldId}-slack-disabled-reason`;
   const hasTriggers =
     draft.schedules.length > 0 ||
@@ -505,7 +514,7 @@ export function RoutineEditor({
           {draft.messageProvider ? (
             <MessageTriggerCard
               provider={draft.messageProvider}
-              installedSlack={installedSlack && draft.messageProvider === "slack"}
+              installedSlack={installedSlack === "available" && draft.messageProvider === "slack"}
               onRemove={() => onChange({ ...draft, messageProvider: null })}
             />
           ) : null}
@@ -560,18 +569,22 @@ export function RoutineEditor({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
-            <span className="block" title={slackAvailable ? undefined : t`Slack not enabled`}>
+            <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
               <DropdownMenuItem
-                disabled={draft.messageProvider === "slack" || !slackAvailable}
+                disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
                 aria-describedby={slackAvailable ? undefined : slackDisabledReasonId}
-                onClick={() => addMessageProvider("slack")}
+                onClick={retrySlack ?? (() => addMessageProvider("slack"))}
               >
                 <MessageSquare />
-                <Trans>Slack message</Trans>
+                {retrySlack ? (
+                  <Trans>Retry Slack connection check</Trans>
+                ) : (
+                  <Trans>Slack message</Trans>
+                )}
               </DropdownMenuItem>
               {!slackAvailable ? (
                 <span id={slackDisabledReasonId} className="sr-only">
-                  <Trans>Slack not enabled</Trans>
+                  {slackUnavailableReason}
                 </span>
               ) : null}
             </span>

@@ -4,6 +4,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  isDeferredReservationLost,
   TeamChatBridge,
   teamChatAmbientPrompt,
   teamChatPrompt,
@@ -701,6 +702,34 @@ describe("team chat bridge", () => {
       .nextAttemptAt;
     expect(nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + 25 * 60_000);
     expect(nextAttemptAt.getTime()).toBeLessThanOrEqual(after + 30 * 60_000);
+  });
+
+  it("reports a failed database renewal as lost ownership", async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new TeamChatBridge({
+        prisma: {} as PrismaClient,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send: vi.fn(),
+        providerId: "slack",
+        botId: "bot-1",
+      });
+      const failure = new Error("Database connection reset");
+      const extend = vi
+        .spyOn(bridge, "extendDeferredReservation")
+        .mockResolvedValueOnce(true)
+        .mockRejectedValueOnce(failure);
+      const lease = await bridge.startDeferredReservationHeartbeat("external-routing", 10);
+      await vi.advanceTimersByTimeAsync(10);
+      const error = await lease.lost.catch((cause: unknown) => cause);
+      expect(isDeferredReservationLost(error)).toBe(true);
+      expect(error).toHaveProperty("cause", failure);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(extend).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps renewing a deferred lease while routine delivery remains blocked", async () => {
