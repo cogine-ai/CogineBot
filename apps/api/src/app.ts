@@ -127,6 +127,7 @@ import { healthRoutes } from "./health.js";
 import { mountLocalSettings } from "./local-settings.js";
 import {
   createMessagingInboundHandler,
+  prepareTeamChatInboundContent,
   teamChatSenderCanWakeMessageRoutines,
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
@@ -951,15 +952,21 @@ async function buildApp(
         await inbound(event);
         return;
       }
+      const preparation = event.attachments?.length
+        ? {
+            prepareTranscript: (target: Parameters<typeof prepareTeamChatInboundContent>[1]) =>
+              prepareTeamChatInboundContent(inboundDeps, target, event),
+          }
+        : undefined;
       const canWake = await teamChatSenderCanWakeMessageRoutines(inboundDeps, event);
       if (!canWake) {
-        await bridge.receive(mapped);
+        await bridge.receive(mapped, preparation);
         return;
       }
 
       // Persist a non-reconcilable row until routine routing owns or releases
       // the message, so the timer cannot start a second TeamChat run.
-      const target = await bridge.receive(mapped, { queueAgent: false });
+      const target = await bridge.receive(mapped, { queueAgent: false, ...preparation });
       if (!target.deferred) return;
       const leaseHeartbeat = await bridge.startDeferredReservationHeartbeat(
         target.externalMessageId,
@@ -971,6 +978,7 @@ async function buildApp(
           // Must match TeamChatBridge ExternalConversation / recovery provider.
           deliveryProvider: bridge.providerId,
           externalMessageId: target.externalMessageId,
+          content: target.content,
         });
         try {
           woken = await Promise.race([wakePromise, leaseHeartbeat.lost]);

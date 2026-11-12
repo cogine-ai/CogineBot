@@ -212,9 +212,29 @@ async function inboundContent(
 ) {
   const text = [event.content, event.mediaUrl].filter(Boolean).join("\n");
   const attachments = event.attachments ?? [];
-  const artifacts: Awaited<ReturnType<typeof createOwnedArtifact>>[] = [];
+  const artifacts: Array<{ id: string; name: string; mimeType: string; size: number }> = [];
   if (deps.artifacts && attachments.length) {
-    for (const [index, attachment] of attachments.slice(0, ATTACHMENT_MAX_COUNT).entries()) {
+    const nonce = `${messagingInboundNonce(event)}:${target.botId}:attachment:`;
+    const selected = attachments.slice(0, ATTACHMENT_MAX_COUNT);
+    const stored = await deps.prisma.artifact.findMany({
+      where: {
+        spaceId: target.spaceId,
+        userId: target.userId,
+        botId: target.botId,
+        groupId: null,
+        clientNonce: { in: selected.map((_, index) => `${nonce}${index}`) },
+      },
+      select: { id: true, name: true, mimeType: true, size: true, clientNonce: true },
+    });
+    const byNonce = new Map(stored.map((file) => [file.clientNonce, file]));
+    for (const [index, attachment] of selected.entries()) {
+      const clientNonce = `${nonce}${index}`;
+      // A delivery can stop after the artifact commits but before its message.
+      const recovered = byNonce.get(clientNonce);
+      if (recovered) {
+        artifacts.push(recovered);
+        continue;
+      }
       const name = attachment.name.trim().slice(0, 255) || "Attachment";
       const mimeType = inferAttachmentMimeType(name, attachment.mimeType);
       if (!mimeType || (attachment.size !== undefined && attachment.size > ATTACHMENT_MAX_BYTES))
@@ -233,7 +253,7 @@ async function inboundContent(
             name,
             mimeType,
             contentBase64: Buffer.from(bytes).toString("base64"),
-            clientNonce: `${messagingInboundNonce(event)}:${target.botId}:attachment:${index}`,
+            clientNonce,
           }),
         );
       } catch {
@@ -250,6 +270,14 @@ async function inboundContent(
     ...artifacts.map(messageBlockForArtifact),
   ];
   return { blocks, caption, prompt: promptTextForAttachments(caption, artifacts) };
+}
+
+export async function prepareTeamChatInboundContent(
+  deps: Pick<MessagingInboundDeps, "prisma" | "artifacts">,
+  target: Pick<IdentityRow, "spaceId" | "userId" | "botId">,
+  event: MessagingInboundMessage,
+) {
+  if (await activeIdentity(deps.prisma, target)) return inboundContent(deps, target, event);
 }
 
 function externalMessagePrompt(event: MessagingInboundMessage, text: string, channelName?: string) {
@@ -488,7 +516,7 @@ export async function wakeMessageRoutines(
      * cannot also deliver for the same provider event.
      */
     externalMessageId?: string;
-    content?: Awaited<ReturnType<typeof inboundContent>>;
+    content?: Pick<Awaited<ReturnType<typeof inboundContent>>, "blocks" | "caption">;
     receiptKey?: string;
   },
 ): Promise<boolean> {

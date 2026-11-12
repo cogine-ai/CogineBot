@@ -690,7 +690,7 @@ describe("createMessagingInboundHandler DM routing", () => {
       target,
       { ...dmEvent, content: "" },
       {
-        content: { caption: "", prompt: "See attached files.", blocks: [file] },
+        content: { caption: "", blocks: [file] },
       },
     );
     expect(deps.sendUserMessage).toHaveBeenCalledWith(

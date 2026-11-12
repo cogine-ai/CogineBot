@@ -62,6 +62,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     ["computers", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["boards", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["connections", tenantPredicate],
+    ["messaging_outbound", "false"],
     ["ai_data_consents", tenantPredicate],
     ["deployment_identities", "false"],
     ["deployment_transfer_sessions", "false"],
@@ -363,18 +364,46 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   it("owns the messaging status callback context independently of its caller", async () => {
     const sink = registeredInbound.mock.calls[0]![0];
     const alien = { spaceId: "space-inbound-alien", userId: "user-inbound-alien" };
-    const before = inboundContexts.length;
-    await runAsTenant(alien, async () => {
-      await sink({
-        type: "status",
-        provider: messaging.provider,
-        handle: "offline-status",
-        status: "ERROR",
-      });
-      expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+    const handle = `offline-status-${randomUUID()}`;
+    const fixture = {
+      kind: "group",
+      body: "Synthetic outbound reply",
+      status: "sent",
+      deliveryState: "accepted",
+      providerHandle: handle,
+    };
+    const expectedKey = `${handle}-same-provider`;
+    const otherKey = `${handle}-other-provider`;
+    await owner.prisma.messagingOutbound.createMany({
+      data: [
+        { ...fixture, idempotencyKey: expectedKey, provider: messaging.provider },
+        { ...fixture, idempotencyKey: otherKey, provider: "other-context-provider" },
+      ],
     });
-    expect(inboundContexts.slice(before)).toEqual([{ kind: "system", reason: expect.any(String) }]);
-    expect(runtime.pool.waitingCount).toBe(0);
+    const before = inboundContexts.length;
+    try {
+      await runAsTenant(alien, async () => {
+        expect(
+          await runtime.prisma.messagingOutbound.count({ where: { providerHandle: handle } }),
+        ).toBe(0);
+        await sink({ type: "status", provider: messaging.provider, handle, status: "ERROR" });
+        expect(currentDbContext()).toEqual({ kind: "tenant", ...alien });
+      });
+      expect(inboundContexts.slice(before)).toEqual([
+        { kind: "system", reason: expect.any(String) },
+      ]);
+      expect(
+        await owner.prisma.messagingOutbound.findUnique({ where: { idempotencyKey: expectedKey } }),
+      ).toMatchObject({ status: "failed", deliveryState: "failed" });
+      expect(
+        await owner.prisma.messagingOutbound.findUnique({ where: { idempotencyKey: otherKey } }),
+      ).toMatchObject({ status: "sent", deliveryState: "accepted" });
+      expect(runtime.pool.waitingCount).toBe(0);
+    } finally {
+      await owner.prisma.messagingOutbound.deleteMany({
+        where: { idempotencyKey: { in: [expectedKey, otherKey] } },
+      });
+    }
   });
 
   it("resolves the public peer identity in system context without borrowing a caller's tenant", async () => {

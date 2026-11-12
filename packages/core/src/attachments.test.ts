@@ -88,7 +88,7 @@ describe("attachment helpers", () => {
     expect(attachmentExtensionForMimeType("application/zip")).toBe("");
   });
 
-  it("scopes current-turn images to user-triggered runs", () => {
+  it("selects current-turn images by user turn or explicit external source", () => {
     const messages = [
       {
         id: "message-old",
@@ -111,11 +111,18 @@ describe("attachment helpers", () => {
       },
     ];
     expect(userTurnMessageForRun("routine", "run-new", messages)).toBeUndefined();
+    expect(userTurnMessageForRun("routine", "run-new", messages, "message-old")).toBeUndefined();
     expect(userTurnMessageForRun("user", "run-old", messages)).toEqual(messages[0]);
     expect(userTurnMessageForRun("user", "run-new", messages)).toEqual(messages[1]);
     expect(userTurnMessageForRun("user", "run-fanout", messages, "message-old")).toEqual(
       messages[0],
     );
+    for (const trigger of ["messaging", "webhook"]) {
+      expect(userTurnMessageForRun(trigger, "run-old", messages)).toBeUndefined();
+      expect(userTurnMessageForRun(trigger, "run-new", messages, "message-old")).toEqual(
+        messages[0],
+      );
+    }
   });
 
   it("selects pending attachments only for their originating bot", () => {

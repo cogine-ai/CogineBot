@@ -93,6 +93,7 @@ async function runWithModel(
     botOwnerId?: string;
     useComputer?: boolean;
     turnCheckpoint?: string;
+    externalImageTrigger?: "messaging" | "webhook";
   } = {},
 ) {
   provisionComputer.mockClear();
@@ -104,7 +105,10 @@ async function runWithModel(
     spaceId: "space-1",
     userId: "user-1",
     status: "queued",
-    trigger: attachmentOptions.answeredSteering ? "routine" : "user",
+    trigger:
+      attachmentOptions.externalImageTrigger ??
+      (attachmentOptions.answeredSteering ? "routine" : "user"),
+    ...(attachmentOptions.externalImageTrigger && { sourceMessageId: "current" }),
     leaseFence: attachmentOptions.answeredSteering ? 1 : 0,
     scriptedState: null,
     modelPinned: attachmentOptions.pinned ?? false,
@@ -227,7 +231,11 @@ async function runWithModel(
       ),
       findMany: vi.fn(async (args: { where?: { threadId?: string } }) =>
         args.where?.threadId
-          ? historyMessages(attachmentOptions.block, attachmentOptions.currentSteeringImage)
+          ? historyMessages(
+              attachmentOptions.block,
+              attachmentOptions.currentSteeringImage ??
+                (attachmentOptions.externalImageTrigger ? attachmentOptions.block : undefined),
+            )
           : [],
       ),
       findUnique: vi.fn(async () => null),
@@ -796,6 +804,26 @@ it("delivers a waiting image only once when a legacy Run also reads it as its cu
   expect(steering?.[0]).toMatchObject({ messageId: "current", requiresImageInput: true });
   expect(steering?.[0]?.images).toBeUndefined();
 });
+
+it.each(["messaging", "webhook"] as const)(
+  "sends the image from the exact %s source",
+  async (trigger) => {
+    const { request } = await runWithModel(VISION_MODEL, undefined, false, false, {
+      externalImageTrigger: trigger,
+      block: {
+        kind: "image",
+        artifactId: "art-1",
+        mimeType: "image/png",
+        name: "shot.png",
+      },
+    });
+    expect(request.sourceMessageId).toBe("current");
+    expect(request.currentTurnImages).toEqual([
+      { name: "shot.png", mimeType: "image/png", data: new Uint8Array([1, 2, 3, 4]) },
+    ]);
+    expect(request.history.find(({ id }) => id === "current")?.images).toBeUndefined();
+  },
+);
 
 it("delivers the attachment without replaying the ordinary waiting answer", async () => {
   const { request, steering } = await runWithModel(VISION_MODEL, undefined, false, false, {

@@ -192,7 +192,13 @@ export function attachmentsForBot<T extends { botId: string }>(
 export function userTurnMessageForRun<
   T extends { id?: string; role: string; runId?: string | null; blocks: MessageBlock[] },
 >(trigger: string, runId: string, messages: T[], sourceMessageId?: string | null): T | undefined {
-  if (trigger !== "user") return undefined;
+  // External deliveries must name their own source message. Never attach a
+  // previous chat upload to an unattended Run by guessing from its history.
+  if (
+    trigger !== "user" &&
+    !(sourceMessageId && (trigger === "messaging" || trigger === "webhook"))
+  )
+    return undefined;
   return messages.find(
     (message) =>
       message.role === "user" &&
