@@ -157,6 +157,67 @@ integration("Slack workspace installation lifecycle", () => {
     expect(exchange).toHaveBeenCalledTimes(calls);
   });
 
+  it("applies a signed revocation that arrives while the first grant is being adopted", async () => {
+    const firstWorkspace = `T${randomUUID().replaceAll("-", "").toUpperCase()}`;
+    const attempt = await start();
+    exchange.mockResolvedValueOnce({
+      workspaceId: firstWorkspace,
+      appId: "AFIXTURE",
+      workspaceName: "Concurrent fixture",
+      installerId: "UOWNER",
+      providerBotId: "UBOT",
+      credential: "fixture-concurrent",
+    });
+    let entered!: () => void;
+    let finishCheck!: (active: boolean) => void;
+    const checking = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const check = new Promise<boolean>((resolve) => {
+      finishCheck = resolve;
+    });
+    verifyGrant
+      .mockImplementationOnce(async () => {
+        entered();
+        return check;
+      })
+      .mockResolvedValueOnce(false);
+    const completed = service.complete(owner.userId, attempt.state, "concurrent");
+    let revoking: Promise<void> | undefined;
+    let cleanupId: string | undefined;
+    try {
+      expect(await Promise.race([checking, completed])).toBeUndefined();
+      cleanupId = [...stagedCredentials].at(-1);
+      revoking = service.revoke({
+        workspaceId: firstWorkspace,
+        appId: "AFIXTURE",
+        at: new Date(),
+        precise: true,
+      });
+      await vi.waitFor(async () => {
+        const locks = await db.pool.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())) AS waiting",
+        );
+        expect(locks.rows[0]?.waiting).toBe(true);
+      });
+      finishCheck(true);
+      await expect(completed).resolves.toBe(true);
+      await revoking;
+      expect(await service.activeByWorkspace(firstWorkspace)).toBeNull();
+      expect(
+        await db.prisma.messagingInstallation.findFirst({
+          where: { workspaceId: firstWorkspace },
+        }),
+      ).toMatchObject({ status: "revoked", ciphertext: null });
+    } finally {
+      finishCheck(true);
+      await Promise.allSettled([completed, revoking]);
+      await db.prisma.messagingInstallation.deleteMany({ where: { workspaceId: firstWorkspace } });
+      if (cleanupId)
+        await db.prisma.messagingCredentialCleanup.deleteMany({ where: { id: cleanupId } });
+    }
+  });
+
   it("keeps an exclusive workspace binding and refuses stale reconnect revisions", async () => {
     const before = (await service.list(owner))[0]!;
     const foreign = await start(other, otherBotId);

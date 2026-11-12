@@ -101,7 +101,7 @@ export async function mirrorMessagingOutbound(
     !run.thread?.externalConversation?.provider.startsWith("slack~") &&
     !(
       run.trigger === "bot_message" &&
-      (await delegatedFromInstalledSlack(deps.prisma, run.parentRunId))
+      !(await delegatedRouteAllowsLegacyMirror(deps.prisma, run.parentRunId))
     )
   ) {
     await mirrorRun(deps, run);
@@ -116,7 +116,7 @@ export async function mirrorMessagingOutbound(
   }
 }
 
-async function delegatedFromInstalledSlack(prisma: PrismaClient, parentId: string | null) {
+async function delegatedRouteAllowsLegacyMirror(prisma: PrismaClient, parentId: string | null) {
   for (let hop = 0; parentId && hop <= BOT_MESSAGE_MAX_HOPS; hop++) {
     const parent = await prisma.run.findUnique({
       where: { id: parentId },
@@ -125,10 +125,10 @@ async function delegatedFromInstalledSlack(prisma: PrismaClient, parentId: strin
         thread: { select: { externalConversation: { select: { provider: true } } } },
       },
     });
-    if (parent?.thread?.externalConversation?.provider.startsWith("slack~")) return true;
-    parentId = parent?.parentRunId ?? null;
+    if (!parent || parent.thread?.externalConversation?.provider.startsWith("slack~")) return false;
+    parentId = parent.parentRunId;
   }
-  return false;
+  return !parentId;
 }
 
 async function mirrorRun(

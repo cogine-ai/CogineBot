@@ -80,7 +80,7 @@ function createDeps(overrides: {
     overrides.identity === null ? null : { ...identity, ...(overrides.identity ?? {}) };
   const prisma = {
     run: {
-      findUnique: vi.fn(async () => overrides.run ?? messagingRun),
+      findUnique: vi.fn(async (): Promise<unknown> => overrides.run ?? messagingRun),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     message: {
@@ -135,7 +135,7 @@ function createDeps(overrides: {
 }
 
 describe("messaging mirror settlement", () => {
-  it.each(["slack~installed", "slack"])(
+  it.each(["slack~installed", "slack", "deleted origin"])(
     "keeps delegated replies in their authorized route from %s",
     async (provider) => {
       const deps = createDeps({
@@ -148,13 +148,15 @@ describe("messaging mirror settlement", () => {
           parentRunId: "delegate-1",
         }))
         .mockImplementationOnce(async () => ({ parentRunId: "origin-1" }))
-        .mockImplementationOnce(async () => ({
-          parentRunId: null,
-          thread: { externalConversation: { provider } },
-        }));
+        .mockImplementationOnce(async () =>
+          provider === "deleted origin"
+            ? null
+            : { parentRunId: null, thread: { externalConversation: { provider } } },
+        );
       await mirrorMessagingOutbound(deps, "run-1");
-      if (provider === "slack~installed") expect(deps.rows).toEqual([]);
-      else expect(deps.rows).toEqual([expect.objectContaining({ body: "Hello from your bot" })]);
+      if (provider === "slack")
+        expect(deps.rows).toEqual([expect.objectContaining({ body: "Hello from your bot" })]);
+      else expect(deps.rows).toEqual([]);
       expect(deps.prisma.run.findUnique).toHaveBeenCalledTimes(3);
     },
   );

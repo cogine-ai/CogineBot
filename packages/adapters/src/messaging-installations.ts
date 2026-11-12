@@ -127,16 +127,18 @@ export class MessagingInstallations {
           },
           { recordId: credentialId, recoveryRef },
         );
-        if (
-          !(await provider.verifyGrant(
-            external.credential,
-            external.workspaceId,
-            external.providerBotId,
-          ))
-        )
-          throw new Error("Slack authorization is no longer active");
         await this.db.$transaction(
           async (tx) => {
+            // Revocation must see this adoption or precede the live grant check.
+            await this.lockWorkspace(tx, external.workspaceId);
+            if (
+              !(await provider.verifyGrant(
+                external.credential,
+                external.workspaceId,
+                external.providerBotId,
+              ))
+            )
+              throw new Error("Slack authorization is no longer active");
             const consume = await tx.messagingInstallSession.updateMany({
               where: { id, consumedAt: claimedAt, expiresAt: { gt: new Date() }, outcome: null },
               data: { outcome: "connected" },
@@ -200,7 +202,7 @@ export class MessagingInstallations {
             });
             if (adopted.count !== 1) throw new Error("Workspace credential write expired");
           },
-          { isolationLevel: "Serializable" },
+          { isolationLevel: "Serializable", timeout: 15_000 },
         );
       } catch (error) {
         await this.db.messagingInstallSession.updateMany({
@@ -315,30 +317,46 @@ export class MessagingInstallations {
   }) {
     const provider = this.provider;
     if (!provider) return Promise.resolve();
-    return runAsSystem("revoke Slack installation from a verified event", async () => {
-      const row = await this.db.messagingInstallation.findUnique({
-        where: { provider_workspaceId: { provider: PROVIDER, workspaceId: event.workspaceId } },
-      });
-      if (
-        !row?.ciphertext ||
-        row.appId !== event.appId ||
-        row.clientId !== provider.clientId ||
-        (event.botUsers && !event.botUsers.includes(row.providerBotId))
-      )
-        return;
-      const cutoff = event.precise
-        ? row.authorizedAt.getTime()
-        : Math.floor(row.authorizedAt.getTime() / 1000) * 1000;
-      if (event.at.getTime() < cutoff) return;
-      // Events can occur during token exchange or storage. Whole-second events
-      // can also overlap the previous grant during a reconnect.
-      if (
-        event.at <= row.acceptAfter &&
-        (await provider.verifyGrant(await this.credential(row), row.workspaceId, row.providerBotId))
-      )
-        return;
-      await this.db.$transaction((tx) => this.disconnect(tx, row, "revoked"));
-    });
+    return runAsSystem("revoke Slack installation from a verified event", () =>
+      this.db.$transaction(
+        async (tx) => {
+          await this.lockWorkspace(tx, event.workspaceId);
+          const row = await tx.messagingInstallation.findUnique({
+            where: { provider_workspaceId: { provider: PROVIDER, workspaceId: event.workspaceId } },
+          });
+          if (
+            !row?.ciphertext ||
+            row.appId !== event.appId ||
+            row.clientId !== provider.clientId ||
+            (event.botUsers && !event.botUsers.includes(row.providerBotId))
+          )
+            return;
+          const cutoff = event.precise
+            ? row.authorizedAt.getTime()
+            : Math.floor(row.authorizedAt.getTime() / 1000) * 1000;
+          if (event.at.getTime() < cutoff) return;
+          // Events can occur during token exchange or storage. Whole-second events
+          // can also overlap the previous grant during a reconnect.
+          if (
+            event.at <= row.acceptAfter &&
+            (await provider.verifyGrant(
+              await this.credential(row),
+              row.workspaceId,
+              row.providerBotId,
+            ))
+          )
+            return;
+          await this.disconnect(tx, row, "revoked");
+        },
+        { isolationLevel: "ReadCommitted", timeout: 20_000 },
+      ),
+    );
+  }
+
+  private async lockWorkspace(tx: Db, workspaceId: string) {
+    await tx.$queryRaw`
+      SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(${`slack-install:${workspaceId}`}, 0))
+    `;
   }
 
   revokeRejectedCredential(installation: WorkspaceInstallation) {
