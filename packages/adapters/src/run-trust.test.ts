@@ -1,4 +1,5 @@
 import { withPageReplyContext } from "@rakazo/core";
+import { historyMyChatsAllowed } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   ACTION_RULE_BLOCKED,
@@ -12,6 +13,52 @@ import {
   loadCallEndOwnerWords,
   loadWaitingAnswer,
 } from "./run-trust.js";
+
+describe("cross-chat history provenance", () => {
+  const source = {
+    role: "user",
+    authorUserId: "owner",
+    blocks: [{ kind: "text", text: "Recall a plan" }],
+  };
+  const run = { origin: "human", trigger: "user", userId: "owner" };
+  it("grants only direct app input and its human follow-up", () => {
+    expect(historyMyChatsAllowed(run, source, false)).toBe(true);
+    expect(historyMyChatsAllowed({ ...run, trigger: "follow_up" }, source, false)).toBe(true);
+    expect(historyMyChatsAllowed(run, null, false)).toBe(false);
+    expect(historyMyChatsAllowed(run, source, true)).toBe(false);
+    expect(historyMyChatsAllowed(run, { ...source, authorUserId: null }, false)).toBe(false);
+    expect(historyMyChatsAllowed(run, { ...source, role: "bot" }, false)).toBe(false);
+    expect(historyMyChatsAllowed(run, { ...source, clientNonce: "messaging:fixture" }, false)).toBe(
+      false,
+    );
+    expect(
+      historyMyChatsAllowed(run, { ...source, blocks: [{ kind: "channel_message" }] }, false),
+    ).toBe(false);
+    expect(historyMyChatsAllowed({ ...run, origin: "bot_peer" }, source, false)).toBe(false);
+    for (const trigger of ["messaging", "routine", "webhook", "spawn", "bot_message"]) {
+      expect(historyMyChatsAllowed({ ...run, trigger }, source, false)).toBe(false);
+    }
+  });
+
+  it("separates action taint from receipt of an outside message", async () => {
+    const steering = { findFirst: vi.fn().mockResolvedValue(null) };
+    const trust = createRunTrust({ steeringMessage: steering } as never, {
+      run: { ...run, id: "run", spaceId: "space" },
+      sourceMessage: source,
+      ownerStartedRun: true,
+      messagingChannelRun: false,
+      restored: false,
+      connectedProviders: [],
+      catalogApprovalMarker: "fixture",
+    });
+    // A webpage result affects action approval but does not change message provenance.
+    trust.state.tainted = true;
+    expect(await trust.receivedOutsideMessage()).toBe(false);
+    trust.recordSteering([{ id: "outside", messageId: "outside-message", text: "", blocks: [] }]);
+    expect(await trust.receivedOutsideMessage()).toBe(true);
+    expect(steering.findFirst).toHaveBeenCalledTimes(1);
+  });
+});
 
 const catalogApprovalMarker = "catalog-approval-fixture";
 const batchTool = "COMPOSIO_MULTI_EXECUTE_TOOL";
@@ -223,6 +270,8 @@ describe("run destination trust", () => {
         claimedAt: { not: null },
         OR: [
           { originTrigger: { not: null } },
+          { userId: { not: "owner" } },
+          { message: { role: { not: "user" } } },
           { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
           { message: { clientNonce: { startsWith: "messaging:" } } },
           { message: { authorUserId: null } },

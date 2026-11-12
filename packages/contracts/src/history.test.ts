@@ -23,6 +23,7 @@ describe("history read references", () => {
     {},
     { messageId: "message", toolResultId: "result" },
     { toolResultId: "result", linkedRunId: "run" },
+    { toolResultId: "result", threadId: "another-thread" },
     { toolResultId: "result", direction: "older" },
     { toolResultId: "result", limit: 1 },
     { toolResultId: "result", textOffset: -1 },
@@ -31,6 +32,29 @@ describe("history read references", () => {
     { messageId: "message", viewHash: "a".repeat(64) },
   ])("rejects mixed or invalid result navigation %j", (input) => {
     expect(HistoryReadInputSchema.safeParse(input).success).toBe(false);
+  });
+});
+
+describe("history keyword variants", () => {
+  it("normalizes duplicate terms without changing their order", () => {
+    const result = HistorySearchInputSchema.parse({
+      queries: [" Aurora ", "Borealis", "aurora"],
+      scope: "my_chats",
+      offset: 10_000,
+      kinds: ["bot_replies"],
+    });
+    expect(result.queries).toEqual(["Aurora", "Borealis"]);
+  });
+
+  it.each([
+    {},
+    { query: "Aurora", queries: ["Aurora"] },
+    { queries: [] },
+    { queries: ["Aurora", "Borealis", "Cygnus", "Dorado", "Eridanus", "Fornax"] },
+    { queries: ["天".repeat(500), "海".repeat(500)] },
+    { queries: ["Aurora"], offset: 10_001 },
+  ])("rejects an invalid keyword range %j", (input) => {
+    expect(HistorySearchInputSchema.safeParse(input).success).toBe(false);
   });
 });
 

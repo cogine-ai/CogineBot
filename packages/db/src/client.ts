@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PrismaPg } from "@prisma/adapter-pg";
 import type { PoolClient } from "pg";
 import { Pool } from "pg";
@@ -15,6 +16,12 @@ export interface DbClientOptions {
 
 const DEFAULT_POOL_MAX = 4;
 const CONNECT_RETRY_ATTEMPTS = 8;
+const abortableCheckout = new AsyncLocalStorage<AbortSignal>();
+
+/** Only work in this scope can discard its checked-out connection when stopped. */
+export function withAbortableDatabaseCheckout<T>(signal: AbortSignal, work: () => Promise<T>) {
+  return abortableCheckout.run(signal, work);
+}
 
 export function createPool(connectionString: string, options: DbClientOptions = {}): Pool {
   const pool = new Pool({
@@ -104,11 +111,36 @@ function installConnectRetry(pool: Pool): void {
     (): Promise<PoolClient>;
     (callback: ConnectCallback): void;
   };
+  const detachAbort = new WeakMap<PoolClient, () => void>();
+  pool.on("release", (_error, client) => detachAbort.get(client)?.());
+
+  function bindAbort(client: PoolClient, signal: AbortSignal): PoolClient {
+    if (signal.aborted) {
+      client.release(true);
+      signal.throwIfAborted();
+    }
+    // End only the still-checked-out socket. Its release removes this listener
+    // before the pool can lend it to any other operation.
+    const stop = () => void client.end().catch(() => undefined);
+    signal.addEventListener("abort", stop, { once: true });
+    detachAbort.set(client, () => {
+      signal.removeEventListener("abort", stop);
+      detachAbort.delete(client);
+    });
+    return client;
+  }
 
   function connect(): Promise<PoolClient>;
   function connect(callback: ConnectCallback): void;
   function connect(callback?: ConnectCallback): Promise<PoolClient> | undefined {
-    if (!callback) return retryOnTooManyConnections(() => originalConnect());
+    if (!callback) {
+      const signal = abortableCheckout.getStore();
+      const checkout = retryOnTooManyConnections(() => {
+        signal?.throwIfAborted();
+        return originalConnect();
+      });
+      return signal ? checkout.then((client) => bindAbort(client, signal)) : checkout;
+    }
     const attempt = (n: number) => {
       originalConnect((err, client, done) => {
         if (err && isTooManyDatabaseConnections(err) && n < CONNECT_RETRY_ATTEMPTS - 1) {

@@ -7439,3 +7439,15 @@ msgstr "मान दिखाएँ"
 
 msgid "Give each field a different label"
 msgstr "हर फ़ील्ड को अलग लेबल दें"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "चैट इतिहास खोजा जा रहा है"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "मूल संदेश देखें"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "इतिहास का यह स्रोत अब उपलब्ध नहीं है।"

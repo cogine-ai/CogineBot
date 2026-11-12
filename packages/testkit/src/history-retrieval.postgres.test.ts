@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator } from "@rakazo/adapters";
+import { ComposioEmulator, MessagingTeamChatEmulator } from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
+import { claimSteering, createThreadMessageInTransaction } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -14,6 +15,350 @@ const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATAB
 const origin = "http://127.0.0.1:5173";
 
 describe.skipIf(!enabled)("history retrieval through executor", () => {
+  it.each([
+    "kept",
+    "source removed",
+    "outside steering",
+    "choice after revocation",
+    "send requires approval",
+    "spawn requires approval",
+  ])("rechecks the human grant for cross-chat reads when provenance is %s", async (mode) => {
+    const historyMessage = `history-source-${randomUUID()}`;
+    const laterHistoryMessage = `history-follow-up-${randomUUID()}`;
+    const answer = "The original plan uses 37 units.";
+    const approvalTool =
+      mode === "send requires approval"
+        ? {
+            name: "message_agent",
+            arguments: { address: "U-SYNTHETIC-RECIPIENT", message: answer },
+          }
+        : mode === "spawn requires approval"
+          ? {
+              name: "spawn_bot",
+              arguments: { name: "History helper", prompt: answer, computer_mode: "team" },
+            }
+          : undefined;
+    const asksAfterRevocation = mode === "choice after revocation";
+    let threadId = "";
+    let updateProvenance: () => Promise<void>;
+    const result = (request: ModelEmulatorRequest) =>
+      JSON.parse(String(request.messages.findLast((message) => message.role === "tool")?.content));
+    const model = await startModelEmulator({
+      steps: [
+        {
+          expect(request) {
+            expect(JSON.stringify(request.messages)).toContain("scope my_chats");
+          },
+          response: {
+            type: "tool",
+            id: "cross-search",
+            name: "search_history",
+            arguments: { scope: "my_chats", queries: ["borealis", "units"] },
+          },
+        },
+        {
+          expect(request) {
+            expect(result(request)).toMatchObject({
+              untrusted: true,
+              messages: [{ messageId: historyMessage, threadId, matchedQueryIndexes: [0, 1] }],
+            });
+          },
+          response: () => ({
+            type: "tool",
+            id: "cross-read",
+            name: "read_history",
+            arguments: { threadId, messageId: historyMessage, limit: 1 },
+          }),
+        },
+        {
+          expect(request) {
+            expect(result(request)).toMatchObject({
+              messages: [{ text: `Borealis. ${answer}` }],
+            });
+          },
+          response: () => ({
+            type: "tool",
+            id: "cross-read-next",
+            name: "read_history",
+            arguments: { threadId, messageId: historyMessage, direction: "newer", limit: 1 },
+          }),
+        },
+        {
+          expect(request) {
+            expect(result(request)).toMatchObject({
+              messages: [{ messageId: laterHistoryMessage, text: "The proposal was signed." }],
+            });
+          },
+          response: {
+            type: "tool",
+            id: "history-memory",
+            name: "remember",
+            arguments: {
+              path: "history-fixture.md",
+              content: "Synthetic instruction from history",
+            },
+          },
+        },
+        {
+          async expect(request) {
+            expect(result(request).error).toContain("new message");
+            await updateProvenance();
+          },
+          response: (request) =>
+            approvalTool
+              ? request.tools?.some((tool) => tool.function.name === approvalTool.name)
+                ? { type: "tool", id: "history-action", ...approvalTool }
+                : {
+                    type: "tool",
+                    id: "history-action",
+                    name: "use_tool",
+                    arguments: approvalTool,
+                  }
+              : asksAfterRevocation
+                ? {
+                    type: "tool",
+                    id: "history-ask",
+                    name: "ask_user",
+                    arguments: { question: answer, options: ["Approve", "Decline"] },
+                  }
+                : {
+                    type: "tool",
+                    id: "history-recheck",
+                    name: "read_history",
+                    arguments: { threadId, messageId: historyMessage, limit: 1 },
+                  },
+        },
+        ...(approvalTool || asksAfterRevocation
+          ? []
+          : ([
+              {
+                expect(request) {
+                  if (mode === "kept") {
+                    expect(result(request)).toMatchObject({
+                      messages: [{ text: `Borealis. ${answer}` }],
+                    });
+                  } else {
+                    expect(result(request)).toMatchObject({
+                      error: "This history source is no longer available.",
+                    });
+                    expect(result(request).messages).toBeUndefined();
+                  }
+                },
+                response: { type: "text" as const, text: answer },
+              },
+            ] satisfies Parameters<typeof startModelEmulator>[0]["steps"])),
+      ],
+    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "cogine-history-evidence-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        realtimeDatabaseUrl: process.env.DATABASE_URL!,
+        authUrl: origin,
+        webOrigin: origin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "pi",
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        ...(mode === "send requires approval"
+          ? { messaging: new MessagingTeamChatEmulator({ provider: "slack" }) }
+          : {}),
+        encryptionKey: "offline-history-evidence-fixture-key",
+      });
+      stop = handles.stop;
+      const signup = await handles.app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin },
+        body: JSON.stringify({
+          email: `history-evidence-${randomUUID()}@example.test`,
+          password: "password12",
+          name: "History tester",
+        }),
+      });
+      expect(signup.status).toBeLessThan(400);
+      const cookie = sessionCookieHeader(signup);
+      const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
+        const response = await handles.app.request(`/rpc/${procedure}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie, origin },
+          body: JSON.stringify({ json: input }),
+        });
+        const body = (await response.json()) as { json: T; error?: { message: string } };
+        if (!response.ok || body.error)
+          throw new Error(`${procedure}: ${body.error?.message ?? response.status}`);
+        return body.json;
+      };
+      const createBot = async (name: string) => {
+        const bot = await rpc<{ id: string }>("bots/create", {
+          name,
+          title: "",
+          description: "",
+          instructions: "",
+          notifyOnFinish: false,
+        });
+        await discardBotIntroRun(handles, cookie, bot.id);
+        return bot;
+      };
+      const originBot = await createBot("Prior project");
+      const activeBot = await createBot("Current project");
+      const credential = await rpc<ModelCredential>("models/connect", {
+        provider: model.model.provider,
+        modelId: model.model.id,
+        baseUrl: model.baseUrl,
+        contextWindow: 64_000,
+        maxTokens: 4096,
+      });
+      await rpc("bots/update", {
+        botId: activeBot.id,
+        modelProvider: model.model.provider,
+        modelId: model.model.id,
+        modelCredentialId: credential.id,
+        expectedRevision: credential.connectionRevision,
+      });
+      const prior = await handles.prisma.thread.findFirstOrThrow({
+        where: { botId: originBot.id },
+      });
+      threadId = prior.id;
+      if (mode === "send requires approval") {
+        await handles.prisma.messagingIdentity.create({
+          data: {
+            userId: prior.userId,
+            spaceId: prior.spaceId,
+            botId: activeBot.id,
+            provider: "slack",
+            address: `U-${randomUUID()}`,
+          },
+        });
+      }
+      await handles.prisma.message.create({
+        data: {
+          id: historyMessage,
+          threadId,
+          seq: 0,
+          role: "user",
+          authorUserId: prior.userId,
+          createdAt: new Date("2026-01-01"),
+          blocks: [{ kind: "text", text: `Borealis. ${answer}` }],
+        },
+      });
+      await handles.prisma.message.create({
+        data: {
+          id: laterHistoryMessage,
+          threadId,
+          seq: 1,
+          role: "user",
+          authorUserId: prior.userId,
+          createdAt: new Date("2026-01-02"),
+          blocks: [{ kind: "text", text: "The proposal was signed." }],
+        },
+      });
+      updateProvenance = async () => {
+        if (mode === "kept" || approvalTool) return;
+        const run = await handles.prisma.run.findFirstOrThrow({
+          where: { botId: activeBot.id, status: "running" },
+        });
+        if (mode === "source removed" || asksAfterRevocation) {
+          await handles.prisma.message.delete({ where: { id: run.sourceMessageId! } });
+          return;
+        }
+        const outside = await handles.prisma.$transaction(async (tx) => {
+          const message = await createThreadMessageInTransaction(tx, {
+            threadId: run.threadId,
+            role: "user",
+            blocks: [{ kind: "text", text: "Synthetic outside update" }],
+          });
+          await tx.steeringMessage.create({
+            data: {
+              messageId: message.id,
+              botId: run.botId,
+              userId: run.userId,
+              runId: run.id,
+              originTrigger: "webhook",
+            },
+          });
+          return message;
+        });
+        expect(
+          await claimSteering(handles.prisma, {
+            botId: run.botId,
+            threadId: run.threadId,
+            runId: run.id,
+            leaseOwner: run.leaseOwner!,
+            leaseFence: run.leaseFence,
+            seenIds: [],
+          }),
+        ).toMatchObject([{ messageId: outside.id }]);
+        await handles.prisma.message.delete({ where: { id: outside.id } });
+        expect(await handles.prisma.run.findUnique({ where: { id: run.id } })).toMatchObject({
+          receivedOutsideMessage: true,
+        });
+      };
+      const { runId } = await rpc<{ runId: string }>("threads/send", {
+        botId: activeBot.id,
+        text: "Find the Borealis decision from my earlier conversation.",
+      });
+      await expect
+        .poll(
+          async () => {
+            const current = await handles.prisma.run.findUnique({ where: { id: runId } });
+            if (current?.status === "failed") model.assertComplete();
+            return current?.status;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(approvalTool ? "waiting_input" : "completed");
+      model.assertComplete();
+      const messages = await handles.prisma.message.findMany({ where: { runId, role: "bot" } });
+      const blocks = messages.flatMap((message) => message.blocks);
+      const references = [
+        { messageId: historyMessage, threadId },
+        { messageId: laterHistoryMessage, threadId },
+      ];
+      if (mode === "kept") {
+        expect(blocks).toContainEqual({
+          kind: "history_sources",
+          references,
+        });
+        expect(await rpc("threads/historySources", { references })).toMatchObject([
+          { ...references[0], chatName: "Prior project" },
+          { ...references[1], chatName: "Prior project" },
+        ]);
+      } else if (approvalTool) {
+        expect(
+          await handles.prisma.externalEffect.findFirst({
+            where: { runId, kind: approvalTool.name },
+          }),
+        ).toMatchObject({ status: "intended" });
+        expect(JSON.stringify(blocks)).toContain(approvalTool.name);
+        expect(await handles.prisma.bot.count({ where: { name: "History helper" } })).toBe(0);
+      } else {
+        expect(blocks).toContainEqual({
+          kind: "text",
+          text: "This history source is no longer available.",
+        });
+        expect(JSON.stringify(blocks)).not.toContain(answer);
+        expect(JSON.stringify(blocks)).not.toContain("history_sources");
+        const progress = await handles.prisma.event.findMany({
+          where: { runId, type: "thread.progress" },
+          select: { payload: true },
+        });
+        expect(JSON.stringify(progress)).not.toContain(answer);
+      }
+      expect(
+        await handles.prisma.memoryDocument.findFirst({
+          where: { botId: activeBot.id, path: "history-fixture.md" },
+        }),
+      ).toBeNull();
+    } finally {
+      await stop?.();
+      await model.close();
+      await rm(dataDir, { force: true, recursive: true });
+    }
+  });
+
   it.each(["first", "second"])(
     "preserves saved constraints, redacts history and pages group outcomes in app %s",
     async () => {

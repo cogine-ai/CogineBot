@@ -3,6 +3,7 @@ import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import type { SharedPageUpdateRequest } from "@rakazo/contracts";
 import {
   type BotSecretDestination,
+  HISTORY_SOURCE_UNAVAILABLE,
   loginCardAnswer,
   type MessageBlock,
   MessageBlock as MessageBlockSchema,
@@ -51,6 +52,7 @@ import {
   ordinaryApprovalCard,
   PROTECTED_APPROVAL_TOOLS,
 } from "./delegated-approvals.js";
+import { lockRunHistoryGrant } from "./history-retrieval.js";
 import type { RunLease } from "./messages.js";
 import {
   assertRunCanWriteHistory,
@@ -176,6 +178,7 @@ export interface ClaimedSteeringMessage {
 export interface FinalizeRunResult {
   continuationRunId: string | null;
   routineRetryAt?: Date;
+  historyRevoked?: true;
 }
 
 interface FinalizeRunBase {
@@ -195,6 +198,8 @@ export type FinalizeRunInput = FinalizeRunBase &
         outcome: "completed";
         blocks: MessageBlock[];
         markUnread?: boolean;
+        /** Cross-chat evidence requires the same live human source under the thread lock. */
+        historyGrantSourceId?: string | null;
       }
     | { outcome: "failed"; error: string; partialText?: string; retryRoutine?: boolean }
   );
@@ -208,6 +213,7 @@ export interface PauseRunForInput {
   leaseOwner: string;
   leaseFence: number;
   blocks: MessageBlock[];
+  historyGrant?: { userId: string; sourceMessageId: string | null };
   /**
    * Unredacted choice actions for resume. Persisted only on the run checkpoint
    * (not in message blocks) so clients still see redacted labels.
@@ -758,6 +764,7 @@ export async function claimSteering(
           spaceId: true,
           userId: true,
           sourceMessageId: true,
+          receivedOutsideMessage: true,
           sourceMessage: { select: { blocks: true } },
         },
       });
@@ -809,6 +816,7 @@ export async function claimSteering(
           item.message.role === "user" &&
           item.message.authorUserId === run.userId &&
           item.originTrigger === null &&
+          !item.message.clientNonce?.startsWith("messaging:") &&
           !blocks.some((block) => block.kind === "channel_message")
             ? { ownerInput: true as const }
             : {}),
@@ -845,6 +853,21 @@ export async function claimSteering(
         },
         data: { runId: input.runId, claimedAt: now },
       });
+      if (
+        run.receivedOutsideMessage === false &&
+        (run.trigger === "user" || run.trigger === "follow_up") &&
+        claimed.some((item) => !item.ownerInput)
+      ) {
+        await tx.run.updateMany({
+          where: {
+            id: run.id,
+            status: "running",
+            leaseOwner: input.leaseOwner,
+            leaseFence: input.leaseFence,
+          },
+          data: { receivedOutsideMessage: true },
+        });
+      }
       if (resetCandidate) {
         const reset = await reserveRunProgressResetInTransaction(tx, {
           ...input,
@@ -1577,6 +1600,18 @@ export async function pauseRunForInput(
     // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
     // concurrent clear cannot deadlock against this transaction.
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
+    if (
+      input.historyGrant &&
+      !(await lockRunHistoryGrant(tx, {
+        ...input.historyGrant,
+        id: input.runId,
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        leaseOwner: input.leaseOwner,
+        leaseFence: input.leaseFence,
+      }))
+    )
+      return null;
     const paused = await tx.run.updateMany({
       where: {
         id: input.runId,
@@ -2215,6 +2250,7 @@ export async function finalizeRun(
   return {
     continuationRunId: committed.continuationRunId,
     ...(committed.routineRetryAt ? { routineRetryAt: committed.routineRetryAt } : {}),
+    ...(committed.historyRevoked ? { historyRevoked: true } : {}),
   };
 }
 
@@ -2245,6 +2281,7 @@ async function finalizeRunOnce(
   continuationRunId: string | null;
   firstResponse: boolean;
   routineRetryAt?: Date;
+  historyRevoked: boolean;
 } | null> {
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
@@ -2256,6 +2293,18 @@ async function finalizeRunOnce(
       throw error;
     }
     if (!writableRun) return null;
+    const historyRevoked =
+      input.outcome === "completed" &&
+      input.historyGrantSourceId !== undefined &&
+      !(await lockRunHistoryGrant(tx, {
+        id: input.runId,
+        spaceId: input.spaceId,
+        userId: writableRun.userId,
+        threadId: input.threadId,
+        sourceMessageId: input.historyGrantSourceId,
+        leaseOwner: input.leaseOwner,
+        leaseFence: input.leaseFence,
+      }));
     const now = new Date();
     const terminal = await tx.run.updateMany({
       where: {
@@ -2311,7 +2360,9 @@ async function finalizeRunOnce(
     let firstResponse = false;
     const blocks: MessageBlock[] =
       input.outcome === "completed"
-        ? completedRunBlocks(input.blocks, writableRun?.startedAt ?? null, now)
+        ? historyRevoked
+          ? [{ kind: "text", text: HISTORY_SOURCE_UNAVAILABLE }]
+          : completedRunBlocks(input.blocks, writableRun.startedAt, now)
         : input.partialText?.trim()
           ? [
               {
@@ -2327,7 +2378,7 @@ async function finalizeRunOnce(
         blocks,
         botId: input.botId,
         runId: input.runId,
-        markUnread: input.outcome === "completed" ? input.markUnread : false,
+        markUnread: input.outcome === "completed" && (historyRevoked || input.markUnread),
       });
       if (input.outcome === "completed") completedMessageId = message.id;
       const response = await appendEventInTransaction(tx, {
@@ -2393,6 +2444,7 @@ async function finalizeRunOnce(
       continuationRunId,
       firstResponse,
       routineRetryAt,
+      historyRevoked,
     };
   });
 }

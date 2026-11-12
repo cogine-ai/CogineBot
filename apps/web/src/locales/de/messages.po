@@ -7495,3 +7495,15 @@ msgstr "Wert anzeigen"
 
 msgid "Give each field a different label"
 msgstr "Gib jedem Feld eine andere Bezeichnung"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "Chatverlauf wird durchsucht"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "Originalnachricht öffnen"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "Diese Quelle ist nicht mehr verfügbar."

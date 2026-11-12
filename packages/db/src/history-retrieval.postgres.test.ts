@@ -3,8 +3,13 @@ import { HistorySearchInputSchema } from "@rakazo/contracts";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "./client.js";
-import { PrismaClient } from "./client.js";
-import { readHistory, searchHistory } from "./history-retrieval.js";
+import { createDb, PrismaClient } from "./client.js";
+import {
+  listHistorySources,
+  readHistory,
+  searchHistory,
+  withCrossChatHistoryBudget,
+} from "./history-retrieval.js";
 
 const enabled = process.env.VERIFY_DATABASE && process.env.DATABASE_URL;
 const postgres = enabled ? describe.sequential : describe.skip;
@@ -77,6 +82,58 @@ postgres("history retrieval (PostgreSQL)", () => {
       await pool?.end();
     }
   });
+  it.each([false, true])(
+    "ends an active scan and preserves later checkouts with RLS=%s",
+    async (rowSecurity) => {
+      const { prisma: isolated, pool: ownedPool } = createDb(process.env.DATABASE_URL!, {
+        poolMax: 1,
+        rowSecurity,
+      });
+      const stop = new AbortController();
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelledPid: number | undefined;
+      const backendId = async (db: Pick<PrismaClient, "$queryRaw">) =>
+        (await db.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`)[0]!.pid;
+      try {
+        await expect(
+          withCrossChatHistoryBudget(isolated, stop.signal, async (db) => {
+            cancelledPid = await backendId(db);
+            const query = db.$queryRaw`SELECT 1 FROM pg_sleep(10)`;
+            stopTimer = setTimeout(() => stop.abort(new Error("History lookup stopped")), 50);
+            return query;
+          }),
+        ).rejects.toThrow("History lookup stopped");
+        expect(cancelledPid).toBeDefined();
+        await expect
+          .poll(
+            async () =>
+              (
+                await isolated.$queryRaw<{ pid: number }[]>`
+            SELECT pid FROM pg_stat_activity WHERE pid = ${cancelledPid}`
+              ).length,
+          )
+          .toBe(0);
+        const read = vi.fn();
+        await expect(withCrossChatHistoryBudget(isolated, stop.signal, read)).rejects.toThrow();
+        expect(read).not.toHaveBeenCalled();
+        const completed = new AbortController();
+        const pid = await withCrossChatHistoryBudget(isolated, completed.signal, backendId);
+        completed.abort();
+        expect(await backendId(isolated)).toBe(pid);
+        await expect(
+          withCrossChatHistoryBudget(
+            isolated,
+            new AbortController().signal,
+            (db) => db.$queryRaw`SELECT 1 FROM pg_sleep(10)`,
+          ),
+        ).rejects.toThrow(/statement timeout/i);
+      } finally {
+        clearTimeout(stopTimer);
+        await isolated.$disconnect();
+        await ownedPool.end();
+      }
+    },
+  );
   it("finds a distant fact in 10,000 messages using the full text index", async () => {
     const querySpy = vi.spyOn(prisma, "$queryRaw");
     const results = await searchHistory(prisma, scope, { query: "exports batching" });
@@ -502,6 +559,138 @@ postgres("history retrieval (PostgreSQL)", () => {
     expect((await searchHistory(prisma, channelScope, { query: "exports" })).messages).toEqual([]);
     expect(
       (await readHistory(prisma, channelScope, { messageId: "channel-result" })).messages,
+    ).toEqual([]);
+  });
+
+  it("pages only owned active chats and rechecks the exact anchor, linked run and source visibility", async () => {
+    await pool.query(`
+      INSERT INTO "user" (id, name, email, "updatedAt")
+        VALUES ('cross-other-user', 'Other owner', 'cross-other@example.test', now());
+      INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+        VALUES ('cross-member', 'synthetic-org', 'synthetic-user', 'owner', now());
+      INSERT INTO space_members (id, "spaceId", "organizationId", "userId", "createdAt")
+        VALUES ('cross-space-member', 'synthetic-space', 'synthetic-org', 'synthetic-user', now());
+      INSERT INTO spaces (id, "organizationId", name, "createdByUserId")
+        VALUES ('cross-other-space', 'synthetic-org', 'Other Space', 'synthetic-user');
+      INSERT INTO bots (id, "spaceId", "userId", name, color, "updatedAt", "archivedAt") VALUES
+        ('cross-bot', 'synthetic-space', 'synthetic-user', 'Past bot', '#000000', now(), NULL),
+        ('cross-archived', 'synthetic-space', 'synthetic-user', 'Archived bot', '#000000', now(), now()),
+        ('cross-foreign', 'synthetic-space', 'cross-other-user', 'Foreign owner', '#000000', now(), NULL),
+        ('cross-other-space-bot', 'cross-other-space', 'synthetic-user', 'Foreign Space', '#000000', now(), NULL);
+      INSERT INTO chat_groups (id, "spaceId", "userId", name, "updatedAt", "archivedAt") VALUES
+        ('cross-group', 'synthetic-space', 'synthetic-user', 'Project group', now(), NULL),
+        ('cross-archived-group', 'synthetic-space', 'synthetic-user', 'Archived group', now(), now());
+      INSERT INTO chat_group_members (id, "groupId", "botId")
+        VALUES ('cross-group-member', 'cross-group', 'cross-bot'),
+               ('cross-group-other-member', 'cross-group', 'synthetic-bot');
+      INSERT INTO threads (id, "spaceId", "userId", "botId", "groupId") VALUES
+        ('cross-thread', 'synthetic-space', 'synthetic-user', 'cross-bot', NULL),
+        ('cross-archived-thread', 'synthetic-space', 'synthetic-user', 'cross-archived', NULL),
+        ('cross-foreign-thread', 'synthetic-space', 'cross-other-user', 'cross-foreign', NULL),
+        ('cross-other-space-thread', 'cross-other-space', 'synthetic-user', 'cross-other-space-bot', NULL),
+        ('cross-group-thread', 'synthetic-space', 'synthetic-user', NULL, 'cross-group'),
+        ('cross-archived-group-thread', 'synthetic-space', 'synthetic-user', NULL, 'cross-archived-group');
+      INSERT INTO tasks (id, "spaceId", "botId", "threadId", "userId", prompt, status, "updatedAt")
+        VALUES ('cross-task', 'synthetic-space', 'cross-bot', 'cross-thread',
+          'synthetic-user', 'History evidence', 'completed', now());
+      INSERT INTO messages ${messageColumns} VALUES
+        ('cross-direct-hit','cross-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar lunar"}]'),
+        ('cross-direct-reply','cross-thread',1,'bot','cross-run',NULL,'2026-02-01','[{"kind":"text","text":"The solar plan is 37 units."}]'),
+        ('cross-hidden-hit','cross-thread',3,'user','cross-hidden',NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar hidden"}]'),
+        ('cross-group-hit','cross-group-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar group"}]'),
+        ('cross-future','cross-thread',2,'user',NULL,NULL,'2026-02-03','[{"kind":"text","text":"crosscanary solar future"}]'),
+        ('cross-archived-hit','cross-archived-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar archived"}]'),
+        ('cross-archived-group-hit','cross-archived-group-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar archived group"}]'),
+        ('cross-foreign-hit','cross-foreign-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar foreign"}]'),
+        ('cross-other-space-hit','cross-other-space-thread',0,'user',NULL,NULL,'2026-02-01','[{"kind":"text","text":"crosscanary solar foreign space"}]');
+      INSERT INTO runs ${runColumns} VALUES
+        ('cross-run','synthetic-space','synthetic-user','cross-thread',
+          'cross-bot','cross-direct-hit','completed','2026-02-01','2026-02-01','cross-task','user',now()),
+        ('cross-hidden','synthetic-space','synthetic-user','cross-thread',
+          'cross-bot','cross-direct-hit','completed','2026-02-01','2026-02-01','cross-task','tickets',now());
+    `);
+    const crossScope = { ...scope, allowMyChats: true, searchAt: new Date("2026-02-02") };
+    const thisChatScope = {
+      ...crossScope,
+      searchAt: new Date("2027-01-01"),
+      searchBeforeSeq: 100,
+    };
+    const currentReference = { threadId: scope.threadId, messageId: "m-100" };
+    await expect(readHistory(prisma, thisChatScope, currentReference)).rejects.toThrow(
+      "no longer available",
+    );
+    expect(
+      await readHistory(prisma, { ...thisChatScope, searchBeforeSeq: 101 }, currentReference),
+    ).toMatchObject({ anchor: currentReference });
+    expect(
+      (await readHistory(prisma, thisChatScope, { messageId: "m-100", limit: 1 })).messages,
+    ).toHaveLength(1);
+    const search = {
+      scope: "my_chats",
+      queries: ["crosscanary solar", "lunar"],
+      botId: "cross-bot",
+      kinds: ["user_messages"],
+      limit: 1,
+    } as const;
+    const query = HistorySearchInputSchema.parse(search);
+    const first = await searchHistory(prisma, crossScope, query);
+    expect(first.messages).toMatchObject([
+      { messageId: "cross-group-hit", chatName: "Project group", matchedQueryIndexes: [0] },
+    ]);
+    expect(first.nextSearch).toMatchObject({ ...query, offset: 1 });
+    const second = await searchHistory(prisma, crossScope, first.nextSearch!);
+    expect(second.messages).toMatchObject([
+      { messageId: "cross-direct-hit", chatName: "Past bot", matchedQueryIndexes: [0, 1] },
+    ]);
+    expect(second.coverage.status).toBe("exhausted");
+    expect(
+      (await searchHistory(prisma, crossScope, { ...query, botId: undefined, limit: 5 })).messages,
+    ).toHaveLength(2);
+    await expect(searchHistory(prisma, scope, query)).rejects.toThrow("no longer available");
+    await expect(
+      searchHistory(prisma, { ...crossScope, channelId: "channel" }, query),
+    ).rejects.toThrow("no longer available");
+
+    const reference = { threadId: "cross-thread", messageId: "cross-direct-hit" };
+    const read = await readHistory(prisma, crossScope, { ...reference, linkedRunId: "cross-run" });
+    expect(read.runs).toMatchObject([
+      { id: "cross-run", outcomes: [{ text: "The solar plan is 37 units." }] },
+    ]);
+    expect(read.messages.map(({ messageId }) => messageId)).not.toContain("cross-future");
+    expect(
+      (await readHistory(prisma, crossScope, { ...reference, linkedRunId: "run-private" })).runs,
+    ).toEqual([]);
+    await expect(
+      readHistory(prisma, crossScope, { ...reference, threadId: "cross-group-thread" }),
+    ).rejects.toThrow("no longer available");
+    await expect(
+      readHistory(prisma, crossScope, { ...reference, messageId: "cross-future" }),
+    ).rejects.toThrow("no longer available");
+    expect(
+      await listHistorySources(prisma, scope, [
+        reference,
+        {
+          threadId: "cross-foreign-thread",
+          messageId: "cross-foreign-hit",
+        },
+      ]),
+    ).toMatchObject([{ ...reference, chatName: "Past bot" }]);
+
+    await pool.query("UPDATE bots SET \"archivedAt\" = now() WHERE id = 'cross-bot'");
+    expect(await listHistorySources(prisma, scope, [reference])).toEqual([]);
+    expect(
+      await listHistorySources(prisma, scope, [
+        {
+          threadId: "cross-group-thread",
+          messageId: "cross-group-hit",
+        },
+      ]),
+    ).toEqual([]);
+    await expect(readHistory(prisma, crossScope, reference)).rejects.toThrow("no longer available");
+    expect((await searchHistory(prisma, crossScope, first.nextSearch!)).messages).toEqual([]);
+    await pool.query("DELETE FROM space_members WHERE id = 'cross-space-member'");
+    expect(
+      (await searchHistory(prisma, crossScope, { ...query, botId: undefined })).messages,
     ).toEqual([]);
   });
 });

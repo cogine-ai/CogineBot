@@ -16,6 +16,7 @@ import type {
 import {
   canReactToThreadMessage,
   DelegatedApprovalAction,
+  HISTORY_LOOKUP_STATUS,
   IMAGE_INPUT_PREVIEW_DELAY_MS,
   imageInputRouteKey,
   MESSAGE_REACTIONS,
@@ -117,6 +118,7 @@ import { ComputerCard } from "../components/ComputerCard";
 import { ComposerReplyPreview } from "../components/composer-reply-preview";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
+import { HistorySourcesCard } from "../components/history-sources-card";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
 import { ImageInputChoice } from "../components/image-input-choice";
 import { InlineImageAttachment } from "../components/inline-image-attachment";
@@ -1128,12 +1130,14 @@ function Thread({
   activeThreadId.current = notificationThreadId;
   const currentBotStatus = snap ? snap.run?.status : currentBot?.status;
   const hasLiveProgress = visibleMessages.some((message) => message.id.startsWith("progress:"));
-  const workingNarrationStatus = liveNarrationStatusLine(
+  const narrationStatus = liveNarrationStatusLine(
     userMessages,
     (snap?.activeRuns ?? (snap?.run ? [snap.run] : []))
       .filter((run) => run.status === "running")
       .map((run) => run.id),
   );
+  const workingNarrationStatus =
+    narrationStatus === HISTORY_LOOKUP_STATUS ? t("Searching chat history") : narrationStatus;
   const workingGroupBots = useMemo(() => {
     if (!inGroup) return [];
     const seen = new Set<string>();
@@ -4552,6 +4556,9 @@ const MessageBubble = memo(function MessageBubble({
   const pageBlocks = message.blocks.filter(
     (block): block is Extract<MessageBlock, { kind: "page" }> => block.kind === "page",
   );
+  const historyCards = message.blocks.flatMap((block, index) =>
+    block.kind === "history_sources" ? [<HistorySourcesCard key={index} block={block} />] : [],
+  );
   const attachments = message.blocks.filter(
     (block) => block.kind === "image" || block.kind === "file",
   );
@@ -4611,6 +4618,7 @@ const MessageBubble = memo(function MessageBubble({
         {pageBlocks.map((block) => (
           <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
         ))}
+        {historyCards}
         {attachments.map((attachment, index) =>
           attachment.kind === "image" ? (
             attachment.artifactId && isInlineImageMimeType(attachment.mimeType) ? (
@@ -4759,6 +4767,7 @@ const MessageBubble = memo(function MessageBubble({
       {pageBlocks.map((block) => (
         <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
       ))}
+      {historyCards}
       {choiceBlocks.map((block, index) => (
         <ChoiceCard
           key={`choice-${index}`}

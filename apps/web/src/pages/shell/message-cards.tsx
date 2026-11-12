@@ -1,16 +1,18 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { MessageBlock } from "@rakazo/contracts";
+import { useHistorySources } from "@rakazo/chat-ui/history-sources";
+import type { HistorySourceReference, MessageBlock } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { X } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { BuiCard, SuccessPop } from "../../components/ai/primitives";
 import { lazyOverlay } from "../../components/ErrorBoundary";
 import type { ArtifactTarget } from "../../lib/artifact-open";
 import { chartViewport } from "../../lib/chart-viewport";
 import { connectMcpOauth } from "../../lib/mcp-connect";
-import { rpc } from "../../lib/rpc";
+import { captureRpcRecoveryScope, isRpcRecoveryScopeCurrent, rpc } from "../../lib/rpc";
 import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
 import { McpServersOverlay } from "../McpServersOverlay";
@@ -18,6 +20,71 @@ import { McpServersOverlay } from "../McpServersOverlay";
 const NativeAppsOverlay = lazyOverlay(() =>
   import("../PluginsOverlay").then((module) => module.PluginsOverlay),
 );
+
+const historySourceClient = {
+  captureScope: captureRpcRecoveryScope,
+  isScopeCurrent: isRpcRecoveryScopeCurrent,
+  load: (references: HistorySourceReference[], signal: AbortSignal) =>
+    rpc.threads.historySources({ references }, { signal }),
+};
+
+export function HistorySourcesCard({
+  block,
+}: {
+  block: Extract<MessageBlock, { kind: "history_sources" }>;
+}) {
+  const navigate = useNavigate();
+  const { i18n } = useLingui();
+  const { sources, unavailable, revalidate } = useHistorySources(
+    block.references,
+    historySourceClient,
+  );
+
+  async function open(source: HistorySourceReference) {
+    const row = await revalidate(source);
+    if (!row) return;
+    navigate({
+      pathname: row.groupId ? `/app/g/${row.groupId}` : `/app/${row.botId}`,
+      search: `?${new URLSearchParams({ m: row.messageId })}`,
+    });
+  }
+
+  if (!sources.length && !unavailable) return null;
+  const formatDate = new Intl.DateTimeFormat(i18n.locale, { dateStyle: "medium" });
+  return (
+    <div className="mt-2 w-[420px] max-w-full rounded-[18px] border border-border bg-card px-4 py-3">
+      {sources.map((source) => (
+        <div key={source.messageId} className="py-2">
+          <div className="truncate text-sm font-medium" dir="auto">
+            {source.chatName} · {formatDate.format(new Date(source.createdAt))}
+          </div>
+          {source.text ? (
+            <p
+              className="mt-1 line-clamp-3 whitespace-pre-line text-sm text-muted-foreground"
+              dir="auto"
+            >
+              {source.text}
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-1"
+            onClick={() => void open(source)}
+          >
+            <Trans>View original message</Trans>
+          </Button>
+        </div>
+      ))}
+      {unavailable ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          <Trans>This history source is no longer available.</Trans>
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 export function ChoiceCard({
   botId,

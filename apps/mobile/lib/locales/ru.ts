@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Searching chat history": "Поиск в истории чатов",
+  "View original message": "Открыть исходное сообщение",
+  "This history source is no longer available.": "Этот источник больше недоступен.",
   "Give each field a different label": "Задайте уникальное название для каждого поля",
   "{bot} will no longer be able to use this credential.":
     "{bot} больше не сможет использовать эти учётные данные.",

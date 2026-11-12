@@ -1,5 +1,6 @@
 import * as z from "zod";
 import { botSecretDestinationSchema, LoginFieldLabels } from "./bot-secrets.js";
+import { HistorySourceReferencesSchema } from "./history.js";
 import { Id } from "./ids.js";
 import { McpTransportSchema } from "./mcp.js";
 import { PAGE_TITLE_MAX_LENGTH, PageTextContextSchema, PageVersionSchema } from "./pages.js";
@@ -147,6 +148,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     /** Transport-only text companion for clients without Page cards. */
     pageCardFallbackFor: z.strictObject({ pageId: Id, version: PageVersionSchema }).optional(),
   }),
+  z.object({ kind: z.literal("history_sources"), references: HistorySourceReferencesSchema }),
   z.object({
     kind: z.literal("card"),
     lines: z.array(z.object({ k: z.string(), v: z.string() })),

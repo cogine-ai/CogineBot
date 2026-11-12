@@ -7510,3 +7510,15 @@ msgstr "Show value"
 
 msgid "Give each field a different label"
 msgstr "Give each field a different label"
+
+#: src/pages/Shell.tsx
+msgid "Searching chat history"
+msgstr "Searching chat history"
+
+#: src/pages/shell/message-cards.tsx
+msgid "View original message"
+msgstr "View original message"
+
+#: src/pages/shell/message-cards.tsx
+msgid "This history source is no longer available."
+msgstr "This history source is no longer available."

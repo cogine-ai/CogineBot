@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Prisma, PrismaClient } from "./client.js";
-import { historyMessageText, readHistory, searchHistory } from "./history-retrieval.js";
+import {
+  historyMessageText,
+  mergeHistorySourceReferences,
+  readHistory,
+  searchHistory,
+} from "./history-retrieval.js";
 
 const scope = { spaceId: "space", userId: "user", threadId: "thread", botId: "bot" };
 const row = (seq: number, text = "Use batch exports") => ({
@@ -24,6 +29,14 @@ function sql(mock: ReturnType<typeof db>["mock"], call = 0) {
   return mock.$queryRaw.mock.calls[call]![0] as Prisma.Sql;
 }
 describe("local history retrieval", () => {
+  it("retains an original before its linked outcomes when citations fill the card", () => {
+    const reference = (messageId: string) => ({ threadId: "thread", messageId });
+    const original = reference("original");
+    const outcomes = Array.from({ length: 5 }, (_, index) => reference(`outcome-${index}`));
+    expect(
+      mergeHistorySourceReferences([reference("earlier"), original], [original, ...outcomes]),
+    ).toEqual([original, ...outcomes.slice(0, 4)]);
+  });
   it("bounds search excerpts and pages by stable sequence", async () => {
     const { mock, prisma } = db();
     mock.$queryRaw.mockResolvedValue([row(10), row(9), row(8)]);
@@ -184,5 +197,36 @@ describe("local history retrieval", () => {
     await expect(searchHistory(prisma, scope, { query: "x", beforeSeq: -1 })).rejects.toThrow();
     await expect(searchHistory(prisma, scope, { query: " " })).rejects.toThrow();
     expect(mock.$queryRaw).not.toHaveBeenCalled();
+  });
+  it("reports an offset cap without claiming the result range was exhausted", async () => {
+    const { mock, prisma } = db();
+    mock.$queryRaw.mockResolvedValue([row(10), row(9)]);
+    const result = await searchHistory(prisma, scope, {
+      query: "exports",
+      limit: 1,
+      offset: 10_000,
+    });
+    expect(result.coverage).toMatchObject({ status: "partial", capped: true });
+    expect(result.nextSearch).toBeNull();
+    expect(sql(mock).values).toContain(10_000);
+  });
+  it("does not start neighbor or linked queries after Stop during an anchor read", async () => {
+    const { mock, prisma } = db();
+    const controller = new AbortController();
+    mock.$queryRaw.mockImplementationOnce(async () => {
+      controller.abort();
+      return [row(1)];
+    });
+    await expect(
+      readHistory(
+        prisma,
+        { ...scope, signal: controller.signal },
+        {
+          messageId: "message-1",
+        },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(mock.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(mock.run.findMany).not.toHaveBeenCalled();
   });
 });
