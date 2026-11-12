@@ -4,12 +4,25 @@ import type { MessageBlock } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
+  isDeferredReservationLost,
   TeamChatBridge,
   teamChatAmbientPrompt,
   teamChatPrompt,
   teamChatResponseText,
 } from "./team-chat-bridge.js";
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
+
+const installedSlack = {
+  acceptAfter: new Date(0),
+  isAvailable: async () => true,
+  grant: {
+    id: "fixture",
+    workspaceId: "TFIXTURE",
+    clientId: "fixture",
+    installerId: "UFIXTURE",
+    revision: 1,
+  },
+};
 
 describe("team chat bridge", () => {
   it.each(["accepted", "rate-limited", "expired"] as const)(
@@ -44,7 +57,7 @@ describe("team chat bridge", () => {
         send,
         providerId: "slack~fixture",
         botId: "fixture-bot",
-        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+        installedSlack,
       }) as unknown as {
         reserveDelivery(id: string): Promise<Date>;
         sendReserved(
@@ -116,7 +129,7 @@ describe("team chat bridge", () => {
         send: vi.fn(),
         providerId: "slack~fixture",
         botId: "fixture-bot",
-        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+        installedSlack,
       });
       const at = Date.now();
       const retry = bridge as unknown as {
@@ -351,7 +364,10 @@ describe("team chat bridge", () => {
     expect(updateMany).toHaveBeenLastCalledWith({
       where: {
         id: "external-deferred",
-        status: { in: ["deferred", "received", "observed"] },
+        OR: [
+          { status: { in: ["deferred", "received", "observed"] } },
+          { status: "ignored", engagementReason: "message_routine_wake" },
+        ],
         externalConversation: { provider: "slack", botId: "bot-1" },
       },
       data: {
@@ -638,7 +654,10 @@ describe("team chat bridge", () => {
     expect(updateMany).toHaveBeenCalledWith({
       where: {
         id: "external-raced",
-        status: { in: ["deferred", "received", "observed"] },
+        OR: [
+          { status: { in: ["deferred", "received", "observed"] } },
+          { status: "ignored", engagementReason: "message_routine_wake" },
+        ],
         externalConversation: { provider: "slack", botId: "bot-1" },
       },
       data: {
@@ -683,6 +702,34 @@ describe("team chat bridge", () => {
       .nextAttemptAt;
     expect(nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + 25 * 60_000);
     expect(nextAttemptAt.getTime()).toBeLessThanOrEqual(after + 30 * 60_000);
+  });
+
+  it("reports a failed database renewal as lost ownership", async () => {
+    vi.useFakeTimers();
+    try {
+      const bridge = new TeamChatBridge({
+        prisma: {} as PrismaClient,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send: vi.fn(),
+        providerId: "slack",
+        botId: "bot-1",
+      });
+      const failure = new Error("Database connection reset");
+      const extend = vi
+        .spyOn(bridge, "extendDeferredReservation")
+        .mockResolvedValueOnce(true)
+        .mockRejectedValueOnce(failure);
+      const lease = await bridge.startDeferredReservationHeartbeat("external-routing", 10);
+      await vi.advanceTimersByTimeAsync(10);
+      const error = await lease.lost.catch((cause: unknown) => cause);
+      expect(isDeferredReservationLost(error)).toBe(true);
+      expect(error).toHaveProperty("cause", failure);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(extend).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps renewing a deferred lease while routine delivery remains blocked", async () => {

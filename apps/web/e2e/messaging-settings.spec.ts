@@ -373,6 +373,7 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
   let attemptStatus = "pending";
   let reconnect: { id: string; expectedRevision: number } | undefined;
   let failLists = false;
+  let retryReadBarrier: Promise<void> | undefined;
   let pauseCalls = 0;
   await page.addInitScript(() => {
     window.open = () => null;
@@ -382,7 +383,8 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
       json: { json: { enabled: true, providers: [], openSignup: false, identities: [] } },
     }),
   );
-  await page.route("**/rpc/messaging/installations/list", (route) => {
+  await page.route("**/rpc/messaging/installations/list", async (route) => {
+    if (retryReadBarrier) await retryReadBarrier;
     if (failLists) {
       return route.fulfill({ status: 503, json: { message: "Fixture unavailable" } });
     }
@@ -487,8 +489,17 @@ test("Slack workspace installation uses a chosen bot and manages the confirmed c
   await slack.getByRole("button", { name: "Pause" }).click();
   await expect(slack.getByRole("button", { name: "Pause" })).toBeDisabled();
   await expect(slack.getByRole("alert")).toContainText("Couldn't load messaging settings");
-  failLists = false;
-  await slack.getByRole("button", { name: "Retry" }).click();
+  // A background read can clear the error before the user reaches Retry.
+  // Hold recovery responses until this test has actually clicked the button.
+  const retryRead = Promise.withResolvers<void>();
+  retryReadBarrier = retryRead.promise;
+  try {
+    await slack.getByRole("button", { name: "Retry" }).click();
+  } finally {
+    failLists = false;
+    retryReadBarrier = undefined;
+    retryRead.resolve();
+  }
   await expect(slack.getByText("Paused", { exact: true })).toBeVisible();
   expect(pauseCalls).toBe(1);
   await slack.getByRole("button", { name: "Resume" }).click();

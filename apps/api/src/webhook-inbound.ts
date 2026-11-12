@@ -13,7 +13,7 @@ type InboundAttachmentBlock = Extract<MessageBlock, { kind: "image" | "file" }>;
 
 export type WebhookEvents = {
   sendUserMessage(
-    input: Pick<SendUserMessageInput, "routineSources"> & {
+    input: Pick<SendUserMessageInput, "routineSources" | "teamChatClaim"> & {
       spaceId: string;
       threadId: string;
       botId: string;
@@ -289,6 +289,7 @@ export async function deliverWebhookEvent(
     messageProvider?: string;
     idempotencyKey?: string;
     messagingReceiptKey?: string;
+    teamChatClaim?: SendUserMessageInput["teamChatClaim"];
     /** Messaging wakes share the live chat thread; keep a separate webhook run. */
     allowParallelRun?: boolean;
   },
@@ -324,12 +325,17 @@ export async function deliverWebhookEvent(
     trigger: "webhook",
     clientNonce,
     ...(input.messagingReceiptKey && { messagingReceiptKey: input.messagingReceiptKey }),
+    ...(input.teamChatClaim && { teamChatClaim: input.teamChatClaim }),
     ...(input.routines.length
       ? {
           routineSources: {
             trigger: input.source,
             ...(input.messageProvider ? { messageProvider: input.messageProvider } : {}),
-            routines: input.routines.map(({ id, prompt }) => ({ id, prompt })),
+            routines: input.routines.map(({ id, prompt, name }) => ({
+              id,
+              prompt,
+              ...(input.teamChatClaim && { name }),
+            })),
           },
         }
       : {}),

@@ -49,6 +49,107 @@ test("Slack message trigger uses the mounted messaging provider and persists", a
   await captureScreenshot(page, testInfo, "routine-slack-message");
 });
 
+test("Slack Routine uses an active workspace connection for the selected bot", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `routine-workspace-${Date.now()}@example.test`, "password12", "Slack Routine");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  let paused = true;
+  let failNextLookup = false;
+  const releaseFailedLookup = Promise.withResolvers<void>();
+  await page.route("**/rpc/messaging/installations/list", async (route) => {
+    if (failNextLookup) {
+      failNextLookup = false;
+      await releaseFailedLookup.promise;
+      return route.fulfill({ status: 503 });
+    }
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: {
+          available: true,
+          workspaces: [
+            {
+              id: "other",
+              botId: "other-bot",
+              workspaceName: "Other",
+              installerName: null,
+              revision: 1,
+              status: "active",
+            },
+            {
+              id: "fixture",
+              botId,
+              workspaceName: "Fixture",
+              installerName: "Owner",
+              revision: 1,
+              status: paused ? "paused" : "active",
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.getByTitle("Agent computer").click();
+  const openEditor = async (status = 200) => {
+    const loaded = page.waitForResponse(
+      (response) =>
+        response.url().includes("/rpc/messaging/installations/list") &&
+        response.status() === status,
+    );
+    await page.getByRole("button", { name: "Create Routine" }).click();
+    await loaded;
+  };
+  await openEditor();
+  await page.getByRole("button", { name: "Add trigger" }).click();
+  await expect(page.getByRole("menuitem", { name: "Slack message", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  const panel = page.getByTestId("side-panel");
+  await panel.getByRole("button", { name: "Back", exact: true }).click();
+
+  paused = false;
+  failNextLookup = true;
+  const openedWithFailure = openEditor(503);
+  const slackStatus = panel.getByRole("status");
+  try {
+    await page.getByRole("button", { name: "Add trigger" }).click();
+    await expect(slackStatus).toHaveAttribute("aria-live", "polite");
+    await expect(slackStatus).toHaveText("Checking Slack connection…");
+  } finally {
+    releaseFailedLookup.resolve();
+  }
+  await openedWithFailure;
+  await expect(slackStatus).toHaveText("Could not check Slack connection");
+  const retry = page.getByRole("menuitem", { name: "Retry Slack connection check" });
+  await expect(retry).toHaveAccessibleDescription("Could not check Slack connection");
+  const reloaded = page.waitForResponse(
+    (response) => response.url().includes("/rpc/messaging/installations/list") && response.ok(),
+  );
+  await retry.click();
+  await reloaded;
+  await expect(slackStatus).toHaveText("Slack message trigger is available.");
+  await page.getByPlaceholder("Name this routine").fill("Triage Slack updates");
+  await page
+    .getByPlaceholder("What should this routine do each time it runs?")
+    .fill("Classify incoming messages");
+  await page.getByRole("button", { name: "Add trigger" }).click();
+  await page.getByRole("menuitem", { name: "Slack message", exact: true }).click();
+  await expect(
+    panel.getByText(
+      "For workspace connections, runs on direct messages or eligible channel mentions from the linked account.",
+    ),
+  ).toBeVisible();
+  await captureScreenshot(page, testInfo, "routine-slack-workspace");
+  const saved = page.waitForResponse(
+    (response) => response.url().includes("/rpc/routines/create") && response.ok(),
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await saved;
+  const [routine] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(routine).toMatchObject({ messageProvider: "slack", active: true });
+});
+
 test("GitHub event trigger exposes signed delivery settings and persists", async ({
   page,
 }, testInfo) => {

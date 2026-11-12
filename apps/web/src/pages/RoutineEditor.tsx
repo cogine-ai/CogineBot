@@ -245,6 +245,8 @@ export function RoutineEditor({
   webhook,
   githubPath,
   messageProviders,
+  installedSlack = "unavailable",
+  onRetrySlack,
   connectionsRevision,
   scopeKey,
   onOpenApplications,
@@ -266,6 +268,8 @@ export function RoutineEditor({
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
   messageProviders: string[];
+  installedSlack?: "available" | "unavailable" | "checking" | "error";
+  onRetrySlack?: () => void;
   connectionsRevision: number;
   scopeKey: string;
   onOpenApplications: () => void;
@@ -313,8 +317,15 @@ export function RoutineEditor({
     selectedEntry?.thinkingLevels ??
     []
   ).filter((level) => level !== "off");
-  const slackAvailable = messageProviders.includes("slack");
-  const slackDisabledReasonId = `${fieldId}-slack-disabled-reason`;
+  const slackAvailable = installedSlack === "available" || messageProviders.includes("slack");
+  const retrySlack = !slackAvailable && installedSlack === "error" ? onRetrySlack : undefined;
+  const slackUnavailableReason =
+    installedSlack === "checking"
+      ? t`Checking Slack connection…`
+      : installedSlack === "error"
+        ? t`Could not check Slack connection`
+        : t`Slack not enabled`;
+  const slackStatusId = `${fieldId}-slack-status`;
   const hasTriggers =
     draft.schedules.length > 0 ||
     draft.webhookEnabled ||
@@ -503,6 +514,7 @@ export function RoutineEditor({
           {draft.messageProvider ? (
             <MessageTriggerCard
               provider={draft.messageProvider}
+              installedSlack={installedSlack === "available" && draft.messageProvider === "slack"}
               onRemove={() => onChange({ ...draft, messageProvider: null })}
             />
           ) : null}
@@ -557,20 +569,19 @@ export function RoutineEditor({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
-            <span className="block" title={slackAvailable ? undefined : t`Slack not enabled`}>
+            <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
               <DropdownMenuItem
-                disabled={draft.messageProvider === "slack" || !slackAvailable}
-                aria-describedby={slackAvailable ? undefined : slackDisabledReasonId}
-                onClick={() => addMessageProvider("slack")}
+                disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
+                aria-describedby={slackAvailable ? undefined : slackStatusId}
+                onClick={retrySlack ?? (() => addMessageProvider("slack"))}
               >
                 <MessageSquare />
-                <Trans>Slack message</Trans>
+                {retrySlack ? (
+                  <Trans>Retry Slack connection check</Trans>
+                ) : (
+                  <Trans>Slack message</Trans>
+                )}
               </DropdownMenuItem>
-              {!slackAvailable ? (
-                <span id={slackDisabledReasonId} className="sr-only">
-                  <Trans>Slack not enabled</Trans>
-                </span>
-              ) : null}
             </span>
 
             {COMING_SOON.map((item) => (
@@ -601,6 +612,10 @@ export function RoutineEditor({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Explicit aria-live keeps the region exposed while the menu is open. */}
+        <span id={slackStatusId} className="sr-only" role="status" aria-live="polite">
+          {slackAvailable ? t`Slack message trigger is available.` : slackUnavailableReason}
+        </span>
 
         {!hasTriggers ? (
           <p className="mt-2 text-xs text-muted-foreground/70">
@@ -695,7 +710,15 @@ export function RoutineEditor({
   );
 }
 
-function MessageTriggerCard({ provider, onRemove }: { provider: string; onRemove: () => void }) {
+function MessageTriggerCard({
+  provider,
+  installedSlack,
+  onRemove,
+}: {
+  provider: string;
+  installedSlack?: boolean;
+  onRemove: () => void;
+}) {
   const { t } = useLingui();
   const label =
     provider === "slack"
@@ -719,7 +742,14 @@ function MessageTriggerCard({ provider, onRemove }: { provider: string; onRemove
         </Button>
       </div>
       <p className="mt-2.5 text-[13.5px] text-muted-foreground/70">
-        <Trans>Runs when this bot receives a verified message from this provider.</Trans>
+        {installedSlack ? (
+          <Trans>
+            For workspace connections, runs on direct messages or eligible channel mentions from the
+            linked account.
+          </Trans>
+        ) : (
+          <Trans>Runs when this bot receives a verified message from this provider.</Trans>
+        )}
       </p>
     </div>
   );

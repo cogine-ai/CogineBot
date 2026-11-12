@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   JobPublisher,
   TeamChatInboundMessage,
@@ -12,8 +13,8 @@ import {
   projectExternalPageMessages,
   promptTextForAttachments,
 } from "@rakazo/core";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { clearEndedRunState, Prisma } from "@rakazo/db";
+import type { PrismaClient, TeamChatInstallationGrant, ThreadEvents } from "@rakazo/db";
+import { clearEndedRunState, MessagingRouteAlreadyChosen, Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { TeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -39,12 +40,16 @@ const ROUTING_RESERVATION_RENEWAL_MS = 60_000;
 const QUEUE_RESERVATION_MS = 2 * 60_000;
 const DELIVERY_RESERVATION_MS = 2 * 60_000;
 // These rows already own a place in the conversation, including during retry.
-const SLACK_PENDING_PREDECESSOR_STATUSES = ["received", "queueing", "delivering"];
+const SLACK_PENDING_PREDECESSOR_STATUSES = ["deferred", "received", "queueing", "delivering"];
 const ROUTING_OWNERSHIP_REASON = MESSAGE_ROUTING_REASON;
 /** Legacy grace marker; still exclusive ownership, never promote while set. */
 const ROUTING_OWNERSHIP_REARMED_REASON = MESSAGE_ROUTING_REARMED_REASON;
 const AGENT_OWNERSHIP_REASON = TEAMCHAT_AGENT_OWNERSHIP_REASON;
 const DEFERRED_RESERVATION_LOST = "Team chat deferred reservation was lost";
+
+export function teamChatMessageClientNonce(providerId: string, eventId: string): string {
+  return `teamchat:${providerId}:${eventId}`;
+}
 
 export function isDeferredReservationLost(error: unknown): boolean {
   return error instanceof Error && error.message === DEFERRED_RESERVATION_LOST;
@@ -61,7 +66,11 @@ interface TeamChatBridgeDeps {
   send: (request: TeamChatSendRequest) => Promise<TeamChatSendResult>;
   providerId: string;
   botId: string;
-  installedSlack?: { acceptAfter: Date; isAvailable: () => Promise<boolean> };
+  installedSlack?: {
+    acceptAfter: Date;
+    isAvailable: () => Promise<boolean>;
+    grant: TeamChatInstallationGrant;
+  };
   judge?: TeamChatEngagementJudge;
   reconcileIntervalMs?: number;
   ambientDebounceMs?: number;
@@ -166,6 +175,11 @@ export class TeamChatBridge {
   /** Provider used for ExternalConversation rows and wake clientNonce recovery. */
   get providerId(): string {
     return this.deps.providerId;
+  }
+
+  get scope() {
+    const target = this.target;
+    return target && { spaceId: target.spaceId, userId: target.userId, botId: target.id };
   }
 
   /** Mark a deferred row as having an in-process routine wake until clearRoutineWake. */
@@ -320,11 +334,13 @@ export class TeamChatBridge {
     const content = (written && transcriptCaption(written)) || message.content;
     const now = new Date();
     const deferredUntil = new Date(now.getTime() + DEFERRED_RESERVATION_MS);
+    const deferredId = options?.queueAgent === false ? randomUUID() : undefined;
     const externalMessage =
       prior ??
       (await this.deps.prisma.externalMessage.upsert({
         where,
         create: {
+          ...(deferredId && { id: deferredId }),
           externalConversationId: conversation.id,
           providerEventId: message.eventId,
           ...(options?.eventAt && { createdAt: options.eventAt }),
@@ -348,8 +364,7 @@ export class TeamChatBridge {
     await this.ensureTranscriptMessage(externalMessage, conversation);
     if (options?.queueAgent === false) {
       const deferred =
-        (externalMessage.status === "deferred" &&
-          externalMessage.nextAttemptAt?.getTime() === deferredUntil.getTime()) ||
+        externalMessage.id === deferredId ||
         (
           await this.deps.prisma.externalMessage.updateMany({
             where: {
@@ -440,7 +455,7 @@ export class TeamChatBridge {
         })
         .catch((error) => {
           getLogger().error("team chat deferred reservation renewal failed", error);
-          fail(error instanceof Error ? error : new Error(String(error)));
+          fail(new Error(DEFERRED_RESERVATION_LOST, { cause: error }));
         })
         .finally(() => {
           renewing = false;
@@ -473,8 +488,14 @@ export class TeamChatBridge {
     const result = await this.deps.prisma.externalMessage.updateMany({
       where: {
         id: externalMessageId,
-        status:
-          resolution === "routine" ? { in: ["deferred", "received", "observed"] } : "deferred",
+        ...(resolution === "routine"
+          ? {
+              OR: [
+                { status: { in: ["deferred", "received", "observed"] } },
+                { status: "ignored", engagementReason: "message_routine_wake" },
+              ],
+            }
+          : { status: "deferred" }),
         externalConversation: { provider: this.deps.providerId, botId: target.id },
       },
       data:
@@ -1192,18 +1213,30 @@ export class TeamChatBridge {
     const prompt = files.length ? promptTextForAttachments(text, files) : text;
     if (this.deps.installedSlack?.isAvailable && !(await this.deps.installedSlack?.isAvailable()))
       return;
-    const sent = await this.deps.events.sendUserMessage({
-      spaceId: message.externalConversation.spaceId,
-      threadId: thread.id,
-      botId: message.externalConversation.botId,
-      userId: message.externalConversation.userId,
-      blocks: [{ kind: "text", text: prompt }, ...attachments],
-      prompt,
-      trigger: "messaging",
-      clientNonce: `teamchat:${this.deps.providerId}:${message.providerEventId}`,
-      linkMessageToRun: true,
-      allowParallelRun: true,
-    });
+    const sent = await this.deps.events
+      .sendUserMessage({
+        spaceId: message.externalConversation.spaceId,
+        threadId: thread.id,
+        botId: message.externalConversation.botId,
+        userId: message.externalConversation.userId,
+        blocks: [{ kind: "text", text: prompt }, ...attachments],
+        prompt,
+        trigger: "messaging",
+        clientNonce: teamChatMessageClientNonce(this.deps.providerId, message.providerEventId),
+        linkMessageToRun: true,
+        allowParallelRun: true,
+        teamChatClaim: {
+          id: message.id,
+          route: "agent",
+          competingNonce: wakeNonce,
+          installation: this.deps.installedSlack?.grant,
+        },
+      })
+      .catch((error: unknown) => {
+        if (error instanceof MessagingRouteAlreadyChosen) return undefined;
+        throw error;
+      });
+    if (!sent) return;
     // Routine wake may have committed during sendUserMessage. Cancel the
     // fallback run before abandoning so the job reconciler cannot enqueue it
     // beside the routine wake.

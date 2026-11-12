@@ -22,10 +22,13 @@ import type {
   PrismaClient,
   ProvisionedMessagingIdentity,
   SignupPolicyEnv,
+  TeamChatInstallationGrant,
+  TeamChatMessageClaim,
   ThreadEvents,
 } from "@rakazo/db";
 import {
   createThreadMessage,
+  MessageRoutineSelectionChanged,
   MessagingRouteAlreadyChosen,
   normalizeMessagingLinkCode,
   redeemMessagingLinkCode,
@@ -511,42 +514,45 @@ export async function wakeMessageRoutines(
      */
     deliveryProvider?: string;
     /**
-     * TeamChat external message id. When set, atomically reassert routine
+     * TeamChat reservation. When set, atomically reassert routine
      * ownership before creating a run so a concurrent TeamChat agent claim
      * cannot also deliver for the same provider event.
      */
-    externalMessageId?: string;
+    teamChatClaim?: Extract<TeamChatMessageClaim, { route: "routine" }>;
     content?: Pick<Awaited<ReturnType<typeof inboundContent>>, "blocks" | "caption">;
     receiptKey?: string;
   },
 ): Promise<boolean> {
-  const routines = await deps.prisma.routine.findMany({
-    where: {
-      botId: target.botId,
-      spaceId: target.spaceId,
-      userId: target.userId,
-      active: true,
-      messageProvider: event.provider,
-    },
-    select: {
-      id: true,
-      name: true,
-      prompt: true,
-      modelProvider: true,
-      modelId: true,
-      modelCredentialId: true,
-      thinkingLevel: true,
-    },
-    orderBy: { updatedAt: "desc" },
-  });
+  const externalMessageId = options?.teamChatClaim?.id;
+  const findRoutines = () =>
+    deps.prisma.routine.findMany({
+      where: {
+        botId: target.botId,
+        spaceId: target.spaceId,
+        userId: target.userId,
+        active: true,
+        messageProvider: event.provider,
+      },
+      select: {
+        id: true,
+        name: true,
+        prompt: true,
+        modelProvider: true,
+        modelId: true,
+        modelCredentialId: true,
+        thinkingLevel: true,
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+  let routines = await findRoutines();
   if (routines.length === 0) return false;
 
-  if (options?.externalMessageId) {
+  if (externalMessageId) {
     // CAS: only deliver when agent ownership has not claimed the row. Holding
     // message_routine_routing blocks TeamChat queue() from creating a parallel run.
     const reserved = await deps.prisma.externalMessage.updateMany({
       where: {
-        id: options.externalMessageId,
+        id: externalMessageId,
         status: { in: ["deferred", "received", "observed"] },
         OR: [
           { engagementReason: null },
@@ -593,31 +599,41 @@ export async function wakeMessageRoutines(
       })),
     }),
   });
-  const result = await deliverWebhookEvent(
-    { events: deps.events, jobs: deps.jobs },
-    {
-      bot: { id: target.botId, spaceId: target.spaceId, userId: target.userId },
-      threadId: target.threadId,
-    },
-    {
-      prompt,
-      routines,
-      source: "messaging",
-      messageProvider: event.provider,
-      ...(attachments?.length && { attachments }),
-      ...(options?.receiptKey && { messagingReceiptKey: options.receiptKey }),
-      idempotencyKey:
-        options?.deliveryProvider || options?.externalMessageId
-          ? messagingWakeIdempotencyKey(options.deliveryProvider ?? event.provider, event.handle)
-          : routineDeliveryKey(event),
-      // TeamChat channel wakes may share a live thread with an active chat run.
-      allowParallelRun: true,
-    },
-  ).catch((error: unknown) => {
-    if (error instanceof MessagingRouteAlreadyChosen) return null;
-    throw error;
-  });
-  return result !== null;
+  for (let attempt = 0; attempt < 2 && routines.length > 0; attempt++) {
+    try {
+      await deliverWebhookEvent(
+        { events: deps.events, jobs: deps.jobs },
+        {
+          bot: { id: target.botId, spaceId: target.spaceId, userId: target.userId },
+          threadId: target.threadId,
+        },
+        {
+          prompt,
+          routines,
+          source: "messaging",
+          messageProvider: event.provider,
+          teamChatClaim: options?.teamChatClaim,
+          ...(attachments?.length && { attachments }),
+          ...(options?.receiptKey && { messagingReceiptKey: options.receiptKey }),
+          idempotencyKey:
+            options?.deliveryProvider || externalMessageId
+              ? messagingWakeIdempotencyKey(
+                  options?.deliveryProvider ?? event.provider,
+                  event.handle,
+                )
+              : routineDeliveryKey(event),
+          // TeamChat channel wakes may share a live thread with an active chat run.
+          allowParallelRun: true,
+        },
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof MessagingRouteAlreadyChosen) return false;
+      if (!(error instanceof MessageRoutineSelectionChanged)) throw error;
+      if (attempt === 0) routines = await findRoutines();
+    }
+  }
+  return false;
 }
 
 /**
@@ -628,18 +644,79 @@ export async function wakeMessageRoutines(
  * active routines.
  */
 export async function teamChatSenderCanWakeMessageRoutines(
-  deps: Pick<MessagingInboundDeps, "prisma">,
+  deps: {
+    prisma: Pick<
+      Prisma.TransactionClient,
+      | "messagingIdentity"
+      | "messagingChannelMember"
+      | "messagingChannel"
+      | "spaceMember"
+      | "bot"
+      | "$queryRaw"
+    >;
+  },
   event: MessagingInboundMessage,
+  scope: Pick<IdentityRow, "spaceId" | "userId" | "botId">,
+  {
+    installation,
+    lockApproval = false,
+  }: {
+    installation?: TeamChatInstallationGrant;
+    lockApproval?: boolean;
+  } = {},
 ): Promise<boolean> {
   if (event.senderIsBot) return false;
+
+  // OAuth verifies the installed app's linked sender in this specific workspace.
+  const installedSender =
+    installation &&
+    event.provider === "slack" &&
+    event.workspaceId === installation.workspaceId &&
+    event.from === installation.installerId;
+  if (installation && !installedSender) return false;
+  if (installedSender && event.isDirect) return true;
 
   const linkedIdentity = await deps.prisma.messagingIdentity.findUnique({
     where: { provider_address: { provider: event.provider, address: event.from } },
     select: { id: true, userId: true, spaceId: true, botId: true },
   });
-  if (!linkedIdentity || !(await activeIdentity(deps.prisma, linkedIdentity))) return false;
+  const linked =
+    linkedIdentity &&
+    linkedIdentity.spaceId === scope.spaceId &&
+    (!installation ||
+      (linkedIdentity.userId === scope.userId && linkedIdentity.botId === scope.botId)) &&
+    (lockApproval
+      ? (
+          await deps.prisma.$queryRaw<Array<{ id: string }>>`
+          SELECT i.id FROM messaging_identities i
+          JOIN bots b ON b.id = i."botId" AND b."spaceId" = i."spaceId" AND b."userId" = i."userId"
+          JOIN space_members m ON m."spaceId" = i."spaceId" AND m."userId" = i."userId"
+          WHERE i.id = ${linkedIdentity.id} AND i."spaceId" = ${linkedIdentity.spaceId}
+            AND i."userId" = ${linkedIdentity.userId} AND i."botId" = ${linkedIdentity.botId}
+            AND i.provider = ${event.provider} AND i.address = ${event.from} AND b."archivedAt" IS NULL
+          FOR SHARE OF i, b, m
+        `
+        ).length === 1
+      : await activeIdentity(deps.prisma, linkedIdentity));
+  if (!linked && !installedSender) return false;
 
-  if (event.isDirect) return true;
+  if (event.isDirect) return Boolean(linked);
+
+  type Approval = { id: string; status: string; identityId: string | null };
+  const isApproved = (member: Approval) =>
+    Boolean(linked && member.status === "approved" && member.identityId === linkedIdentity.id);
+  const hasApproval = async (member: Approval) => {
+    if (!isApproved(member)) return false;
+    if (!lockApproval) return true;
+    // Keep a concurrent leave or unlink ordered with the admitted Run.
+    const rows = await deps.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT m.id FROM messaging_channel_members m
+      JOIN messaging_channels c ON c.id = m."channelId"
+      WHERE m.id = ${member.id} AND m.status = 'approved' AND m."identityId" = ${member.identityId}
+      FOR SHARE OF m, c
+    `;
+    return rows.length === 1;
+  };
 
   const room =
     event.provider === "slack" && event.conversationKey ? `slack:${event.conversationKey}` : null;
@@ -650,12 +727,28 @@ export async function teamChatSenderCanWakeMessageRoutines(
       provider: "slack",
       OR: [{ threadId: room }, { threadId: { startsWith: `${room}:` } }],
     };
-    const member = await deps.prisma.messagingChannelMember.findFirst({
-      where: { address: event.from, channel: roomWhere },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      select: { status: true, identityId: true },
-    });
-    if (member) return member.status === "approved" && member.identityId === linkedIdentity.id;
+    // Another historical thread may record the latest leave. Lock the
+    // matching rows before choosing the authoritative membership.
+    const member = lockApproval
+      ? (
+          await deps.prisma.$queryRaw<Approval[]>`
+          WITH locked AS MATERIALIZED (
+            SELECT m.id, m.status, m."identityId", m."updatedAt"
+            FROM messaging_channel_members m
+            JOIN messaging_channels c ON c.id = m."channelId"
+            WHERE c.provider = 'slack' AND m.address = ${event.from}
+              AND (c."threadId" = ${room} OR starts_with(c."threadId", ${`${room}:`}))
+            ORDER BY m.id FOR SHARE OF m, c
+          )
+          SELECT id, status, "identityId" FROM locked ORDER BY "updatedAt" DESC, id DESC LIMIT 1
+        `
+        )[0]
+      : await deps.prisma.messagingChannelMember.findFirst({
+          where: { address: event.from, channel: roomWhere },
+          orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+          select: { id: true, status: true, identityId: true },
+        });
+    if (member) return isApproved(member);
     const ledger = await deps.prisma.messagingChannel.findFirst({
       where: roomWhere,
       select: { id: true },
@@ -669,13 +762,12 @@ export async function teamChatSenderCanWakeMessageRoutines(
   if (channel) {
     const member = await deps.prisma.messagingChannelMember.findUnique({
       where: { channelId_address: { channelId: channel.id, address: event.from } },
-      select: { status: true, identityId: true },
+      select: { id: true, status: true, identityId: true },
     });
-    return member?.status === "approved" && member.identityId === linkedIdentity.id;
+    return member ? hasApproval(member) : false;
   }
 
-  // Pure TeamChat workspace rooms have no personal membership ledger.
-  // Still require a linked sender before waking message routines.
+  // Pure TeamChat rooms have no personal membership ledger, but the sender is linked.
   return true;
 }
 

@@ -289,6 +289,34 @@ export interface AnswerRunInput {
 }
 
 export class MessagingRouteAlreadyChosen extends Error {}
+export class MessageRoutineSelectionChanged extends Error {}
+
+/** Durable claim while wakeMessageRoutines may still be writing its wake nonce. */
+export const MESSAGE_ROUTING_REASON = "message_routine_routing";
+/** One-shot grace claim; a second expiry promotes to agent delivery. */
+export const MESSAGE_ROUTING_REARMED_REASON = "message_routine_routing_rearmed";
+/** Exclusive claim while TeamChat is creating the fallback agent run. */
+export const TEAMCHAT_AGENT_OWNERSHIP_REASON = "message_teamchat_agent";
+export function installedSlackProviderId(installationId: string): string {
+  return `slack~${installationId}`;
+}
+
+export type TeamChatInstallationGrant = {
+  id: string;
+  workspaceId: string;
+  clientId: string;
+  revision: number;
+  installerId: string;
+};
+
+export type TeamChatMessageClaim = {
+  id: string;
+  competingNonce: string;
+  installation?: TeamChatInstallationGrant;
+} & (
+  | { route: "routine"; verifySender: (tx: Prisma.TransactionClient) => Promise<boolean> }
+  | { route: "agent" }
+);
 
 export interface SendUserMessageInput {
   spaceId: string;
@@ -301,6 +329,8 @@ export interface SendUserMessageInput {
   clientNonce?: string;
   /** Server-owned receipt for a verified messaging delivery. */
   messagingReceiptKey?: string;
+  /** Server-owned route reservation checked in the Run creation transaction. */
+  teamChatClaim?: TeamChatMessageClaim;
   linkMessageToRun?: boolean;
   /** When false, persist the user message without starting a run (team-chat transcript). */
   createRun?: boolean;
@@ -310,7 +340,7 @@ export interface SendUserMessageInput {
   routineSources?: {
     trigger: "webhook" | "github" | "messaging";
     messageProvider?: string;
-    routines: Array<{ id: string; prompt: string }>;
+    routines: Array<{ id: string; prompt: string; name?: string }>;
   };
   /** Model every routine in an inbound delivery agreed on. */
   modelPin?: {
@@ -508,6 +538,7 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
     Array<{
       id: string;
       prompt: string;
+      name: string;
       active: boolean;
       webhookEnabled: boolean;
       githubEnabled: boolean;
@@ -520,7 +551,7 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
       thinkingLevel: string | null;
     }>
   >(Prisma.sql`
-    SELECT id, prompt, active, "webhookEnabled", "githubEnabled", "messageProvider",
+    SELECT id, prompt, name, active, "webhookEnabled", "githubEnabled", "messageProvider",
       "authorizedInstructions", "authorizedSites",
       "modelProvider", "modelId", "modelCredentialId", "thinkingLevel"
     FROM routines
@@ -539,8 +570,10 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
         routine.thinkingLevel !== pin.thinkingLevel
       );
     })
-  )
+  ) {
+    if (input.teamChatClaim?.route === "routine") throw new MessageRoutineSelectionChanged();
     throw new IsolationError("Routine model selection changed.");
+  }
   if (pin?.modelCredentialId) {
     const credential = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id FROM user_model_credentials WHERE id=${pin.modelCredentialId}
@@ -552,19 +585,93 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
   const sites = new Set<string>();
   for (const captured of sourceRoutines) {
     const routine = byId.get(captured.id);
-    // Keep the delivered prompt, but never inherit authorization after a Routine edit or disable.
-    if (!routine?.active || captured.prompt !== routine.prompt) continue;
     const enabled =
-      source.trigger === "webhook"
+      routine &&
+      (source.trigger === "webhook"
         ? routine.webhookEnabled
         : source.trigger === "github"
           ? routine.githubEnabled
-          : Boolean(source.messageProvider && routine.messageProvider === source.messageProvider);
-    if (!enabled) continue;
+          : Boolean(source.messageProvider && routine.messageProvider === source.messageProvider));
+    if (
+      !routine?.active ||
+      !enabled ||
+      captured.prompt !== routine.prompt ||
+      (captured.name !== undefined && captured.name !== routine.name)
+    ) {
+      if (input.teamChatClaim?.route === "routine") throw new MessageRoutineSelectionChanged();
+      continue;
+    }
     if (routine.authorizedInstructions) instructions.push(routine.authorizedInstructions);
     for (const site of routine.authorizedSites) sites.add(site);
   }
   return { routineInstructions: instructions.join("\n\n") || null, routineSites: [...sites] };
+}
+
+async function lockTeamChatClaim(
+  tx: Prisma.TransactionClient,
+  input: SendUserMessageInput,
+  claim: TeamChatMessageClaim,
+) {
+  const routine = claim.route === "routine";
+  const installation = claim.installation;
+  if (
+    (routine && (input.trigger !== "webhook" || input.routineSources?.trigger !== "messaging")) ||
+    (!routine && input.trigger !== "messaging")
+  )
+    throw new MessagingRouteAlreadyChosen();
+
+  // Pause, removal, credential rotation and membership changes serialize with admission.
+  const grant = installation
+    ? (
+        await tx.$queryRaw<Array<{ acceptAfter: Date }>>`
+        SELECT i."acceptAfter"
+        FROM messaging_installations i
+        JOIN bots b ON b.id = i."botId" AND b."spaceId" = i."spaceId" AND b."userId" = i."userId"
+        JOIN space_members m ON m."spaceId" = i."spaceId" AND m."userId" = i."userId"
+        WHERE i.id = ${installation.id} AND i.provider = 'slack' AND i.status = 'active'
+          AND i."clientId" = ${installation.clientId} AND i.revision = ${installation.revision}
+          AND i."workspaceId" = ${installation.workspaceId} AND i."installerId" = ${installation.installerId}
+          AND i."spaceId" = ${input.spaceId} AND i."userId" = ${input.userId} AND i."botId" = ${input.botId}
+          AND i.ciphertext IS NOT NULL AND b."archivedAt" IS NULL
+        FOR SHARE OF i, b, m
+      `
+      )[0]
+    : undefined;
+  if (installation && !grant) throw new MessagingRouteAlreadyChosen();
+
+  // Lock the same row that the reconciler and deferred heartbeat update.
+  const ownership = routine
+    ? Prisma.sql`em.status IN ('deferred', 'received', 'observed')
+        AND em."engagementReason" IN (${MESSAGE_ROUTING_REASON}, ${MESSAGE_ROUTING_REARMED_REASON})
+        AND NOT em."senderIsBot"`
+    : Prisma.sql`em.status = 'queueing' AND em."engagementReason" = ${TEAMCHAT_AGENT_OWNERSHIP_REASON}`;
+  const installed =
+    installation && grant
+      ? Prisma.sql`AND ec.provider = ${installedSlackProviderId(installation.id)}
+        AND ec."workspaceId" = ${installation.workspaceId} AND em."senderId" = ${installation.installerId}
+        AND em."createdAt" > ${grant.acceptAfter}`
+      : Prisma.empty;
+  const [message] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT em.id FROM external_messages em
+    JOIN external_conversations ec ON ec.id = em."externalConversationId"
+    JOIN threads t ON t."externalConversationId" = ec.id
+    WHERE em.id = ${claim.id} AND t.id = ${input.threadId}
+      AND ec."spaceId" = ${input.spaceId} AND ec."userId" = ${input.userId} AND ec."botId" = ${input.botId}
+      AND ${ownership} ${installed}
+    FOR UPDATE OF em
+  `);
+  if (!message || (claim.route === "routine" && !(await claim.verifySender(tx)))) {
+    throw new MessagingRouteAlreadyChosen();
+  }
+  // A replica may have observed the old lease before the competing receipt
+  // committed. Read the receipt after locking the reservation row.
+  const competing = await tx.message.findUnique({
+    where: {
+      threadId_clientNonce: { threadId: input.threadId, clientNonce: claim.competingNonce },
+    },
+    select: { id: true },
+  });
+  if (competing) throw new MessagingRouteAlreadyChosen();
 }
 
 export async function sendUserMessage(
@@ -601,6 +708,7 @@ export async function sendUserMessage(
   const commit = () =>
     prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Keep the selected model and authorized Routine snapshot consistent with enqueue.
+      if (input.teamChatClaim) await lockTeamChatClaim(tx, input, input.teamChatClaim);
       const routineProvenance = await lockInboundRoutines(tx, input);
       if (input.messagingReceiptKey) {
         if (

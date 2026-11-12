@@ -1069,6 +1069,51 @@ export function ShellPage() {
     JSON.stringify([settingsOwnerKey, bootstrapMe?.spaceId, currentSpaceSelectionGeneration()]),
   );
   const creationSpaceId = userId && bootstrapMe?.userId === userId ? bootstrapMe.spaceId : null;
+  const routineMessagingBot = panel === "routine" && !inGroup ? active?.id : undefined;
+  const routineMessagingScope =
+    routineMessagingBot && creationSpaceId && creationSpaceId === settingsCurrentSpaceId
+      ? JSON.stringify([settingsOwnerKey, creationSpaceId, routineMessagingBot])
+      : null;
+  const [routineSlackResult, setRoutineSlackResult] = useState<{
+    scope: string;
+    status: "available" | "unavailable" | "error";
+  } | null>(null);
+  const [routineSlackAttempt, setRoutineSlackAttempt] = useState(0);
+  const routineSlackStatus =
+    routineSlackResult && routineSlackResult.scope === routineMessagingScope
+      ? routineSlackResult.status
+      : "checking";
+  useEffect(() => {
+    setRoutineSlackResult(null);
+    if (!routineMessagingScope || !creationSpaceId || messagingSettingsOpen) return;
+    const controller = new AbortController();
+    void createSpaceRpc(creationSpaceId)
+      .messaging.installations.list(undefined, { signal: controller.signal })
+      .then(({ available, workspaces }) => {
+        if (controller.signal.aborted) return;
+        const connected =
+          available &&
+          workspaces.some(
+            ({ botId, status }) => botId === routineMessagingBot && status === "active",
+          );
+        setRoutineSlackResult({
+          scope: routineMessagingScope,
+          status: connected ? "available" : "unavailable",
+        });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setRoutineSlackResult({ scope: routineMessagingScope, status: "error" });
+        }
+      });
+    return () => controller.abort();
+  }, [
+    creationSpaceId,
+    messagingSettingsOpen,
+    routineMessagingBot,
+    routineMessagingScope,
+    routineSlackAttempt,
+  ]);
   useEffect(() => {
     if (!slackEntrySpaceId || !creationSpaceId || !initialBotsLoaded) return;
     setSlackEntrySpaceId(null);
@@ -6644,6 +6689,11 @@ export function ShellPage() {
                     : `/api/v1/bots/${active.id}/github`
                 }
                 messageProviders={messagingProviders}
+                installedSlack={routineSlackStatus}
+                onRetrySlack={() => {
+                  setRoutineSlackResult(null);
+                  setRoutineSlackAttempt((attempt) => attempt + 1);
+                }}
                 connectionsRevision={connectionsRevision}
                 scopeKey={active.id}
                 onOpenApplications={() => setPluginsOpen(true)}
