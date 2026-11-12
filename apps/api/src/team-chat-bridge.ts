@@ -12,8 +12,8 @@ import {
   projectExternalPageMessages,
   promptTextForAttachments,
 } from "@rakazo/core";
-import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { clearEndedRunState } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import { clearEndedRunState, Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { TeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -38,6 +38,8 @@ const ROUTING_RESERVATION_MS = MESSAGE_ROUTING_RESERVATION_MS;
 const ROUTING_RESERVATION_RENEWAL_MS = 60_000;
 const QUEUE_RESERVATION_MS = 2 * 60_000;
 const DELIVERY_RESERVATION_MS = 2 * 60_000;
+// These rows already own a place in the conversation, including during retry.
+const SLACK_PENDING_PREDECESSOR_STATUSES = ["received", "queueing", "delivering"];
 const ROUTING_OWNERSHIP_REASON = MESSAGE_ROUTING_REASON;
 /** Legacy grace marker; still exclusive ownership, never promote while set. */
 const ROUTING_OWNERSHIP_REARMED_REASON = MESSAGE_ROUTING_REARMED_REASON;
@@ -799,7 +801,7 @@ export class TeamChatBridge {
           SELECT 1 FROM public.external_messages earlier
           WHERE earlier."externalConversationId" = e."externalConversationId"
             AND earlier."createdAt" > ${acceptAfter}
-            AND (earlier.status = 'delivering' OR
+            AND (earlier.status IN (${Prisma.join(SLACK_PENDING_PREDECESSOR_STATUSES)}) OR
                  (earlier.status = 'running' AND earlier."runId" IS NOT NULL))
             AND (earlier."createdAt", earlier.id) < (e."createdAt", e.id)
         )
@@ -1437,7 +1439,12 @@ export class TeamChatBridge {
                 none: {
                   createdAt: { gt: installed.acceptAfter },
                   AND: [
-                    { OR: [{ status: "delivering" }, { status: "running", runId: { not: null } }] },
+                    {
+                      OR: [
+                        { status: { in: SLACK_PENDING_PREDECESSOR_STATUSES } },
+                        { status: "running", runId: { not: null } },
+                      ],
+                    },
                     {
                       OR: [
                         { createdAt: { lt: candidate.createdAt } },
