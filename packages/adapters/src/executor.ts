@@ -95,13 +95,13 @@ import {
   HistoryReadInputSchema,
   HistorySearchInputSchema,
   HistorySourceReferenceSchema,
-  HistorySourceReferencesSchema,
   isAttachmentImageMimeType,
   LoginFieldLabels,
   loginCommandName,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   PROTECTED_LOGIN_USERNAME,
   RUN_QUOTA_WAIT_MAX_MS,
+  RunHistoryEvidenceSchema,
   RunLoginSubmission,
   runQuotaWaitStateSchema,
   SecretHttpRequest,
@@ -650,31 +650,22 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "list_secrets",
   "cloud_agent_status",
 ]);
-const HISTORY_PROTECTED_TOOLS = new Set([
-  "add_mcp_server",
-  "browser_act",
-  "browser_navigate",
-  "cloud_agent_launch",
-  "cloud_agent_reply",
-  "computer_act",
-  "connect_agent",
-  "forget_secret",
-  "generate_secret",
-  "handoff_to_bot",
-  "message_agent",
-  "message_bot",
-  "recall_memory",
-  "run_subagent",
-  "schedule_create",
-  "shell",
-  "skill_create",
-  "skill_delete",
-  "skill_update",
-  "spawn_bot",
-  "ticket_comment",
-  "ticket_create",
-  "ticket_update",
-  "web_search",
+// This is narrower than READ_ONLY_AGENT_TOOLS: external reads can transmit their inputs.
+const HISTORY_INSPECTION_TOOLS = new Set([
+  "board_tickets",
+  "browser_snapshot",
+  "computer_observe",
+  "list_files",
+  "list_secrets",
+  "read_file",
+  "read_history",
+  "request_takeover",
+  "schedule_list",
+  "scratchpad_list",
+  "search_history",
+  "skill_read",
+  "task_catalog",
+  "ticket_get",
 ]);
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 const VOICE_CALL_BASE_INSTRUCTION =
@@ -5314,7 +5305,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const flushProgress = async () => {
           if (
             scripted ||
-            historyReferences !== undefined ||
+            historyEvidence !== undefined ||
             !pendingProgress ||
             !runPromotesMidTurnNarration(run.trigger)
           )
@@ -5371,7 +5362,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         };
         const publishTakenNarration = async (text: string, allowSteeringReply = true) => {
           if (
-            historyReferences !== undefined ||
+            historyEvidence !== undefined ||
             !text ||
             !runPromotesMidTurnNarration(run.trigger) ||
             isExactNoResponse(text)
@@ -5391,7 +5382,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
         };
         const publishMidTurnNarration = async (allowSteeringReply = true) => {
-          if (!scripted && historyReferences === undefined)
+          if (!scripted && historyEvidence === undefined)
             await publishTakenNarration(takeMidTurnNarration(), allowSteeringReply);
         };
         const flushConnectionNarration = async (executionId: string) => {
@@ -5515,11 +5506,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
           connectedProviders: connectedPlugins.map((plugin) => plugin.provider),
           catalogApprovalMarker: CATALOG_APPROVAL_TOOL,
         });
-        const storedHistoryReferences = HistorySourceReferencesSchema.safeParse(
+        const storedHistoryEvidence = RunHistoryEvidenceSchema.safeParse(
           run.historySourceReferences,
         );
-        let historyReferences = storedHistoryReferences.success
-          ? storedHistoryReferences.data
+        let historyEvidence = storedHistoryEvidence.success
+          ? storedHistoryEvidence.data
           : undefined;
         const liveHistoryRun = {
           id: runId,
@@ -5538,23 +5529,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
           context.signal.throwIfAborted();
           return allowed;
         };
-        const retainHistoryEvidence = async (sources: HistorySourceReference[]) => {
-          const previous = historyReferences ?? [];
-          const next = mergeHistorySourceReferences(previous, sources);
+        const retainHistoryEvidence = async (
+          kind: "search" | "originals",
+          sources: HistorySourceReference[],
+        ) => {
+          const previous = historyEvidence ?? { search: [], originals: [] };
+          const next = mergeHistorySourceReferences(previous[kind], sources);
           if (
-            historyReferences &&
-            next.length === previous.length &&
-            next.every((source, index) => source.messageId === previous[index]?.messageId)
+            historyEvidence &&
+            next.length === previous[kind].length &&
+            next.every((source, index) => source.messageId === previous[kind][index]?.messageId)
           )
             return true;
+          const evidence = { ...previous, [kind]: next };
           context.signal.throwIfAborted();
           const result = await deps.prisma.run.updateMany({
             where: historyGrantWhere(liveHistoryRun),
-            data: { historySourceReferences: next },
+            data: { historySourceReferences: evidence },
           });
           context.signal.throwIfAborted();
           if (result.count !== 1) return false;
-          historyReferences = next;
+          historyEvidence = evidence;
           return true;
         };
         // Apply the Page trust boundary to the history selected for this run.
@@ -5804,7 +5799,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           try {
             const paused = await deps.events.pauseRunForInput({
               ...input,
-              ...(historyReferences !== undefined
+              ...(historyEvidence !== undefined
                 ? { historyGrant: { userId: run.userId, sourceMessageId: run.sourceMessageId } }
                 : {}),
             });
@@ -5917,7 +5912,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return { error: "This tool is disabled for this bot." };
           }
           if (
-            historyReferences !== undefined &&
+            historyEvidence !== undefined &&
             ["remember", "save_shared_memory", "save_memory", "forget_memory"].includes(name)
           ) {
             return {
@@ -5925,7 +5920,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 "Cross-chat history is evidence for this reply. Ask in a new message to change permanent memory.",
             };
           }
-          if (historyReferences !== undefined) {
+          if (historyEvidence !== undefined) {
             if (!(await canReadMyChats())) {
               return { untrusted: true, error: HISTORY_SOURCE_UNAVAILABLE };
             }
@@ -6553,12 +6548,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           const gated = requiresApprovalByDefault || connectorReadGated;
           const historyActionNeedsApproval =
-            historyReferences !== undefined &&
-            (sendsToSite ||
-              viaConnector ||
-              opensWebPath ||
-              (name === "launch_app" && Boolean(args.uri)) ||
-              HISTORY_PROTECTED_TOOLS.has(name));
+            historyEvidence !== undefined &&
+            (viaConnector ||
+              !(
+                HISTORY_INSPECTION_TOOLS.has(name) ||
+                // The protected-input card already requires the user to provide the value.
+                name === "request_secret" ||
+                pageMode === "read" ||
+                pageMode === "help" ||
+                (name === "open_path" && !opensWebPath) ||
+                (name === "launch_app" && !args.uri)
+              ));
           const generationNeedsApproval =
             generation?.success === true && (await credentialGenerationNeedsApproval());
           const requiresMandatoryApproval =
@@ -7325,7 +7325,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // longer matches this worker. Exiting via pauseForApproval() would leave the run
             // stuck in "running" with no ask card — fail instead so the user can retry.
             if (!paused) {
-              if (historyReferences !== undefined && !(await canReadMyChats())) {
+              if (historyEvidence !== undefined && !(await canReadMyChats())) {
                 return { untrusted: true, error: HISTORY_SOURCE_UNAVAILABLE };
               }
               throw new Error("Could not pause this run for approval; try sending again.");
@@ -8813,12 +8813,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
               name === "search_history"
                 ? args.scope === "my_chats"
                 : typeof args.threadId === "string" &&
-                  (args.threadId !== run.threadId || historyReferences !== undefined);
+                  (args.threadId !== run.threadId || historyEvidence !== undefined);
             const unavailable = {
               untrusted: true,
               error: HISTORY_SOURCE_UNAVAILABLE,
             };
-            if (crossChat && historyReferences === undefined && !(await canReadMyChats()))
+            if (crossChat && historyEvidence === undefined && !(await canReadMyChats()))
               return finish(unavailable);
             if (crossChat && !hasStreamedText && !narrationStatusShowing)
               await showNarrationStatus(HISTORY_LOOKUP_STATUS).catch(() => undefined);
@@ -8872,7 +8872,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             if (crossChat) {
               const sources: HistorySourceReference[] = [];
-              if (name === "read_history") {
+              if (name === "search_history") {
+                for (const message of response.messages) {
+                  const source = HistorySourceReferenceSchema.safeParse(message);
+                  if (source.success) sources.push(source.data);
+                }
+              } else {
                 const anchor = HistorySourceReferenceSchema.safeParse(
                   "anchor" in response ? response.anchor : undefined,
                 );
@@ -8888,8 +8893,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
               if (
-                (sources.length || response.messages.length) &&
-                !(await retainHistoryEvidence(sources))
+                sources.length &&
+                !(await retainHistoryEvidence(
+                  name === "search_history" ? "search" : "originals",
+                  sources,
+                ))
               )
                 return finish(unavailable);
             }
@@ -9456,7 +9464,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 recordedForAsk.effect.id,
               );
               if (!paused) {
-                if (historyReferences !== undefined && !(await canReadMyChats())) {
+                if (historyEvidence !== undefined && !(await canReadMyChats())) {
                   return { untrusted: true, error: HISTORY_SOURCE_UNAVAILABLE };
                 }
                 throw new Error("Could not pause this run for protected input; try sending again.");
@@ -9965,7 +9973,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // The user takes over the computer's screen, so it must be up before the run waits.
             await runComputer.get();
             const safeReason =
-              historyReferences === undefined
+              historyEvidence === undefined
                 ? redactSecrets(reason, runSecrets)
                 : "I need you on the screen.";
             // Scripted output stays with its checkpoint instead of becoming a separate message.
@@ -10684,7 +10692,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 await serializeProgress(async () => {
                   // The claim has already anchored the new window. Hold any remaining
                   // pre-steering prose as a status so it cannot spend that window.
-                  if (historyReferences === undefined) {
+                  if (historyEvidence === undefined) {
                     await showNarrationStatus(takeMidTurnNarration());
                   }
                   progressStartedAt = startedAt;
@@ -10694,7 +10702,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             } else if (event.type === "progress") {
               if (!event.activity) toolCallStreak = { key: undefined, count: 0 };
-              if (historyReferences !== undefined || !runPromotesMidTurnNarration(run.trigger))
+              if (historyEvidence !== undefined || !runPromotesMidTurnNarration(run.trigger))
                 continue;
               if (narrationStatusShowing && event.activity) continue;
               await flushProgress();
@@ -10711,7 +10719,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               });
             } else if (event.type === "ask") {
-              if (historyReferences !== undefined && !(await canReadMyChats())) continue;
+              if (historyEvidence !== undefined && !(await canReadMyChats())) continue;
               const pause = await requestPause(async () => {
                 if (!(await renewRunLease(deps, runId, workerId, fence))) return false;
                 const safeText = redactSecrets(event.text, runSecrets);
@@ -10759,10 +10767,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
                 return true;
               });
-              if (historyReferences !== undefined && pause.owned && !pause.result) continue;
+              if (historyEvidence !== undefined && pause.owned && !pause.result) continue;
               return;
             } else if (event.type === "takeover") {
-              if (historyReferences !== undefined && !(await canReadMyChats())) continue;
+              if (historyEvidence !== undefined && !(await canReadMyChats())) continue;
               await requestTakeover(event.reason, event.executionId);
               return;
             } else if (event.type === "tool") {
@@ -10775,7 +10783,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 await serializeProgress(async () => {
                   if (
                     !scripted &&
-                    historyReferences === undefined &&
+                    historyEvidence === undefined &&
                     runPromotesMidTurnNarration(run.trigger) &&
                     event.name === "add_mcp_server" &&
                     parseMcpServerToolArgs(event.args)?.assignToSelf
@@ -10904,7 +10912,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
             } else if (event.type === "subagent") {
-              if (historyReferences !== undefined && !(await canReadMyChats())) continue;
+              if (historyEvidence !== undefined && !(await canReadMyChats())) continue;
               const safeTask = redactSecrets(event.task, runSecrets);
               const safeProgress = event.progress
                 ? redactSecrets(event.progress, runSecrets)
@@ -10985,7 +10993,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             approvedEffectReplays.assertDrained();
             flushPendingTools();
             if (!(await renewRunLease(deps, runId, workerId, fence))) return;
-            if (historyReferences === undefined && messageSegments.length > 0) {
+            if (historyEvidence === undefined && messageSegments.length > 0) {
               await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
             }
             await workspaceCheckpoint.flush();
@@ -11116,7 +11124,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           flushPendingTools();
           // Only routine runs are instructed to emit NO_RESPONSE. Other
           // allowSilentEmpty wakes (FYI, messaging) may finish truly empty.
-          const historyRevoked = historyReferences !== undefined && !(await canReadMyChats());
+          const historyRevoked = historyEvidence !== undefined && !(await canReadMyChats());
           const silentReply = historyRevoked
             ? {
                 assembled: HISTORY_SOURCE_UNAVAILABLE,
@@ -11151,12 +11159,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 redactBlocks(completionBlocks, runSecrets),
                 publishedMidTurnUserMessage || runAllowsSilentEmpty(run.trigger),
               );
+          const references = historyEvidence?.originals.length
+            ? historyEvidence.originals
+            : historyEvidence?.search;
           if (
             !historyRevoked &&
-            historyReferences?.length &&
+            references?.length &&
             blocks.some((block) => block.kind === "text" && block.text.trim())
           ) {
-            blocks.push({ kind: "history_sources", references: historyReferences });
+            blocks.push({ kind: "history_sources", references });
           }
           const text = handedOff
             ? ""
@@ -11191,7 +11202,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             outcome: "completed",
             blocks,
             markUnread: completionMarksUnread(run.trigger, text),
-            ...(historyReferences !== undefined && !historyRevoked
+            ...(historyEvidence !== undefined && !historyRevoked
               ? { historyGrantSourceId: run.sourceMessageId }
               : {}),
           });
@@ -11312,7 +11323,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (
             error instanceof ModelOutputRecoveryError &&
-            historyReferences === undefined &&
+            historyEvidence === undefined &&
             !handedOff &&
             !isBackgroundRunTrigger(run.trigger) &&
             !isExactNoResponse(assembled)

@@ -7451,3 +7451,7 @@ msgstr "मूल संदेश देखें"
 #: src/pages/shell/message-cards.tsx
 msgid "This history source is no longer available."
 msgstr "इतिहास का यह स्रोत अब उपलब्ध नहीं है।"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "चैट इतिहास के स्रोत लोड नहीं हो सके।"

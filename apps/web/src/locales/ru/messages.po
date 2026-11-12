@@ -7507,3 +7507,7 @@ msgstr "Открыть исходное сообщение"
 #: src/pages/shell/message-cards.tsx
 msgid "This history source is no longer available."
 msgstr "Этот источник больше недоступен."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "Не удалось загрузить источники из истории."

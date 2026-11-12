@@ -7,8 +7,10 @@ import {
   rememberImplicitRpcSpace,
   rpc,
   rpcForSpace,
+  rpcRecoveryScopeKey,
   selectedSpaceId,
   selectSpace,
+  subscribeRpcRecoveryScope,
   subscribeSubscriptionRequired,
   synchronizeRpcSession,
 } from "./rpc.js";
@@ -79,6 +81,28 @@ it("advances the selection generation across A to B to A and logout", () => {
   clearSpaceSelection();
   expect(selectedSpaceId()).toBeNull();
   expect(currentSpaceSelectionGeneration()).toBe(initial + 4);
+});
+
+it("notifies scoped readers when the same account receives a new session", () => {
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    localStorage: { getItem: () => null },
+  });
+  synchronizeRpcSession("authenticated", "history-owner", "session-one");
+  const previous = rpcRecoveryScopeKey();
+  const listener = vi.fn();
+  const unsubscribe = subscribeRpcRecoveryScope(listener);
+  try {
+    synchronizeRpcSession("authenticated", "history-owner", "session-one");
+    expect(listener).not.toHaveBeenCalled();
+    synchronizeRpcSession("authenticated", "history-owner", "session-two");
+    expect(listener).toHaveBeenCalledOnce();
+    expect(rpcRecoveryScopeKey()).not.toBe(previous);
+  } finally {
+    unsubscribe();
+    synchronizeRpcSession("anonymous");
+  }
 });
 
 describe("settings RPC target attribution", () => {

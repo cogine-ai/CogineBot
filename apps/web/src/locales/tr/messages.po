@@ -7451,3 +7451,7 @@ msgstr "Orijinal mesajı görüntüle"
 #: src/pages/shell/message-cards.tsx
 msgid "This history source is no longer available."
 msgstr "Bu geçmiş kaynağı artık kullanılamıyor."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "Sohbet geçmişi kaynakları yüklenemedi."

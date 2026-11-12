@@ -102,6 +102,10 @@ export type HistoryReadInput = z.infer<typeof HistoryReadInputSchema>;
 
 export const HistorySourceReferenceSchema = z.object({ threadId: Id, messageId: Id });
 export const HistorySourceReferencesSchema = z.array(HistorySourceReferenceSchema).max(5);
+export const RunHistoryEvidenceSchema = z.object({
+  search: HistorySourceReferencesSchema,
+  originals: HistorySourceReferencesSchema,
+});
 export const HistorySourceSchema = HistorySourceReferenceSchema.extend({
   botId: Id.nullable(),
   groupId: Id.nullable(),

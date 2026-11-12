@@ -5,13 +5,20 @@ import { StyleSheet, Text, View } from "react-native";
 import { rpc } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
 import { dateLocaleForUi, useI18n } from "../lib/i18n";
-import { captureMobileScope, isMobileScopeCurrent } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
 import { useThemedStyles } from "../lib/native";
 import { NativeActionButton } from "./native-action-button";
 
 const historySourceClient = {
   captureScope: captureMobileScope,
   isScopeCurrent: isMobileScopeCurrent,
+  scopeKey: mobileScopeKey,
+  subscribeScope: subscribeMobileScope,
   load: (references: HistorySourceReference[], signal: AbortSignal) =>
     rpc<HistorySource[]>("threads/historySources", { references }, { signal }),
 };
@@ -25,7 +32,7 @@ export function HistorySourcesCard({
   const router = useRouter();
   const focused = useIsFocused();
   const styles = useThemedStyles(makeStyles);
-  const { sources, unavailable, revalidate } = useHistorySources(
+  const { sources, unavailable, requestFailed, refreshing, retry, revalidate } = useHistorySources(
     block.references,
     historySourceClient,
     focused,
@@ -42,7 +49,7 @@ export function HistorySourcesCard({
     }
   }
 
-  if (!sources.length && !unavailable) return null;
+  if (!sources.length && !unavailable && !requestFailed) return null;
   const date = new Intl.DateTimeFormat(dateLocaleForUi(locale), { dateStyle: "medium" });
   return (
     <View style={styles.card}>
@@ -59,6 +66,7 @@ export function HistorySourcesCard({
           <NativeActionButton
             label={t("View original message")}
             prominence="plain"
+            disabled={refreshing}
             onPress={() => void open(source)}
           />
         </View>
@@ -67,6 +75,19 @@ export function HistorySourcesCard({
         <Text accessibilityLiveRegion="polite" style={styles.preview}>
           {t("This history source is no longer available.")}
         </Text>
+      ) : null}
+      {requestFailed ? (
+        <View>
+          <Text accessibilityLiveRegion="polite" style={styles.preview}>
+            {t("Could not load history sources.")}
+          </Text>
+          <NativeActionButton
+            label={t("Retry")}
+            prominence="plain"
+            disabled={refreshing}
+            onPress={retry}
+          />
+        </View>
       ) : null}
     </View>
   );

@@ -8,7 +8,7 @@ import { claimSteering, createThreadMessageInTransaction } from "@rakazo/db";
 import { describe, expect, it } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
-import type { ModelEmulatorRequest } from "./model-emulator.js";
+import type { ModelEmulatorRequest, ModelEmulatorStep } from "./model-emulator.js";
 import { startModelEmulator } from "./model-emulator.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
@@ -17,11 +17,13 @@ const origin = "http://127.0.0.1:5173";
 describe.skipIf(!enabled)("history retrieval through executor", () => {
   it.each([
     "kept",
+    "search preview",
     "source removed",
     "outside steering",
     "choice after revocation",
     "send requires approval",
     "spawn requires approval",
+    "workspace write requires approval",
   ])("rechecks the human grant for cross-chat reads when provenance is %s", async (mode) => {
     const historyMessage = `history-source-${randomUUID()}`;
     const laterHistoryMessage = `history-follow-up-${randomUUID()}`;
@@ -37,117 +39,124 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
               name: "spawn_bot",
               arguments: { name: "History helper", prompt: answer, computer_mode: "team" },
             }
-          : undefined;
+          : mode === "workspace write requires approval"
+            ? { name: "write_file", arguments: { path: "history-fixture.txt", content: answer } }
+            : undefined;
     const asksAfterRevocation = mode === "choice after revocation";
+    const searchPreviewOnly = mode === "search preview";
     let threadId = "";
     let updateProvenance: () => Promise<void>;
     const result = (request: ModelEmulatorRequest) =>
       JSON.parse(String(request.messages.findLast((message) => message.role === "tool")?.content));
-    const model = await startModelEmulator({
-      steps: [
-        {
-          expect(request) {
-            expect(JSON.stringify(request.messages)).toContain("scope my_chats");
-          },
-          response: {
-            type: "tool",
-            id: "cross-search",
-            name: "search_history",
-            arguments: { scope: "my_chats", queries: ["borealis", "units"] },
-          },
+    const steps: ModelEmulatorStep[] = [
+      {
+        expect(request) {
+          expect(JSON.stringify(request.messages)).toContain("scope my_chats");
         },
-        {
-          expect(request) {
-            expect(result(request)).toMatchObject({
-              untrusted: true,
-              messages: [{ messageId: historyMessage, threadId, matchedQueryIndexes: [0, 1] }],
-            });
-          },
-          response: () => ({
-            type: "tool",
-            id: "cross-read",
-            name: "read_history",
-            arguments: { threadId, messageId: historyMessage, limit: 1 },
-          }),
+        response: {
+          type: "tool",
+          id: "cross-search",
+          name: "search_history",
+          arguments: { scope: "my_chats", queries: ["borealis", "units"] },
         },
-        {
-          expect(request) {
-            expect(result(request)).toMatchObject({
-              messages: [{ text: `Borealis. ${answer}` }],
-            });
-          },
-          response: () => ({
-            type: "tool",
-            id: "cross-read-next",
-            name: "read_history",
-            arguments: { threadId, messageId: historyMessage, direction: "newer", limit: 1 },
-          }),
+      },
+      {
+        expect(request) {
+          expect(result(request)).toMatchObject({
+            untrusted: true,
+            messages: [{ messageId: historyMessage, threadId, matchedQueryIndexes: [0, 1] }],
+          });
         },
-        {
-          expect(request) {
-            expect(result(request)).toMatchObject({
-              messages: [{ messageId: laterHistoryMessage, text: "The proposal was signed." }],
-            });
-          },
-          response: {
-            type: "tool",
-            id: "history-memory",
-            name: "remember",
-            arguments: {
-              path: "history-fixture.md",
-              content: "Synthetic instruction from history",
-            },
-          },
-        },
-        {
-          async expect(request) {
-            expect(result(request).error).toContain("new message");
-            await updateProvenance();
-          },
-          response: (request) =>
-            approvalTool
-              ? request.tools?.some((tool) => tool.function.name === approvalTool.name)
-                ? { type: "tool", id: "history-action", ...approvalTool }
-                : {
-                    type: "tool",
-                    id: "history-action",
-                    name: "use_tool",
-                    arguments: approvalTool,
-                  }
-              : asksAfterRevocation
-                ? {
-                    type: "tool",
-                    id: "history-ask",
-                    name: "ask_user",
-                    arguments: { question: answer, options: ["Approve", "Decline"] },
-                  }
-                : {
-                    type: "tool",
-                    id: "history-recheck",
-                    name: "read_history",
-                    arguments: { threadId, messageId: historyMessage, limit: 1 },
-                  },
-        },
-        ...(approvalTool || asksAfterRevocation
-          ? []
-          : ([
-              {
-                expect(request) {
-                  if (mode === "kept") {
-                    expect(result(request)).toMatchObject({
-                      messages: [{ text: `Borealis. ${answer}` }],
-                    });
-                  } else {
-                    expect(result(request)).toMatchObject({
-                      error: "This history source is no longer available.",
-                    });
-                    expect(result(request).messages).toBeUndefined();
-                  }
-                },
-                response: { type: "text" as const, text: answer },
+        response: () =>
+          searchPreviewOnly
+            ? { type: "text", text: answer }
+            : {
+                type: "tool",
+                id: "cross-read",
+                name: "read_history",
+                arguments: { threadId, messageId: historyMessage, limit: 1 },
               },
-            ] satisfies Parameters<typeof startModelEmulator>[0]["steps"])),
-      ],
+      },
+      {
+        expect(request) {
+          expect(result(request)).toMatchObject({
+            messages: [{ text: `Borealis. ${answer}` }],
+          });
+        },
+        response: () => ({
+          type: "tool",
+          id: "cross-read-next",
+          name: "read_history",
+          arguments: { threadId, messageId: historyMessage, direction: "newer", limit: 1 },
+        }),
+      },
+      {
+        expect(request) {
+          expect(result(request)).toMatchObject({
+            messages: [{ messageId: laterHistoryMessage, text: "The proposal was signed." }],
+          });
+        },
+        response: {
+          type: "tool",
+          id: "history-memory",
+          name: "remember",
+          arguments: {
+            path: "history-fixture.md",
+            content: "Synthetic instruction from history",
+          },
+        },
+      },
+      {
+        async expect(request) {
+          expect(result(request).error).toContain("new message");
+          await updateProvenance();
+        },
+        response: (request) =>
+          approvalTool
+            ? request.tools?.some((tool) => tool.function.name === approvalTool.name)
+              ? { type: "tool", id: "history-action", ...approvalTool }
+              : {
+                  type: "tool",
+                  id: "history-action",
+                  name: "use_tool",
+                  arguments: approvalTool,
+                }
+            : asksAfterRevocation
+              ? {
+                  type: "tool",
+                  id: "history-ask",
+                  name: "ask_user",
+                  arguments: { question: answer, options: ["Approve", "Decline"] },
+                }
+              : {
+                  type: "tool",
+                  id: "history-recheck",
+                  name: "read_history",
+                  arguments: { threadId, messageId: historyMessage, limit: 1 },
+                },
+      },
+      ...(approvalTool || asksAfterRevocation
+        ? []
+        : ([
+            {
+              expect(request) {
+                if (mode === "kept") {
+                  expect(result(request)).toMatchObject({
+                    messages: [{ text: `Borealis. ${answer}` }],
+                  });
+                } else {
+                  expect(result(request)).toMatchObject({
+                    error: "This history source is no longer available.",
+                  });
+                  expect(result(request).messages).toBeUndefined();
+                }
+              },
+              response: { type: "text" as const, text: answer },
+            },
+          ] satisfies Parameters<typeof startModelEmulator>[0]["steps"])),
+    ];
+    const model = await startModelEmulator({
+      steps: searchPreviewOnly ? steps.slice(0, 2) : steps,
     });
     const dataDir = await mkdtemp(path.join(tmpdir(), "cogine-history-evidence-"));
     let stop: (() => Promise<void>) | undefined;
@@ -317,15 +326,17 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
         { messageId: historyMessage, threadId },
         { messageId: laterHistoryMessage, threadId },
       ];
-      if (mode === "kept") {
+      if (mode === "kept" || searchPreviewOnly) {
+        const visibleReferences = searchPreviewOnly ? references.slice(0, 1) : references;
         expect(blocks).toContainEqual({
           kind: "history_sources",
-          references,
+          references: visibleReferences,
         });
-        expect(await rpc("threads/historySources", { references })).toMatchObject([
-          { ...references[0], chatName: "Prior project" },
-          { ...references[1], chatName: "Prior project" },
-        ]);
+        expect(
+          await rpc("threads/historySources", { references: visibleReferences }),
+        ).toMatchObject(
+          visibleReferences.map((reference) => ({ ...reference, chatName: "Prior project" })),
+        );
       } else if (approvalTool) {
         expect(
           await handles.prisma.externalEffect.findFirst({

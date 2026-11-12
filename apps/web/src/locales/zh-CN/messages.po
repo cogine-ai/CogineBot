@@ -7546,3 +7546,7 @@ msgstr "查看原消息"
 #: src/pages/shell/message-cards.tsx
 msgid "This history source is no longer available."
 msgstr "这条来源已不可用。"
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "暂时无法加载历史来源。"

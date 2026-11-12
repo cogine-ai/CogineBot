@@ -7451,3 +7451,7 @@ msgstr "Ver mensaje original"
 #: src/pages/shell/message-cards.tsx
 msgid "This history source is no longer available."
 msgstr "Esta fuente del historial ya no está disponible."
+
+#: src/pages/shell/message-cards.tsx
+msgid "Could not load history sources."
+msgstr "No se pudieron cargar las fuentes del historial."

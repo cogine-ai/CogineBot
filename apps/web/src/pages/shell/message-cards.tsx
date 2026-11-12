@@ -12,7 +12,13 @@ import { lazyOverlay } from "../../components/ErrorBoundary";
 import type { ArtifactTarget } from "../../lib/artifact-open";
 import { chartViewport } from "../../lib/chart-viewport";
 import { connectMcpOauth } from "../../lib/mcp-connect";
-import { captureRpcRecoveryScope, isRpcRecoveryScopeCurrent, rpc } from "../../lib/rpc";
+import {
+  captureRpcRecoveryScope,
+  isRpcRecoveryScopeCurrent,
+  rpc,
+  rpcRecoveryScopeKey,
+  subscribeRpcRecoveryScope,
+} from "../../lib/rpc";
 import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
 import { McpServersOverlay } from "../McpServersOverlay";
@@ -24,6 +30,8 @@ const NativeAppsOverlay = lazyOverlay(() =>
 const historySourceClient = {
   captureScope: captureRpcRecoveryScope,
   isScopeCurrent: isRpcRecoveryScopeCurrent,
+  scopeKey: rpcRecoveryScopeKey,
+  subscribeScope: subscribeRpcRecoveryScope,
   load: (references: HistorySourceReference[], signal: AbortSignal) =>
     rpc.threads.historySources({ references }, { signal }),
 };
@@ -35,7 +43,7 @@ export function HistorySourcesCard({
 }) {
   const navigate = useNavigate();
   const { i18n } = useLingui();
-  const { sources, unavailable, revalidate } = useHistorySources(
+  const { sources, unavailable, requestFailed, refreshing, retry, revalidate } = useHistorySources(
     block.references,
     historySourceClient,
   );
@@ -49,7 +57,7 @@ export function HistorySourcesCard({
     });
   }
 
-  if (!sources.length && !unavailable) return null;
+  if (!sources.length && !unavailable && !requestFailed) return null;
   const formatDate = new Intl.DateTimeFormat(i18n.locale, { dateStyle: "medium" });
   return (
     <div className="mt-2 w-[420px] max-w-full rounded-[18px] border border-border bg-card px-4 py-3">
@@ -71,6 +79,7 @@ export function HistorySourcesCard({
             variant="ghost"
             size="sm"
             className="mt-1"
+            disabled={refreshing}
             onClick={() => void open(source)}
           >
             <Trans>View original message</Trans>
@@ -81,6 +90,23 @@ export function HistorySourcesCard({
         <p role="status" className="text-sm text-muted-foreground">
           <Trans>This history source is no longer available.</Trans>
         </p>
+      ) : null}
+      {requestFailed ? (
+        <div>
+          <p role="status" className="text-sm text-muted-foreground">
+            <Trans>Could not load history sources.</Trans>
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-1"
+            disabled={refreshing}
+            onClick={retry}
+          >
+            <Trans>Retry</Trans>
+          </Button>
+        </div>
       ) : null}
     </div>
   );
