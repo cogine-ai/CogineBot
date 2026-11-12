@@ -105,6 +105,32 @@ it("notifies scoped readers when the same account receives a new session", () =>
   }
 });
 
+it.each([401, 403])(
+  "keeps history source denial %i without decoding the response body",
+  async (status) => {
+    const cancel = vi.fn();
+    const pull = vi.fn((controller: ReadableStreamDefaultController) => {
+      controller.error(new DOMException("Response body timed out", "TimeoutError"));
+    });
+    const body = new ReadableStream({ pull, cancel }, { highWaterMark: 0 });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      rpc.threads.historySources({ references: [{ threadId: "thread", messageId: "message" }] }),
+    ).rejects.toMatchObject({ status });
+    expect(pull).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+  },
+);
+
 describe("settings RPC target attribution", () => {
   function setup() {
     const stored = new Map([["rakazo:space-id", "space-a"]]);

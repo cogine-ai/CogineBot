@@ -99,33 +99,45 @@ export function useHistorySources<Scope>(
     const { controller, scope } = current;
     const isCurrent = () => !controller.signal.aborted && client.isScopeCurrent(scope);
     if (!isCurrent()) return;
+    current.refreshing = true;
+    setRefreshing(true);
     const request = ++latestRequest.current;
-    const rows = await client
-      .load([{ threadId, messageId }], controller.signal)
-      .catch((error: unknown) => (sourceAccessDenied(error) ? ("denied" as const) : undefined));
-    if (!isCurrent() || latestRequest.current !== request) return;
-    if (rows === "denied") {
-      setView({ references, scope, sources: [], unavailable: true, requestFailed: false });
-      return;
+    const canCommit = () => isCurrent() && latestRequest.current === request;
+    try {
+      const rows = await client
+        .load([{ threadId, messageId }], controller.signal)
+        .catch((error: unknown) => (sourceAccessDenied(error) ? ("denied" as const) : undefined));
+      if (!canCommit()) return;
+      if (rows === "denied") {
+        setView({ references, scope, sources: [], unavailable: true, requestFailed: false });
+        return;
+      }
+      if (!rows) {
+        setView((previous) => previous && { ...previous, requestFailed: true });
+        return;
+      }
+      const row = rows.find(
+        (entry) => entry.threadId === threadId && entry.messageId === messageId,
+      );
+      if (row?.groupId || row?.botId) {
+        setView((previous) => previous && { ...previous, requestFailed: false });
+        return row;
+      }
+      setView(
+        (previous) =>
+          previous && {
+            ...previous,
+            sources: previous.sources.filter((entry) => entry.messageId !== messageId),
+            unavailable: true,
+            requestFailed: false,
+          },
+      );
+    } finally {
+      if (canCommit()) {
+        current.refreshing = false;
+        setRefreshing(false);
+      }
     }
-    if (!rows) {
-      setView((previous) => previous && { ...previous, requestFailed: true });
-      return;
-    }
-    const row = rows.find((entry) => entry.threadId === threadId && entry.messageId === messageId);
-    if (row?.groupId || row?.botId) {
-      setView((previous) => previous && { ...previous, requestFailed: false });
-      return row;
-    }
-    setView(
-      (previous) =>
-        previous && {
-          ...previous,
-          sources: previous.sources.filter((entry) => entry.messageId !== messageId),
-          unavailable: true,
-          requestFailed: false,
-        },
-    );
   }
 
   const visible = active && view?.references === references && client.isScopeCurrent(view.scope);
