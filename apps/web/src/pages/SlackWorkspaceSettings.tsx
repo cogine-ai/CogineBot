@@ -19,10 +19,7 @@ import type { createSpaceRpc } from "../lib/rpc";
 type Api = ReturnType<typeof createSpaceRpc>["messaging"]["installations"];
 type List = Awaited<ReturnType<Api["list"]>>;
 type Workspace = List["workspaces"][number];
-type Attempt = Awaited<ReturnType<Api["start"]>> & {
-  versions: Map<string, number>;
-  botId: string;
-};
+type Attempt = Awaited<ReturnType<Api["start"]>>;
 
 export function SlackWorkspaceSettings({
   api,
@@ -53,20 +50,18 @@ export function SlackWorkspaceSettings({
     async function refresh() {
       const request = ++generation.current;
       try {
+        const result = attempt
+          ? await api.attempt({ attemptId: attempt.attemptId }, { signal: controller.signal })
+          : null;
         const list = await api.list(undefined, { signal: controller.signal });
         if (controller.signal.aborted || !currentRef.current() || request !== generation.current)
           return;
         setLoaded(list);
-        if (
-          attempt &&
-          list.workspaces.some(
-            (row) =>
-              row.botId === attempt.botId &&
-              row.status === "active" &&
-              row.revision !== attempt.versions.get(row.id),
-          )
-        )
+        if (result && result.status !== "pending") {
           setAttempt(null);
+          if (result.status === "failed") setError(true);
+          if (result.status === "expired") setExpired(true);
+        }
       } catch {
         if (!controller.signal.aborted && currentRef.current()) setError(true);
       }
@@ -112,11 +107,7 @@ export function SlackWorkspaceSettings({
     const url = new URL(issued.url);
     if (url.origin !== "https://slack.com" || url.pathname !== "/oauth/v2/authorize")
       throw new Error("Invalid Slack authorization URL");
-    setAttempt({
-      ...issued,
-      botId: selected,
-      versions: new Map(loaded?.workspaces.map((row) => [row.id, row.revision])),
-    });
+    setAttempt(issued);
     window.open(url.href, "rakazo-app-connect", "popup,noopener,noreferrer,width=560,height=720");
   }
 
@@ -152,17 +143,22 @@ export function SlackWorkspaceSettings({
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-sm font-medium">{row.workspaceName}</span>
             <span className="text-xs text-muted-foreground">
-              {row.status === "active"
-                ? t`Connected`
-                : row.status === "paused"
-                  ? t`Paused`
-                  : t`Reconnect required`}
+              {!loaded.available
+                ? t`Unavailable`
+                : row.status === "active"
+                  ? t`Connected`
+                  : row.status === "paused"
+                    ? t`Paused`
+                    : row.status === "unavailable"
+                      ? t`Bot unavailable`
+                      : t`Reconnect required`}
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
             {bots.find((bot) => bot.id === row.botId)?.name ?? t`Bot unavailable`}
+            {row.installerName ? ` · ${row.installerName}` : ""}
           </p>
-          {row.status === "active" ? (
+          {loaded.available && row.status === "active" ? (
             <p className="text-sm text-muted-foreground">
               <Trans>
                 The bot replies to your direct messages and mentions in channels the app has joined.
@@ -174,12 +170,14 @@ export function SlackWorkspaceSettings({
             <Button
               size="sm"
               variant="outline"
-              disabled={busy || Boolean(attempt)}
+              disabled={
+                busy || Boolean(attempt) || !loaded.available || row.status === "unavailable"
+              }
               onClick={() => void perform(() => start(row.botId, row))}
             >
               <Trans>Reconnect</Trans>
             </Button>
-            {row.status !== "revoked" ? (
+            {loaded.available && (row.status === "active" || row.status === "paused") ? (
               <Button
                 size="sm"
                 variant="ghost"

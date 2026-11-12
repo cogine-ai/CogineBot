@@ -11,6 +11,7 @@ CREATE TABLE public.messaging_install_sessions (
   "expectedRevision" INTEGER,
   "expiresAt" TIMESTAMP(3) NOT NULL,
   "consumedAt" TIMESTAMP(3),
+  outcome TEXT,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX messaging_install_sessions_expires_idx ON public.messaging_install_sessions ("expiresAt");
@@ -22,6 +23,7 @@ CREATE TABLE public.messaging_installations (
   "workspaceId" TEXT NOT NULL,
   "workspaceName" TEXT NOT NULL,
   "installerId" TEXT NOT NULL,
+  "installerName" TEXT,
   "providerBotId" TEXT NOT NULL,
   "spaceId" TEXT NOT NULL,
   "userId" TEXT NOT NULL,

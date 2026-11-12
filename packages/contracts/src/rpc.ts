@@ -1133,7 +1133,8 @@ export const appContract = {
               id: Id,
               botId: Id,
               workspaceName: z.string(),
-              status: z.enum(["active", "paused", "revoked"]),
+              installerName: z.string().nullable(),
+              status: z.enum(["active", "paused", "revoked", "unavailable"]),
               revision: z.number().int().positive(),
             }),
           ),
@@ -1149,6 +1150,11 @@ export const appContract = {
           }),
         )
         .output(z.object({ url: z.url(), attemptId: Id, expiresAt: IsoDate })),
+      attempt: oc
+        .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
+        .output(
+          z.object({ status: z.enum(["pending", "connected", "cancelled", "failed", "expired"]) }),
+        ),
       cancel: oc
         .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
         .output(z.object({ ok: z.literal(true) })),

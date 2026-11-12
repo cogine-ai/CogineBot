@@ -110,6 +110,7 @@ export function messagingPlatformsFromEnv(
   env: MessagingEnvironmentValues,
   options: {
     pollInboundMessages?: boolean;
+    onSlackAuthFailure?: (error: unknown) => Promise<void>;
     sendblueTransport?: Pick<SendblueClientOptions, "baseURL" | "fetch">;
     larkTransport?: HttpInstance;
   } = {},
@@ -206,8 +207,9 @@ export function messagingPlatformsFromEnv(
             if (!result.team_id) throw new Error("Slack workspace could not be verified");
             return result.team_id;
           })
-          .catch((error: unknown) => {
+          .catch(async (error: unknown) => {
             ownWorkspace = undefined;
+            await options.onSlackAuthFailure?.(error);
             throw error;
           });
         const ownTeam = await ownWorkspace;

@@ -5,6 +5,7 @@ import type {
   TeamChatSendResult,
 } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
+import { MessagingSendError } from "@rakazo/adapters";
 import { AutomatedSenderPoliciesSchema, type MessageBlock } from "@rakazo/contracts";
 import {
   BOT_MESSAGE_MAX_HOPS,
@@ -58,8 +59,7 @@ interface TeamChatBridgeDeps {
   send: (request: TeamChatSendRequest) => Promise<TeamChatSendResult>;
   providerId: string;
   botId: string;
-  acceptAfter?: Date;
-  isAvailable?: () => Promise<boolean>;
+  installedSlack?: { acceptAfter: Date; isAvailable: () => Promise<boolean> };
   judge?: TeamChatEngagementJudge;
   reconcileIntervalMs?: number;
   ambientDebounceMs?: number;
@@ -713,8 +713,12 @@ export class TeamChatBridge {
 
   private async reconcile(): Promise<void> {
     const target = this.target;
-    if (!target || (this.deps.isAvailable && !(await this.deps.isAvailable()))) return;
-    const acceptAfter = this.deps.acceptAfter;
+    if (
+      !target ||
+      (this.deps.installedSlack?.isAvailable && !(await this.deps.installedSlack?.isAvailable()))
+    )
+      return;
+    const acceptAfter = this.deps.installedSlack?.acceptAfter;
     const currentWindow = acceptAfter ? { createdAt: { gt: acceptAfter } } : {};
     const now = new Date();
     await this.recoverExpiredDeferredMessages(target, now);
@@ -771,7 +775,7 @@ export class TeamChatBridge {
         await this.deliverFailure(message).catch((error) => this.retry(message, error));
       }
     }
-    if (!this.deps.acceptAfter) await this.deliverDelegatedReplies(target);
+    if (!this.deps.installedSlack?.acceptAfter) await this.deliverDelegatedReplies(target);
   }
 
   private async deliverDelegatedReplies(target: TargetBot): Promise<void> {
@@ -1144,7 +1148,7 @@ export class TeamChatBridge {
     const text =
       message.batchContext ??
       teamChatPrompt(
-        this.deps.acceptAfter ? "slack" : this.deps.providerId,
+        this.deps.installedSlack?.acceptAfter ? "slack" : this.deps.providerId,
         message.senderName,
         message.content,
       );
@@ -1153,7 +1157,8 @@ export class TeamChatBridge {
       : [];
     const files = attachments.filter((block) => block.kind === "file");
     const prompt = files.length ? promptTextForAttachments(text, files) : text;
-    if (this.deps.isAvailable && !(await this.deps.isAvailable())) return;
+    if (this.deps.installedSlack?.isAvailable && !(await this.deps.installedSlack?.isAvailable()))
+      return;
     const sent = await this.deps.events.sendUserMessage({
       spaceId: message.externalConversation.spaceId,
       threadId: thread.id,
@@ -1402,7 +1407,29 @@ export class TeamChatBridge {
     // retried from received. Once linked, preserve running so the shared run
     // reconciler can recover a failed continuation enqueue without creating a
     // second message/run from this stale snapshot.
-    const status = current.status === "queueing" ? "received" : current.status;
+    const installedFailure =
+      this.deps.installedSlack &&
+      current.status === "delivering" &&
+      error instanceof MessagingSendError
+        ? error
+        : undefined;
+    const canRetry = installedFailure?.disposition === "retryable" && attempts < 6;
+    const failed =
+      installedFailure &&
+      (installedFailure.disposition === "permanent" ||
+        (installedFailure.disposition === "retryable" && !canRetry));
+    const status =
+      current.status === "queueing"
+        ? "received"
+        : canRetry
+          ? "running"
+          : failed
+            ? "failed"
+            : current.status;
+    const retryAfter = installedFailure?.retryAfterMs;
+    const nextAttemptAt = failed
+      ? null
+      : new Date(Date.now() + Math.max(delay, Math.min(retryAfter ?? 0, 60 * 60_000)));
     // Conditional write: if reserveDelivery finalized between the read and this
     // update, leave the delivered/unconfirmed row alone.
     await this.deps.prisma.externalMessage.updateMany({
@@ -1416,7 +1443,7 @@ export class TeamChatBridge {
         ...(current.status === "queueing" ? { engagementReason: null } : {}),
         attempts,
         lastError: error instanceof Error ? error.message.slice(0, 500) : "Unknown bridge error",
-        nextAttemptAt: new Date(Date.now() + delay),
+        nextAttemptAt,
       },
     });
   }

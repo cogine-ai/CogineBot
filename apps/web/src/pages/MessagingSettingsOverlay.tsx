@@ -356,7 +356,7 @@ export function MessagingSettingsOverlay({
             </NativeSelect>
             <Button
               className="rounded-full"
-              disabled={!linkBotId || !status || actionBusy}
+              disabled={!linkBotId || !status?.providers.length || actionBusy}
               onClick={() =>
                 void act(async () => {
                   const version = linkVersion.current;

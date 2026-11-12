@@ -1540,6 +1540,7 @@ model MessagingInstallSession {
   expectedRevision Int?
   expiresAt        DateTime
   consumedAt       DateTime?
+  outcome          String?
   createdAt        DateTime  @default(now())
 
   @@index([expiresAt], map: "messaging_install_sessions_expires_idx")
@@ -1554,6 +1555,7 @@ model MessagingInstallation {
   workspaceId   String
   workspaceName String
   installerId   String
+  installerName String?
   providerBotId String
   spaceId       String
   userId        String

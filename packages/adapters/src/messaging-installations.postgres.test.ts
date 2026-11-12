@@ -120,6 +120,8 @@ integration("Slack workspace installation lifecycle", () => {
     ]);
     expect(completed.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(exchange).toHaveBeenCalledTimes(1);
+    await expect(service.attempt(owner, attempt.attemptId)).resolves.toBe("connected");
+    await expect(service.attempt(other, attempt.attemptId)).resolves.toBe("expired");
     const row = await service.activeByWorkspace(workspaceId);
     expect(row).toMatchObject({ botId, userId: owner.userId, installerId: "UOWNER" });
     expect(row?.ciphertext).not.toContain("fixture-secret");
@@ -187,7 +189,8 @@ integration("Slack workspace installation lifecycle", () => {
     await service.revoke(workspaceId, new Date(0), [before.providerBotId]);
     await service.revoke(workspaceId, new Date(), ["UOTHER"]);
     expect(await service.activeById(before.id)).not.toBeNull();
-    await service.revoke(workspaceId, new Date(), [before.providerBotId]);
+    const sameSecond = new Date(Math.floor(before.authorizedAt.getTime() / 1000) * 1000);
+    await service.revoke(workspaceId, sameSecond, [before.providerBotId], false);
     expect(await service.activeById(before.id)).toBeNull();
     const revoked = (await service.list(owner))[0]!;
     expect(revoked.status).toBe("revoked");
@@ -209,7 +212,7 @@ integration("Slack workspace installation lifecycle", () => {
         where: { id: retry.id },
         data: { nextAttemptAt: new Date(0) },
       });
-      await new MessagingInstallations(db.prisma, store, { authorizeUrl, exchange }).cleanup();
+      await new MessagingInstallations(db.prisma, store).cleanup();
       expect(
         await db.prisma.messagingCredentialCleanup.findUnique({
           where: { id: before.credentialId! },
@@ -220,5 +223,27 @@ integration("Slack workspace installation lifecycle", () => {
     }
     await service.remove(owner, { id: revoked.id, expectedRevision: revoked.revision });
     expect(await service.list(owner)).toEqual([]);
+  });
+  it("releases a workspace after its owner loses membership and a later owner authorizes it", async () => {
+    const attempt = await start();
+    await expect(service.complete(owner.userId, attempt.state, "renewed")).resolves.toBe(true);
+    const original = (await service.activeByWorkspace(workspaceId))!;
+    await db.prisma.spaceMember.deleteMany({
+      where: { spaceId: owner.spaceId, userId: owner.userId },
+    });
+    expect(await service.activeByWorkspace(workspaceId)).toBeNull();
+    await new MessagingInstallations(db.prisma, store).cleanup();
+    const released = await db.prisma.messagingInstallation.findUniqueOrThrow({
+      where: { id: original.id },
+    });
+    expect(released).toMatchObject({ status: "removed", ciphertext: null });
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(released.acceptAfter.getTime()));
+    const successor = await start(other, otherBotId);
+    await expect(service.complete(other.userId, successor.state, "successor")).resolves.toBe(true);
+    expect(await service.activeByWorkspace(workspaceId)).toMatchObject({
+      userId: other.userId,
+      botId: otherBotId,
+    });
+    expect(await service.activeById(original.id)).toBeNull();
   });
 });

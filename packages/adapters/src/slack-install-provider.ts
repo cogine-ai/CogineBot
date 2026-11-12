@@ -88,6 +88,7 @@ export class SlackInstallProvider {
       result.refresh_token
     )
       throw new Error("Slack workspace authorization failed");
+    const installerName = await this.installerName(result.authed_user!.id!, result.access_token);
     return {
       workspaceId: result.team!.id!,
       workspaceName:
@@ -95,23 +96,52 @@ export class SlackInstallProvider {
           ? result.team.name.trim().slice(0, 160) || "Slack"
           : "Slack",
       installerId: result.authed_user!.id!,
+      ...(installerName && { installerName }),
       providerBotId: result.bot_user_id,
       credential: result.access_token,
     };
   }
 
-  surface(credential: string) {
+  private async installerName(userId: string, credential: string) {
+    try {
+      const url = new URL("https://slack.com/api/users.info");
+      url.searchParams.set("user", userId);
+      const response = await this.fetcher(url, {
+        headers: { authorization: `Bearer ${credential}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(4_000),
+      });
+      const text = response.ok && (await readBoundedText(response, 65_536));
+      const payload = text
+        ? (JSON.parse(text) as {
+            user?: { real_name?: unknown; profile?: { display_name?: unknown } };
+          })
+        : null;
+      const name = payload?.user?.profile?.display_name || payload?.user?.real_name;
+      return typeof name === "string" ? name.trim().slice(0, 160) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  surface(credential: string, onSlackAuthFailure?: (error: unknown) => Promise<void>) {
     return new ChatSdkMessagingSurface(
-      messagingPlatformsFromEnv({
-        slackBotToken: credential,
-        slackSigningSecret: this.config.signingSecret,
-      }),
+      messagingPlatformsFromEnv(
+        {
+          slackBotToken: credential,
+          slackSigningSecret: this.config.signingSecret,
+        },
+        { onSlackAuthFailure },
+      ),
     );
   }
 
   credentialWasRejected(error: unknown): boolean {
-    const failure = error as { cause?: { data?: { error?: unknown } } } | null;
-    const code = failure?.cause?.data?.error;
+    const failure = error as {
+      data?: { error?: unknown };
+      cause?: { data?: { error?: unknown } };
+    } | null;
+    const code = failure?.data?.error ?? failure?.cause?.data?.error;
     return code === "invalid_auth" || code === "token_revoked" || code === "account_inactive";
   }
 
@@ -120,6 +150,7 @@ export class SlackInstallProvider {
     workspaceId?: string;
     challenge?: string;
     eventAt?: Date;
+    preciseEventTime: boolean;
     uninstalled: boolean;
     revokedBots?: string[];
   }> {
@@ -140,8 +171,15 @@ export class SlackInstallProvider {
       challenge?: string;
       team_id?: string;
       event_time?: number;
-      event?: { type?: string; tokens?: { bot?: unknown[] } };
+      event?: { type?: string; event_ts?: string; ts?: string; tokens?: { bot?: unknown[] } };
     };
+    const event = payload?.event;
+    const wireTime = event?.event_ts ?? event?.ts;
+    const millis =
+      typeof wireTime === "string" && /^\d{9,11}\.\d{1,6}$/.test(wireTime)
+        ? Math.floor(Number(wireTime) * 1000)
+        : undefined;
+    const preciseEventTime = millis !== undefined && millis > 0 && millis <= Date.now() + 5_000;
     return {
       request: new Request(request.url, { method: request.method, headers: request.headers, body }),
       workspaceId: slackId(payload?.team_id, "T") ? payload.team_id : undefined,
@@ -149,10 +187,12 @@ export class SlackInstallProvider {
         payload?.type === "url_verification" && typeof payload.challenge === "string"
           ? payload.challenge
           : undefined,
-      eventAt:
-        Number.isSafeInteger(payload?.event_time) &&
-        payload.event_time! > 0 &&
-        payload.event_time! <= Math.floor(Date.now() / 1000)
+      preciseEventTime,
+      eventAt: preciseEventTime
+        ? new Date(millis!)
+        : Number.isSafeInteger(payload?.event_time) &&
+            payload.event_time! > 0 &&
+            payload.event_time! <= Math.floor(Date.now() / 1000) + 5
           ? new Date(payload.event_time! * 1000)
           : undefined,
       uninstalled: payload?.event?.type === "app_uninstalled",

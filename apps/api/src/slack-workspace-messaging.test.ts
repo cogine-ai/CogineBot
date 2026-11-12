@@ -59,7 +59,12 @@ function harness() {
     },
     sendToThread,
   } as unknown as MessagingSurface;
-  const verified = { request, workspaceId: row.workspaceId, eventAt: new Date("2026-01-02") };
+  const verified = {
+    request,
+    workspaceId: row.workspaceId,
+    eventAt: new Date("2026-01-02"),
+    preciseEventTime: true,
+  };
   const provider = {
     parseWebhook: vi.fn(async () => verified),
     surface: vi.fn(() => surface),
@@ -128,7 +133,12 @@ describe("Slack installed workspace routing", () => {
       uninstalled: true,
     } as typeof verified);
     await runtime.webhook(request);
-    expect(store.revoke).toHaveBeenCalledWith(row.workspaceId, verified.eventAt, undefined);
+    expect(store.revoke).toHaveBeenCalledWith(
+      row.workspaceId,
+      verified.eventAt,
+      undefined,
+      verified.preciseEventTime,
+    );
     provider.parseWebhook.mockRejectedValueOnce(new Error("bad signature"));
     expect((await runtime.webhook(request)).status).toBe(401);
     await runtime.stop();

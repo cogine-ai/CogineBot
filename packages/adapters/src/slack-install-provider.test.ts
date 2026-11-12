@@ -36,7 +36,11 @@ function request(payload: unknown, age = 0, signingSecret = config.signingSecret
 
 describe("Slack workspace OAuth and event verification", () => {
   it("uses the configured callback and returns the verified workspace and bot identity", async () => {
-    const fetcher = vi.fn(async (_url: string, _options: RequestInit) => Response.json(access));
+    const fetcher = vi.fn(async (url: string | URL, _options: RequestInit) =>
+      String(url).includes("/users.info")
+        ? Response.json({ user: { profile: { display_name: "Fixture Installer" } } })
+        : Response.json(access),
+    );
     const provider = new SlackInstallProvider(config, fetcher as typeof fetch);
     const url = new URL(provider.authorizeUrl("fixture-state"));
     expect(url.origin).toBe("https://slack.com");
@@ -46,6 +50,7 @@ describe("Slack workspace OAuth and event verification", () => {
       workspaceId: "TFIXTURE",
       workspaceName: "Fixture Workspace",
       installerId: "UFIXTURE",
+      installerName: "Fixture Installer",
       providerBotId: "UBOTFIXTURE",
       credential: "synthetic-bot-token",
     });
@@ -93,7 +98,24 @@ describe("Slack workspace OAuth and event verification", () => {
       workspaceId: "TFIXTURE",
       eventAt: new Date(eventTime * 1000),
       revokedBots: ["UBOTFIXTURE"],
+      preciseEventTime: false,
       uninstalled: false,
+    });
+  });
+  it("preserves signed fractional event time for a newly authorized workspace", async () => {
+    const provider = new SlackInstallProvider(config);
+    const time = Math.floor(Date.now() / 1000) - 1;
+    const verified = await provider.parseWebhook(
+      request({
+        type: "event_callback",
+        team_id: "TFIXTURE",
+        event_time: time,
+        event: { type: "message", event_ts: `${time}.987000` },
+      }),
+    );
+    expect(verified).toMatchObject({
+      eventAt: new Date(time * 1000 + 987),
+      preciseEventTime: true,
     });
   });
 });

@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
-import type { Prisma, PrismaClient } from "@rakazo/db";
-import { runAsSystem } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { Prisma, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { credentialDigest } from "./credential-digest.js";
 import { reconcileSecretWrite } from "./secret-store-factory.js";
@@ -25,10 +25,16 @@ export class MessagingInstallations {
   constructor(
     private readonly db: PrismaClient,
     private readonly secrets: SecretStore,
-    private readonly provider: Provider,
+    private readonly provider?: Provider,
   ) {}
 
+  get available() {
+    return Boolean(this.provider);
+  }
+
   async start(actor: Actor, botId: string, reconnect?: Revision) {
+    const provider = this.provider;
+    if (!provider) throw new Error("Slack installation is unavailable");
     return runAsSystem("start Slack workspace authorization", async () => {
       const scope = { userId: actor.userId, spaceId: actor.spaceId, botId };
       await this.requireOwner(this.db, scope);
@@ -48,7 +54,7 @@ export class MessagingInstallations {
         },
       });
       return {
-        url: this.provider.authorizeUrl(state),
+        url: provider.authorizeUrl(state),
         attemptId: id,
         expiresAt: expiresAt.toISOString(),
       };
@@ -64,6 +70,8 @@ export class MessagingInstallations {
   }
 
   async complete(userId: string, state: string, code: string | undefined) {
+    const provider = this.provider;
+    if (!provider) throw new Error("Slack installation is unavailable");
     if (!/^[A-Za-z0-9_-]{43}$/.test(state) || (code?.length ?? 0) > 4096)
       throw new Error("Invalid Slack authorization");
     return runAsSystem("complete Slack workspace authorization", async () => {
@@ -77,96 +85,140 @@ export class MessagingInstallations {
         data: { consumedAt: claimedAt },
       });
       if (claimed.count !== 1) throw new Error("Slack authorization expired");
-      if (!code) return false;
-      await this.requireOwner(this.db, session);
-      const external = await this.provider.exchange(code);
-      const credentialId = randomUUID();
-      const recoveryRef = this.secrets.prepareWrite?.(credentialId);
-      if (!recoveryRef) throw new Error("Workspace credential storage is unavailable");
-      const staged = await this.db.messagingCredentialCleanup.create({
-        data: {
-          id: credentialId,
-          ref: recoveryRef,
-          pendingWrite: true,
-          nextAttemptAt: new Date(Date.now() + CLEANUP_LEASE_MS),
-        },
-      });
-      const sealed = await this.secrets.put(
-        external.credential,
-        {
-          operationId: credentialId,
-          traceId: credentialId,
-          spaceId: session.spaceId,
-          userId,
-          signal: AbortSignal.timeout(10_000),
-        },
-        { recordId: credentialId, recoveryRef },
-      );
-      await this.db.$transaction(
-        async (tx) => {
-          const consume = await tx.messagingInstallSession.deleteMany({
-            where: { id, consumedAt: claimedAt, expiresAt: { gt: new Date() } },
-          });
-          if (consume.count !== 1) throw new Error("Slack authorization expired");
-          await this.requireOwner(tx, session);
-          const old = await tx.messagingInstallation.findUnique({
-            where: {
-              provider_workspaceId: { provider: PROVIDER, workspaceId: external.workspaceId },
-            },
-          });
-          const at = new Date();
-          const data = {
-            provider: PROVIDER,
-            workspaceId: external.workspaceId,
-            workspaceName: external.workspaceName,
-            installerId: external.installerId,
-            providerBotId: external.providerBotId,
-            userId: session.userId,
+      if (!code) {
+        await this.db.messagingInstallSession.updateMany({
+          where: { id, consumedAt: claimedAt },
+          data: { outcome: "cancelled" },
+        });
+        return false;
+      }
+      try {
+        await this.requireOwner(this.db, session);
+        const external = await provider.exchange(code);
+        const credentialId = randomUUID();
+        const recoveryRef = this.secrets.prepareWrite?.(credentialId);
+        if (!recoveryRef) throw new Error("Workspace credential storage is unavailable");
+        const staged = await this.db.messagingCredentialCleanup.create({
+          data: {
+            id: credentialId,
+            ref: recoveryRef,
+            pendingWrite: true,
+            nextAttemptAt: new Date(Date.now() + CLEANUP_LEASE_MS),
+          },
+        });
+        const sealed = await this.secrets.put(
+          external.credential,
+          {
+            operationId: credentialId,
+            traceId: credentialId,
             spaceId: session.spaceId,
-            botId: session.botId,
-            ciphertext: sealed.ciphertext,
-            credentialId,
-            authorizedAt: at,
-            acceptAfter: at,
-            status: "active",
-          };
-          if (session.installationId) {
-            if (
-              !old ||
-              old.id !== session.installationId ||
-              old.revision !== session.expectedRevision ||
-              old.userId !== session.userId ||
-              old.spaceId !== session.spaceId ||
-              old.botId !== session.botId ||
-              old.status === "removed"
-            )
-              throw new Error("Workspace connection changed");
-            const updated = await tx.messagingInstallation.updateMany({
-              where: { id: old.id, revision: old.revision, ciphertext: old.ciphertext },
-              data: { ...data, revision: { increment: 1 } },
+            userId,
+            signal: AbortSignal.timeout(10_000),
+          },
+          { recordId: credentialId, recoveryRef },
+        );
+        await this.db.$transaction(
+          async (tx) => {
+            const consume = await tx.messagingInstallSession.updateMany({
+              where: { id, consumedAt: claimedAt, expiresAt: { gt: new Date() }, outcome: null },
+              data: { outcome: "connected" },
             });
-            if (updated.count !== 1) throw new Error("Workspace connection changed");
-            await this.retire(tx, old);
-          } else if (old) {
-            if (old.status !== "removed" || old.acceptAfter >= session.createdAt)
-              throw new Error("Workspace is already connected");
-            const updated = await tx.messagingInstallation.updateMany({
-              where: { id: old.id, revision: old.revision, status: "removed" },
-              data: { ...data, id: randomUUID(), revision: 1 },
+            if (consume.count !== 1) throw new Error("Slack authorization expired");
+            await this.requireOwner(tx, session);
+            const old = await tx.messagingInstallation.findUnique({
+              where: {
+                provider_workspaceId: { provider: PROVIDER, workspaceId: external.workspaceId },
+              },
             });
-            if (updated.count !== 1) throw new Error("Workspace connection changed");
-          } else {
-            await tx.messagingInstallation.create({ data: { id: randomUUID(), ...data } });
-          }
-          const adopted = await tx.messagingCredentialCleanup.deleteMany({
-            where: { id: credentialId, pendingWrite: true, nextAttemptAt: staged.nextAttemptAt },
-          });
-          if (adopted.count !== 1) throw new Error("Workspace credential write expired");
-        },
-        { isolationLevel: "Serializable" },
-      );
+            const at = new Date();
+            const data = {
+              provider: PROVIDER,
+              workspaceId: external.workspaceId,
+              workspaceName: external.workspaceName,
+              installerId: external.installerId,
+              installerName: external.installerName ?? null,
+              providerBotId: external.providerBotId,
+              userId: session.userId,
+              spaceId: session.spaceId,
+              botId: session.botId,
+              ciphertext: sealed.ciphertext,
+              credentialId,
+              authorizedAt: at,
+              acceptAfter: at,
+              status: "active",
+            };
+            if (session.installationId) {
+              if (
+                !old ||
+                old.id !== session.installationId ||
+                old.revision !== session.expectedRevision ||
+                old.userId !== session.userId ||
+                old.spaceId !== session.spaceId ||
+                old.botId !== session.botId ||
+                old.status === "removed"
+              )
+                throw new Error("Workspace connection changed");
+              const updated = await tx.messagingInstallation.updateMany({
+                where: { id: old.id, revision: old.revision, ciphertext: old.ciphertext },
+                data: { ...data, revision: { increment: 1 } },
+              });
+              if (updated.count !== 1) throw new Error("Workspace connection changed");
+              await this.retire(tx, old);
+            } else if (old) {
+              if (old.status !== "removed" || old.acceptAfter >= session.createdAt)
+                throw new Error("Workspace is already connected");
+              const updated = await tx.messagingInstallation.updateMany({
+                where: { id: old.id, revision: old.revision, status: "removed" },
+                data: { ...data, id: randomUUID(), revision: 1 },
+              });
+              if (updated.count !== 1) throw new Error("Workspace connection changed");
+            } else {
+              await tx.messagingInstallation.create({ data: { id: randomUUID(), ...data } });
+            }
+            const adopted = await tx.messagingCredentialCleanup.deleteMany({
+              where: { id: credentialId, pendingWrite: true, nextAttemptAt: staged.nextAttemptAt },
+            });
+            if (adopted.count !== 1) throw new Error("Workspace credential write expired");
+          },
+          { isolationLevel: "Serializable" },
+        );
+      } catch (error) {
+        await this.db.messagingInstallSession.updateMany({
+          where: { id, consumedAt: claimedAt, outcome: null },
+          data: { outcome: "failed" },
+        });
+        throw error;
+      }
       return true;
     });
+  }
+
+  async attempt(actor: Actor, id: string) {
+    return runAsSystem("check a user's Slack authorization attempt", async () => {
+      const row = await this.db.messagingInstallSession.findFirst({
+        where: { id, provider: PROVIDER, userId: actor.userId, spaceId: actor.spaceId },
+        select: { outcome: true, expiresAt: true },
+      });
+      if (row?.outcome === "connected" || row?.outcome === "cancelled" || row?.outcome === "failed")
+        return row.outcome;
+      return !row || row.expiresAt <= new Date() ? ("expired" as const) : ("pending" as const);
+    });
+  }
+
+  async hasOwned(actor: Actor) {
+    return runAsSystem("check owned Slack connections", async () =>
+      Boolean(
+        await this.db.messagingInstallation.findFirst({
+          where: {
+            provider: PROVIDER,
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+            status: { not: "removed" },
+          },
+          select: { id: true },
+        }),
+      ),
+    );
   }
 
   async list(actor: Actor) {
@@ -178,10 +230,28 @@ export class MessagingInstallations {
           spaceId: actor.spaceId,
           status: { not: "removed" },
         },
-        select: { id: true, botId: true, workspaceName: true, revision: true, status: true },
+        select: {
+          id: true,
+          botId: true,
+          workspaceName: true,
+          installerName: true,
+          revision: true,
+          status: true,
+        },
         orderBy: { createdAt: "asc" },
       });
-      return rows;
+      return Promise.all(
+        rows.map(async (row) => ({
+          ...row,
+          status: (await this.hasOwner(this.db, {
+            userId: actor.userId,
+            spaceId: actor.spaceId,
+            botId: row.botId,
+          }))
+            ? row.status
+            : "unavailable",
+        })),
+      );
     });
   }
 
@@ -213,7 +283,7 @@ export class MessagingInstallations {
     );
   }
 
-  revoke(workspaceId: string, eventAt: Date, revokedBots?: string[]) {
+  revoke(workspaceId: string, eventAt: Date, revokedBots?: string[], preciseEventTime = true) {
     return runAsSystem("revoke Slack installation from a verified event", () =>
       this.db.$transaction(async (tx) => {
         const row = await tx.messagingInstallation.findUnique({
@@ -221,7 +291,9 @@ export class MessagingInstallations {
         });
         if (
           row?.ciphertext &&
-          eventAt >= row.authorizedAt &&
+          (preciseEventTime
+            ? eventAt >= row.authorizedAt
+            : eventAt.getTime() >= Math.floor(row.authorizedAt.getTime() / 1000) * 1000) &&
           (!revokedBots || revokedBots.includes(row.providerBotId))
         )
           await this.disconnect(tx, row, "revoked");
@@ -269,6 +341,7 @@ export class MessagingInstallations {
 
   async cleanup() {
     return runAsSystem("recover Slack credential cleanup", async () => {
+      await this.retireOrphaned();
       const now = new Date();
       await this.db.messagingInstallSession.deleteMany({ where: { expiresAt: { lt: now } } });
       const candidates = await this.db.messagingCredentialCleanup.findMany({
@@ -310,6 +383,42 @@ export class MessagingInstallations {
     });
   }
 
+  private async retireOrphaned() {
+    const candidates = await this.db.$queryRaw<Array<{ id: string }>>(
+      Prisma.sql`SELECT i.id FROM public.messaging_installations i
+        WHERE i.provider = ${PROVIDER} AND i.status <> 'removed'
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM public.bots b WHERE b.id = i."botId"
+                AND b."userId" = i."userId" AND b."spaceId" = i."spaceId"
+            )
+            OR NOT EXISTS (
+              SELECT 1 FROM public.space_members m
+                WHERE m."spaceId" = i."spaceId" AND m."userId" = i."userId"
+            )
+          )
+        ORDER BY i.id LIMIT 20`,
+    );
+    for (const { id } of candidates) {
+      await this.db.$transaction(
+        async (tx) => {
+          const row = await tx.messagingInstallation.findUnique({ where: { id } });
+          if (!row || row.status === "removed" || (await this.hasOwner(tx, row, true))) return;
+          await this.disconnect(tx, row, "removed");
+          await tx.messagingInstallSession.deleteMany({
+            where: {
+              userId: row.userId,
+              spaceId: row.spaceId,
+              botId: row.botId,
+              provider: PROVIDER,
+            },
+          });
+        },
+        { isolationLevel: "Serializable" },
+      );
+    }
+  }
+
   private async active(where: Prisma.MessagingInstallationWhereUniqueInput) {
     return runAsSystem("resolve an active Slack installation", async () => {
       const row = await this.db.messagingInstallation.findUnique({ where });
@@ -333,10 +442,15 @@ export class MessagingInstallations {
     return row;
   }
 
-  private async hasOwner(tx: Db, scope: Scope) {
+  private async hasOwner(tx: Db, scope: Scope, includeArchived = false) {
     const [bot, member] = await Promise.all([
       tx.bot.findFirst({
-        where: { id: scope.botId, spaceId: scope.spaceId, userId: scope.userId, archivedAt: null },
+        where: {
+          id: scope.botId,
+          spaceId: scope.spaceId,
+          userId: scope.userId,
+          ...(includeArchived ? {} : { archivedAt: null }),
+        },
         select: { id: true },
       }),
       tx.spaceMember.findFirst({

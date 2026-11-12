@@ -68,6 +68,7 @@ export function resolveMessagingThreadId(
 /** Outbound sender that posts through the existing MessagingSurface. */
 export function createMessagingTeamChatSender(
   messaging: MessagingSurface,
+  beforeSubmit?: () => Promise<boolean>,
 ): (request: TeamChatSendRequest) => Promise<TeamChatSendResult> {
   return async (request) => {
     const operationId = request.idempotencyKey
@@ -84,6 +85,7 @@ export function createMessagingTeamChatSender(
       {
         threadId: resolveMessagingThreadId(request.conversationId, request.replyThreadId),
         body: request.content,
+        ...(beforeSubmit && { beforeSubmit }),
         ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
       },
       context,

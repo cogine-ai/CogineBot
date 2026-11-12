@@ -45,21 +45,28 @@ export class SlackWorkspaceMessaging {
 
   constructor(
     readonly installations: MessagingInstallations,
-    private readonly provider: SlackInstallProvider,
+    private readonly provider: SlackInstallProvider | undefined,
     private readonly deps: Dependencies,
   ) {}
 
   async webhook(request: Request) {
+    const provider = this.provider;
+    if (!provider) return new Response(null, { status: 404 });
     let event: Awaited<ReturnType<SlackInstallProvider["parseWebhook"]>>;
     try {
-      event = await this.provider.parseWebhook(request);
+      event = await provider.parseWebhook(request);
     } catch {
       return new Response("Invalid webhook", { status: 401 });
     }
     if (event.challenge !== undefined) return Response.json({ challenge: event.challenge });
     if (!event.workspaceId || !event.eventAt) return new Response(null, { status: 200 });
     if (event.uninstalled || event.revokedBots) {
-      await this.installations.revoke(event.workspaceId, event.eventAt, event.revokedBots);
+      await this.installations.revoke(
+        event.workspaceId,
+        event.eventAt,
+        event.revokedBots,
+        event.preciseEventTime,
+      );
       return new Response(null, { status: 200 });
     }
     const row = await this.installations.activeByWorkspace(event.workspaceId);
@@ -87,7 +94,7 @@ export class SlackWorkspaceMessaging {
         });
     };
     tick();
-    this.timer = setInterval(tick, 5_000);
+    this.timer = setInterval(tick, this.provider ? 5_000 : 60_000);
     this.timer.unref?.();
   }
 
@@ -101,6 +108,7 @@ export class SlackWorkspaceMessaging {
 
   private async maintain() {
     await this.installations.cleanup();
+    if (!this.provider) return;
     const targets = await this.installations.activeTargets();
     const active = new Set(targets.map(({ id }) => id));
     for (const [id, entry] of this.workspaces) {
@@ -128,6 +136,8 @@ export class SlackWorkspaceMessaging {
   }
 
   private async use<T>(row: WorkspaceInstallation, task: (entry: Workspace) => Promise<T>) {
+    const provider = this.provider;
+    if (!provider) throw new Error("Slack installation is unavailable");
     const credential = await this.installations.credential(row);
     if (!(await this.current(row))) throw new Error("Slack connection changed");
     const digest = credentialDigest(credential);
@@ -145,25 +155,25 @@ export class SlackWorkspaceMessaging {
         this.workspaces.delete(idle[0]);
         retired.push(idle[1]);
       }
-      const surface = this.provider.surface(
-        credential ?? (await this.installations.credential(row)),
-      );
-      const send = createMessagingTeamChatSender(surface);
+      const surface = provider.surface(credential, async (error) => {
+        if (provider.credentialWasRejected(error))
+          await this.installations.revokeRejectedCredential(row);
+      });
+      const send = createMessagingTeamChatSender(surface, () => this.current(row));
       const bridge = new TeamChatBridge({
         prisma: this.deps.prisma,
         jobs: this.deps.jobs,
         events: this.deps.events,
         botId: row.botId,
         providerId: `slack~${row.id}`,
-        acceptAfter: row.acceptAfter,
+        installedSlack: { acceptAfter: row.acceptAfter, isAvailable: () => this.current(row) },
         reconcileIntervalMs: 0,
-        isAvailable: () => this.current(row),
         send: async (request) => {
           if (!(await this.current(row))) throw new Error("Slack connection changed");
           try {
             return await send(request);
           } catch (error) {
-            if (this.provider.credentialWasRejected(error))
+            if (provider.credentialWasRejected(error))
               await this.installations.revokeRejectedCredential(row);
             throw error;
           }

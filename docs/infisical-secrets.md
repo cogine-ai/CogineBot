@@ -76,7 +76,7 @@ pnpm --filter @rakazo/api secrets:infisical --dry-run
 pnpm --filter @rakazo/api secrets:infisical
 ```
 
-The CLI loads the root `.env` before reading configuration. It covers credential rows, bot secrets, and integration provider settings.
+The CLI loads the root `.env` before reading configuration. It covers credential rows, bot secrets, integration provider settings, and Slack workspace installations.
 It leaves short-lived run secrets local. It verifies existing refs before
 skipping them, compares the original ref during database updates, and deletes
 new orphan writes on a failed update. Concurrent edits win. Persisted refs are
@@ -101,7 +101,7 @@ and access to Infisical, then complete the reverse migration before disabling it
 Forward migration can run alongside normal edits; the Infisical selection reads
 both formats throughout the transition.
 
-Pending credential-transfer writes block changing storage so their recovery references stay usable.
+Pending credential-transfer writes and Slack credential cleanup block changing storage so their recovery references stay usable.
 Finish or stop live transfers first. If the owning account, Space or bot was removed, operators
 can inspect orphaned confirmed writes with
 `pnpm --filter @rakazo/api secrets:infisical --cleanup-orphaned-transfers --dry-run`, then repeat

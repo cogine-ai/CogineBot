@@ -7415,30 +7415,27 @@ export function createRouter(deps: RouterDeps) {
     messaging: {
       installations: {
         list: authed.messaging.installations.list.handler(async ({ context }) => ({
-          available: Boolean(deps.messagingInstallations),
+          available: deps.messagingInstallations?.available ?? false,
           ...(deps.messagingInstallations && {
             managementUrl: new URL(
-              "/app?slackInstallation=settings",
+              "/sign-in?next=%2Fapp%3FslackInstallation%3Dsettings",
               deps.env.webOrigin,
             ).toString(),
           }),
-          workspaces: ((await deps.messagingInstallations?.list(context.actor)) ?? [])
-            .filter(
-              (row) =>
-                row.status === "active" || row.status === "paused" || row.status === "revoked",
-            )
-            .map((row) => ({
-              ...row,
-              status:
-                row.status === "active"
-                  ? ("active" as const)
-                  : row.status === "paused"
-                    ? ("paused" as const)
-                    : ("revoked" as const),
-            })),
+          workspaces: ((await deps.messagingInstallations?.list(context.actor)) ?? []).flatMap(
+            (row) => {
+              const status = row.status;
+              return status === "active" ||
+                status === "paused" ||
+                status === "revoked" ||
+                status === "unavailable"
+                ? [{ ...row, status }]
+                : [];
+            },
+          ),
         })),
         start: authed.messaging.installations.start.handler(async ({ context, input }) => {
-          if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
+          if (!deps.messagingInstallations?.available) throw new ORPCError("SERVICE_UNAVAILABLE");
           try {
             return await deps.messagingInstallations.start(
               context.actor,
@@ -7449,6 +7446,11 @@ export function createRouter(deps: RouterDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "Slack authorization could not start." });
           }
         }),
+        attempt: authed.messaging.installations.attempt.handler(async ({ context, input }) => ({
+          status:
+            (await deps.messagingInstallations?.attempt(context.actor, input.attemptId)) ??
+            "expired",
+        })),
         cancel: authed.messaging.installations.cancel.handler(async ({ context, input }) => {
           if (!deps.messagingInstallations) throw new ORPCError("SERVICE_UNAVAILABLE");
           await deps.messagingInstallations.cancel(context.actor, input.attemptId);
@@ -7483,7 +7485,9 @@ export function createRouter(deps: RouterDeps) {
             }),
         );
         return {
-          enabled: deps.messaging?.enabled ?? false,
+          enabled: Boolean(
+            deps.messaging?.enabled || (await deps.messagingInstallations?.hasOwned(context.actor)),
+          ),
           providers: deps.messaging?.providers ?? [],
           openSignup: deps.messaging?.openSignup ?? false,
           identities: await Promise.all(

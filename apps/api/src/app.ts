@@ -406,13 +406,13 @@ async function buildApp(
           redirectUri: slackRedirect.toString(),
         })
       : undefined;
-  const slackMessaging = slackProvider
-    ? new SlackWorkspaceMessaging(
-        new MessagingInstallations(prisma, secrets, slackProvider),
-        slackProvider,
-        { prisma, artifacts, events, jobs },
-      )
-    : undefined;
+  const messagingInstallations = new MessagingInstallations(prisma, secrets, slackProvider);
+  const slackMessaging = new SlackWorkspaceMessaging(messagingInstallations, slackProvider, {
+    prisma,
+    artifacts,
+    events,
+    jobs,
+  });
   const memory = new MarkdownMemoryStore(prisma);
   const mcp = new McpConnector(
     prisma,
@@ -698,9 +698,9 @@ async function buildApp(
     artifacts,
     dataDir: env.dataDir,
     billing,
-    messagingInstallations: slackMessaging?.installations,
+    messagingInstallations,
     messaging: {
-      enabled: Boolean(messaging),
+      enabled: Boolean(messaging || slackProvider),
       providers: messaging?.platforms().map((platform) => platform.provider) ?? [],
       openSignup: env.messagingOpenSignup,
     },
@@ -771,7 +771,8 @@ async function buildApp(
   ] as const) {
     app.use(path, (_c, next) => runAsSystem(reason, next));
   }
-  if (slackMessaging) {
+  slackMessaging.start();
+  if (slackProvider) {
     app.post(SLACK_INSTALL_EVENTS, (c) => slackMessaging.webhook(c.req.raw));
     app.get(SLACK_INSTALL_CALLBACK, async (c) => {
       c.header("cache-control", "no-store");
@@ -794,7 +795,6 @@ async function buildApp(
       returnUrl.searchParams.set("slackInstallation", outcome);
       return c.redirect(returnUrl.toString(), 303);
     });
-    slackMessaging.start();
   }
   registerNativeEventWebhooks(app, nativeEvents);
   registerNativeEnterpriseWebhooks(app, native.enterpriseHooks);
@@ -1286,7 +1286,7 @@ async function buildApp(
         await readiness?.close().catch(() => undefined);
         oauthLogins.abortAll();
         messagingStopped = true;
-        await slackMessaging?.stop();
+        await slackMessaging.stop();
         messagingReceipts?.stop();
         clearMessagingRetryDelay?.();
         clearTeamChatRetryDelay?.();

@@ -1,4 +1,5 @@
 import type { TeamChatInboundMessage, TeamChatSendRequest } from "@rakazo/adapter-kit";
+import { MessagingSendError } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +12,48 @@ import {
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
 
 describe("team chat bridge", () => {
+  it.each(["retryable", "unknown"] as const)(
+    "only retries a known installed Slack rejection (%s)",
+    async (disposition) => {
+      const updateMany = vi.fn(
+        async (_input: { data: { status: string; nextAttemptAt: Date } }) => ({ count: 1 }),
+      );
+      const prisma = {
+        externalMessage: {
+          findUnique: vi.fn(async () => ({ status: "delivering", providerReplyHandle: null })),
+          updateMany,
+        },
+      } as unknown as PrismaClient;
+      const bridge = new TeamChatBridge({
+        prisma,
+        events: { sendUserMessage: vi.fn() },
+        jobs: { enqueue: vi.fn() },
+        send: vi.fn(),
+        providerId: "slack~fixture",
+        botId: "fixture-bot",
+        installedSlack: { acceptAfter: new Date(0), isAvailable: async () => true },
+      });
+      const at = Date.now();
+      const retry = bridge as unknown as {
+        retry(
+          message: { id: string; status: string; attempts: number },
+          error: unknown,
+        ): Promise<void>;
+      };
+      await retry.retry(
+        { id: "message", status: "running", attempts: 0 },
+        new MessagingSendError(
+          disposition,
+          disposition === "retryable" ? "rate_limited" : "outcome_unknown",
+          30_000,
+        ),
+      );
+      const { data } = updateMany.mock.calls[0]![0];
+      expect(data.status).toBe(disposition === "retryable" ? "running" : "delivering");
+      expect(data.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(at + 30_000);
+    },
+  );
+
   it("attributes an external speaker without changing their message", () => {
     expect(teamChatPrompt("slack", "Ada Lovelace", "Review the launch plan")).toBe(
       "Slack message from Ada Lovelace:\n\nReview the launch plan",

@@ -114,25 +114,28 @@ export default function Integrations() {
   const [query, setQuery] = useState("");
   const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
   const [notice, setNotice] = useState<string | null>(null);
-  const [messagingUrl, setMessagingUrl] = useState<string | null>(null);
+  const [messagingLink, setMessagingLink] = useState<{
+    url: string;
+    scope: ReturnType<typeof captureMobileScope>;
+  } | null>(null);
   useFocusEffect(
     useCallback(() => {
       const scope = captureMobileScope();
       const controller = new AbortController();
-      setMessagingUrl(null);
-      void rpc<{ available: boolean; managementUrl?: string }>(
+      setMessagingLink(null);
+      void rpc<{ available: boolean; managementUrl?: string; workspaces: unknown[] }>(
         "messaging/installations/list",
         {},
         { signal: controller.signal },
       )
-        .then(({ available, managementUrl }) => {
+        .then(({ available, managementUrl, workspaces }) => {
           if (
             !controller.signal.aborted &&
             isMobileScopeCurrent(scope) &&
-            available &&
+            (available || workspaces.length > 0) &&
             managementUrl
           )
-            setMessagingUrl(managementUrl);
+            setMessagingLink({ url: managementUrl, scope });
         })
         .catch(() => undefined);
       return () => controller.abort();
@@ -1336,12 +1339,15 @@ export default function Integrations() {
           />
         ) : null}
 
-        {!detailItem && messagingUrl ? (
+        {!detailItem && messagingLink ? (
           <NativeActionButton
             label={t("Manage Slack messaging in browser")}
             fill={false}
             prominence="secondary"
-            onPress={() => void Linking.openURL(messagingUrl)}
+            onPress={() => {
+              if (isMobileScopeCurrent(messagingLink.scope))
+                void Linking.openURL(messagingLink.url);
+            }}
           />
         ) : null}
 

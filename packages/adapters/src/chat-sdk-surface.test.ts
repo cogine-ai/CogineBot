@@ -428,6 +428,21 @@ describe("provider acceptance boundary", () => {
 });
 
 describe("ChatSdkMessagingSurface outbound", () => {
+  it("rechecks a workspace lifecycle fence after setup and before sending", async () => {
+    const postMessage = vi.fn();
+    const initialize = vi.fn(async () => undefined);
+    const { surface } = createSurface({}, { initialize, postMessage });
+    const beforeSubmit = vi.fn(async () => {
+      expect(initialize).toHaveBeenCalled();
+      return false;
+    });
+    await expect(
+      surface.sendToThread({ threadId: "mock:C1:9", body: "hi", beforeSubmit }, context),
+    ).rejects.toMatchObject({ disposition: "permanent" });
+    expect(beforeSubmit).toHaveBeenCalledOnce();
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
   it("posts to a thread through the platform adapter and returns the handle", async () => {
     const { surface, adapter } = createSurface();
     const result = await surface.sendToThread({ threadId: "mock:C1:9", body: "hi" }, context);

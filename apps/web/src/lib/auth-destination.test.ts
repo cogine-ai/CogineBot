@@ -10,6 +10,14 @@ describe("post-sign-in destinations", () => {
     expect(authDestination("/integrations/setup")).toBe("/integrations/setup");
     expect(isNativeAuthDestination("/integrations/setup")).toBe(false);
   });
+  it("returns to the Slack settings card after signing in", () => {
+    expect(authDestination("/app?slackInstallation=settings")).toBe(
+      "/app?slackInstallation=settings",
+    );
+    expect(authDestination("/app?slackInstallation=settings&next=https://example.test")).toBe(
+      "/app",
+    );
+  });
   it("retains an exact transfer invitation or owned status page after login", () => {
     const invitation = `/transfers/source?targetOrigin=https%3A%2F%2Ftarget.example.test&locator=${state}`;
     for (const path of [
