@@ -382,6 +382,14 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
           (attachment) => attachment.url && !canFetchAttachment(attachment, provider),
         )?.url ?? null,
       ...(attachments.length ? { attachments } : {}),
+      ...(provider === "slack" && !isDirect
+        ? {
+            legacySlackContent: {
+              text: message.text ?? "",
+              mediaUrl: message.attachments.find((attachment) => attachment.url)?.url ?? null,
+            },
+          }
+        : {}),
     };
     const payload = webhookDrain.getStore()?.payload;
     const enrichment =

@@ -1,6 +1,7 @@
 import { createMockAdapter, createTestMessage } from "@chat-adapter/tests";
 import type { AdapterContext, MessagingInboundEvent } from "@rakazo/adapter-kit";
-import type { Adapter, ChatInstance } from "chat";
+import type { Adapter, ChatInstance, Message } from "chat";
+import { parseMarkdown } from "chat";
 import { describe, expect, it, vi } from "vitest";
 import {
   ChatSdkMessagingSurface,
@@ -39,6 +40,8 @@ function createPlatform(
           id: string;
           text: string;
           isMe?: boolean;
+          markdown?: string;
+          fileUrl?: string;
         };
         // Fire-and-forget: matches Chat SDK adapters that return 200 before
         // processMessage settles, relying on waitUntil for background work.
@@ -48,6 +51,19 @@ function createPlatform(
           createTestMessage(payload.id, payload.text, {
             threadId: payload.threadId,
             raw: { roster: ["+15551111111", "+15552222222"] },
+            ...(payload.markdown ? { formatted: parseMarkdown(payload.markdown) } : {}),
+            ...(payload.fileUrl
+              ? {
+                  attachments: [
+                    {
+                      type: "file",
+                      name: "fixture.txt",
+                      url: payload.fileUrl,
+                      fetchData: async () => Buffer.from("fixture"),
+                    },
+                  ] satisfies Message["attachments"],
+                }
+              : {}),
             author: {
               userId: "U123",
               userName: "testuser",
@@ -141,6 +157,29 @@ describe("ChatSdkMessagingSurface inbound", () => {
       ).toBe(200);
     }
     expect(events).toMatchObject([{ content: "First" }, { content: "Second" }]);
+  });
+
+  it("retains the historical Slack group projection beside normalized links and files", async () => {
+    const { surface, events } = createSurface({ provider: "slack" }, { name: "slack" });
+    const fileUrl = "https://files.slack.com/files-pri/fixture";
+    await surface.handleWebhook(
+      "slack",
+      webhookRequest({
+        threadId: "slack:Cfixture:1",
+        id: "1700000000.000100",
+        text: "Report",
+        markdown: "[Report](https://example.test/report)",
+        fileUrl,
+      }),
+    );
+    expect(events).toMatchObject([
+      {
+        content: "Report (https://example.test/report)",
+        mediaUrl: null,
+        attachments: [{ name: "fixture.txt" }],
+        legacySlackContent: { text: "Report", mediaUrl: fileUrl },
+      },
+    ]);
   });
 
   it("never surfaces the bot's own messages", async () => {

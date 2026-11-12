@@ -157,15 +157,16 @@ function matchesLegacySlackRoutine(
     };
     const escapePayloadText = (value: string) =>
       value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    const legacy = event.legacySlackContent ?? { text: event.content, mediaUrl: event.mediaUrl };
     return (
       data.from === escapePayloadText(event.from) &&
       data.kind === (event.isDirect ? "direct" : "channel") &&
       (event.isDirect ||
         (data.channelName ===
           (event.channelName === null ? null : escapePayloadText(event.channelName)) &&
-          data.content === escapePayloadText(event.content) &&
+          data.content === escapePayloadText(legacy.text) &&
           (data.mediaUrl ?? null) ===
-            (event.mediaUrl === null ? null : escapePayloadText(event.mediaUrl))))
+            (legacy.mediaUrl === null ? null : escapePayloadText(legacy.mediaUrl))))
     );
   } catch {
     return false;
@@ -614,19 +615,29 @@ export async function teamChatSenderCanWakeMessageRoutines(
 
   const room =
     event.provider === "slack" && event.conversationKey ? `slack:${event.conversationKey}` : null;
-  const channel = room
-    ? await deps.prisma.messagingChannel.findFirst({
-        where: {
-          provider: "slack",
-          OR: [{ threadId: room }, { threadId: { startsWith: `${room}:` } }],
-        },
-        orderBy: { updatedAt: "desc" },
-        select: { id: true },
-      })
-    : await deps.prisma.messagingChannel.findUnique({
-        where: { threadId: event.threadId },
-        select: { id: true },
-      });
+  if (room) {
+    // Older Slack ledgers can have one channel row per message thread.
+    // Channel activity does not determine when a sender's approval changed.
+    const roomWhere = {
+      provider: "slack",
+      OR: [{ threadId: room }, { threadId: { startsWith: `${room}:` } }],
+    };
+    const member = await deps.prisma.messagingChannelMember.findFirst({
+      where: { address: event.from, channel: roomWhere },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      select: { status: true, identityId: true },
+    });
+    if (member) return member.status === "approved" && member.identityId === linkedIdentity.id;
+    const ledger = await deps.prisma.messagingChannel.findFirst({
+      where: roomWhere,
+      select: { id: true },
+    });
+    return !ledger;
+  }
+  const channel = await deps.prisma.messagingChannel.findUnique({
+    where: { threadId: event.threadId },
+    select: { id: true },
+  });
   if (channel) {
     const member = await deps.prisma.messagingChannelMember.findUnique({
       where: { channelId_address: { channelId: channel.id, address: event.from } },

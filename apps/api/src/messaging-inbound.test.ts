@@ -1105,62 +1105,78 @@ describe("createMessagingInboundHandler channel routing", () => {
     );
   });
 
-  it("does not suppress a Slack event for another channel sharing a legacy timestamp", async () => {
-    const deps = createDeps({
-      members: [
-        {
-          id: "cm-1",
-          channelId: "ch-1",
-          identityId: "mi-1",
+  it.each([
+    { recordedContent: "Different channel payload", expectedRun: true },
+    { recordedContent: "Report & notes", expectedRun: false },
+  ])(
+    "distinguishes legacy Slack deliveries after link and file normalization ($expectedRun)",
+    async ({ recordedContent, expectedRun }) => {
+      const deps = createDeps({
+        members: [
+          {
+            id: "cm-1",
+            channelId: "ch-1",
+            identityId: "mi-1",
+            address: groupEvent.from,
+            status: "approved",
+          },
+        ],
+        identity: {
+          id: "mi-1",
+          provider: "slack",
           address: groupEvent.from,
-          status: "approved",
+          userId: "user-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
         },
-      ],
-      identity: {
-        id: "mi-1",
+      });
+      const event = {
+        ...groupEvent,
         provider: "slack",
-        address: groupEvent.from,
-        userId: "user-1",
-        spaceId: "ws-1",
-        botId: "bot-1",
-      },
-    });
-    const event = {
-      ...groupEvent,
-      provider: "slack",
-      threadId: "slack:fixture-channel",
-      channelName: null,
-      participants: [],
-    };
-    const legacyNonce = inboundDeliveryClientNonce(
-      "messaging",
-      "bot-1",
-      messagingWakeIdempotencyKey(event.provider, event.handle),
-    );
-    vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
-      where.threadId_clientNonce?.clientNonce === legacyNonce
-        ? ({
-            blocks: [
-              {
-                kind: "text",
-                text: formatUntrustedDeliveryPayload("[Messaging Event: slack]", {
-                  provider: "slack",
-                  kind: "channel",
-                  handle: event.handle,
-                  from: event.from,
-                  channelName: null,
-                  content: "Different channel payload",
-                }),
-              },
-            ],
-          } as never)
-        : null,
-    );
-    await createMessagingInboundHandler(deps)(event);
-    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ trigger: "messaging" }),
-    );
-  });
+        threadId: "slack:fixture-channel",
+        channelName: null,
+        participants: [],
+        content: "Report & notes (https://example.test/report)",
+        legacySlackContent: {
+          text: "Report & notes",
+          mediaUrl: "https://files.slack.com/files-pri/fixture",
+        },
+      };
+      const legacyNonce = inboundDeliveryClientNonce(
+        "messaging",
+        "bot-1",
+        messagingWakeIdempotencyKey(event.provider, event.handle),
+      );
+      vi.mocked(deps.prisma.message.findUnique).mockImplementation(async ({ where }) =>
+        where.threadId_clientNonce?.clientNonce === legacyNonce
+          ? ({
+              blocks: [
+                {
+                  kind: "text",
+                  text: formatUntrustedDeliveryPayload("[Messaging Event: slack]", {
+                    provider: "slack",
+                    kind: "channel",
+                    handle: event.handle,
+                    from: event.from,
+                    channelName: null,
+                    content: recordedContent,
+                    mediaUrl: event.legacySlackContent.mediaUrl,
+                  }),
+                },
+              ],
+            } as never)
+          : null,
+      );
+      await createMessagingInboundHandler(deps)(event);
+      if (expectedRun) {
+        expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ trigger: "messaging" }),
+        );
+      } else {
+        expect(deps.sendUserMessage).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("does not start a normal group Run after a routine already consumed the event", async () => {
     const deps = createDeps({
@@ -1853,49 +1869,59 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
     ).resolves.toBe(false);
   });
 
-  it("uses a stable Slack room when the incoming post has a different thread timestamp", async () => {
-    const deps = createDeps({
-      identity: {
-        id: "mi-1",
-        provider: "slack",
-        address: groupEvent.from,
-        userId: "user-1",
-        spaceId: "ws-1",
-        botId: "bot-1",
-      },
-      members: [
-        {
-          id: "cm-1",
-          channelId: "ch-1",
-          identityId: "mi-1",
-          address: groupEvent.from,
-          status: "invited",
-        },
-      ],
-    });
-    vi.mocked(deps.prisma.messagingChannel.findFirst).mockResolvedValueOnce({
-      id: "ch-1",
-    } as never);
-    await expect(
-      teamChatSenderCanWakeMessageRoutines(deps, {
-        ...groupEvent,
-        provider: "slack",
-        threadId: "slack:fixture-room:later",
-        conversationKey: "fixture-room",
-      }),
-    ).resolves.toBe(false);
-    expect(deps.prisma.messagingChannel.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
+  it.each([
+    { member: { status: "approved", identityId: "mi-1" }, hasLedger: true, allowed: true },
+    { member: { status: "left", identityId: "mi-1" }, hasLedger: true, allowed: false },
+    { member: { status: "approved", identityId: "old-identity" }, hasLedger: true, allowed: false },
+    { member: null, hasLedger: true, allowed: false },
+    { member: null, hasLedger: false, allowed: true },
+  ])(
+    "uses the latest sender membership across Slack room threads ($member, $hasLedger)",
+    async ({ member, hasLedger, allowed }) => {
+      const deps = createDeps({
+        identity: {
+          id: "mi-1",
           provider: "slack",
-          OR: [
-            { threadId: "slack:fixture-room" },
-            { threadId: { startsWith: "slack:fixture-room:" } },
-          ],
+          address: groupEvent.from,
+          userId: "user-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
         },
-      }),
-    );
-  });
+      });
+      vi.mocked(deps.prisma.messagingChannelMember.findFirst).mockResolvedValueOnce(
+        member as never,
+      );
+      vi.mocked(deps.prisma.messagingChannel.findFirst).mockResolvedValueOnce(
+        hasLedger ? ({ id: "ch-1" } as never) : null,
+      );
+      await expect(
+        teamChatSenderCanWakeMessageRoutines(deps, {
+          ...groupEvent,
+          provider: "slack",
+          threadId: "slack:fixture-room:later",
+          conversationKey: "fixture-room",
+        }),
+      ).resolves.toBe(allowed);
+      const roomWhere = {
+        provider: "slack",
+        OR: [
+          { threadId: "slack:fixture-room" },
+          { threadId: { startsWith: "slack:fixture-room:" } },
+        ],
+      };
+      expect(deps.prisma.messagingChannelMember.findFirst).toHaveBeenCalledWith({
+        where: { address: groupEvent.from, channel: roomWhere },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: { status: true, identityId: true },
+      });
+      if (!member) {
+        expect(deps.prisma.messagingChannel.findFirst).toHaveBeenCalledWith({
+          where: roomWhere,
+          select: { id: true },
+        });
+      }
+    },
+  );
 
   it("requires approved membership or a linked identity for channel wakes", async () => {
     const approved = createDeps({

@@ -997,6 +997,8 @@ export interface MessagingInboundMessage {
   content: string;
   mediaUrl: string | null;
   attachments?: MessagingInboundAttachment[];
+  /** Original Slack group payload used only to recognize pre-upgrade Routine deliveries. */
+  legacySlackContent?: { text: string; mediaUrl: string | null };
   /** Team-room workspace/team id when the platform reports one (Slack team_id, …). */
   workspaceId?: string;
   /** Stable conversation key within the workspace (channel id, DM key, …). */
