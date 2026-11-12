@@ -1,4 +1,7 @@
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Prisma, RowSecurityPolicyStatus } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
@@ -488,6 +491,77 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     }
     if (failures.length) throw new AggregateError(failures, "Policy fixture cleanup failed");
   });
+
+  it("reports orphaned transfer credentials from the maintenance CLI under RLS", async () => {
+    const transferId = id("orphaned-transfer");
+    const itemId = id("orphaned-item");
+    await owner.prisma.deploymentTransferSession.create({
+      data: {
+        id: transferId,
+        side: "target",
+        targetTransferId: transferId,
+        localUserId: id("removed-user"),
+        localSpaceId: id("removed-space"),
+        localBotId: id("removed-bot"),
+        localSessionId: id("removed-session"),
+        sourceOrigin: "https://source.example.test",
+        targetOrigin: "https://target.example.test",
+        targetDeploymentId: "fixture",
+        targetPublicKey: "fixture",
+        targetFingerprint: "fixture",
+        localNonce: "fixture",
+        targetBindingDigest: "fixture",
+        clientNonce: "fixture",
+        requestBinding: "fixture",
+        expiresAt: new Date(Date.now() + 60_000),
+        items: {
+          create: {
+            id: itemId,
+            itemKey: "fixture",
+            sourceBotId: "fixture",
+            sourceSecretId: "fixture",
+            sourceRevision: "fixture",
+            targetName: "Fixture",
+            origin: "https://source.example.test",
+            auth: {},
+            decision: "create",
+            secretRecordId: itemId,
+            ciphertext: "synthetic-ciphertext",
+          },
+        },
+      },
+    });
+    try {
+      expect(await runtime!.prisma.deploymentTransferItem.count({ where: { id: itemId } })).toBe(0);
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          fileURLToPath(new URL("./cli/secrets-infisical.ts", import.meta.url)),
+          "--cleanup-orphaned-transfers",
+          "--dry-run",
+        ],
+        {
+          env: {
+            ...process.env,
+            DATABASE_URL: runtimeUrl,
+            REALTIME_DATABASE_URL: runtimeUrl,
+            SECRET_STORE: "encrypted",
+            ENCRYPTION_KEY: "synthetic-transfer-cleanup-key",
+          },
+          timeout: 15_000,
+        },
+      );
+      expect(stdout).toContain('"candidates":1,"retired":0');
+      expect(
+        await owner.prisma.deploymentTransferItem.findUnique({ where: { id: itemId } }),
+      ).toMatchObject({ ciphertext: "synthetic-ciphertext" });
+    } finally {
+      await owner.prisma.deploymentTransferItem.delete({ where: { id: itemId } });
+      await owner.prisma.deploymentTransferSession.delete({ where: { id: transferId } });
+    }
+  }, 20_000);
 
   it("installs the exact schema-wide policy set for a real restricted connection", async () => {
     expect(beforePolicies.policyInstalled).toBe(false);

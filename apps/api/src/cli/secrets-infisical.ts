@@ -60,12 +60,14 @@ try {
       `Slack cleanup retries ${command.dryRun ? "eligible" : "rearmed"}: ${count}\n`,
     );
   } else if (command.cleanupOrphanedTransfers) {
-    const result = await cleanupOrphanedTransfers({
-      prisma,
-      secrets: infisical,
-      dryRun: command.dryRun,
-      signal: controller.signal,
-    });
+    const result = await runAsSystem("clean up orphaned credential transfers", () =>
+      cleanupOrphanedTransfers({
+        prisma,
+        secrets: infisical,
+        dryRun: command.dryRun,
+        signal: controller.signal,
+      }),
+    );
     process.stdout.write(`Transfer cleanup: ${JSON.stringify(result)}\n`);
     if (result.uncertain || controller.signal.aborted) process.exitCode = 1;
   } else {
