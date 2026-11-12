@@ -396,7 +396,7 @@ export async function prepareOwnBotSettings(
       if (!choice || matches.length !== 1)
         return {
           error: choice
-            ? "Several connected models match. Ask which model and connection to use."
+            ? "Several connected models match. Ask which model and connection to use in a normal reply, then wait for their next message."
             : "No connected model matches. Check the model connections in Settings.",
           models: limitedModelChoices(matches),
         };
@@ -449,7 +449,7 @@ export async function prepareOwnBotSettings(
   if (args.voice?.toLowerCase() === "default") patch.voiceId = null;
   const explicitVoice = args.voice && patch.voiceId !== null ? args.voice : undefined;
   const loadedVoice =
-    explicitVoice || args.readAloud === true
+    args.voice !== undefined || args.readAloud === true
       ? await spaceVoices(deps, scope, context).catch(() => null)
       : null;
   if (explicitVoice) {
@@ -460,7 +460,9 @@ export async function prepareOwnBotSettings(
     const [voice] = matches;
     if (!voice || matches.length !== 1)
       return {
-        error: voice ? "Several voices match. Ask which voice to use." : "No voice matches.",
+        error: voice
+          ? "Several voices match. Ask which voice to use in a normal reply, then wait for their next message."
+          : "No voice matches.",
         voices: (voice ? matches : voices).slice(0, 10).map(({ id, label }) => ({ id, label })),
       };
     patch.voiceId = voice.id;
@@ -494,7 +496,8 @@ export async function prepareOwnBotSettings(
       ...(previousModelConnection && { previousModelConnection }),
       ...(voiceConnection && { voiceConnection }),
       ...(voiceLabel && { voiceLabel }),
-      ...(version.after.autoSpeak && !hostedPlayback && { playback: "device_if_enabled" }),
+      ...((version.after.autoSpeak === true || version.after.voiceId === null) &&
+        !hostedPlayback && { playback: "device_if_enabled" }),
     }),
   };
 }
