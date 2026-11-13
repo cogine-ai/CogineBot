@@ -59,7 +59,17 @@ export function openAgentImportArchive(data: Uint8Array): {
   if (!isZip && !isGzip) throw unreadable();
   const zip = isZip ? zipEntries(data, limits) : null;
   const entries = zip ? zip.entries : tarEntries(data, limits);
-  const layout = archiveLayout(entries);
+  let read = 0;
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  function readEntry(entry: Entry): string {
+    if (entry.skipped || !mayBeRead(entry.path)) throw unreadable();
+    const bytes = entry.data ?? zip?.read(entry.path);
+    if (!bytes) throw tooLarge();
+    read += bytes.length;
+    if (read > limits.readBytes) throw tooLarge();
+    return decoder.decode(bytes);
+  }
+  const layout = archiveLayout(entries, readEntry);
   const paths: string[] = [];
   const skippedPaths: string[] = [];
   const byVirtual = new Map<string, Entry>();
@@ -71,8 +81,6 @@ export function openAgentImportArchive(data: Uint8Array): {
     (entry.skipped ? skippedPaths : paths).push(path);
     byVirtual.set(path, entry);
   }
-  let read = 0;
-  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   // Counted once per selected file.
   const texts = new Map<string, string>();
   return {
@@ -83,12 +91,8 @@ export function openAgentImportArchive(data: Uint8Array): {
       const cached = texts.get(path);
       if (cached !== undefined) return cached;
       const entry = byVirtual.get(path);
-      if (!entry || entry.skipped || !mayBeRead(entry.path)) throw unreadable();
-      const bytes = entry.data ?? zip?.read(entry.path);
-      if (!bytes) throw tooLarge();
-      read += bytes.length;
-      if (read > limits.readBytes) throw tooLarge();
-      const text = decoder.decode(bytes);
+      if (!entry) throw unreadable();
+      const text = readEntry(entry);
       texts.set(path, text);
       return text;
     },
@@ -485,10 +489,12 @@ function ascii(bytes: Uint8Array): string {
  * Maps archive paths to `.openclaw/...` or `.hermes/...`, or null outside the agent's home.
  *
  * OpenClaw backups hold `<name>/manifest.json` and `<name>/payload/posix/<original path>`:
- * the `state` asset is the home, and a `workspace` asset outside it its workspace. Only tar
- * keeps manifest data while streaming; Hermes zips hold the home at the archive root.
+ * the `state` asset is the home, and a `workspace` asset outside it its workspace.
  */
-function archiveLayout(entries: Entry[]): {
+function archiveLayout(
+  entries: Entry[],
+  readEntry: (entry: Entry) => string,
+): {
   map: (path: string) => string | null;
   declaredWorkspace: boolean;
 } {
@@ -496,9 +502,10 @@ function archiveLayout(entries: Entry[]): {
   const manifests = entries.filter((entry) => /^[^/]+\/manifest\.json$/.test(entry.path));
   if (manifests.length > 1) throw unreadable();
   const manifest = manifests[0];
-  if (manifest?.data) {
+  if (manifest) {
     const roots = openClawRoots(
-      manifest,
+      manifest.path,
+      readEntry(manifest).replace(/^\uFEFF/, ""),
       entries.map((entry) => entry.path),
     );
     if (roots) {
@@ -543,18 +550,24 @@ function archiveLayout(entries: Entry[]): {
 }
 
 function openClawRoots(
-  manifest: Entry,
+  manifestPath: string,
+  manifestText: string,
   paths: readonly string[],
 ): { home: string; workspace?: string } | null {
+  let parsed: {
+    schemaVersion?: number;
+    archiveRoot?: string;
+    paths?: { workspaceDirs?: unknown; stateDir?: unknown };
+    assets?: { kind?: string; archivePath?: string; sourcePath?: string }[];
+  };
   try {
-    const parsed = JSON.parse(new TextDecoder().decode(manifest.data)) as {
-      schemaVersion?: number;
-      archiveRoot?: string;
-      paths?: { workspaceDirs?: unknown; stateDir?: unknown };
-      assets?: { kind?: string; archivePath?: string; sourcePath?: string }[];
-    };
-    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
-    const folder = manifest.path.slice(0, -"/manifest.json".length);
+    parsed = JSON.parse(manifestText);
+  } catch {
+    return null;
+  }
+  if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
+  try {
+    const folder = manifestPath.slice(0, -"/manifest.json".length);
     // The manifest describes this archive only if it names the folder it sits in.
     if (parsed.archiveRoot !== undefined && parsed.archiveRoot !== folder) throw unreadable();
     const inArchive = (archivePath: string) => {
@@ -564,7 +577,7 @@ function openClawRoots(
     };
     const state = parsed.assets.find((asset) => asset.kind === "state" && asset.archivePath);
     const home = state?.archivePath ? inArchive(state.archivePath) : null;
-    if (!home) return null;
+    if (!home) throw unreadable();
     // Every declared asset must exist in the archive, under its root folder.
     for (const asset of parsed.assets) {
       if (!asset.archivePath) continue;
@@ -625,7 +638,7 @@ function openClawRoots(
     return workspace ? { home, workspace: workspace.root } : { home };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;
-    return null;
+    throw unreadable();
   }
 }
 

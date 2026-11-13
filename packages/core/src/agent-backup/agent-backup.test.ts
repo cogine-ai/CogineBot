@@ -184,8 +184,8 @@ it("rejects a declared workspace without supported text even when other content 
   expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
 });
 
-it("uses an explicitly declared external workspace even if old workspace folders remain", () => {
-  const backup = tar({
+it.each(["tar", "zip"])("uses the declared external workspace in %s archives", (format) => {
+  const files = {
     "backup/manifest.json": JSON.stringify({
       schemaVersion: 1,
       archiveRoot: "backup",
@@ -195,9 +195,16 @@ it("uses an explicitly declared external workspace even if old workspace folders
         { kind: "workspace", archivePath: "external", sourcePath: "/current" },
       ],
     }),
+    "backup/state/openclaw.json": "{}",
     "backup/state/workspace-other/SOUL.md": "Old instructions",
     "backup/external/SOUL.md": "Current instructions",
-  });
+  };
+  const backup =
+    format === "tar"
+      ? tar(files)
+      : zipSync(
+          Object.fromEntries(Object.entries(files).map(([path, text]) => [path, strToU8(text)])),
+        );
   expect(JSON.parse(encodeAgentBackup(backup)).files).toEqual([
     { path: "SOUL.md", content: "Current instructions" },
   ]);
@@ -233,6 +240,17 @@ it.each(["missing", "mismatched", "runtime-only"])(
     expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
   },
 );
+
+it("does not infer a stale ZIP workspace after a malformed layout declaration", () => {
+  const backup = zipSync({
+    "backup/manifest.json": strToU8(
+      JSON.stringify({ schemaVersion: 1, archiveRoot: "backup", assets: [null] }),
+    ),
+    "backup/openclaw.json": strToU8("{}"),
+    "backup/workspace-old/SOUL.md": strToU8("Old instructions"),
+  });
+  expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+});
 
 it.each(["\n", "\r\n"])("renames quoted and multiline Skills with valid YAML (%j)", (newline) => {
   const name = 'Reader\'s "quoted" \\notes-2';
