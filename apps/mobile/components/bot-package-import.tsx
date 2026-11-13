@@ -8,6 +8,7 @@ import {
 } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import {
+  BackupModelKeyMismatch,
   BackupModelKeyUnavailable,
   backupModelKeySourceDigest,
   createBotPackageImport,
@@ -365,11 +366,13 @@ export function NativeBotPackageImport({
       ) : null}
       {state?.error ? (
         <Text accessibilityRole="alert" style={styles.secondary}>
-          {state.error instanceof BackupModelKeyUnavailable
-            ? t("Could not read the API key. Choose the backup again.")
-            : phase === "editing" || phase === "review"
-              ? t("Could not preview this package.")
-              : t("Could not confirm import. Check status before trying again.")}
+          {state.error instanceof BackupModelKeyMismatch
+            ? t("Select the original backup to resume this model connection.")
+            : state.error instanceof BackupModelKeyUnavailable
+              ? t("Could not read the API key. Choose the backup again.")
+              : phase === "editing" || phase === "review"
+                ? t("Could not preview this package.")
+                : t("Could not confirm import. Check status before trying again.")}
         </Text>
       ) : null}
       {preview && phase !== "completed" ? (

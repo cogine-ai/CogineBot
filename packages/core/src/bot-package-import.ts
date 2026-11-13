@@ -12,6 +12,7 @@ import {
   AgentBackupModelSchema,
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_ROUTINES,
+  BOT_PACKAGE_MODEL_KEY_MISMATCH,
   botPackageUtf8Bytes,
   isBackupMcpPath,
 } from "@rakazo/contracts";
@@ -22,6 +23,8 @@ export class BackupModelKeyUnavailable extends Error {
     super("Could not read the selected backup model key.");
   }
 }
+
+export class BackupModelKeyMismatch extends Error {}
 
 /** The projection excludes credentials and preserves the source kind and reviewed content. */
 export function backupModelKeySourceDigest(source: string) {
@@ -173,7 +176,19 @@ export function createBotPackageImport(deps: Deps) {
       const receipt = await request(controller.signal);
       if (current(version)) receive(receipt, nonce);
     } catch (error) {
-      if (current(version)) publish({ ...state, phase: "unknown", error, canRetry: false });
+      if (current(version)) {
+        const mismatch =
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === BOT_PACKAGE_MODEL_KEY_MISMATCH;
+        publish({
+          ...state,
+          phase: "unknown",
+          error: mismatch ? new BackupModelKeyMismatch() : error,
+          canRetry: mismatch,
+        });
+      }
     } finally {
       if (current(version)) pending = null;
     }

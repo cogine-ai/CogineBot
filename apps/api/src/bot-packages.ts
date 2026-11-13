@@ -23,6 +23,7 @@ import {
   AgentBackupModelSchema,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_CONNECTIONS,
+  BOT_PACKAGE_MODEL_KEY_MISMATCH,
   BotPackageDocumentSchema,
   BotPackageLeftOutSchema,
 } from "@rakazo/contracts";
@@ -293,7 +294,8 @@ export function createBotPackagesService(deps: Deps) {
           Buffer.from(plan.modelKeyBinding, "hex"),
         ))
     )
-      throw new ORPCError("BAD_REQUEST", {
+      throw new ORPCError(BOT_PACKAGE_MODEL_KEY_MISMATCH, {
+        status: 400,
         message: "Select the original backup to resume this model connection.",
       });
     const kind = await botCreationComputerKind(deps.prisma);

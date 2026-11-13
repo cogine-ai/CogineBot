@@ -525,10 +525,9 @@ test("agent backup folder previews only selected content and preserves the draft
     await choose(otherBackup);
     await resume.click();
     await expect(
-      panel.getByText("Could not confirm import. Check status before trying again."),
+      panel.getByText("Select the original backup to resume this model connection."),
     ).toBeVisible();
     expect(resumes).toHaveLength(0);
-    await panel.getByRole("button", { name: "Check status", exact: true }).click();
     await choose(root);
     await resume.click();
     await expect.poll(() => resumes.length).toBe(1);

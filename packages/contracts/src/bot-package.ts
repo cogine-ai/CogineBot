@@ -153,6 +153,8 @@ export const BotPackagePreviewSchema = z.object({
 });
 export type BotPackagePreview = z.infer<typeof BotPackagePreviewSchema>;
 
+export const BOT_PACKAGE_MODEL_KEY_MISMATCH = "BOT_PACKAGE_MODEL_KEY_MISMATCH";
+
 export const BotPackageModelKeyInput = z.object({
   apiKey: z
     .string()

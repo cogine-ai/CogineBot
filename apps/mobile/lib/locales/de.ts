@@ -1404,6 +1404,8 @@ export const DE_MESSAGES: Record<string, string> = {
     "Wähle die Sicherung erneut aus, um den Import des API-Schlüssels fortzusetzen.",
   "Could not read the API key. Choose the backup again.":
     "Der API-Schlüssel konnte nicht gelesen werden. Wähle die Sicherung erneut aus.",
+  "Select the original backup to resume this model connection.":
+    "Wähle die ursprüngliche Sicherung aus, um diese Modellverbindung weiter zu importieren.",
   "Import cancelled.": "Import abgebrochen.",
   "Import needs attention.": "Der Import muss geprüft werden.",
   "Imported bot name": "Name des importierten Bots",

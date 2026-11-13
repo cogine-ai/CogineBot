@@ -1397,6 +1397,8 @@ export const RU_MESSAGES: Record<string, string> = {
     "Выберите резервную копию ещё раз, чтобы продолжить импорт API-ключа.",
   "Could not read the API key. Choose the backup again.":
     "Не удалось прочитать API-ключ. Выберите резервную копию ещё раз.",
+  "Select the original backup to resume this model connection.":
+    "Выберите исходную резервную копию, чтобы продолжить импорт подключения модели.",
   "Import cancelled.": "Импорт отменён.",
   "Import needs attention.": "Импорт требует внимания.",
   "Imported bot name": "Имя импортированного бота",

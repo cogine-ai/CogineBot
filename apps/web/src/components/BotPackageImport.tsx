@@ -3,6 +3,7 @@ import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import {
+  BackupModelKeyMismatch,
   BackupModelKeyUnavailable,
   backupModelKeySourceDigest,
   createBotPackageImport,
@@ -424,11 +425,13 @@ export function BotPackageImport({
       ) : null}
       {state?.error ? (
         <p role="alert" className="text-sm text-destructive">
-          {state.error instanceof BackupModelKeyUnavailable
-            ? t`Could not read the API key. Choose the backup again.`
-            : phase === "editing" || phase === "review"
-              ? t`Could not preview this package.`
-              : t`Could not confirm import. Check status before trying again.`}
+          {state.error instanceof BackupModelKeyMismatch
+            ? t`Select the original backup to resume this model connection.`
+            : state.error instanceof BackupModelKeyUnavailable
+              ? t`Could not read the API key. Choose the backup again.`
+              : phase === "editing" || phase === "review"
+                ? t`Could not preview this package.`
+                : t`Could not confirm import. Check status before trying again.`}
         </p>
       ) : null}
       {preview && phase !== "completed" ? (
