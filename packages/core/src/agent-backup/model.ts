@@ -15,6 +15,37 @@ const providerAliases = new Map([
   ["z-ai", "zai"],
   ["zhipu", "zai"],
 ]);
+const hermesProviderAliases = new Map([
+  ["openai-api", "openai"],
+  ["chatgpt", "openai-codex"],
+  ["chatgpt-codex", "openai-codex"],
+  ["claude-code", "anthropic"],
+  ["google-ai-studio", "google"],
+  ["x.ai", "xai"],
+  ["kimi-for-coding", "kimi-coding"],
+  ["moonshot", "kimi-coding"],
+  ["kimi-cn", "kimi-coding-cn"],
+  ["moonshot-cn", "kimi-coding-cn"],
+  ["glm", "zai"],
+  ["z.ai", "zai"],
+  ["minimax-china", "minimax-cn"],
+  ["minimax_cn", "minimax-cn"],
+  ["ai-gateway", "vercel-ai-gateway"],
+  ["aigateway", "vercel-ai-gateway"],
+  ["vercel", "vercel-ai-gateway"],
+  ["opencode-zen", "opencode"],
+  ["zen", "opencode"],
+  ["go", "opencode-go"],
+  ["opencode-go-sub", "opencode-go"],
+  ["hf", "huggingface"],
+  ["hugging-face", "huggingface"],
+  ["huggingface-hub", "huggingface"],
+  ["mimo", "xiaomi"],
+  ["xiaomi-mimo", "xiaomi"],
+  ["kilo", "kilocode"],
+  ["kilo-code", "kilocode"],
+  ["kilo-gateway", "kilocode"],
+]);
 // A saved address can disambiguate the account family. Only portable built-in routes are listed.
 const hermesDefaultEndpoints = new Map<string, ReadonlyMap<string, string>>([
   ["anthropic", new Map([["https://api.anthropic.com", "anthropic"]])],
@@ -41,6 +72,9 @@ const hermesDefaultEndpoints = new Map<string, ReadonlyMap<string, string>>([
   ["openai", new Map([["https://api.openai.com/v1", "openai"]])],
   ["openai-codex", new Map([["https://chatgpt.com/backend-api/codex", "openai-codex"]])],
   ["openrouter", new Map([["https://openrouter.ai/api/v1", "openrouter"]])],
+  ["vercel-ai-gateway", new Map([["https://ai-gateway.vercel.sh/v1", "vercel-ai-gateway"]])],
+  ["opencode", new Map([["https://opencode.ai/zen/v1", "opencode"]])],
+  ["opencode-go", new Map([["https://opencode.ai/zen/go/v1", "opencode-go"]])],
   ["xai", new Map([["https://api.x.ai/v1", "xai"]])],
   ["xiaomi", new Map([["https://api.xiaomimimo.com/v1", "xiaomi"]])],
   [
@@ -52,7 +86,7 @@ const hermesDefaultEndpoints = new Map<string, ReadonlyMap<string, string>>([
   ],
 ]);
 const hermesEndpointRequired = new Set(["kimi-coding", "kimi-coding-cn", "zai"]);
-const hermesAggregatorProviders = new Set(["openrouter", "nous", "ai-gateway", "kilocode"]);
+const hermesAggregatorProviders = new Set(["openrouter", "nous", "vercel-ai-gateway", "kilocode"]);
 const hermesAggregatorVendors = new Map([
   ["claude", "anthropic"],
   ["gpt", "openai"],
@@ -97,9 +131,8 @@ const own = (object: Record<string, unknown>, key: string) =>
   Object.hasOwn(object, key) ? object[key] : undefined;
 const providerId = (source: AgentBackupSource, value: string) => {
   const id = value.trim().toLowerCase();
-  if (source === "hermes" && id === "openai-api") return "openai";
-  if (source === "hermes" && id === "moonshot") return "kimi-coding";
-  return canonicalPiProviderId(providerAliases.get(id) ?? id);
+  const hermesId = source === "hermes" ? hermesProviderAliases.get(id) : undefined;
+  return canonicalPiProviderId(hermesId ?? providerAliases.get(id) ?? id);
 };
 
 export const backupModelConfigPath = (source: AgentBackupSource) =>
@@ -266,6 +299,13 @@ function normalizeHermesModelId(provider: string, modelId: string): string {
       hermesAggregatorVendors.get(lower.split("-", 1)[0]!) ??
       [...hermesAggregatorVendors].find(([prefix]) => lower.startsWith(prefix))?.[1];
     return vendor ? `${vendor}/${modelId}` : modelId;
+  }
+  if (provider === "opencode" || provider === "opencode-go") {
+    const slash = modelId.indexOf("/");
+    const bare = slash >= 0 ? modelId.slice(slash + 1).trim() || modelId : modelId;
+    return provider === "opencode" && bare.toLowerCase().startsWith("claude-")
+      ? bare.replaceAll(".", "-")
+      : bare;
   }
   if (!hermesDirectProviders.has(provider)) return modelId;
   const separator = modelId.search(/[/:]/);

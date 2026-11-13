@@ -100,17 +100,22 @@ it.each([
   ["model: { provider: azure, default: { provider: openai, model: gpt-4.1 } }", "azure"],
   ["model: { name: { provider: openai, model: gpt-4.1 } }", "openai"],
   ["model: gpt-4.1\nprovider: openai", "openai"],
+  ["model: { provider: ai-gateway, default: gpt-4.1 }", "vercel-ai-gateway", "openai/gpt-4.1"],
+  ["model: { provider: vercel, default: gpt-4.1 }", "vercel-ai-gateway", "openai/gpt-4.1"],
   ["model: { provider: openai, default: { model: '  ', default: old }, name: gpt-4.1 }", "openai"],
   ["model: { provider: openai, default: gpt-4.1, model: old, name: older }", "openai"],
-])("normalizes a supported Hermes model preference (%s)", (config, provider) => {
-  const backup = encodeAgentBackup(
-    zipSync({
-      "HERMES.md": strToU8("Review sources."),
-      "config.yaml": strToU8(config),
-    }),
-  );
-  expect(JSON.parse(backup).model).toEqual({ provider, modelId: "gpt-4.1" });
-});
+])(
+  "normalizes a supported Hermes model preference (%s)",
+  (config, provider, modelId = "gpt-4.1") => {
+    const backup = encodeAgentBackup(
+      zipSync({
+        "HERMES.md": strToU8("Review sources."),
+        "config.yaml": strToU8(config),
+      }),
+    );
+    expect(JSON.parse(backup).model).toEqual({ provider, modelId });
+  },
+);
 
 it.each([
   ["anthropic", "anthropic/claude-opus-4.6", "claude-opus-4-6"],
@@ -149,6 +154,14 @@ it.each([
 
 it.each([
   ["openai-api", "https://api.openai.com/v1", "gpt-4.1", "openai"],
+  [
+    "ai-gateway",
+    "https://ai-gateway.vercel.sh/v1",
+    "anthropic/claude-sonnet-4.6",
+    "vercel-ai-gateway",
+  ],
+  ["opencode-zen", "https://opencode.ai/zen/v1", "claude-sonnet-4-6", "opencode"],
+  ["opencode-go", "https://opencode.ai/zen/go/v1", "glm-5.2", "opencode-go"],
   ["openai-codex", "https://chatgpt.com/backend-api/codex", "gpt-5.3-codex-spark", "openai-codex"],
   ["gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-pro", "google"],
   ["kimi-coding", "https://api.kimi.com/coding", "kimi-for-coding", "kimi-coding"],
@@ -174,6 +187,21 @@ it.each([
   );
   expect(JSON.parse(backup).model).toEqual({ provider: target, modelId });
   expect(backup).not.toContain(endpoint);
+});
+
+it("uses flat model IDs and preserves the two OpenCode plans", () => {
+  for (const [provider, modelId, target, expected] of [
+    ["opencode-zen", "anthropic/claude-sonnet-4.6", "opencode", "claude-sonnet-4-6"],
+    ["go", "z-ai/glm-5.2", "opencode-go", "glm-5.2"],
+  ]) {
+    const backup = encodeAgentBackup(
+      zipSync({
+        "HERMES.md": strToU8("Read this."),
+        "config.yaml": strToU8(`model: { provider: ${provider}, default: '${modelId}' }`),
+      }),
+    );
+    expect(JSON.parse(backup).model).toEqual({ provider: target, modelId: expected });
+  }
 });
 
 it("omits a credential-shaped model ID before normalization", () => {
@@ -267,6 +295,9 @@ it("reports an unavailable declared active configuration without using the home 
 it.each([
   "model: { provider: openrouter, default: anthropic/claude-opus-4.6 }\nproviders: { openrouter: { base_url: 'https://openrouter.ai/api/v1' } }",
   "model: { provider: zai, default: glm-5.2, base_url: 'https://api.z.ai/api/paas/v4' }",
+  "model: { provider: opencode-zen, default: claude-sonnet-4-6, base_url: 'https://opencode.ai/zen/go/v1' }",
+  "model: { provider: vercel, default: claude-sonnet-4.6, base_url: 'https://ai-gateway.vercel.sh/v1?key=fixture' }",
+  "model: { provider: ai-gateway, default: claude-sonnet-4.6 }\nproviders: { vercel-ai-gateway: { api: 'https://example.test' } }",
   "model: { provider: zai, default: glm-5.2 }",
   "model: { provider: kimi-coding, default: kimi-for-coding }",
   "model: { provider: kimi-coding-cn, default: kimi-k2.6 }",
