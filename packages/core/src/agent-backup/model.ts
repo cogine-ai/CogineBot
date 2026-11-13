@@ -19,6 +19,27 @@ const hermesDefaultEndpoints = new Map([
   ["anthropic", "https://api.anthropic.com"],
   ["openrouter", "https://openrouter.ai/api/v1"],
 ]);
+const hermesAggregatorProviders = new Set(["openrouter", "nous", "ai-gateway", "kilocode"]);
+const hermesAggregatorVendors = new Map([
+  ["claude", "anthropic"],
+  ["gpt", "openai"],
+  ["o1", "openai"],
+  ["o3", "openai"],
+  ["o4", "openai"],
+  ["gemini", "google"],
+  ["gemma", "google"],
+  ["deepseek", "deepseek"],
+  ["glm", "z-ai"],
+  ["kimi", "moonshotai"],
+  ["minimax", "minimax"],
+  ["grok", "x-ai"],
+  ["qwen", "qwen"],
+  ["mimo", "xiaomi"],
+  ["trinity", "arcee-ai"],
+  ["nemotron", "nvidia"],
+  ["llama", "meta-llama"],
+  ["step", "stepfun"],
+]);
 const hermesDirectProviders = new Set([
   "anthropic",
   "arcee",
@@ -200,6 +221,14 @@ function validConfig(value: unknown): boolean {
 }
 
 function normalizeHermesModelId(provider: string, modelId: string): string {
+  if (hermesAggregatorProviders.has(provider)) {
+    if (modelId.includes("/")) return modelId;
+    const lower = modelId.toLowerCase();
+    const vendor =
+      hermesAggregatorVendors.get(lower.split("-", 1)[0]!) ??
+      [...hermesAggregatorVendors].find(([prefix]) => lower.startsWith(prefix))?.[1];
+    return vendor ? `${vendor}/${modelId}` : modelId;
+  }
   if (!hermesDirectProviders.has(provider)) return modelId;
   const separator = modelId.search(/[/:]/);
   if (separator >= 0) {
