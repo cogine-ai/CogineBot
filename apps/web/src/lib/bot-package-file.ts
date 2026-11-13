@@ -1,7 +1,16 @@
 import type { BotPackageExport } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
-import { readBotImportBytes } from "@rakazo/core/agent-backup";
+import { encodeAgentBackupFolder, readBotImportBytes } from "@rakazo/core/agent-backup";
 import { downloadArtifactBytes } from "./artifact-open";
+
+export function supportsBotBackupFolder(): boolean {
+  // The folder inventory needs hidden entries to identify Skill dependencies.
+  return (
+    typeof HTMLInputElement !== "undefined" &&
+    "webkitdirectory" in HTMLInputElement.prototype &&
+    /\b(?:Chrome|HeadlessChrome|Chromium|Firefox)\//.test(navigator.userAgent)
+  );
+}
 
 /** Packages have a separate byte budget from chat attachments. */
 export async function readBotPackageFile(file: File, isCurrent: () => boolean): Promise<string> {
@@ -12,6 +21,17 @@ export async function readBotPackageFile(file: File, isCurrent: () => boolean): 
   if (bytes.byteLength > BOT_PACKAGE_MAX_BYTES)
     throw new Error("Bot packages must be at most 4 MiB.");
   return readBotImportBytes(new Uint8Array(bytes));
+}
+
+export function readBotBackupFolder(files: readonly File[], isCurrent: () => boolean) {
+  return encodeAgentBackupFolder(
+    files.map((file) => ({
+      path: file.webkitRelativePath,
+      size: file.size,
+      read: async (maxBytes) => new Uint8Array(await file.slice(0, maxBytes).arrayBuffer()),
+    })),
+    isCurrent,
+  );
 }
 
 export function downloadBotPackage(result: BotPackageExport, isCurrent: () => boolean): void {

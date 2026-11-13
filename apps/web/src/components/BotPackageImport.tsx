@@ -6,7 +6,11 @@ import { createBotPackageImport } from "@rakazo/core";
 import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
 import { Button, Checkbox, Input, Switch, Textarea } from "@rakazo/ui-web";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { readBotPackageFile } from "../lib/bot-package-file";
+import {
+  readBotBackupFolder,
+  readBotPackageFile,
+  supportsBotBackupFolder,
+} from "../lib/bot-package-file";
 import { newClientId } from "../lib/client-id";
 import { createSpaceRpc } from "../lib/rpc";
 import { BotPackageDocumentView, BotPackageLeftOutList } from "./BotPackageDocumentView";
@@ -48,6 +52,8 @@ export function BotPackageImport({
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const current = useRef<() => boolean>(() => false);
   const fileGeneration = useRef(0);
+  const folderInput = useRef<HTMLInputElement | null>(null);
+  const canPickFolder = supportsBotBackupFolder();
   const imported = useRef<string | null>(null);
   const onImportedRef = useRef(onImported);
   onImportedRef.current = onImported;
@@ -111,27 +117,18 @@ export function BotPackageImport({
     setFileError(null);
     manager.current?.edit(input);
   }
-  async function read(file: File) {
+  async function readSource(read: (valid: () => boolean) => Promise<string>, errorMessage: string) {
     const version = ++fileGeneration.current;
+    const valid = () => version === fileGeneration.current && current.current();
     setReading(true);
     setFileError(null);
     try {
-      const source = await readBotPackageFile(
-        file,
-        () => version === fileGeneration.current && current.current(),
-      );
-      if (version === fileGeneration.current && current.current())
-        manager.current?.edit({
-          source,
-          includeMemory: false,
-        });
+      const source = await read(valid);
+      if (valid()) manager.current?.edit({ source, includeMemory: false });
     } catch {
-      if (version === fileGeneration.current && current.current())
-        setFileError(
-          t`Could not read this package. Use a JSON file or an agent backup up to 4 MiB.`,
-        );
+      if (valid()) setFileError(errorMessage);
     } finally {
-      if (version === fileGeneration.current && current.current()) setReading(false);
+      if (valid()) setReading(false);
     }
   }
   return (
@@ -185,9 +182,43 @@ export function BotPackageImport({
             onChange={(event) => {
               const file = event.target.files?.[0];
               event.target.value = "";
-              if (file) void read(file);
+              if (file)
+                void readSource(
+                  (valid) => readBotPackageFile(file, valid),
+                  t`Could not read this package. Use a JSON file or an agent backup up to 4 MiB.`,
+                );
             }}
           />
+          {canPickFolder ? (
+            <>
+              <input
+                ref={(input) => {
+                  folderInput.current = input;
+                  input?.setAttribute("webkitdirectory", "");
+                }}
+                type="file"
+                hidden
+                disabled={locked || reading}
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = "";
+                  if (files.length)
+                    void readSource(
+                      (valid) => readBotBackupFolder(files, valid),
+                      t`Could not read this backup folder. Choose a supported agent folder or use a backup file.`,
+                    );
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={locked || reading}
+                onClick={() => folderInput.current?.click()}
+              >
+                <Trans>Choose backup folder</Trans>
+              </Button>
+            </>
+          ) : null}
           <label htmlFor={`${ids}-name`} className="block text-sm">
             <Trans>Name</Trans>
             <Input
@@ -196,7 +227,7 @@ export function BotPackageImport({
               value={state?.name ?? ""}
               maxLength={BOT_NAME_MAX_LENGTH}
               placeholder={preview?.document.profile.name ?? ""}
-              disabled={locked}
+              disabled={locked || reading}
               onChange={(event) => edit({ name: event.target.value })}
             />
           </label>
@@ -213,7 +244,7 @@ export function BotPackageImport({
             <Switch
               id={`${ids}-memory`}
               checked={state?.includeMemory ?? false}
-              disabled={locked}
+              disabled={locked || reading}
               onCheckedChange={(includeMemory) => edit({ includeMemory })}
             />
           </label>
@@ -424,7 +455,7 @@ export function BotPackageImport({
               <span dir="auto">{item.botName}</span>
               <Button
                 variant="outline"
-                disabled={locked}
+                disabled={locked || reading}
                 onClick={() => void manager.current?.recover(item.clientNonce)}
               >
                 <Trans>Review import</Trans>

@@ -6677,12 +6677,20 @@ msgid "Check imported skills"
 msgstr "Vérifier les compétences importées"
 
 #: src/components/BotPackageImport.tsx
+msgid "Choose backup folder"
+msgstr "Choisir un dossier de sauvegarde"
+
+#: src/components/BotPackageImport.tsx
 msgid "Choose package file"
 msgstr "Choisir un fichier de paquet"
 
 #: src/components/BotPackageImport.tsx
 msgid "Agent backup selected"
 msgstr "Sauvegarde de l’agent sélectionnée"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this backup folder. Choose a supported agent folder or use a backup file."
+msgstr "Impossible de lire ce dossier de sauvegarde. Choisissez un dossier d’agent pris en charge ou utilisez un fichier de sauvegarde."
 
 #: src/components/BotPackageImport.tsx
 msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."

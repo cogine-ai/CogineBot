@@ -8,7 +8,7 @@ import { Gunzip, Inflate } from "fflate";
  * files an import might use are decompressed; others are listed by name only.
  */
 
-const AGENT_IMPORT_ARCHIVE_LIMITS = {
+export const AGENT_IMPORT_ARCHIVE_LIMITS = {
   archiveBytes: BOT_PACKAGE_MAX_BYTES,
   entries: 2_000,
   /** One file that is read. Larger files are never sent (the upload cap is far lower). */

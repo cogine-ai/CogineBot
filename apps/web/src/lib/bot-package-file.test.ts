@@ -1,12 +1,33 @@
 import type { BotPackageExport } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
-import { beforeEach, expect, it, vi } from "vitest";
-import { downloadBotPackage, readBotPackageFile } from "./bot-package-file";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  downloadBotPackage,
+  readBotPackageFile,
+  supportsBotBackupFolder,
+} from "./bot-package-file";
 
 const { download } = vi.hoisted(() => ({ download: vi.fn() }));
 vi.mock("./artifact-open", () => ({ downloadArtifactBytes: download }));
 
 beforeEach(() => vi.clearAllMocks());
+afterEach(() => vi.unstubAllGlobals());
+
+it.each([
+  ["Mozilla/5.0 AppleWebKit/537.36 Chrome/141.0.0.0 Safari/537.36", true],
+  ["Mozilla/5.0 Gecko/20100101 Firefox/143.0", true],
+  ["Mozilla/5.0 AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15", false],
+  ["Mozilla/5.0 AppleWebKit/605.1.15 CriOS/141.0 Mobile/15E148 Safari/604.1", false],
+])(
+  "uses the archive picker when directory enumeration is incomplete for %s",
+  (userAgent, supported) => {
+    vi.stubGlobal("navigator", { userAgent });
+    vi.stubGlobal("HTMLInputElement", { prototype: { webkitdirectory: false } });
+    expect(supportsBotBackupFolder()).toBe(supported);
+    vi.stubGlobal("HTMLInputElement", { prototype: {} });
+    expect(supportsBotBackupFolder()).toBe(false);
+  },
+);
 
 function file(bytes: Uint8Array, size = bytes.byteLength) {
   const read = vi.fn(async () => bytes.buffer);

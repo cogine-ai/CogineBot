@@ -6677,12 +6677,20 @@ msgid "Check imported skills"
 msgstr "가져온 스킬 확인"
 
 #: src/components/BotPackageImport.tsx
+msgid "Choose backup folder"
+msgstr "백업 폴더 선택"
+
+#: src/components/BotPackageImport.tsx
 msgid "Choose package file"
 msgstr "패키지 파일 선택"
 
 #: src/components/BotPackageImport.tsx
 msgid "Agent backup selected"
 msgstr "에이전트 백업을 선택했습니다"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this backup folder. Choose a supported agent folder or use a backup file."
+msgstr "이 백업 폴더를 읽을 수 없습니다. 지원되는 에이전트 폴더를 선택하거나 백업 파일을 사용하세요."
 
 #: src/components/BotPackageImport.tsx
 msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
