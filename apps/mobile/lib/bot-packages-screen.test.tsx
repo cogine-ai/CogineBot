@@ -309,12 +309,24 @@ it("invalidates a native preview when memory selection changes", async () => {
   ).toBe(true);
 });
 
-it("explains an unavailable backup file without sending its text", async () => {
+it.each([
+  [
+    "skills/invalid/SKILL.md",
+    "Private text without metadata.",
+    "This Skill is missing valid metadata.",
+  ],
+  [
+    "skills/missing/SKILL.md",
+    "---\nname: fixture\ndescription: Read a report.\n---\nRead references/guide.md.",
+    "This Skill needs additional files.",
+  ],
+  ["TOOLS.md", "Private runtime fixture.", "This runtime file is not used."],
+])("explains unavailable %s before any request", async (path, content, reason) => {
   api.pick.mockResolvedValueOnce(
     JSON.stringify({
       format: "agent-backup/v1",
-      source: "hermes",
-      files: [{ path: "skills/invalid/SKILL.md", content: "Private text without metadata." }],
+      source: "openclaw",
+      files: [{ path, content }],
     }),
   );
   await mountImport();
@@ -323,9 +335,9 @@ it("explains an unavailable backup file without sending its text", async () => {
   expect(button("Choose backup content").getAttribute("aria-expanded")).toBe("false");
   await click("Choose backup content");
   expect(button("Choose backup content").getAttribute("aria-expanded")).toBe("true");
-  expect(node.textContent).toContain("skills/invalid/SKILL.md");
-  expect(node.textContent).toContain("This Skill is missing valid metadata.");
-  expect(node.textContent).not.toContain("Private text without metadata.");
+  expect(node.textContent).toContain(path);
+  expect(node.textContent).toContain(reason);
+  expect(node.textContent).not.toContain(content);
   await click("Preview");
   expect(api.request.mock.calls.filter(([name]) => name === "botPackages/preview")).toHaveLength(0);
 });

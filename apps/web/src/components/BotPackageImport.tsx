@@ -28,11 +28,9 @@ export function BotPackageImport({
   onCancel(): void;
 }) {
   const { t } = useLingui();
-  const backupOmissionLabels: Record<
-    Exclude<AgentBackupOmissionReason, "missingSkillFiles">,
-    string
-  > = {
+  const backupOmissionLabels: Record<AgentBackupOmissionReason, string> = {
     invalidSkill: t`This Skill is missing valid metadata.`,
+    missingSkillFiles: t`This Skill needs additional files.`,
     skillRequirements: t`This Skill declares requirements that need review.`,
     skillLimit: t`This Skill exceeds the Bot limits.`,
     stock: t`The original template was omitted.`,
@@ -255,9 +253,11 @@ export function BotPackageImport({
                     {fileGroups.unavailable.map(({ path, reason }) => (
                       <li key={path} className="break-all" dir="auto">
                         <span>{path}</span>
-                        {reason && reason !== "missingSkillFiles" ? (
-                          <p className="break-words">{backupOmissionLabels[reason]}</p>
-                        ) : null}
+                        <p className="break-words">
+                          {reason
+                            ? backupOmissionLabels[reason]
+                            : t`This runtime file is not used.`}
+                        </p>
                       </li>
                     ))}
                   </ul>

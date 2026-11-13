@@ -1,5 +1,6 @@
 import {
   agentBackupOmissionReasons,
+  agentBackupRuntimeOmission,
   BOT_NAME_MAX_LENGTH,
   BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
@@ -243,11 +244,11 @@ export function NativeBotPackageImport({
                       <Text selectable style={styles.secondary}>
                         {path}
                       </Text>
-                      {reason && reason !== "missingSkillFiles" ? (
-                        <Text style={styles.secondary}>
-                          {t(agentBackupOmissionReasons[reason])}
-                        </Text>
-                      ) : null}
+                      <Text style={styles.secondary}>
+                        {t(
+                          reason ? agentBackupOmissionReasons[reason] : agentBackupRuntimeOmission,
+                        )}
+                      </Text>
                     </View>
                   ))}
                 </View>

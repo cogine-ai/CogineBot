@@ -7662,3 +7662,11 @@ msgstr "此笔记超过 Bot 的记忆限制。"
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "此身份文件没有受支持的字段。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "此 Skill 需要附属文件。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "此运行时文件不会使用。"

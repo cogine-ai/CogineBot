@@ -7563,3 +7563,11 @@ msgstr "Эта заметка превышает ограничения памя
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "В этом файле идентификации нет поддерживаемых полей."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "Этому навыку нужны дополнительные файлы."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "Этот файл среды выполнения не используется."

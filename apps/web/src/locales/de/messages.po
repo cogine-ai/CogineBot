@@ -7563,3 +7563,11 @@ msgstr "Diese Notiz überschreitet die Speichergrenzen des Bots."
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "Diese Identitätsdatei enthält keine unterstützten Felder."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "Dieser Skill benötigt zusätzliche Dateien."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "Diese Laufzeitdatei wird nicht verwendet."

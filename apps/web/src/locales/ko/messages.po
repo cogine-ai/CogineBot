@@ -7507,3 +7507,11 @@ msgstr "이 메모는 봇 메모리의 제한을 초과합니다."
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "이 신원 파일에는 지원되는 필드가 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "이 스킬에는 추가 파일이 필요합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "이 런타임 파일은 사용되지 않습니다."

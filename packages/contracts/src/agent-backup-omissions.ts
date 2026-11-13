@@ -18,6 +18,7 @@ const agentBackupOmissionReasonKeys = Object.keys(agentBackupOmissionReasons) as
   keyof typeof agentBackupOmissionReasons
 >;
 export type AgentBackupOmissionReason = keyof typeof agentBackupOmissionReasons;
+export const agentBackupRuntimeOmission = "This runtime file is not used.";
 
 export function isAgentBackupPath(path: string): boolean {
   return (

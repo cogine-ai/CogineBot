@@ -7507,3 +7507,11 @@ msgstr "Cette note dépasse les limites de mémoire du Bot."
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "Ce fichier d’identité ne contient aucun champ pris en charge."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "Ce Skill nécessite des fichiers supplémentaires."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "Ce fichier d’exécution n’est pas utilisé."

@@ -7507,3 +7507,11 @@ msgstr "Bu not botun bellek sınırlarını aşıyor."
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "Bu kimlik dosyasında desteklenen alan yok."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "Bu beceri ek dosyalar gerektirir."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "Bu çalışma zamanı dosyası kullanılmaz."

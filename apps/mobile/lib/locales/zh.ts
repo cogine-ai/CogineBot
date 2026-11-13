@@ -1296,6 +1296,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "This instruction file exceeds the Bot limit.": "此指令文件超过 Bot 的限制。",
   "This note exceeds the Bot memory limits.": "此笔记超过 Bot 的记忆限制。",
   "This identity file has no supported fields.": "此身份文件没有受支持的字段。",
+  "This Skill needs additional files.": "此 Skill 需要附属文件。",
+  "This runtime file is not used.": "此运行时文件不会使用。",
   "Unavailable backup files": "无法导入的备份文件",
   "Agent backup selected": "已选择 Agent 备份",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

@@ -8,6 +8,7 @@ import {
   AGENT_BACKUP_FORMAT,
   AgentBackupDocumentSchema,
   agentBackupOmissionReasons,
+  agentBackupRuntimeOmission,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
@@ -541,7 +542,7 @@ function backupPackage(
   for (const label of identity?.unused ?? [])
     addNote("unsupported", label, "This identity field is not used.");
   for (const path of openClawRuntimeFiles) {
-    if (byPath.has(path)) addNote("unsupported", path, "This runtime file is not used.");
+    if (byPath.has(path)) addNote("unsupported", path, agentBackupRuntimeOmission);
   }
   const instructions: string[] = [];
   for (const path of backupInstructions[source]) {
@@ -561,7 +562,7 @@ function backupPackage(
   const incomplete = new Set(backup.incompleteSkills);
   for (const path of incomplete) {
     if (!byPath.has(path) && isBackupSkill(path) && !reportedOmissions.has(path))
-      addNote("skill", path, "This Skill needs additional files.");
+      addNote("skill", path, agentBackupOmissionReasons.missingSkillFiles);
   }
   const skillNames = new Set<string>();
   const skills: BotPackageDocument["skills"] = [];

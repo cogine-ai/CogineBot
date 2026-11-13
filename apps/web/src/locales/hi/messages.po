@@ -7507,3 +7507,11 @@ msgstr "यह नोट बॉट की मेमोरी की सीमा
 #: src/components/BotPackageImport.tsx
 msgid "This identity file has no supported fields."
 msgstr "इस पहचान फ़ाइल में कोई समर्थित फ़ील्ड नहीं है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "इस स्किल को अतिरिक्त फ़ाइलें चाहिए।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "इस रनटाइम फ़ाइल का उपयोग नहीं होता है।"

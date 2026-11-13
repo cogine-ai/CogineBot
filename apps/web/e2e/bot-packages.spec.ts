@@ -196,6 +196,7 @@ test("agent backup import previews supported text and saves only the selected co
     ".openclaw/workspace/skills/missing/SKILL.md":
       "---\nname: missing\ndescription: Needs a reference.\n---\nRead references/guide.md.\n",
     ".openclaw/workspace/skills/invalid/SKILL.md": "Private text without metadata.",
+    ".openclaw/workspace/TOOLS.md": "Private runtime fixture.",
     ".openclaw/.env": "IGNORE_THIS_FIXTURE_VALUE",
   };
   const blocks = Object.entries(files).flatMap(([name, text]) => {
@@ -234,6 +235,10 @@ test("agent backup import previews supported text and saves only the selected co
   await expect(
     panel.getByText("This Skill is missing valid metadata.", { exact: true }),
   ).toBeVisible();
+  await expect(
+    panel.getByText("This Skill needs additional files.", { exact: true }),
+  ).toBeVisible();
+  await expect(panel.getByText("This runtime file is not used.", { exact: true })).toBeVisible();
   const persona = panel.getByRole("checkbox", { name: "SOUL.md", exact: true });
   await persona.click();
   await expect(panel.getByRole("button", { name: "Preview", exact: true })).toBeDisabled();
@@ -253,6 +258,7 @@ test("agent backup import previews supported text and saves only the selected co
   expect(uploaded).not.toContain("Inspect each row.");
   expect(uploaded).not.toContain("Read references/guide.md.");
   expect(uploaded).not.toContain("Private text without metadata.");
+  expect(uploaded).not.toContain("Private runtime fixture.");
   expect(uploaded).not.toContain(note);
   await memory.click();
   await panel.getByRole("checkbox", { name: "USER.md", exact: true }).click();

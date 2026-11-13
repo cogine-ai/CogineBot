@@ -1356,6 +1356,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "This note exceeds the Bot memory limits.": "Эта заметка превышает ограничения памяти бота.",
   "This identity file has no supported fields.":
     "В этом файле идентификации нет поддерживаемых полей.",
+  "This Skill needs additional files.": "Этому навыку нужны дополнительные файлы.",
+  "This runtime file is not used.": "Этот файл среды выполнения не используется.",
   "Unavailable backup files": "Недоступные файлы резервной копии",
   "Agent backup selected": "Выбрана резервная копия агента",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

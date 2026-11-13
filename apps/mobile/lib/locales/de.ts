@@ -1362,6 +1362,8 @@ export const DE_MESSAGES: Record<string, string> = {
     "Diese Notiz überschreitet die Speichergrenzen des Bots.",
   "This identity file has no supported fields.":
     "Diese Identitätsdatei enthält keine unterstützten Felder.",
+  "This Skill needs additional files.": "Dieser Skill benötigt zusätzliche Dateien.",
+  "This runtime file is not used.": "Diese Laufzeitdatei wird nicht verwendet.",
   "Unavailable backup files": "Nicht verfügbare Sicherungsdateien",
   "Agent backup selected": "Agent-Sicherung ausgewählt",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
