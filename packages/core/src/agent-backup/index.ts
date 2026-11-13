@@ -147,7 +147,6 @@ function localSkillUrl(url: string | undefined): boolean {
 }
 
 function hasLocalSkillLink(body: string): boolean {
-  if (!body.includes("]")) return false;
   const nodes: MarkdownNode[] = [backupSkillMarkdown.parse(body)];
   const references = new Set<string>();
   const definitions = new Map<string, string>();

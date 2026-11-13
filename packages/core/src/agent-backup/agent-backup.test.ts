@@ -150,6 +150,7 @@ it("does not offer Skills linking to files absent from the picker inventory", as
   const folder = await encodeAgentBackupFolder(
     [
       folderEntry("agent/SOUL.md", "Review rows."),
+      skill("local-autolink", "Read <file:///example/helper.txt>."),
       skill("local-file", "Read [the helper](helper.txt)."),
       skill("local-reference", "Read [the helper][ref].\n\n[ref]: <folder/file name.md>"),
       skill(
@@ -164,6 +165,7 @@ it("does not offer Skills linking to files absent from the picker inventory", as
   expect(agentBackupFileGroups(folder)).toMatchObject({
     skills: ["skills/external/SKILL.md", "skills/unused/SKILL.md"],
     unavailable: [
+      { path: "skills/local-autolink/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-first/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-reference/SKILL.md", reason: "missingSkillFiles" },
