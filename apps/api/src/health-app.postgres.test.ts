@@ -13,7 +13,9 @@ import { routineJobKey, routineWakeupJob, runContinueJob, runJobKey } from "@rak
 import * as adapters from "@rakazo/adapters";
 import type {
   Actor,
+  AppBootstrap,
   Bot,
+  ComputerStatus,
   Routine,
   RoutineHistory,
   SpaceNavigation,
@@ -63,6 +65,59 @@ describePostgres("database readiness app wiring", () => {
       expect(await cached.text()).toBe("");
       expect((await handles.app.request("/api/v1/assets/private.js")).status).toBe(404);
     } finally {
+      await handles?.stop();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads newly created Bot threads with the computer provider disabled", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "no-computer-app-"));
+    vi.stubEnv("SANDBOX_PROVIDER", "none");
+    let handles: Awaited<ReturnType<typeof createApp>> | undefined;
+    try {
+      handles = await createApp({ ...options(dataDir), sandboxProvider: "none" });
+      const origin = "http://127.0.0.1:5173";
+      const signup = await handles.app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Computer-free User",
+          email: `no-computer-${randomUUID()}@example.test`,
+          password: "password12",
+        }),
+      });
+      expect(signup.status).toBe(200);
+      const app = handles.app;
+      const cookie = sessionCookieHeader(signup);
+      const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
+        const response = await app.request(`/rpc/${procedure}`, {
+          method: "POST",
+          headers: { origin, cookie, "content-type": "application/json" },
+          body: JSON.stringify({ json: input }),
+        });
+        const result = (await response.json()) as { json: T };
+        expect(response.status, JSON.stringify(result)).toBe(200);
+        return result.json;
+      };
+      const bot = await rpc<Bot>("bots/create", { name: "No Computer" });
+      const expected = {
+        botId: bot.id,
+        kind: "none",
+        state: "stopped",
+        canUpdate: false,
+        terminalAvailable: false,
+        screenAvailable: false,
+      };
+      const snapshot = { botId: bot.id, computer: expected };
+      expect(await rpc<ThreadSnapshot>("threads/get", { botId: bot.id })).toMatchObject(snapshot);
+      expect(await rpc<AppBootstrap>("bootstrap", { botId: bot.id })).toMatchObject({
+        thread: snapshot,
+      });
+      expect(await rpc<ComputerStatus>("computer/status", { botId: bot.id })).toMatchObject(
+        expected,
+      );
+    } finally {
+      vi.unstubAllEnvs();
       await handles?.stop();
       await rm(dataDir, { recursive: true, force: true });
     }

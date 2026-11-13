@@ -86,6 +86,27 @@ export function toComputerStatus(
   busyBotName: string | null = null,
   sandbox?: SandboxProvider,
 ): ComputerStatus {
+  const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
+  const mode = computer?.scope === "dedicated" ? "dedicated" : "team";
+  const screen = computerScreenSize(computer?.kind);
+  if (kind === "none") {
+    return {
+      botId,
+      mode,
+      kind,
+      state: "stopped",
+      controlHolder: "none",
+      controlBotId: null,
+      takeoverRequested: false,
+      screenAvailable: false,
+      screenWidth: screen.width,
+      screenHeight: screen.height,
+      homeRevision: computer?.homeRevision ?? null,
+      busyBotName: null,
+      canUpdate: false,
+      terminalAvailable: false,
+    };
+  }
   let state: ComputerStatus["state"];
   switch (computer?.state) {
     case "quarantined":
@@ -156,11 +177,9 @@ export function toComputerStatus(
     state === "running" && sandbox && computer && ref
       ? computerActiveDeadline(sandbox, ref, computerActiveEpoch(computer))
       : undefined;
-  const screen = computerScreenSize(computer?.kind);
-  const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
   return {
     botId,
-    mode: computer?.scope === "dedicated" ? "dedicated" : "team",
+    mode,
     kind,
     state: unavailable ? "error" : state,
     ...(powerState ? { powerState } : {}),
