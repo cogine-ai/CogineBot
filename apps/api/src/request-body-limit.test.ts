@@ -112,4 +112,77 @@ describe("API request body limits", () => {
     expect(response.status).toBe(200);
     expect(parse).toHaveBeenCalledOnce();
   });
+
+  it("preserves the same binary body across different transport chunk boundaries", async () => {
+    const bytes = new TextEncoder().encode("é🌐".repeat(1024));
+    const app = new Hono();
+    app.use("/parse", requestBodyLimit(bytes.length));
+    app.post("/parse", async (c) => {
+      expect(c.req.header("content-type")).toBe("application/octet-stream");
+      expect(c.req.header("x-fixture")).toBe("preserved");
+      return c.body(await c.req.raw.arrayBuffer());
+    });
+    for (const chunkSize of [1, 4096]) {
+      let offset = 0;
+      const response = await app.request("/parse", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream", "x-fixture": "preserved" },
+        body: new ReadableStream({
+          pull(controller) {
+            if (offset >= bytes.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(bytes.subarray(offset, offset + chunkSize));
+            offset += chunkSize;
+          },
+        }),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" });
+      expect(response.status).toBe(200);
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    }
+  });
+
+  it("releases an interrupted body and reports the read error before calling the parser", async () => {
+    const { app, parse } = testApp(16);
+    const onError = vi.fn(() => new Response(null, { status: 500 }));
+    app.onError(onError);
+    const interrupted = new Error("Request body read interrupted");
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          controller.error(interrupted);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await app.request("/parse", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(onError).toHaveBeenCalledExactlyOnceWith(interrupted, expect.anything());
+    expect(parse).not.toHaveBeenCalled();
+    expect(body.locked).toBe(false);
+  });
+
+  it("preserves a complete body recovered by the server after a disconnect", async () => {
+    const { app, parse } = testApp(16);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"ok":true}'));
+        controller.close();
+      },
+    });
+    const response = await app.request("/parse", {
+      method: "POST",
+      body,
+      signal: AbortSignal.abort(),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(parse).toHaveBeenCalledOnce();
+    expect(parse.mock.calls[0]?.[0].signal.aborted).toBe(true);
+  });
 });
