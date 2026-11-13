@@ -273,6 +273,7 @@ export function createBotPackageImport(deps: Deps) {
       if (
         !active() ||
         !preview ||
+        preview.canImport === false ||
         (state.phase !== "review" &&
           !(state.phase === "unknown" && state.canRetry && state.receipt === null))
       )

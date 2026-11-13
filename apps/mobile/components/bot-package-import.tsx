@@ -333,7 +333,7 @@ export function NativeBotPackageImport({
               </Text>
             </>
           )}
-          {phase === "review" ? (
+          {phase === "review" && preview.canImport !== false ? (
             <NativeActionButton
               label={t("Import as new bot")}
               disabled={reading}

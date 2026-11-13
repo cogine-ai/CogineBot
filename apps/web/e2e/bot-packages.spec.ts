@@ -428,14 +428,21 @@ test("agent backup folder previews only selected content and preserves the draft
     const model = panel.getByRole("checkbox", { name: "Model · openai/gpt-4.1", exact: true });
     await expect(model).not.toBeChecked();
     await model.click();
+    const instructionsChoice = panel.getByRole("checkbox", { name: "HERMES.md", exact: true });
+    await instructionsChoice.click();
     await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await expect(
       panel.getByTestId("bot-package-left-out").getByText("openai/gpt-4.1"),
     ).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
+      0,
+    );
     expect(previews).toHaveLength(2);
     expect(previews[1]).toContain("gpt-4.1");
     expect(previews[1]).not.toContain("local-config-fixture");
     await captureScreenshot(page, testInfo, "d021-package-backup-model");
+    await instructionsChoice.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
     await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
     expect(

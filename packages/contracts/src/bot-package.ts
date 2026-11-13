@@ -142,6 +142,7 @@ export const BotPackagePreviewSchema = z.object({
   availableMemoryCount: z.number().int().nonnegative(),
   document: BotPackageDocumentSchema,
   model: AgentBackupModelSchema.optional(),
+  canImport: z.literal(false).optional(),
   leftOut: z.array(BotPackageLeftOutSchema),
 });
 export type BotPackagePreview = z.infer<typeof BotPackagePreviewSchema>;

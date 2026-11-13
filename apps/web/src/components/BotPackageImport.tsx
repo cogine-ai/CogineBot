@@ -376,7 +376,7 @@ export function BotPackageImport({
               </p>
             </>
           )}
-          {phase === "review" ? (
+          {phase === "review" && preview.canImport !== false ? (
             <Button disabled={reading} onClick={() => void manager.current?.confirm()}>
               <Trans>Import as new bot</Trans>
             </Button>

@@ -31,6 +31,7 @@ import {
   withTransactionRetry,
 } from "@rakazo/db";
 import { redactSecretText } from "@rakazo/logging/redaction";
+import * as z from "zod";
 import { createAgentSkillsService, resolveSkillContent } from "./agent-skills.js";
 import {
   BackupModelBindingSchema,
@@ -49,6 +50,7 @@ type Context = {
 type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets">;
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
+  modelOnly: z.literal(true).optional(),
 });
 const includeChildren = {
   bot: { select: { archivedAt: true } },
@@ -243,6 +245,10 @@ export function createBotPackagesService(deps: Deps) {
         const model = binding
           ? await validateBackupModelBinding(tx, deps.secrets, context.actor, binding, true)
           : null;
+        if (document.modelOnly && !model)
+          throw new ORPCError("CONFLICT", {
+            message: "The reviewed model connection is no longer available.",
+          });
         const bot = await createBotRecordsInTransaction(
           tx,
           context.actor,
@@ -360,6 +366,7 @@ export function createBotPackagesService(deps: Deps) {
         backupModel && backupModel !== "unavailable"
           ? await findBackupModelBinding(deps.prisma, deps.secrets, context.actor, backupModel)
           : null;
+      const modelOnly = parsed.modelOnly === true;
       const leftOut =
         backupModel && !binding
           ? [
@@ -395,6 +402,7 @@ export function createBotPackagesService(deps: Deps) {
           : hash(parsed.json);
       const expiresAt = new Date(Date.now() + 10 * 60_000);
       await transact(context, async (tx) => {
+        if (modelOnly && !binding) return;
         await tx.botPackagePreview.create({
           data: {
             ...own(context.actor),
@@ -402,7 +410,11 @@ export function createBotPackagesService(deps: Deps) {
             digest,
             sourceFormat: parsed.sourceFormat,
             document: binding
-              ? { ...parsed.document, backupModelBinding: binding }
+              ? {
+                  ...parsed.document,
+                  backupModelBinding: binding,
+                  ...(modelOnly ? { modelOnly: true } : {}),
+                }
               : parsed.document,
             leftOut,
             includeMemory: input.includeMemory,
@@ -419,6 +431,7 @@ export function createBotPackagesService(deps: Deps) {
         sourceFormat: parsed.sourceFormat,
         leftOut,
         ...(binding && backupModel && backupModel !== "unavailable" ? { model: backupModel } : {}),
+        ...(modelOnly && !binding ? { canImport: false as const } : {}),
         availableMemoryCount: parsed.availableMemoryCount,
         includeMemory: input.includeMemory,
       };

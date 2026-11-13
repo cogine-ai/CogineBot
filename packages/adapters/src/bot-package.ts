@@ -84,6 +84,7 @@ export type ParsedBotPackage = {
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
   backupModel?: AgentBackupDocument["model"];
+  modelOnly?: boolean;
 };
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -640,15 +641,14 @@ function backupPackage(
     )
       ? "unavailable"
       : model;
-  if (
+  const modelOnly =
     !instructions.length &&
     !skills.length &&
     !routines.length &&
     !(options.includeMemory && memory.length) &&
     !identity?.name &&
-    !identity?.description &&
-    (!backupModel || backupModel === "unavailable")
-  )
+    !identity?.description;
+  if (modelOnly && (!backupModel || backupModel === "unavailable"))
     throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({
     format: BOT_PACKAGE_FORMAT,
@@ -671,6 +671,7 @@ function backupPackage(
     leftOut: leftOut.entries,
     availableMemoryCount,
     backupModel,
+    modelOnly,
   };
 }
 

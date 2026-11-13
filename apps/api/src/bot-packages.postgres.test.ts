@@ -402,6 +402,16 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const missing = await preview(owner, value);
     expect(missing.model).toBeUndefined();
     expect(missing.leftOut).toContainEqual(expect.objectContaining({ kind: "model" }));
+    const missingModelOnly = await preview(owner, { ...value, files: [] });
+    expect(missingModelOnly.canImport).toBe(false);
+    expect(
+      (
+        await request(owner, "import", {
+          previewToken: missingModelOnly.previewToken,
+          clientNonce: randomUUID(),
+        })
+      ).status,
+    ).toBe(400);
     const select = (credentialId: string) =>
       database.prisma.spaceModelPreference.create({
         data: {
@@ -465,11 +475,23 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     await database.prisma.spaceModelPreference.delete({ where: { id: secondPreference.id } });
 
     const stale = await preview(owner, value);
+    const staleModelOnly = await preview(owner, { ...value, files: [] });
     await database.prisma.userModelCredential.update({
       where: { id: credential.id },
       data: { connectionRevision: { increment: 1 } },
     });
     const changed = await importPackage(owner, stale);
+    const staleNonce = randomUUID();
+    expect(
+      (
+        await request(owner, "import", {
+          previewToken: staleModelOnly.previewToken,
+          clientNonce: staleNonce,
+        })
+      ).status,
+    ).toBe(409);
+    const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce: staleNonce });
+    expect(failed).toMatchObject({ status: "failed", botId: null });
     expect(changed.leftOut).toContainEqual(
       expect.objectContaining({
         kind: "model",
