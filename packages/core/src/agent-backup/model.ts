@@ -127,7 +127,7 @@ const record = (value: unknown): Record<string, unknown> =>
     : {};
 const own = (object: Record<string, unknown>, key: string) =>
   Object.hasOwn(object, key) ? object[key] : undefined;
-const providerId = (source: AgentBackupSource, value: string) => {
+export const backupProviderId = (source: AgentBackupSource, value: string) => {
   const id = value.trim().toLowerCase();
   const hermesId = source === "hermes" ? hermesProviderAliases.get(id) : undefined;
   return canonicalPiProviderId(hermesId ?? providerAliases.get(id) ?? id);
@@ -177,7 +177,7 @@ export function projectBackupModel(
       }
       modelId = text(selected);
       provider = text(providerValue || config.provider);
-      const canonicalProvider = providerId(source, provider);
+      const canonicalProvider = backupProviderId(source, provider);
       const endpoints = [...endpointOverrides(model), ...endpointOverrides(config)];
       if (!endpoints.length && hermesEndpointRequired.has(canonicalProvider)) return "unavailable";
       const routes = endpoints.map((endpoint) =>
@@ -194,7 +194,7 @@ export function projectBackupModel(
       if (
         overrides.some(
           ([name, entry]) =>
-            [canonicalProvider, routedProvider].includes(providerId(source, name)) &&
+            [canonicalProvider, routedProvider].includes(backupProviderId(source, name)) &&
             (hasEndpoint(record(entry)) || hasOverride(own(record(entry), "api"))),
         )
       )
@@ -237,10 +237,15 @@ export function projectBackupModel(
       modelId = name.slice(slash + 1);
       const providers = record(record(config.models).providers);
       if (
-        Object.entries(providers).some(
-          ([name, entry]) =>
-            providerId(source, name) === providerId(source, provider) && hasEndpoint(record(entry)),
-        )
+        Object.entries(providers).some(([name, value]) => {
+          if (backupProviderId(source, name) !== backupProviderId(source, provider)) return false;
+          const entry = record(value);
+          return (
+            hasEndpoint(entry) ||
+            (Array.isArray(entry.models) &&
+              entry.models.map(record).some((row) => text(row.id) === modelId && hasEndpoint(row)))
+          );
+        })
       )
         return "unavailable";
     }
@@ -248,9 +253,9 @@ export function projectBackupModel(
       [provider, modelId].some((value) => redactSecretText(value) !== value || /:\/\//.test(value))
     )
       return "unavailable";
-    const canonicalProvider = routedProvider ?? providerId(source, provider);
+    const canonicalProvider = routedProvider ?? backupProviderId(source, provider);
     if (source === "hermes") {
-      const normalized = normalizeHermesModelId(providerId(source, provider), modelId);
+      const normalized = normalizeHermesModelId(backupProviderId(source, provider), modelId);
       if (normalized !== modelId && redactSecretText(normalized) !== normalized)
         return "unavailable";
       modelId = normalized;
@@ -285,7 +290,7 @@ function normalizeHermesModelId(provider: string, modelId: string): string {
     const remainder = modelId.slice(separator + 1).trim();
     if (
       remainder &&
-      (providerId("hermes", prefix) === provider ||
+      (backupProviderId("hermes", prefix) === provider ||
         (provider === "openai-codex" && prefix === "openai"))
     )
       modelId = remainder;

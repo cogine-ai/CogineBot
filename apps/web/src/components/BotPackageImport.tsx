@@ -2,13 +2,23 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { createBotPackageImport } from "@rakazo/core";
-import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
+import {
+  BackupModelKeyMismatch,
+  BackupModelKeyUnavailable,
+  backupModelKeySourceDigest,
+  createBotPackageImport,
+} from "@rakazo/core";
+import {
+  agentBackupFileGroups,
+  agentBackupSelectableGroups,
+  isBackupModelKeyProvider,
+} from "@rakazo/core/agent-backup";
 import { Button, Checkbox, Input, Switch, Textarea } from "@rakazo/ui-web";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   readBotBackupFolder,
   readBotPackageFile,
+  readBotPackageModelKey,
   supportsBotBackupFolder,
 } from "../lib/bot-package-file";
 import { newClientId } from "../lib/client-id";
@@ -59,6 +69,7 @@ export function BotPackageImport({
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const current = useRef<() => boolean>(() => false);
   const fileGeneration = useRef(0);
+  const localSource = useRef<{ file: File | readonly File[]; projection: string } | null>(null);
   const folderInput = useRef<HTMLInputElement | null>(null);
   const canPickFolder = supportsBotBackupFolder();
   const imported = useRef<string | null>(null);
@@ -74,17 +85,32 @@ export function BotPackageImport({
     const review = createBotPackageImport({
       preview: (input, signal) => client.botPackages.preview(input, { signal }),
       import: (input, signal) => client.botPackages.import(input, { signal }),
+      readModelKey: (model, sourceDigest, signal) => {
+        const source = localSource.current;
+        const version = fileGeneration.current;
+        return source && backupModelKeySourceDigest(source.projection) === sourceDigest
+          ? readBotPackageModelKey(
+              source.file,
+              model,
+              () => valid() && !signal.aborted && version === fileGeneration.current,
+            )
+          : Promise.resolve(undefined);
+      },
       status: (input, signal) => client.botPackages.status(input, { signal }),
       recent: (signal) => client.botPackages.recent(undefined, { signal }),
       resume: (input, signal) => client.botPackages.resume(input, { signal }),
       cancel: (input, signal) => client.botPackages.cancel(input, { signal }),
       newNonce: newClientId,
       isCurrent: valid,
-      changed: setState,
+      changed(next) {
+        if (next.phase === "completed") localSource.current = null;
+        setState(next);
+      },
     });
     manager.current = review;
     return () => {
       active = false;
+      localSource.current = null;
       fileGeneration.current++;
       review.dispose();
       manager.current = null;
@@ -106,9 +132,14 @@ export function BotPackageImport({
   const locked =
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
+  const reattachingKey = phase === "unknown" && Boolean(receipt?.modelKey ?? preview?.modelKey);
+  const pickDisabled = reading || phase === "previewing" || (locked && !reattachingKey);
   const backupNotice = preview?.document.routines.length
     ? t`Imported routines start paused.`
-    : preview?.model || preview?.document.connections.length || preview?.canImport === false
+    : preview?.model ||
+        preview?.modelKey ||
+        preview?.document.connections.length ||
+        preview?.canImport === false
       ? null
       : t`This import includes supported text only.`;
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -130,20 +161,29 @@ export function BotPackageImport({
     name?: string;
     includeMemory?: boolean;
     includeBackupModel?: boolean;
+    importModelKey?: boolean;
   }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(null);
+    if (input.source !== undefined) localSource.current = null;
     manager.current?.edit(input);
   }
-  async function readSource(read: (valid: () => boolean) => Promise<string>, errorMessage: string) {
+  async function readSource(
+    selected: File | readonly File[],
+    read: (valid: () => boolean) => Promise<string>,
+    errorMessage: string,
+  ) {
     const version = ++fileGeneration.current;
     const valid = () => version === fileGeneration.current && current.current();
     setReading(true);
     setFileError(null);
     try {
       const source = await read(valid);
-      if (valid()) manager.current?.edit({ source, includeMemory: false });
+      if (valid()) {
+        localSource.current = { file: selected, projection: source };
+        if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
+      }
     } catch {
       if (valid()) setFileError(errorMessage);
     } finally {
@@ -191,18 +231,21 @@ export function BotPackageImport({
             </label>
           )}
           <p className="text-sm text-muted-foreground">
-            <Trans>OpenClaw or Hermes backup</Trans>
+            {reattachingKey
+              ? t`Choose the backup again to resume importing the API key.`
+              : t`OpenClaw or Hermes backup`}
           </p>
           <Input
             aria-label={t`Choose package file`}
             type="file"
             accept=".json,.txt,.zip,.tar.gz,.tgz,application/json,text/plain,application/zip,application/gzip"
-            disabled={locked || reading}
+            disabled={pickDisabled}
             onChange={(event) => {
               const file = event.target.files?.[0];
               event.target.value = "";
               if (file)
                 void readSource(
+                  file,
                   (valid) => readBotPackageFile(file, valid),
                   t`Could not read this package. Use a JSON file or an agent backup up to 4 MiB.`,
                 );
@@ -217,12 +260,13 @@ export function BotPackageImport({
                 }}
                 type="file"
                 hidden
-                disabled={locked || reading}
+                disabled={pickDisabled}
                 onChange={(event) => {
                   const files = Array.from(event.currentTarget.files ?? []);
                   event.currentTarget.value = "";
                   if (files.length)
                     void readSource(
+                      files,
                       (valid) => readBotBackupFolder(files, valid),
                       t`Could not read this backup folder. Choose a supported agent folder or use a backup file.`,
                     );
@@ -231,7 +275,7 @@ export function BotPackageImport({
               <Button
                 type="button"
                 variant="outline"
-                disabled={locked || reading}
+                disabled={pickDisabled}
                 onClick={() => folderInput.current?.click()}
               >
                 <Trans>Choose backup folder</Trans>
@@ -283,6 +327,20 @@ export function BotPackageImport({
                   <span className="min-w-0 break-all" dir="auto">
                     <Trans>Model</Trans> · {selection.model.label}
                   </span>
+                </label>
+              ) : null}
+              {selection.model?.selected &&
+              fileGroups.modelProvider &&
+              isBackupModelKeyProvider(fileGroups.modelProvider) &&
+              localSource.current ? (
+                <label className="mt-3 flex items-start gap-2" htmlFor={`${ids}-backup-model-key`}>
+                  <Checkbox
+                    id={`${ids}-backup-model-key`}
+                    checked={state?.importModelKey ?? false}
+                    disabled={locked || reading}
+                    onCheckedChange={(checked) => edit({ importModelKey: checked === true })}
+                  />
+                  <Trans>Also import this model’s API key</Trans>
                 </label>
               ) : null}
               {selection.groups.map(({ kind, items }) => (
@@ -367,9 +425,13 @@ export function BotPackageImport({
       ) : null}
       {state?.error ? (
         <p role="alert" className="text-sm text-destructive">
-          {phase === "editing" || phase === "review"
-            ? t`Could not preview this package.`
-            : t`Could not confirm import. Check status before trying again.`}
+          {state.error instanceof BackupModelKeyMismatch
+            ? t`Select the original backup to resume this model connection.`
+            : state.error instanceof BackupModelKeyUnavailable
+              ? t`Could not read the API key. Choose the backup again.`
+              : phase === "editing" || phase === "review"
+                ? t`Could not preview this package.`
+                : t`Could not confirm import. Check status before trying again.`}
         </p>
       ) : null}
       {preview && phase !== "completed" ? (
@@ -378,6 +440,11 @@ export function BotPackageImport({
           {preview.model ? (
             <p className="break-all text-sm" dir="auto">
               <Trans>Model</Trans> · {preview.model.provider}/{preview.model.modelId}
+            </p>
+          ) : null}
+          {preview.modelKey ? (
+            <p className="break-all text-sm" dir="auto">
+              <Trans>Import API key</Trans> · {preview.modelKey.provider}/{preview.modelKey.modelId}
             </p>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
@@ -409,13 +476,17 @@ export function BotPackageImport({
       ) : null}
       {phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed" ? (
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => void manager.current?.check()}>
+          <Button
+            variant="outline"
+            disabled={busy || reading}
+            onClick={() => void manager.current?.check()}
+          >
             <Trans>Check status</Trans>
           </Button>
           {state?.canRetry && (receipt || preview) ? (
             <Button
               variant="outline"
-              disabled={busy}
+              disabled={busy || reading || (reattachingKey && localSource.current === null)}
               onClick={() =>
                 void (receipt ? manager.current?.resume() : manager.current?.confirm())
               }
@@ -423,7 +494,11 @@ export function BotPackageImport({
               <Trans>Resume import</Trans>
             </Button>
           ) : null}
-          <Button variant="outline" disabled={busy} onClick={() => void manager.current?.cancel()}>
+          <Button
+            variant="outline"
+            disabled={busy || reading}
+            onClick={() => void manager.current?.cancel()}
+          >
             <Trans>Cancel import</Trans>
           </Button>
         </div>
@@ -514,7 +589,15 @@ export function BotPackageImport({
               <Button
                 variant="outline"
                 disabled={locked || reading}
-                onClick={() => void manager.current?.recover(item.clientNonce)}
+                onClick={() => {
+                  if (state?.clientNonce !== item.clientNonce) {
+                    fileGeneration.current++;
+                    localSource.current = null;
+                    setReading(false);
+                    setFileError(null);
+                  }
+                  void manager.current?.recover(item.clientNonce);
+                }}
               >
                 <Trans>Review import</Trans>
               </Button>

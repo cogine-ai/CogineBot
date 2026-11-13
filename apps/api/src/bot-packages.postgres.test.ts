@@ -46,7 +46,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   const users: string[] = [];
   const organizations: string[] = [];
   const readCodexCatalog = vi.fn<CodexLiveCatalog["read"]>();
-  const outbound = vi.fn(async () => {
+  const outbound = vi.fn<typeof fetch>(async () => {
     throw new Error("JSON packages must stay offline");
   });
   function faultable(prisma: PrismaClient): PrismaClient {
@@ -331,6 +331,217 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     readCodexCatalog.mockReset();
     vi.unstubAllEnvs();
     expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("imports a reviewed model key only on confirm and replays its committed receipt", async () => {
+    const owner = await account();
+    const apiKey = "synthetic-key-for-model-backup";
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const fixture = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
+    const input = {
+      source: JSON.stringify(fixture),
+      importModelKey: true,
+      modelKeySourceDigest: "a".repeat(64),
+    };
+    const unavailable = await call<BotPackagePreview>(owner, "preview", {
+      ...input,
+      importModelKey: false,
+    });
+    expect(unavailable).toMatchObject({ canImport: false, leftOut: [{ kind: "model" }] });
+    expect(unavailable.modelKey).toBeUndefined();
+    const plan = await call<BotPackagePreview>(owner, "preview", input);
+    expect(plan.modelKey).toEqual(model);
+    expect(JSON.stringify(plan)).not.toContain(apiKey);
+    expect(outbound).not.toHaveBeenCalled();
+    const clientNonce = randomUUID();
+    const confirm = { previewToken: plan.previewToken, clientNonce, apiKey };
+    expect((await request(owner, "import", { ...confirm, apiKey: undefined })).status).toBe(400);
+    const check = async (url: RequestInfo | URL, options?: RequestInit) => {
+      expect(String(url)).toBe("https://api.openai.com/v1/models");
+      expect(new Headers(options?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
+      return Response.json({ data: [{ id: model.modelId }] });
+    };
+    afterMarkerAccepted = async () => {
+      const pending = await call<BotPackageReceipt>(owner, "status", { clientNonce });
+      expect(pending.status).toBe("importing");
+      expect(
+        (await request(owner, "resume", { clientNonce, apiKey: "different-synthetic-key" })).status,
+      ).toBe(400);
+      expect(await call<BotPackageReceipt>(owner, "status", { clientNonce })).toEqual(pending);
+      expect(outbound).not.toHaveBeenCalled();
+    };
+    outbound.mockImplementationOnce(check);
+    loseCommitAck = true;
+    const imported = await call<BotPackageReceipt>(owner, "import", confirm);
+    expect(await call<BotPackageReceipt>(owner, "import", confirm)).toEqual(imported);
+    expect(outbound).toHaveBeenCalledTimes(1);
+    outbound.mockClear();
+    const row = await database.prisma.userModelCredential.findFirstOrThrow({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    expect(await database.prisma.bot.findUnique({ where: { id: imported.botId! } })).toMatchObject({
+      modelProvider: model.provider,
+      modelId: model.modelId,
+      modelCredentialId: row.id,
+    });
+    const secret = await database.prisma.secret.findUniqueOrThrow({ where: { id: row.secretId } });
+    expect(secret.ciphertext).not.toContain(apiKey);
+    expect(JSON.stringify(imported)).not.toContain(apiKey);
+    expect(
+      (await call<BotPackageExport>(owner, "export", { botId: imported.botId })).json,
+    ).not.toContain(apiKey);
+    const replay = await call<BotPackagePreview>(owner, "preview", input);
+    expect(replay.modelKey).toBeUndefined();
+    expect(replay.model).toEqual(model);
+  });
+
+  it("rolls a rejected or failed backup connection back and resumes using the original nonce", async () => {
+    const owner = await account();
+    const foreign = await account();
+    const apiKey = "synthetic-backup-retry-key";
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const { skills } = source();
+    const fixture = {
+      format: AGENT_BACKUP_FORMAT,
+      source: "hermes",
+      files: [{ path: `skills/${skills[0]!.name}/SKILL.md`, content: skills[0]!.content }],
+      model,
+    };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify(fixture),
+      importModelKey: true,
+      modelKeySourceDigest: "b".repeat(64),
+    });
+    const clientNonce = randomUUID();
+    const confirm = { previewToken: plan.previewToken, clientNonce, apiKey };
+    expect((await request(foreign, "import", confirm)).status).toBe(400);
+    expect(outbound).not.toHaveBeenCalled();
+    outbound.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    expect((await request(owner, "import", confirm)).status).toBe(400);
+    const accountFilter = { userId: owner.actor.userId, provider: model.provider };
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
+    const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce });
+    expect(failed).toMatchObject({
+      status: "failed",
+      botId: null,
+      modelKey: model,
+      modelKeySourceDigest: "b".repeat(64),
+    });
+    expect(JSON.stringify(failed)).not.toContain(apiKey);
+    expect(failed).not.toHaveProperty("modelKeyBinding");
+    expect(
+      (await request(owner, "resume", { clientNonce, apiKey: "different-synthetic-key" })).status,
+    ).toBe(400);
+    expect(outbound).toHaveBeenCalledTimes(1);
+    outbound.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-4.1-mini" }] }));
+    expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(400);
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
+    const succeed = () => Response.json({ data: [{ id: model.modelId }] });
+    failComponents = true;
+    outbound.mockResolvedValueOnce(succeed());
+    expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(500);
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
+    expect(
+      await database.prisma.secret.count({ where: { userId: owner.actor.userId, kind: "model" } }),
+    ).toBe(0);
+    outbound.mockResolvedValueOnce(succeed());
+    const imported = await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey });
+    expect(imported).toMatchObject({ status: "completed", importId: failed.importId, clientNonce });
+    expect(imported.modelKey).toBeUndefined();
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(1);
+    expect(outbound).toHaveBeenCalledTimes(4);
+    outbound.mockClear();
+  });
+
+  it("does not overwrite a model connection added in another Space during verification", async () => {
+    const owner = await account();
+    const sibling = await createSpaceForMember(database.prisma, {
+      currentSpaceId: owner.actor.spaceId,
+      userId: owner.actor.userId,
+      name: "Other model Space",
+    });
+    const target = { ...owner, actor: { ...owner.actor, spaceId: sibling.id } };
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const input = {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+      modelKeySourceDigest: "c".repeat(64),
+    };
+    const first = await call<BotPackagePreview>(owner, "preview", input);
+    const second = await call<BotPackagePreview>(target, "preview", input);
+    const verified = () => Response.json({ data: [{ id: model.modelId }] });
+    let competing: BotPackageReceipt | undefined;
+    outbound.mockImplementationOnce(async () => {
+      competing = await call<BotPackageReceipt>(target, "import", {
+        previewToken: second.previewToken,
+        clientNonce: randomUUID(),
+        apiKey: "synthetic-concurrent-second-key",
+      });
+      return verified();
+    });
+    outbound.mockImplementationOnce(async () => verified());
+    const result = await call<BotPackageReceipt>(owner, "import", {
+      previewToken: first.previewToken,
+      clientNonce: randomUUID(),
+      apiKey: "synthetic-concurrent-first-key",
+    });
+    expect(competing?.status).toBe("completed");
+    expect(result).toMatchObject({
+      status: "cancelled",
+      botId: null,
+      leftOut: [{ kind: "model" }],
+    });
+    const credentials = await database.prisma.userModelCredential.findMany({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    expect(credentials).toHaveLength(1);
+    expect(
+      await database.prisma.bot.findUnique({ where: { id: competing!.botId! } }),
+    ).toMatchObject({
+      modelCredentialId: credentials[0]!.id,
+    });
+    expect(
+      await database.prisma.spaceModelPreference.findMany({
+        where: { userId: owner.actor.userId, credentialId: credentials[0]!.id },
+        select: { spaceId: true, isDefault: true },
+      }),
+    ).toEqual([{ spaceId: sibling.id, isDefault: false }]);
+    expect(
+      await database.prisma.secret.count({
+        where: { userId: owner.actor.userId, kind: "model" },
+      }),
+    ).toBe(1);
+    expect(outbound).toHaveBeenCalledTimes(2);
+    outbound.mockClear();
+  });
+
+  it("requires the exact Anthropic model before saving a connection", async () => {
+    const owner = await account();
+    const model = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+      modelKeySourceDigest: "d".repeat(64),
+    });
+    const apiKey = "synthetic-anthropic-key";
+    const clientNonce = randomUUID();
+    const verify = (status: number) => async (url: RequestInfo | URL, options?: RequestInit) => {
+      expect(String(url)).toBe(`https://api.anthropic.com/v1/models/${model.modelId}`);
+      expect(new Headers(options?.headers).get("x-api-key")).toBe(apiKey);
+      expect(options?.redirect).toBe("error");
+      return new Response(null, { status });
+    };
+    outbound.mockImplementationOnce(verify(404)).mockImplementationOnce(verify(200));
+    expect(
+      (await request(owner, "import", { previewToken: plan.previewToken, clientNonce, apiKey }))
+        .status,
+    ).toBe(400);
+    expect((await call<BotPackageReceipt>(owner, "status", { clientNonce })).status).toBe("failed");
+    expect((await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey })).status).toBe(
+      "completed",
+    );
+    expect(outbound).toHaveBeenCalledTimes(2);
+    outbound.mockClear();
   });
   afterAll(async () => {
     if (database) {

@@ -1391,6 +1391,14 @@ export const RU_MESSAGES: Record<string, string> = {
   "Import another bot": "Импортировать другого бота",
   "Import as new bot": "Импортировать как нового бота",
   "Import bot": "Импортировать бота",
+  "Also import this model’s API key": "Также импортировать API-ключ этой модели",
+  "Import API key": "Импортировать API-ключ",
+  "Choose the backup again to resume importing the API key.":
+    "Выберите резервную копию ещё раз, чтобы продолжить импорт API-ключа.",
+  "Could not read the API key. Choose the backup again.":
+    "Не удалось прочитать API-ключ. Выберите резервную копию ещё раз.",
+  "Select the original backup to resume this model connection.":
+    "Выберите исходную резервную копию, чтобы продолжить импорт подключения модели.",
   "Import cancelled.": "Импорт отменён.",
   "Import needs attention.": "Импорт требует внимания.",
   "Imported bot name": "Имя импортированного бота",

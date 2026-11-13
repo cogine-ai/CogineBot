@@ -1327,6 +1327,12 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Import another bot": "导入另一个 Bot",
   "Import as new bot": "导入为新 Bot",
   "Import bot": "导入 Bot",
+  "Also import this model’s API key": "同时导入此模型的 API 密钥",
+  "Import API key": "导入 API 密钥",
+  "Choose the backup again to resume importing the API key.": "重新选择备份以继续导入 API 密钥。",
+  "Could not read the API key. Choose the backup again.": "无法读取 API 密钥，请重新选择备份。",
+  "Select the original backup to resume this model connection.":
+    "请选择原始备份以继续导入此模型连接。",
   "Import cancelled.": "导入已取消。",
   "Import needs attention.": "导入需要处理。",
   "Imported bot name": "导入的 Bot 名称",
