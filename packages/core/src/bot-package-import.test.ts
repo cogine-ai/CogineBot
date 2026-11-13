@@ -114,6 +114,20 @@ describe("bot package import review", () => {
     expect(f.deps.preview.mock.calls[1]![0]).toEqual({ source, includeMemory: true });
   });
 
+  it("refuses malformed backup memory before the default preview request", async () => {
+    const f = fixture();
+    f.manager.edit({
+      source: JSON.stringify({
+        format: "agent-backup/v1",
+        source: "hermes",
+        files: [{ path: "memories/MEMORY.md", content: "invalid\0note" }],
+      }),
+    });
+    await f.manager.preview();
+    expect(f.state.phase).toBe("editing");
+    expect(f.deps.preview).not.toHaveBeenCalled();
+  });
+
   it("measures UTF-8 bytes before RPC rather than string characters", async () => {
     const f = fixture();
     f.manager.edit({ source: "界".repeat(Math.floor(BOT_PACKAGE_MAX_BYTES / 3) + 1) });

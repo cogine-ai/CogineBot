@@ -27,7 +27,10 @@ export const AgentBackupDocumentSchema = z
       .array(
         z.strictObject({
           path: z.string().refine(isAgentBackupPath),
-          content: z.string().max(AGENT_BACKUP_MAX_FILE_LENGTH),
+          content: z
+            .string()
+            .max(AGENT_BACKUP_MAX_FILE_LENGTH)
+            .refine((value) => !value.includes("\0")),
         }),
       )
       .max(AGENT_BACKUP_MAX_FILES),
