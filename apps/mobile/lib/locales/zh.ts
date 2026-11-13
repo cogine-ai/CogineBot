@@ -1429,4 +1429,6 @@ export const ZH_MESSAGES: Record<string, string> = {
   minutes: "分钟",
   hours: "小时",
   days: "天",
+  Edit: "编辑",
+  Resume: "恢复",
 };

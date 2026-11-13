@@ -1493,4 +1493,6 @@ export const RU_MESSAGES: Record<string, string> = {
   minutes: "минуты",
   hours: "часы",
   days: "дни",
+  Edit: "Редактировать",
+  Resume: "Возобновить",
 };

@@ -1500,4 +1500,6 @@ export const DE_MESSAGES: Record<string, string> = {
   minutes: "Minuten",
   hours: "Stunden",
   days: "Tage",
+  Edit: "Bearbeiten",
+  Resume: "Fortsetzen",
 };
