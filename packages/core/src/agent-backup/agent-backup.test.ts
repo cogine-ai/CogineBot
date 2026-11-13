@@ -112,6 +112,50 @@ it.each([
   expect(JSON.parse(backup).model).toEqual({ provider, modelId: "gpt-4.1" });
 });
 
+it.each([
+  ["anthropic", "anthropic/claude-opus-4.6", "claude-opus-4-6"],
+  ["anthropic", "anthropic:claude-opus-4.6", "claude-opus-4-6"],
+  ["anthropic", "other/claude-opus-4.6", "other/claude-opus-4.6"],
+  ["openai-codex", "openai:gpt-4.1", "gpt-4.1"],
+  ["openrouter", "anthropic/claude-opus-4.6", "anthropic/claude-opus-4.6"],
+  ["deepseek", "deepseek:deepseek-chat", "deepseek-flash"],
+  ["deepseek", "deepseek-reasoner", "deepseek-flash"],
+  ["xiaomi", "xiaomi/MiMo-V2.5-Pro", "mimo-v2.5-pro"],
+])("keeps the provider's model naming convention (%s %s)", (provider, value, modelId) => {
+  const config = `model: { provider: ${provider}, default: '${value}' }`;
+  const backup = encodeAgentBackup(
+    zipSync({ "HERMES.md": strToU8("Read this."), "config.yaml": strToU8(config) }),
+  );
+  expect(JSON.parse(backup).model).toEqual({ provider, modelId });
+});
+
+it.each([
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1/' }",
+  "base_url: 'https://openrouter.ai/api/v1'\nmodel: { provider: openrouter, default: anthropic/claude-opus-4.6 }",
+])("projects a saved canonical endpoint without copying the address (%s)", (config) => {
+  const backup = encodeAgentBackup(
+    zipSync({ "HERMES.md": strToU8("Read this."), "config.yaml": strToU8(config) }),
+  );
+  expect(JSON.parse(backup).model).toEqual({
+    provider: "openrouter",
+    modelId: "anthropic/claude-opus-4.6",
+  });
+  expect(backup).not.toContain("openrouter.ai");
+});
+
+it("omits a credential-shaped model ID before normalization", () => {
+  const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig";
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(`model: { provider: anthropic, default: 'anthropic:${token}' }`),
+    }),
+  );
+  expect(JSON.parse(backup).model).toBe("unavailable");
+  expect(backup).not.toContain(token);
+  expect(backup).not.toContain(token.replaceAll(".", "-"));
+});
+
 it("reports an unavailable declared active configuration without using the home fallback", () => {
   const root = "backup";
   const value = encodeAgentBackup(
@@ -145,6 +189,10 @@ it("reports an unavailable declared active configuration without using the home 
 });
 
 it.each([
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6 }\nproviders: { openrouter: { base_url: 'https://openrouter.ai/api/v1' } }",
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/other' }",
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1?token=fixture' }",
+  "model: { provider: anthropic, default: claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1' }",
   "provider: openai\nmodel: { provider: '   ', default: gpt-4.1 }",
   "provider: openai\nmodel: { provider: 123, default: gpt-4.1 }",
   "model: { provider: 123, default: { provider: openai, model: gpt-4.1 } }",

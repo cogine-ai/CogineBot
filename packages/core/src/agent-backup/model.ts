@@ -15,6 +15,25 @@ const providerAliases = new Map([
   ["z-ai", "zai"],
   ["zhipu", "zai"],
 ]);
+const hermesDefaultEndpoints = new Map([
+  ["anthropic", "https://api.anthropic.com"],
+  ["openrouter", "https://openrouter.ai/api/v1"],
+]);
+const hermesDirectProviders = new Set([
+  "anthropic",
+  "arcee",
+  "deepseek",
+  "google",
+  "kimi-coding",
+  "kimi-coding-cn",
+  "minimax",
+  "minimax-cn",
+  "minimax-oauth",
+  "openai-codex",
+  "xai",
+  "xiaomi",
+  "zai",
+]);
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
@@ -53,7 +72,6 @@ export function projectBackupModel(
     if (source === "hermes") {
       const model = record(config.model);
       if (!Object.hasOwn(config, "model")) return undefined;
-      if (hasEndpoint(model) || hasEndpoint(config)) return "unavailable";
       let providerValue = own(model, "provider");
       if (providerValue && typeof providerValue !== "string") return "unavailable";
       let selected: unknown = typeof config.model === "string" ? config.model : undefined;
@@ -76,6 +94,10 @@ export function projectBackupModel(
       }
       modelId = text(selected);
       provider = text(providerValue || config.provider);
+      const canonicalProvider = providerId(source, provider);
+      const canonicalEndpoint = hermesDefaultEndpoints.get(canonicalProvider);
+      if (hasEndpoint(model, canonicalEndpoint) || hasEndpoint(config, canonicalEndpoint))
+        return "unavailable";
       const overrides = [
         ...Object.entries(record(config.providers)),
         ...(Array.isArray(config.custom_providers)
@@ -85,7 +107,7 @@ export function projectBackupModel(
       if (
         overrides.some(
           ([name, entry]) =>
-            providerId(source, name) === providerId(source, provider) &&
+            providerId(source, name) === canonicalProvider &&
             (hasEndpoint(record(entry)) || hasOverride(own(record(entry), "api"))),
         )
       )
@@ -139,10 +161,9 @@ export function projectBackupModel(
       [provider, modelId].some((value) => redactSecretText(value) !== value || /:\/\//.test(value))
     )
       return "unavailable";
-    const result = AgentBackupModelSchema.safeParse({
-      provider: providerId(source, provider),
-      modelId,
-    });
+    const canonicalProvider = providerId(source, provider);
+    if (source === "hermes") modelId = normalizeHermesModelId(canonicalProvider, modelId);
+    const result = AgentBackupModelSchema.safeParse({ provider: canonicalProvider, modelId });
     return result.success ? result.data : "unavailable";
   } catch {
     return "unavailable";
@@ -173,10 +194,35 @@ function validConfig(value: unknown): boolean {
   return visit(value, 0);
 }
 
-function hasEndpoint(value: Record<string, unknown>) {
-  return ["baseUrl", "base_url", "endpoint", "api_base", "apiBase", "url"].some((key) =>
-    hasOverride(own(value, key)),
-  );
+function normalizeHermesModelId(provider: string, modelId: string): string {
+  if (!hermesDirectProviders.has(provider)) return modelId;
+  const separator = modelId.search(/[/:]/);
+  if (separator >= 0) {
+    const prefix = modelId.slice(0, separator);
+    const remainder = modelId.slice(separator + 1).trim();
+    if (
+      remainder &&
+      (providerId("hermes", prefix) === provider ||
+        (provider === "openai-codex" && prefix === "openai"))
+    )
+      modelId = remainder;
+  }
+  if (provider === "anthropic" && !modelId.includes("/")) return modelId.replaceAll(".", "-");
+  if (provider === "xiaomi") return modelId.toLowerCase();
+  if (provider === "deepseek" && !modelId.includes("/")) {
+    const bare = modelId.toLowerCase();
+    return ["deepseek-chat", "deepseek-reasoner"].includes(bare) ? "deepseek-flash" : bare;
+  }
+  return modelId;
+}
+
+function hasEndpoint(value: Record<string, unknown>, canonical?: string) {
+  return ["baseUrl", "base_url", "endpoint", "api_base", "apiBase", "url"].some((key) => {
+    const endpoint = own(value, key);
+    return (
+      hasOverride(endpoint) && (!canonical || text(endpoint).replace(/\/+$/, "") !== canonical)
+    );
+  });
 }
 
 const hasOverride = (value: unknown) =>
