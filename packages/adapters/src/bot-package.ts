@@ -19,7 +19,6 @@ import {
   BOT_PACKAGE_MEMORY_MAX_BYTES,
   BotAvatarValueSchema,
   BotPackageDocumentSchema,
-  BotPackageMemorySchema,
   BotPackageRoutineSchema,
   BotPackageSkillSchema,
   botPackageUtf8Bytes,
@@ -35,7 +34,6 @@ import {
 import {
   backupInstructions,
   botImportJsonObject,
-  isBackupMemory,
   isBackupSkill,
   isBackupTextFile,
   isHermesDefault,
@@ -43,6 +41,7 @@ import {
   openClawRuntimeFiles,
   parseOpenClawIdentity,
   renameBackupSkill,
+  selectBackupMemory,
 } from "@rakazo/core/agent-backup";
 import { redactSecretText } from "@rakazo/logging/redaction";
 
@@ -551,8 +550,6 @@ function backupPackage(
   const incomplete = new Set(backup.incompleteSkills);
   const skillNames = new Set<string>();
   const skills: BotPackageDocument["skills"] = [];
-  const memory: BotPackageDocument["memory"] = [];
-  let memoryBytes = 0;
   for (const [path, content] of [...byPath].sort(([left], [right]) =>
     left < right ? -1 : left > right ? 1 : 0,
   )) {
@@ -589,36 +586,11 @@ function backupPackage(
           skills.push(candidate.data);
         }
       }
-    } else if (isBackupMemory(source, path) && content.trim()) {
-      if (source === "openclaw" && isOpenClawDefault(path, content)) {
-        addNote("memory", path, "The original template was omitted.");
-        continue;
-      }
-      const note =
-        source === "hermes"
-          ? content
-              .replace(/\r\n?/g, "\n")
-              .split(/^[^\S\n]*§[^\S\n]*$/m)
-              .map((entry) => entry.trim())
-              .filter(Boolean)
-              .join("\n\n")
-          : content;
-      if (!note) continue;
-      const target = source === "hermes" ? path.slice("memories/".length) : path;
-      const candidate = BotPackageMemorySchema.safeParse({ path: target, content: note });
-      const bytes = botPackageUtf8Bytes(note);
-      if (
-        !candidate.success ||
-        memory.length >= BOT_PACKAGE_MAX_MEMORY_FILES ||
-        memoryBytes + bytes > BOT_PACKAGE_MEMORY_MAX_BYTES
-      ) {
-        addNote("memory", path, "This note exceeds the Bot memory limits.");
-        continue;
-      }
-      memoryBytes += bytes;
-      memory.push(candidate.data);
     }
   }
+  const memory = selectBackupMemory(source, files, (path, reason) =>
+    addNote("memory", path, reason),
+  );
   const availableMemoryCount =
     memory.length + (options.includeMemory ? 0 : backup.excludedMemoryCount);
   if (!options.includeMemory && availableMemoryCount)
@@ -627,7 +599,8 @@ function backupPackage(
     !instructions.length &&
     !skills.length &&
     !(options.includeMemory && memory.length) &&
-    !identity?.name
+    !identity?.name &&
+    !identity?.description
   )
     throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({

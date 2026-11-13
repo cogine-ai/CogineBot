@@ -4,10 +4,14 @@ import {
   AGENT_BACKUP_MAX_FILES,
   AgentBackupDocumentSchema,
   BOT_PACKAGE_MAX_BYTES,
+  BOT_PACKAGE_MAX_MEMORY_FILES,
+  BOT_PACKAGE_MEMORY_MAX_BYTES,
+  BotPackageMemorySchema,
   botPackageUtf8Bytes,
   isAgentBackupPath,
 } from "@rakazo/contracts";
 import { AgentImportArchiveError, openAgentImportArchive } from "./archive.js";
+import { isOpenClawDefault } from "./stock.js";
 
 const openClawInstructions = ["SOUL.md", "AGENTS.md"] as const;
 const hermesInstructions = ["SOUL.md", "AGENTS.md", "HERMES.md", ".hermes.md"] as const;
@@ -23,10 +27,53 @@ export const openClawRuntimeFiles = new Set([
 ]);
 export const isBackupSkill = (path: string) =>
   /^(?:\.agents\/)?skills\/(?:[^/]+\/){1,4}SKILL\.md$/.test(path);
-export function isBackupMemory(source: AgentBackupSource, path: string) {
+function isBackupMemory(source: AgentBackupSource, path: string) {
   return source === "openclaw"
     ? /^(?:MEMORY|USER)\.md$|^memory\/[^/]+\.md$/.test(path)
     : /^memories\/(?:MEMORY|USER)\.md$/.test(path);
+}
+
+export function selectBackupMemory(
+  source: AgentBackupSource,
+  files: AgentBackupDocument["files"],
+  omit?: (path: string, reason: string) => void,
+) {
+  const notes: AgentBackupDocument["files"] = [];
+  let totalBytes = 0;
+  const sorted = files
+    .filter(({ path }) => isBackupMemory(source, path))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  for (const { path, content } of sorted) {
+    if (!content.trim()) continue;
+    if (source === "openclaw" && isOpenClawDefault(path, content)) {
+      omit?.(path, "The original template was omitted.");
+      continue;
+    }
+    const note =
+      source === "hermes"
+        ? content
+            .replace(/\r\n?/g, "\n")
+            .split(/^[^\S\n]*§[^\S\n]*$/m)
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+            .join("\n\n")
+        : content;
+    if (!note) continue;
+    const target = source === "hermes" ? path.slice("memories/".length) : path;
+    const candidate = BotPackageMemorySchema.safeParse({ path: target, content: note });
+    const bytes = botPackageUtf8Bytes(note);
+    if (
+      !candidate.success ||
+      notes.length >= BOT_PACKAGE_MAX_MEMORY_FILES ||
+      totalBytes + bytes > BOT_PACKAGE_MEMORY_MAX_BYTES
+    ) {
+      omit?.(path, "This note exceeds the Bot memory limits.");
+      continue;
+    }
+    totalBytes += bytes;
+    notes.push(candidate.data);
+  }
+  return notes;
 }
 
 export function isBackupTextFile(source: AgentBackupSource, path: string) {
@@ -203,9 +250,11 @@ export function agentBackupPreviewSource(source: string, includeMemory: boolean)
   const backup = parsed.data;
   const files = backup.files.filter(({ path }) => !isBackupMemory(backup.source, path));
   if (files.length === backup.files.length) return source;
+  const excludedMemoryCount = selectBackupMemory(backup.source, backup.files).length;
+  if (!files.length && !excludedMemoryCount) throw new AgentImportArchiveError("unreadable");
   return JSON.stringify({
     ...backup,
     files,
-    excludedMemoryCount: backup.files.length - files.length,
+    excludedMemoryCount,
   });
 }

@@ -495,6 +495,19 @@ it("does not approve an empty import from excluded backup notes", () => {
   );
 });
 
+it("accepts OpenClaw identity with a custom description and placeholder name", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [{ path: "IDENTITY.md", content: "- Name: not set yet\n- Theme: Quiet research" }],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: false });
+  expect(preview.document.profile).toMatchObject({
+    name: "OpenClaw",
+    description: "Quiet research",
+  });
+});
+
 it("keeps standalone Hermes Skills pending without classifying edits by bundled names", () => {
   const edited = `\uFEFF${skill.replace("Original body.", "User edits.")}`;
   const source = JSON.stringify({

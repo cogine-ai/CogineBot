@@ -95,7 +95,10 @@ describe("bot package import review", () => {
       {
         source: "hermes",
         format: "agent-backup/v1",
-        files: [{ path: "memories/MEMORY.md", content: "private note" }],
+        files: [
+          { path: "memories/MEMORY.md", content: "private note" },
+          { path: "memories/USER.md", content: "  \n§\n " },
+        ],
       },
       null,
       2,
