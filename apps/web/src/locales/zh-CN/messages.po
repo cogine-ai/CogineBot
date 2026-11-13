@@ -7626,3 +7626,11 @@ msgstr "要断开 Slack 连接吗？"
 
 msgid "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot."
 msgstr "Bot 将停止收发此工作区的消息。对话历史仍保留在 CogineBot。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "选择备份内容"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "无法导入的备份文件"

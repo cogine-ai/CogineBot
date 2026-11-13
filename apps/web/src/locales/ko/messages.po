@@ -7471,3 +7471,11 @@ msgstr "이 기록의 출처는 더 이상 사용할 수 없습니다."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "채팅 기록의 출처를 불러오지 못했습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "백업 콘텐츠 선택"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "사용할 수 없는 백업 파일"

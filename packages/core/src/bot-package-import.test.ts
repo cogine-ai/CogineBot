@@ -112,17 +112,99 @@ describe("bot package import review", () => {
     });
     f.manager.edit({ includeMemory: true });
     await f.manager.preview();
-    expect(f.deps.preview.mock.calls[1]![0]).toEqual({ source, includeMemory: true });
+    expect(f.deps.preview.mock.calls[1]![0].includeMemory).toBe(true);
+    expect(JSON.parse(f.deps.preview.mock.calls[1]![0].source)).toMatchObject({
+      files: [{ path: "memories/MEMORY.md", content: "private note" }],
+      excludedMemoryCount: 2,
+    });
   });
 
-  it("drops source-specific consent when the source is emptied", async () => {
+  it("drops source-specific consent when pasted content is replaced or emptied", async () => {
     const f = fixture();
-    f.manager.edit({ source: "old source", includeMemory: true });
+    f.manager.edit({ source: "old source" });
+    f.manager.edit({ includeMemory: true });
+    f.manager.edit({ source: "replacement source" });
+    expect(f.state.includeMemory).toBe(false);
+    f.manager.edit({ includeMemory: true });
     f.manager.edit({ source: " \n" });
     f.manager.edit({ source: "new source" });
     await f.manager.preview();
     expect(f.deps.preview).toHaveBeenCalledWith(
       { source: "new source", includeMemory: false },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("filters unchecked backup files before the request and invalidates their old preview", async () => {
+    const f = fixture();
+    const files = [
+      { path: "HERMES.md", content: "Keep these instructions." },
+      { path: "AGENTS.md", content: "Keep this text on the device." },
+      { path: "skills/review/SKILL.md", content: "Local Skill text." },
+      { path: "memories/MEMORY.md", content: "Share this note." },
+      { path: "memories/USER.md", content: "Private note." },
+    ];
+    const source = JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files,
+      incompleteSkills: ["skills/review/SKILL.md"],
+    });
+    await review(f, source);
+    for (const { path } of [files[1]!, files[2]!, files[4]!])
+      f.manager.setBackupFileIncluded(path, false);
+    f.manager.edit({ includeMemory: true, name: "Imported assistant" });
+    expect(f.state.preview).toBeNull();
+    await f.manager.confirm();
+    expect(f.deps.import).not.toHaveBeenCalled();
+    await f.manager.preview();
+    const input = f.deps.preview.mock.lastCall?.[0];
+    expect(input).toMatchObject({ includeMemory: true, name: "Imported assistant" });
+    expect(JSON.parse(input!.source)).toEqual({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [files[0], files[3]],
+      excludedMemoryCount: 1,
+    });
+    f.manager.edit({ includeMemory: false });
+    await f.manager.preview();
+    expect(JSON.parse(f.deps.preview.mock.lastCall![0].source)).toMatchObject({
+      files: [files[0]],
+      excludedMemoryCount: 2,
+    });
+    f.manager.edit({ includeMemory: true });
+    await f.manager.preview();
+    expect(f.deps.preview.mock.lastCall?.[0]).toEqual(input);
+    f.manager.edit({ source, includeMemory: false });
+    expect(f.state.excludedBackupPaths).toEqual([]);
+    expect(f.state.preview).toBeNull();
+  });
+
+  it("ignores a preview that returned after the selected backup files changed", async () => {
+    const f = fixture();
+    const old = deferred<ReturnType<typeof packagePreview>>();
+    f.deps.preview.mockImplementationOnce(() => old.promise);
+    f.manager.edit({
+      source: JSON.stringify({
+        format: "agent-backup/v1",
+        source: "openclaw",
+        files: [
+          { path: "SOUL.md", content: "Instructions" },
+          { path: "AGENTS.md", content: "Other instructions" },
+        ],
+      }),
+    });
+    const first = f.manager.preview();
+    const signal = f.deps.preview.mock.calls[0]![1];
+    f.manager.setBackupFileIncluded("AGENTS.md", false);
+    f.deps.preview.mockResolvedValueOnce(packagePreview({ previewToken: "current-selection" }));
+    await f.manager.preview();
+    old.resolve(packagePreview({ previewToken: "previous-selection" }));
+    await first;
+    expect(signal.aborted).toBe(true);
+    await f.manager.confirm();
+    expect(f.deps.import).toHaveBeenCalledExactlyOnceWith(
+      { previewToken: "current-selection", clientNonce: "nonce-1" },
       expect.any(AbortSignal),
     );
   });
@@ -186,7 +268,8 @@ describe("bot package import review", () => {
 
   it("refuses a preview that does not confirm the requested memory choice", async () => {
     const f = fixture();
-    f.manager.edit({ source: "package", includeMemory: true });
+    f.manager.edit({ source: "package" });
+    f.manager.edit({ includeMemory: true });
     f.deps.preview.mockResolvedValueOnce(packagePreview({ includeMemory: false }));
     await f.manager.preview();
     await f.manager.confirm();

@@ -6,12 +6,13 @@ import type {
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES, botPackageUtf8Bytes } from "@rakazo/contracts";
-import { agentBackupPreviewSource } from "./agent-backup/index.js";
+import { agentBackupPreview } from "./agent-backup/index.js";
 
 export type BotPackageImportState = {
   source: string;
   name: string;
   includeMemory: boolean;
+  excludedBackupPaths: readonly string[];
   phase: "editing" | "previewing" | "review" | "importing" | "checking" | "unknown" | "completed";
   preview: BotPackagePreview | null;
   receipt: BotPackageReceipt | null;
@@ -27,6 +28,7 @@ export const initialBotPackageImport: BotPackageImportState = {
   source: "",
   name: "",
   includeMemory: false,
+  excludedBackupPaths: [],
   phase: "editing",
   preview: null,
   receipt: null,
@@ -94,7 +96,9 @@ export function createBotPackageImport(deps: Deps) {
     const done = settled(receipt);
     publish({
       ...state,
-      ...(done ? { source: "", name: "", includeMemory: false, preview: null } : {}),
+      ...(done
+        ? { source: "", name: "", includeMemory: false, excludedBackupPaths: [], preview: null }
+        : {}),
       phase: done ? "completed" : "unknown",
       receipt,
       clientNonce: nonce,
@@ -153,14 +157,13 @@ export function createBotPackageImport(deps: Deps) {
   return {
     edit(input: Partial<Pick<BotPackageImportState, "source" | "name" | "includeMemory">>) {
       if (!active() || state.clientNonce !== null) return;
-      const includeMemory =
-        input.source !== undefined && !input.source.trim()
-          ? false
-          : (input.includeMemory ?? state.includeMemory);
+      const replacingSource = input.source !== undefined;
+      const includeMemory = replacingSource ? false : (input.includeMemory ?? state.includeMemory);
       if (
         (input.source === undefined || input.source === state.source) &&
         (input.name === undefined || input.name === state.name) &&
-        includeMemory === state.includeMemory
+        includeMemory === state.includeMemory &&
+        !(replacingSource && state.excludedBackupPaths.length)
       )
         return;
       invalidate();
@@ -168,6 +171,23 @@ export function createBotPackageImport(deps: Deps) {
         ...state,
         ...input,
         includeMemory,
+        ...(replacingSource ? { excludedBackupPaths: [] } : {}),
+        phase: "editing",
+        preview: null,
+        error: null,
+        canRetry: false,
+      });
+    },
+    setBackupFileIncluded(path: string, included: boolean) {
+      if (!active() || state.clientNonce !== null) return;
+      const excluded = new Set(state.excludedBackupPaths);
+      if (included === !excluded.has(path)) return;
+      if (included) excluded.delete(path);
+      else excluded.add(path);
+      invalidate();
+      publish({
+        ...state,
+        excludedBackupPaths: [...excluded],
         phase: "editing",
         preview: null,
         error: null,
@@ -189,7 +209,7 @@ export function createBotPackageImport(deps: Deps) {
       if (!current(version)) return;
       try {
         const input = {
-          source: agentBackupPreviewSource(state.source, state.includeMemory),
+          ...agentBackupPreview(state.source, state.includeMemory, state.excludedBackupPaths),
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
         };
@@ -237,6 +257,7 @@ export function createBotPackageImport(deps: Deps) {
         source: "",
         name: "",
         includeMemory: false,
+        excludedBackupPaths: [],
         preview: null,
         receipt: null,
         clientNonce,

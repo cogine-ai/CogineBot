@@ -1346,6 +1346,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "Не удалось загрузить последние импорты.",
   "Could not load skills.": "Не удалось загрузить навыки.",
   "Could not preview this package.": "Не удалось открыть предпросмотр пакета.",
+  "Choose backup content": "Выбрать содержимое резервной копии",
+  "Unavailable backup files": "Недоступные файлы резервной копии",
   "Agent backup selected": "Выбрана резервная копия агента",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
     "Не удалось прочитать пакет. Выберите файл JSON или резервную копию агента размером до 4 МиБ.",

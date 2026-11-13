@@ -1,9 +1,9 @@
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
-import { isAgentBackupUpload } from "@rakazo/core/agent-backup";
+import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 import type { MobileBotPackageClient } from "../lib/bot-package-client";
 import { mobileBotPackageClient } from "../lib/bot-package-client";
@@ -14,6 +14,7 @@ import { native } from "../lib/native";
 import { BotPackageDocumentView, BotPackageLeftOutList } from "./bot-package-document";
 import { NativeBotPackageSkills } from "./bot-package-tools";
 import { NativeActionButton } from "./native-action-button";
+import { NativeDisclosure } from "./native-disclosure";
 import { NativeSwitch } from "./native-switch";
 
 export function NativeBotPackageImport({
@@ -35,6 +36,7 @@ export function NativeBotPackageImport({
   const [reload, setReload] = useState(0);
   const [reading, setReading] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
+  const [backupContentOpen, setBackupContentOpen] = useState(false);
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const fileGeneration = useRef(0);
   useFocusEffect(
@@ -47,6 +49,7 @@ export function NativeBotPackageImport({
       setFileError(false);
       setInitializationError(false);
       setRecentOpen(false);
+      setBackupContentOpen(false);
       void mobileBotPackageClient(scope, () => active)
         .then((next) => {
           if (!next.isCurrent()) return;
@@ -82,7 +85,12 @@ export function NativeBotPackageImport({
   const phase = state?.phase ?? "editing";
   const receipt = state?.receipt;
   const preview = state?.preview;
-  const backup = isAgentBackupUpload(state?.source ?? "");
+  const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
+  const backup = fileGroups !== null;
+  const excluded = new Set(state?.excludedBackupPaths);
+  const selection = fileGroups
+    ? agentBackupSelectableGroups(fileGroups, state?.includeMemory ?? false, excluded)
+    : null;
   const busy = phase === "importing" || phase === "checking";
   const locked =
     !client ||
@@ -94,6 +102,7 @@ export function NativeBotPackageImport({
     fileGeneration.current++;
     setReading(false);
     setFileError(false);
+    if (input.source !== undefined) setBackupContentOpen(false);
     manager.current?.edit(input);
   }
   async function pick() {
@@ -105,6 +114,7 @@ export function NativeBotPackageImport({
     try {
       const source = await pickBotPackageFile(valid);
       if (valid() && source !== null) {
+        setBackupContentOpen(false);
         manager.current?.edit({
           source,
           includeMemory: false,
@@ -189,9 +199,55 @@ export function NativeBotPackageImport({
               onValueChange={(includeMemory) => edit({ includeMemory })}
             />
           </View>
+          {fileGroups && selection ? (
+            <NativeDisclosure
+              label={t("Choose backup content")}
+              expanded={backupContentOpen}
+              onExpandedChange={setBackupContentOpen}
+            >
+              {selection.groups.map(({ kind, paths }) => (
+                <View key={kind} style={styles.section}>
+                  <Text style={styles.heading}>
+                    {t(
+                      kind === "instructions"
+                        ? "Instructions"
+                        : kind === "skills"
+                          ? "Skills"
+                          : "Memory",
+                    )}
+                  </Text>
+                  {paths.map((path) => (
+                    <View key={path} style={styles.row}>
+                      <Text style={[styles.text, styles.backupPath]}>{path}</Text>
+                      <NativeSwitch
+                        accessibilityLabel={path}
+                        value={!excluded.has(path)}
+                        disabled={locked || reading}
+                        onValueChange={(included) =>
+                          manager.current?.setBackupFileIncluded(path, included)
+                        }
+                      />
+                    </View>
+                  ))}
+                </View>
+              ))}
+              {fileGroups.unavailable.length ? (
+                <View style={styles.section}>
+                  <Text style={styles.heading}>{t("Unavailable backup files")}</Text>
+                  {fileGroups.unavailable.map((path) => (
+                    <Text key={path} selectable style={styles.secondary}>
+                      {path}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+            </NativeDisclosure>
+          ) : null}
           <NativeActionButton
             label={phase === "previewing" ? t("Previewing…") : t("Preview")}
-            disabled={locked || reading || !state?.source.trim()}
+            disabled={
+              locked || reading || !state?.source.trim() || selection?.hasSelection === false
+            }
             busy={phase === "previewing"}
             onPress={() => void manager.current?.preview()}
             prominence="secondary"
@@ -229,6 +285,7 @@ export function NativeBotPackageImport({
           {phase === "review" ? (
             <NativeActionButton
               label={t("Import as new bot")}
+              disabled={reading}
               onPress={() => void manager.current?.confirm()}
             />
           ) : null}
@@ -361,5 +418,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   source: { minHeight: 160, textAlignVertical: "top" },
+  backupPath: { flex: 1 },
   row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
 });

@@ -7471,3 +7471,11 @@ msgstr "इतिहास का यह स्रोत अब उपलब्�
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "चैट इतिहास के स्रोत लोड नहीं हो सके।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "बैकअप सामग्री चुनें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "अनुपलब्ध बैकअप फ़ाइलें"

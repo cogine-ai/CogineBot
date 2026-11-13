@@ -7527,3 +7527,11 @@ msgstr "Этот источник больше недоступен."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "Не удалось загрузить источники из истории."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "Выбрать содержимое резервной копии"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "Недоступные файлы резервной копии"

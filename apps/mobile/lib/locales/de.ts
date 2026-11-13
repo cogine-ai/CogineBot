@@ -1350,6 +1350,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "Letzte Importe konnten nicht geladen werden.",
   "Could not load skills.": "Skills konnten nicht geladen werden.",
   "Could not preview this package.": "Dieses Paket konnte nicht in der Vorschau angezeigt werden.",
+  "Choose backup content": "Sicherungsinhalte auswählen",
+  "Unavailable backup files": "Nicht verfügbare Sicherungsdateien",
   "Agent backup selected": "Agent-Sicherung ausgewählt",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
     "Dieses Paket konnte nicht gelesen werden. Wähle eine JSON-Datei oder eine Agent-Sicherung mit bis zu 4 MiB.",

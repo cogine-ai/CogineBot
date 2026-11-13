@@ -7471,3 +7471,11 @@ msgstr "Esta fonte do histórico não está mais disponível."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "Não foi possível carregar as fontes do histórico."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "Escolher conteúdo do backup"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "Arquivos de backup indisponíveis"

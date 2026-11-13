@@ -1,17 +1,28 @@
-import type { AgentBackupDocument, AgentBackupSource } from "@rakazo/contracts";
+import type {
+  AgentBackupDocument,
+  AgentBackupOmissionReason,
+  AgentBackupOmissions,
+  AgentBackupSource,
+} from "@rakazo/contracts";
 import {
   AGENT_BACKUP_FORMAT,
   AGENT_BACKUP_MAX_FILES,
   AgentBackupDocumentSchema,
+  agentBackupOmissionReasons,
+  BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_MEMORY_FILES,
   BOT_PACKAGE_MEMORY_MAX_BYTES,
   BotPackageMemorySchema,
+  BotPackageSkillSchema,
   botPackageUtf8Bytes,
   isAgentBackupPath,
 } from "@rakazo/contracts";
+import type { ParsedSkillMd } from "../agent-skill.js";
+import { parseSkillMd } from "../agent-skill.js";
 import { AgentImportArchiveError, openAgentImportArchive } from "./archive.js";
-import { isOpenClawDefault } from "./stock.js";
+import { parseOpenClawIdentity } from "./identity.js";
+import { isHermesDefault, isOpenClawDefault } from "./stock.js";
 
 const openClawInstructions = ["SOUL.md", "AGENTS.md"] as const;
 const hermesInstructions = ["SOUL.md", "AGENTS.md", "HERMES.md", ".hermes.md"] as const;
@@ -27,7 +38,7 @@ export const openClawRuntimeFiles = new Set([
 ]);
 export const isBackupSkill = (path: string) =>
   /^(?:\.agents\/)?skills\/(?:[^/]+\/){1,4}SKILL\.md$/.test(path);
-function isBackupMemory(source: AgentBackupSource, path: string) {
+export function isBackupMemory(source: AgentBackupSource, path: string) {
   return source === "openclaw"
     ? /^(?:MEMORY|USER)\.md$|^memory\/[^/]+\.md$/.test(path)
     : /^memories\/(?:MEMORY|USER)\.md$/.test(path);
@@ -38,15 +49,43 @@ export function selectBackupMemory(
   files: AgentBackupDocument["files"],
   omit?: (path: string, reason: string) => void,
 ) {
+  const candidates = backupMemoryCandidates(source, files, (path, reason) =>
+    omit?.(path, agentBackupOmissionReasons[reason]),
+  );
   const notes: AgentBackupDocument["files"] = [];
   let totalBytes = 0;
+  for (const { file, note } of candidates) {
+    const bytes = botPackageUtf8Bytes(note.content);
+    if (
+      notes.length >= BOT_PACKAGE_MAX_MEMORY_FILES ||
+      totalBytes + bytes > BOT_PACKAGE_MEMORY_MAX_BYTES
+    ) {
+      omit?.(file.path, "This note exceeds the Bot memory limits.");
+      continue;
+    }
+    totalBytes += bytes;
+    notes.push(note);
+  }
+  return { notes, available: candidates.length };
+}
+
+function backupMemoryCandidates(
+  source: AgentBackupSource,
+  files: AgentBackupDocument["files"],
+  omit?: (path: string, reason: AgentBackupOmissionReason) => void,
+) {
+  const candidates: {
+    file: AgentBackupDocument["files"][number];
+    note: AgentBackupDocument["files"][number];
+  }[] = [];
   const sorted = files
     .filter(({ path }) => isBackupMemory(source, path))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  for (const { path, content } of sorted) {
+  for (const file of sorted) {
+    const { path, content } = file;
     if (!content.trim()) continue;
     if (source === "openclaw" && isOpenClawDefault(path, content)) {
-      omit?.(path, "The original template was omitted.");
+      omit?.(path, "stock");
       continue;
     }
     const note =
@@ -61,19 +100,13 @@ export function selectBackupMemory(
     if (!note) continue;
     const target = source === "hermes" ? path.slice("memories/".length) : path;
     const candidate = BotPackageMemorySchema.safeParse({ path: target, content: note });
-    const bytes = botPackageUtf8Bytes(note);
-    if (
-      !candidate.success ||
-      notes.length >= BOT_PACKAGE_MAX_MEMORY_FILES ||
-      totalBytes + bytes > BOT_PACKAGE_MEMORY_MAX_BYTES
-    ) {
-      omit?.(path, "This note exceeds the Bot memory limits.");
+    if (!candidate.success) {
+      omit?.(path, "memoryLimit");
       continue;
     }
-    totalBytes += bytes;
-    notes.push(candidate.data);
+    candidates.push({ file, note: candidate.data });
   }
-  return notes;
+  return candidates;
 }
 
 export function isBackupTextFile(source: AgentBackupSource, path: string) {
@@ -83,6 +116,57 @@ export function isBackupTextFile(source: AgentBackupSource, path: string) {
     isBackupSkill(path) ||
     (source === "openclaw" && (path === "IDENTITY.md" || openClawRuntimeFiles.has(path)))
   );
+}
+
+export function assessBackupSkill(
+  content: string,
+  incomplete: boolean,
+): { skill: ParsedSkillMd } | { reason: AgentBackupOmissionReason } {
+  if (incomplete) return { reason: "missingSkillFiles" };
+  const skill = parseSkillMd(content);
+  if ("error" in skill) return { reason: "invalidSkill" };
+  if (/\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(skill.body))
+    return { reason: "missingSkillFiles" };
+  const { frontmatter } = skill;
+  const metadata = frontmatter.metadata;
+  if (
+    Object.keys(frontmatter).some((key) =>
+      /^(?:requires|prerequisites|platforms|os|required_environment_variables|allowed-tools)$/i.test(
+        key,
+      ),
+    ) ||
+    (typeof metadata === "string" && metadata.trim()) ||
+    (metadata &&
+      typeof metadata === "object" &&
+      !Array.isArray(metadata) &&
+      Object.keys(metadata).some((key) => /^(?:openclaw|hermes)$/i.test(key)))
+  )
+    return { reason: "skillRequirements" };
+  if (
+    !BotPackageSkillSchema.safeParse({ name: skill.name, description: skill.description, content })
+      .success
+  )
+    return { reason: "skillLimit" };
+  return { skill };
+}
+
+export function isStockBackupInstruction(source: AgentBackupSource, path: string, content: string) {
+  return source === "openclaw"
+    ? isOpenClawDefault(path, content)
+    : path === "SOUL.md" && isHermesDefault(content);
+}
+
+function backupInstructionOmission(
+  source: AgentBackupSource,
+  path: string,
+  content: string,
+): AgentBackupOmissionReason | null {
+  if (isStockBackupInstruction(source, path, content)) return "stock";
+  if (source === "openclaw" && path === "IDENTITY.md") {
+    const { name, description } = parseOpenClawIdentity(content);
+    return name || description ? null : "identity";
+  }
+  return content.length > BOT_INSTRUCTIONS_MAX_LENGTH ? "instructionLimit" : null;
 }
 
 function sourceLayout(paths: readonly string[]): { source: AgentBackupSource; home: string } {
@@ -216,8 +300,51 @@ export function renameBackupSkill(content: string, name: string): string {
   return `${head}${body.slice(0, start)}${replacement}${body.slice(end)}${content.slice(head.length + body.length)}`;
 }
 
-export function isAgentBackupUpload(source: string): boolean {
-  return source.startsWith(`{"format":"${AGENT_BACKUP_FORMAT}","`);
+/** Names only. The file bodies stay in the editor until the selected preview is requested. */
+export function agentBackupFileGroups(raw: string) {
+  if (!raw.trim() || raw.length > BOT_PACKAGE_MAX_BYTES) return null;
+  const parsed = AgentBackupDocumentSchema.safeParse(botImportJsonObject(raw.trim()));
+  if (!parsed.success) return null;
+  const { source, files, incompleteSkills } = parsed.data;
+  const incomplete = new Set(incompleteSkills);
+  const groups = {
+    instructions: [] as string[],
+    skills: [] as string[],
+    memory: [] as string[],
+    unavailable: [] as string[],
+  };
+  const memory = new Set(backupMemoryCandidates(source, files).map(({ file }) => file.path));
+  for (const { path, content } of files) {
+    if (!content.trim()) continue;
+    if (memory.has(path)) groups.memory.push(path);
+    else if (isBackupSkill(path) && "skill" in assessBackupSkill(content, incomplete.has(path)))
+      groups.skills.push(path);
+    else if (
+      (backupInstructions[source].some((file) => file === path) ||
+        (source === "openclaw" && path === "IDENTITY.md")) &&
+      !backupInstructionOmission(source, path, content)
+    )
+      groups.instructions.push(path);
+    else if (isBackupTextFile(source, path)) groups.unavailable.push(path);
+  }
+  for (const paths of Object.values(groups)) paths.sort();
+  return groups;
+}
+
+export function agentBackupSelectableGroups(
+  files: NonNullable<ReturnType<typeof agentBackupFileGroups>>,
+  includeMemory: boolean,
+  excluded: ReadonlySet<string>,
+) {
+  const groups = [
+    { kind: "instructions", paths: files.instructions },
+    { kind: "skills", paths: files.skills },
+    { kind: "memory", paths: includeMemory ? files.memory : [] },
+  ] as const;
+  return {
+    groups: groups.filter(({ paths }) => paths.length),
+    hasSelection: groups.some(({ paths }) => paths.some((path) => !excluded.has(path))),
+  };
 }
 
 export function botImportJsonObject(raw: string): Record<string, unknown> | undefined {
@@ -241,21 +368,78 @@ export function botImportJsonObject(raw: string): Record<string, unknown> | unde
   }
 }
 
-export function agentBackupPreviewSource(source: string, includeMemory: boolean): string {
-  if (includeMemory) return source;
+export function agentBackupPreview(
+  source: string,
+  includeMemory: boolean,
+  excludedPaths: readonly string[] = [],
+): { source: string; backupOmissions?: AgentBackupOmissions } {
   const value = botImportJsonObject(source.trim());
-  if (value?.format !== AGENT_BACKUP_FORMAT) return source;
+  if (value?.format !== AGENT_BACKUP_FORMAT) return { source };
   const parsed = AgentBackupDocumentSchema.safeParse(value);
   if (!parsed.success) throw new AgentImportArchiveError("unreadable");
   const backup = parsed.data;
-  const files = backup.files.filter(({ path }) => !isBackupMemory(backup.source, path));
-  if (files.length === backup.files.length) return source;
-  const excludedMemoryCount =
-    backup.excludedMemoryCount + selectBackupMemory(backup.source, backup.files).length;
-  if (!files.length && !excludedMemoryCount) throw new AgentImportArchiveError("unreadable");
-  return JSON.stringify({
-    ...backup,
-    files,
-    excludedMemoryCount,
+  if (backup.files.some(({ path }) => !isBackupTextFile(backup.source, path)))
+    throw new AgentImportArchiveError("unreadable");
+  const excluded = new Set(excludedPaths);
+  const incomplete = new Set(backup.incompleteSkills);
+  const omissions = new Map<string, AgentBackupOmissionReason>();
+  const filePaths = new Set(backup.files.map(({ path }) => path));
+  for (const path of incomplete) {
+    if (isBackupSkill(path) && !filePaths.has(path) && !excluded.has(path))
+      omissions.set(path, "missingSkillFiles");
+  }
+  const unavailableMemory = new Map<string, AgentBackupOmissionReason>();
+  const availableMemory = new Set(
+    backupMemoryCandidates(backup.source, backup.files, (path, reason) => {
+      unavailableMemory.set(path, reason);
+    }).map(({ file }) => file.path),
+  );
+  let excludedMemoryCount = backup.excludedMemoryCount;
+  const files = backup.files.filter((file) => {
+    if (!file.content.trim())
+      return backup.source === "openclaw" && openClawRuntimeFiles.has(file.path);
+    if (excluded.has(file.path) && !isBackupMemory(backup.source, file.path)) return false;
+    let reason: AgentBackupOmissionReason | null = null;
+    if (isBackupMemory(backup.source, file.path)) {
+      if (!availableMemory.has(file.path)) {
+        if (!includeMemory) return false;
+        const omitted = unavailableMemory.get(file.path);
+        if (!omitted) return false;
+        reason = omitted;
+      } else if (!includeMemory || excluded.has(file.path)) {
+        excludedMemoryCount++;
+        return false;
+      }
+    } else if (isBackupSkill(file.path)) {
+      const assessed = assessBackupSkill(file.content, incomplete.has(file.path));
+      if ("reason" in assessed) reason = assessed.reason;
+    } else if (!openClawRuntimeFiles.has(file.path)) {
+      reason = backupInstructionOmission(backup.source, file.path, file.content);
+    }
+    if (reason) omissions.set(file.path, reason);
+    return reason === null;
   });
+  const safeFiles = files.map((file) =>
+    backup.source === "openclaw" && openClawRuntimeFiles.has(file.path)
+      ? { path: file.path, content: "" }
+      : file,
+  );
+  if (!safeFiles.length && !excludedMemoryCount) throw new AgentImportArchiveError("unreadable");
+  const backupOmissions = [...omissions].slice(0, AGENT_BACKUP_MAX_FILES).map(([path, reason]) => ({
+    path,
+    reason,
+  }));
+  const incompleteSkills = backupOmissions
+    .filter(({ reason }) => reason === "missingSkillFiles")
+    .map(({ path }) => path);
+  const serialized = JSON.stringify({
+    format: backup.format,
+    source: backup.source,
+    files: safeFiles,
+    excludedMemoryCount,
+    ...(incompleteSkills.length ? { incompleteSkills } : {}),
+  });
+  if (botPackageUtf8Bytes(serialized) > BOT_PACKAGE_MAX_BYTES)
+    throw new AgentImportArchiveError("too_large");
+  return { source: serialized, ...(backupOmissions.length ? { backupOmissions } : {}) };
 }

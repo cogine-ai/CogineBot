@@ -7527,3 +7527,11 @@ msgstr "Diese Quelle ist nicht mehr verfügbar."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "Die Quellen aus dem Verlauf konnten nicht geladen werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "Sicherungsinhalte auswählen"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "Nicht verfügbare Sicherungsdateien"

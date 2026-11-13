@@ -1288,6 +1288,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "无法加载最近的导入。",
   "Could not load skills.": "无法加载技能。",
   "Could not preview this package.": "无法预览此包。",
+  "Choose backup content": "选择备份内容",
+  "Unavailable backup files": "无法导入的备份文件",
   "Agent backup selected": "已选择 Agent 备份",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
     "无法读取此包。请选择不超过 4 MiB 的 JSON 文件或 Agent 备份。",

@@ -7566,3 +7566,11 @@ msgstr "Ask the recipient to send a new WhatsApp message before replying."
 
 msgid "An attachment could not be sent."
 msgstr "An attachment could not be sent."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "Choose backup content"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "Unavailable backup files"

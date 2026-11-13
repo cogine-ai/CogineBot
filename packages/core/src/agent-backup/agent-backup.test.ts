@@ -2,7 +2,13 @@ import { gzipSync, strToU8, zipSync } from "fflate";
 import { expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { parseSkillMd } from "../agent-skill.js";
-import { encodeAgentBackup, readBotImportBytes, renameBackupSkill } from "./index.js";
+import {
+  agentBackupFileGroups,
+  agentBackupPreview,
+  encodeAgentBackup,
+  readBotImportBytes,
+  renameBackupSkill,
+} from "./index.js";
 
 function tar(files: Record<string, string>, links: Record<string, string> = {}): Uint8Array {
   const chunks: Uint8Array[] = [];
@@ -29,6 +35,107 @@ function tar(files: Record<string, string>, links: Record<string, string> = {}):
   }
   return gzipSync(archive);
 }
+
+it("recognizes wrapped backup JSON and lists missing Skill dependencies separately", () => {
+  const raw = JSON.stringify(
+    {
+      source: "openclaw",
+      format: "agent-backup/v1",
+      files: [
+        { path: "SOUL.md", content: "Review the report." },
+        {
+          path: "skills/review/SKILL.md",
+          content:
+            "---\nname: review\ndescription: A report review.\n---\nRead references/guide.md.",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+  expect(agentBackupFileGroups(`\n\x60\x60\x60json\n${raw}\n\x60\x60\x60\n`)).toEqual({
+    instructions: ["SOUL.md"],
+    skills: [],
+    memory: [],
+    unavailable: ["skills/review/SKILL.md"],
+  });
+});
+
+it("counts every valid locally omitted note without applying the saved-memory limit", () => {
+  const files = Array.from({ length: 101 }, (_, index) => ({
+    path: `memory/note-${index}.md`,
+    content: "Local note.",
+  }));
+  const source = JSON.stringify({ format: "agent-backup/v1", source: "openclaw", files });
+  expect(JSON.parse(agentBackupPreview(source, false).source)).toMatchObject({
+    files: [],
+    excludedMemoryCount: 101,
+  });
+});
+
+it("sends only the validated backup when pasted text wraps its JSON", () => {
+  const files = [{ path: "SOUL.md", content: "Selected instruction." }];
+  const json = JSON.stringify({ format: "agent-backup/v1", source: "openclaw", files });
+  const source = `Local prose.\n\x60\x60\x60json\n${json}\n\x60\x60\x60`;
+  expect(agentBackupPreview(source, true).source).not.toContain("Local prose.");
+  expect(JSON.parse(agentBackupPreview(source, true).source)).toMatchObject({ files });
+});
+
+it("preserves bounded legacy omission names and leaves the backup JSON compatible", () => {
+  const files = [{ path: "HERMES.md", content: "Selected instruction." }];
+  const missing = Array.from({ length: 500 }, (_, index) => `skills/missing-${index}/SKILL.md`);
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [...files, { path: "memories/MEMORY.md", content: "§\n§\n" }],
+    incompleteSkills: missing,
+  });
+  const preview = agentBackupPreview(source, true);
+  expect(JSON.parse(preview.source)).toEqual({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files,
+    excludedMemoryCount: 0,
+    incompleteSkills: missing,
+  });
+  expect(preview.backupOmissions).toHaveLength(500);
+  expect(preview.backupOmissions?.every(({ reason }) => reason === "missingSkillFiles")).toBe(true);
+});
+
+it("keeps unavailable file bodies and runtime text out of the preview request", () => {
+  const path = `memory/${"m".repeat(200)}.md`;
+  const raw = JSON.stringify({
+    source: "openclaw",
+    format: "agent-backup/v1",
+    files: [
+      { path: "SOUL.md", content: "Review the report." },
+      { path, content: "Private unselectable note." },
+      { path: "TOOLS.md", content: "Local runtime details." },
+      { path: "skills/invalid/SKILL.md", content: "Invalid skill body." },
+      {
+        path: "skills/review/SKILL.md",
+        content: "---\nname: review\ndescription: A report review.\n---\nRead references/guide.md.",
+      },
+    ],
+  }).replace("agent-backup/v1", "agent-backup\\/v1");
+  expect(agentBackupFileGroups(raw)).toMatchObject({ memory: [], skills: [] });
+  const preview = agentBackupPreview(raw, true);
+  expect(JSON.parse(preview.source)).toEqual({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    excludedMemoryCount: 0,
+    incompleteSkills: ["skills/review/SKILL.md"],
+    files: [
+      { path: "SOUL.md", content: "Review the report." },
+      { path: "TOOLS.md", content: "" },
+    ],
+  });
+  expect(preview.backupOmissions).toEqual([
+    { path, reason: "memoryLimit" },
+    { path: "skills/invalid/SKILL.md", reason: "invalidSkill" },
+    { path: "skills/review/SKILL.md", reason: "missingSkillFiles" },
+  ]);
+});
 
 it("reads an OpenClaw manifest and keeps the workspace ahead of managed skills", () => {
   const root = "backup/payload/posix";
