@@ -1806,3 +1806,187 @@ it("deletes only after confirmation and returns after the server succeeds", asyn
   });
   expect(state.back).toHaveBeenCalledOnce();
 });
+
+it.each(["routines/create", "routines/testRun"])(
+  "revokes %s while consent waits across Bot and Space switches",
+  async (procedure) => {
+    for (const switchTarget of ["bot", "space"]) {
+      state.params =
+        procedure === "routines/create"
+          ? { botId: "bot-1" }
+          : { botId: "bot-1", routineId: "routine-1" };
+      const normal = state.rpc.getMockImplementation()!;
+      const consent = deferred<void>();
+      const dispatched = vi.fn();
+      state.rpc.mockImplementation(async (p, input, options) => {
+        if (p === "me") return { timezone: "UTC" };
+        if (p === procedure) {
+          await consent.promise;
+          if (options.requestContext.isCurrent?.() === false) throw new Error("Request canceled");
+          dispatched(input);
+          return { id: "obsolete-created", runId: "obsolete-run" };
+        }
+        return normal(p, input, options);
+      });
+      await act(async () => root.render(<RoutineDetail />));
+      if (procedure === "routines/create") {
+        await edit(routineInput("Name"), "Synthetic routine");
+        await edit(routineInput("Prompt"), "Synthetic prompt");
+      }
+      await act(async () =>
+        button(procedure === "routines/create" ? "Create" : "Test run").click(),
+      );
+      if (switchTarget === "bot") state.params = { botId: "bot-2", routineId: "routine-2" };
+      else {
+        state.spaceId = "space-2";
+        state.spaceGeneration += 1;
+      }
+      await act(async () => root.render(<RoutineDetail />));
+      await act(async () => consent.resolve());
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(state.replace).not.toHaveBeenCalled();
+      // Give the next scenario a distinct route owner without creating a new root.
+      state.spaceId = "space-1";
+      state.spaceGeneration += 1;
+      state.rpc.mockImplementation(normal);
+    }
+  },
+);
+
+it.each(["before", "after"])(
+  "reads committed routine after refocus when the earlier read resolves %s settlement",
+  async (order) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const original = (await normal("routines/list"))[0];
+    const saving = deferred<unknown>();
+    const focusRead = deferred<unknown>();
+    let reads = 0;
+    let committed = false;
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list") {
+        reads += 1;
+        if (reads === 2) return focusRead.promise;
+        return [{ ...original, active: !committed }];
+      }
+      if (p === "routines/update") return saving.promise;
+      return normal(p, input, options);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () => button("Pause").click());
+    await refocus();
+    if (order === "before") await act(async () => focusRead.resolve([original]));
+    committed = true;
+    await act(async () => saving.resolve({ ...original, active: false }));
+    if (order === "after") await act(async () => focusRead.resolve([original]));
+    expect(reads).toBe(3);
+    expect(button("Resume").disabled).toBe(false);
+  },
+);
+
+it("preserves the same-object field draft when a pending save fails after refocus", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saving = deferred<unknown>();
+  state.rpc.mockImplementation((p, input, options) =>
+    p === "routines/update" ? saving.promise : normal(p, input, options),
+  );
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Keep this draft");
+  await act(async () => button("Save").click());
+  await refocus();
+  await act(async () => saving.reject(new Error("Save failed")));
+  expect(routineInput("Name").value).toBe("Keep this draft");
+  expect(container.textContent).toContain("Save failed");
+  expect(button("Save").disabled).toBe(false);
+});
+
+it("does not refresh another object or drop its draft when an old save settles", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const saving = deferred<unknown>();
+  let reads = 0;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/list") {
+      reads += 1;
+      return [{ ...original, botId: state.params.botId, id: state.params.routineId }];
+    }
+    if (p === "routines/update") return saving.promise;
+    return normal(p, input, options);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Pause").click());
+  state.params = { botId: "bot-2", routineId: "routine-2" };
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => saving.resolve({ ...original, name: "Old object", active: false }));
+  expect(reads).toBe(2);
+  expect(container.textContent).not.toContain("Old object");
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "New object draft");
+  await refocus();
+  expect(routineInput("Name").value).toBe("New object draft");
+});
+
+it.each([false, true])(
+  "refreshes untouched model selection but retains an edited model draft on refocus (edited: %s)",
+  async (edited) => {
+    const normal = state.rpc.getMockImplementation()!;
+    let refreshed = false;
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list")
+        return [{ ...(await normal(p))[0], modelId: refreshed ? "model-b" : "model-a" }];
+      return normal(p, input, options);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    if (edited) {
+      await chooseRoutineModel("model-b");
+      await chooseRoutineModel("model-a");
+    }
+    refreshed = true;
+    await refocus();
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.value).toBe(
+      modelOptionKey("openai-compatible", edited ? "model-a" : "model-b", "connection-a"),
+    );
+  },
+);
+
+it("ignores a focus read started before a save in the current focus scope", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const focusRead = deferred<unknown>();
+  let reads = 0;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/list") return ++reads === 1 ? [original] : focusRead.promise;
+    if (p === "routines/update") return { ...original, active: false };
+    return normal(p, input, options);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await refocus();
+  await act(async () => button("Pause").click());
+  await act(async () => focusRead.resolve([original]));
+  expect(button("Resume").disabled).toBe(false);
+});
+
+it("reads the committed state when the save settles while blurred before refocus", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const saving = deferred<unknown>();
+  let committed = false;
+  let reads = 0;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/list") {
+      reads += 1;
+      return [{ ...original, active: !committed }];
+    }
+    if (p === "routines/update") return saving.promise;
+    return normal(p, input, options);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Pause").click());
+  await act(async () => state.blur?.());
+  committed = true;
+  await act(async () => saving.resolve({ ...original, active: false }));
+  expect(reads).toBe(1);
+  await refocus();
+  expect(reads).toBe(2);
+  expect(button("Resume").disabled).toBe(false);
+});

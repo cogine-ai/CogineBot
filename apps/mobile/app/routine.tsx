@@ -63,6 +63,9 @@ export default function RoutineDetail() {
   const routeGeneration = useRef(0);
   const scopeRef = useRef<RoutineScope | null>(null);
   const modelRequest = useRef(0);
+  const routineRequest = useRef(0);
+  const modelDirty = useRef(false);
+  const loadedOwner = useRef<{ key: string } | null>(null);
   // A dispatched save must settle before another route can write.
   const saveInFlight = useRef(false);
   const [routine, setRoutine] = useState<Routine | null>(null);
@@ -134,6 +137,47 @@ export default function RoutineDetail() {
     }
   }
 
+  async function loadRoutine(scope: RoutineScope) {
+    const request = ++routineRequest.current;
+    const eligible = () => current(scope) && request === routineRequest.current;
+    setLoading(true);
+    try {
+      const requestContext = await spaceRequestContext(scope, eligible, scope.verifiedSpaceId);
+      if (!eligible()) return;
+      if (!readOnly && !creating) void loadModels(scope, requestContext);
+      const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
+      if (!eligible()) return;
+      scope.verifiedSpaceId = requestContext.headers["x-rakazo-space-id"];
+      if (creating) {
+        const me = await rpc<{ timezone: string | null }>("me", {}, { requestContext });
+        if (eligible()) {
+          setTimezone(me.timezone ?? deviceTimeZone() ?? "UTC");
+          setCreateReady(true);
+        }
+        return;
+      }
+      const match = routines.find((item) => item.id === routineId && item.botId === botId);
+      if (match) {
+        setRoutine(match);
+        if (!modelDirty.current) {
+          setModelKey(
+            match.modelProvider && match.modelId
+              ? modelOptionKey(match.modelProvider, match.modelId, match.modelCredentialId)
+              : "",
+          );
+          setThinkingLevel(match.thinkingLevel ?? "");
+        }
+      } else {
+        setRoutine(null);
+        setError(t("This routine no longer exists"));
+      }
+    } catch (loadError) {
+      if (eligible()) setError(errorText(loadError, t("Could not load routine")));
+    } finally {
+      if (eligible()) setLoading(false);
+    }
+  }
+
   useFocusEffect(
     useCallback(() => {
       const scope: RoutineScope = {
@@ -141,58 +185,32 @@ export default function RoutineDetail() {
         generation: ++routeGeneration.current,
         owner: routeOwner.current,
       };
+      const sameOwner = loadedOwner.current === scope.owner;
+      loadedOwner.current = scope.owner;
       scopeRef.current = scope;
       setSaving(saveInFlight.current);
-      setRoutine(null);
-      setEditing(false);
-      setCreateReady(false);
-      setRunAt("");
       setError(null);
-      setCredentials([]);
-      setCatalog([]);
-      setModelsReady(false);
-      setModelsError(null);
-      setModelsLoading(!readOnly);
-      setModelKey("");
-      setModelRevision(undefined);
-      setThinkingLevel("");
+      // Refocusing the same object must not unmount its unsaved field draft.
+      if (!sameOwner) {
+        modelDirty.current = false;
+        setRoutine(null);
+        setEditing(false);
+        setCreateReady(false);
+        setRunAt("");
+        setCredentials([]);
+        setCatalog([]);
+        setModelsReady(false);
+        setModelsError(null);
+        setModelsLoading(!readOnly);
+        setModelKey("");
+        setModelRevision(undefined);
+        setThinkingLevel("");
+      }
       if (!botId || (creating && readOnly)) {
         setError(t("Routine link is incomplete"));
         setLoading(false);
       } else {
-        setLoading(true);
-        void (async () => {
-          const requestContext = await spaceRequestContext(scope, () => current(scope));
-          if (!current(scope)) return;
-          if (!readOnly && !creating) void loadModels(scope, requestContext);
-          const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
-          if (!current(scope)) return;
-          scope.verifiedSpaceId = requestContext.headers["x-rakazo-space-id"];
-          if (creating) {
-            const me = await rpc<{ timezone: string | null }>("me", {}, { requestContext });
-            if (current(scope)) {
-              setTimezone(me.timezone ?? deviceTimeZone() ?? "UTC");
-              setCreateReady(true);
-            }
-            return;
-          }
-          const match = routines.find((item) => item.id === routineId && item.botId === botId);
-          if (match) {
-            setRoutine(match);
-            setModelKey(
-              match.modelProvider && match.modelId
-                ? modelOptionKey(match.modelProvider, match.modelId, match.modelCredentialId)
-                : "",
-            );
-            setThinkingLevel(match.thinkingLevel ?? "");
-          } else setError(t("This routine no longer exists"));
-        })()
-          .catch((loadError) => {
-            if (current(scope)) setError(errorText(loadError, t("Could not load routine")));
-          })
-          .finally(() => {
-            if (current(scope)) setLoading(false);
-          });
+        void loadRoutine(scope);
       }
       return () => {
         if (scopeRef.current === scope) scopeRef.current = null;
@@ -227,6 +245,9 @@ export default function RoutineDetail() {
         },
         { requestContext },
       );
+      const activeScope = scopeRef.current;
+      if (activeScope && current(activeScope) && activeScope.owner === scope.owner)
+        modelDirty.current = false;
       if (current(scope)) setRoutine(saved);
     });
   }
@@ -235,6 +256,9 @@ export default function RoutineDetail() {
     const scope = shownScope;
     if (!scope || !current(scope) || readOnly || saveInFlight.current) return;
     saveInFlight.current = true;
+    // A pre-mutation focus read must not overwrite the acknowledged result.
+    routineRequest.current += 1;
+    setLoading(false);
     setSaving(true);
     setError(null);
     try {
@@ -244,12 +268,28 @@ export default function RoutineDetail() {
         scope.verifiedSpaceId,
       );
       if (!current(scope)) return;
-      await action(requestContext);
+      await action({ ...requestContext, isCurrent: () => current(scope) });
     } catch (cause) {
-      if (current(scope)) setError(errorText(cause, t("Could not save")));
+      const activeScope = scopeRef.current;
+      if (
+        current(scope) ||
+        (activeScope && current(activeScope) && activeScope.owner === scope.owner)
+      ) {
+        setError(errorText(cause, t("Could not save")));
+      }
     } finally {
       saveInFlight.current = false;
-      if (scopeRef.current) setSaving(false);
+      const activeScope = scopeRef.current;
+      if (activeScope) setSaving(false);
+      if (
+        activeScope &&
+        current(activeScope) &&
+        activeScope !== scope &&
+        activeScope.owner.key === scope.owner.key
+      ) {
+        // Read after settlement, invalidate any earlier focus read, and preserve drafts.
+        void loadRoutine(activeScope);
+      }
     }
   }
 
@@ -332,7 +372,7 @@ export default function RoutineDetail() {
           onPress={() => setLoadRevision((value) => value + 1)}
         />
       ) : null}
-      {!loading && createReady && creating && !readOnly ? (
+      {createReady && creating && !readOnly ? (
         <RoutineFields
           key={routeKey}
           routine={null}
@@ -450,6 +490,7 @@ export default function RoutineDetail() {
                   ]}
                   onChange={(key) => {
                     if (!shownScope || !current(shownScope) || saving) return;
+                    modelDirty.current = true;
                     setModelKey(key);
                     setModelRevision(
                       modelOptions.find((entry) => entry.key === key)?.connectionRevision,
@@ -470,6 +511,7 @@ export default function RoutineDetail() {
                     ]}
                     onChange={(level) => {
                       if (!shownScope || !current(shownScope) || saving) return;
+                      modelDirty.current = true;
                       setThinkingLevel(level);
                       setModelRevision(modelRevision ?? selectedCredential?.connectionRevision);
                     }}

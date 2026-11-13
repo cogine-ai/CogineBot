@@ -1407,7 +1407,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   Visible: "可见",
   "These login values are too long together. Shorten one or more fields.":
     "登录信息的总长度超出限制。请缩短一个或多个字段。",
-  "Create routine": "创建例程",
+  "Create routine": "创建例行任务",
   "Remove schedule": "移除排程",
   "Add schedule": "添加排程",
   "How often": "重复频率",
@@ -1416,7 +1416,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Time of day": "执行时间",
   "Cron expression": "Cron 表达式",
   "Run time": "运行时间",
-  "Delete routine?": "删除例程？",
+  "Delete routine?": "删除例行任务？",
   "Run time must be in the future.": "运行时间必须晚于当前时间。",
   "Add a name and prompt.": "请填写名称和指令。",
   "Test run": "试跑",

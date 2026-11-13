@@ -1465,6 +1465,62 @@ describe("mobile API authentication", () => {
     expect(promptAiConsent).toHaveBeenLastCalledWith(recipient, "https://example.com/privacy");
   });
 
+  it.each(["routines/create", "routines/testRun"])(
+    "does not dispatch %s after its consent scope is revoked",
+    async (procedure) => {
+      let releaseConsent!: (allowed: boolean) => void;
+      let prompted!: () => void;
+      const shown = new Promise<void>((resolve) => {
+        prompted = resolve;
+      });
+      vi.mocked(promptAiConsent).mockImplementation(() => {
+        prompted();
+        return new Promise<boolean>((resolve) => {
+          releaseConsent = resolve;
+        });
+      });
+      const calls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url) => {
+          const path = new URL(String(url)).pathname;
+          calls.push(path);
+          return jsonResponse({
+            json: path.endsWith("/status")
+              ? {
+                  scope: "account-space",
+                  version: "2026-09-14",
+                  recipients: [
+                    {
+                      key: "provider",
+                      name: "Example AI",
+                      use: "model",
+                      detail: "",
+                      allowed: false,
+                    },
+                  ],
+                  privacyUrl: "https://example.com/privacy",
+                }
+              : { ok: true },
+          });
+        }),
+      );
+      let current = true;
+      const context = { ...(await captureApiRequestContext()), isCurrent: () => current };
+      const pending = rpc(
+        procedure,
+        procedure === "routines/create" ? { botId: "bot-1" } : { routineId: "routine-1" },
+        { requestContext: context },
+      );
+      const rejected = expect(pending).rejects.toThrow("Request canceled");
+      await shown;
+      current = false;
+      releaseConsent(true);
+      await rejected;
+      expect(calls).toEqual(["/rpc/aiConsent/status"]);
+    },
+  );
+
   it("coalesces concurrent mobile consent checks before sending each request once", async () => {
     vi.mocked(promptAiConsent).mockClear();
     vi.mocked(promptAiConsent).mockResolvedValue(true);
