@@ -305,9 +305,26 @@ it("opens a declared workspace with only a portable routine", () => {
   const preview = agentBackupPreview(source, false, [], ["cron/routine-1.json"]);
   expect(JSON.parse(preview.source).files).toEqual([]);
   expect(preview.backupRoutines).toHaveLength(1);
-  expect(() => encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": "{}" }))).toThrow(
-    "could not be read",
-  );
+  for (const config of [
+    { agents: { defaults: { workspace: "/state/workspace" }, entries: { main: {} } } },
+    { agents: { defaults: { workspace: "/state/workspace" } } },
+  ]) {
+    const inherited = encodeAgentBackup(
+      tar({ ...files, "backup/state/openclaw.json": JSON.stringify(config) }),
+    );
+    expect(agentBackupFileGroups(inherited)?.routines).toEqual([
+      { path: "cron/routine-1.json", name: "Review reports" },
+    ]);
+  }
+  for (const config of [
+    {},
+    { agents: { defaults: { workspace: "/state/workspace" }, entries: { main: null } } },
+    { agents: { defaults: { workspace: "/state/workspace" }, ownership: "explicit" } },
+  ]) {
+    expect(() =>
+      encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": JSON.stringify(config) })),
+    ).toThrow("could not be read");
+  }
 });
 
 it("keeps supported text usable if the optional job store cannot be read", () => {

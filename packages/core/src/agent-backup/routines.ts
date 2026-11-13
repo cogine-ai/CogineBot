@@ -18,8 +18,9 @@ type Job =
   | { path: string; routine: Routine }
   | { path: string; reason: "routineSchedule" | "routineOwner" };
 
-const record = (value: unknown): Json =>
-  value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : {};
+const isRecord = (value: unknown): value is Json =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const record = (value: unknown): Json => (isRecord(value) ? value : {});
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 const present = (value: unknown) => value !== undefined && value !== null && value !== "";
 export const isBackupRoutineOmission = (path: string) =>
@@ -55,18 +56,37 @@ export function backupWorkspaceAgent(
     const agents = record(root.agents);
     if (
       Object.hasOwn(agents, "$include") ||
-      (Object.hasOwn(agents, "list") && Object.hasOwn(agents, "entries"))
+      (agents.ownership !== undefined && agents.ownership !== "explicit") ||
+      (Object.hasOwn(agents, "list") &&
+        (Object.hasOwn(agents, "entries") || !Array.isArray(agents.list))) ||
+      (Object.hasOwn(agents, "entries") && !isRecord(agents.entries))
     )
       return null;
     const entries = Array.isArray(agents.list)
-      ? agents.list.map((value) => {
-          const entry = record(value);
-          return [text(entry.id), entry] as const;
-        })
-      : Object.entries(record(agents.entries)).map(([id, entry]) => [id, record(entry)] as const);
+      ? agents.list.map((value) => [text(record(value).id), value] as const)
+      : Object.entries(record(agents.entries));
+    if (
+      !Object.hasOwn(agents, "entries") &&
+      !Object.hasOwn(agents, "list") &&
+      agents.ownership === undefined
+    )
+      entries.push(["main", {}]);
+    const defaults = record(agents.defaults);
+    // A sole agent can inherit the configured default workspace. Machine-specific
+    // fallbacks and multi-agent defaults require more context than the archive has.
+    const inheritedWorkspace =
+      entries.length === 1 && !Object.hasOwn(defaults, "$include")
+        ? absolutePath(defaults.workspace)
+        : null;
     const bindings = entries.map(([id, entry]) => ({
       id,
-      path: Object.hasOwn(entry, "$include") ? null : absolutePath(entry.workspace),
+      path:
+        !isRecord(entry) || Object.hasOwn(entry, "$include")
+          ? null
+          : entry.workspace === undefined ||
+              (typeof entry.workspace === "string" && !entry.workspace.trim())
+            ? inheritedWorkspace
+            : absolutePath(entry.workspace),
     }));
     if (bindings.some(({ path }) => path === null)) return null;
     const matches = bindings.filter(({ path }) => path === workspace);
