@@ -1300,6 +1300,13 @@ so a later tag move cannot change rollback content. Do not prune the previous ap
 until the next update has been accepted. If it is missing, rollback fails closed instead of pulling
 new content under an old tag.
 
+Successful rollback and health checks confirm service recovery. Before returning a restored
+deployment to normal traffic, verify that the actual application, supervisor, and updater images
+contain the required HTTP runtime fixes. For this HTTP runtime update, the image baseline is Node
+22.23.5 with built-in Undici 6.29.1, Hono 4.13.18, and, where bundled, Undici 6.29.1, 7.30.1, or
+8.12.4 on its respective major version. If a restored image is older or its versions are unknown,
+keep its affected endpoints isolated until you can restore or rebuild a verified patched image.
+
 To populate the registry the first time, run the workflow manually (`workflow_dispatch`) or push a
 `v*` tag. A manual run from a branch produces `sha-<full-commit>`; only the newest stable `vX.Y.Z`
 tag produces `latest`, and valid release tags produce semver tags. The updater ignores prereleases

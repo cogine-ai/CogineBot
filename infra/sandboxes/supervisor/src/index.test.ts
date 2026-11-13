@@ -325,6 +325,14 @@ describe("sandbox supervisor HTTP boundary", () => {
       },
       body: "{}",
     });
+    const unauthorized = await supervisorApp.request("/computers/id/actions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(MAX_SUPERVISOR_REQUEST_BYTES + 1),
+      },
+      body: "{}",
+    });
     const streamed = await supervisorApp.request("/computers/id/actions", {
       method: "POST",
       headers,
@@ -335,6 +343,8 @@ describe("sandbox supervisor HTTP boundary", () => {
       expect(response.status).toBe(413);
       await expect(response.json()).resolves.toEqual({ error: "Request body is too large." });
     }
+    expect(unauthorized.status).toBe(401);
+    await expect(unauthorized.json()).resolves.toEqual({ error: "unauthorized" });
   });
 
   it("keeps the larger file-write allowance scoped to that exact POST route", () => {

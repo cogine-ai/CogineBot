@@ -63,7 +63,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
       - run: node scripts/check-repository.mjs
       - run: bash infra/compose/run-smokes.sh
       - run: bash scripts/lint-workflows.sh
@@ -94,7 +94,7 @@ jobs:
           run_install: false
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
           cache: pnpm
       - name: Install locked dependencies without lifecycle scripts
         run: |
