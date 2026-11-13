@@ -18,9 +18,10 @@ const keyChecks = new Map([
       header: "x-goog-api-key",
     },
   ],
-  ["openrouter", { url: "https://openrouter.ai/api/v1/key", header: "Authorization" }],
+  ["openrouter", { url: "https://openrouter.ai/api/v1/models/user", header: "Authorization" }],
 ]);
 const catalogChecks = new Set(["openai", "groq"]);
+const OPENROUTER_MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;
 
 export function supportsBackupModelKey(model: AgentBackupModel) {
   return (
@@ -69,10 +70,10 @@ export async function verifyBackupModelKey(
       void response.body?.cancel().catch(() => undefined);
       throw new Error("Provider did not accept the key or the reviewed model");
     }
-    if (model.provider === "deepseek") {
+    if (!modelLookup) {
       const listing = await readBoundedJsonResponse<{ data?: { id?: string }[] }>(
         response,
-        2_000_000,
+        model.provider === "openrouter" ? OPENROUTER_MODEL_LIST_MAX_BYTES : 2_000_000,
         probeSignal,
       );
       if (!listing.data?.some(({ id }) => id === model.modelId))
