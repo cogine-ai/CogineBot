@@ -88,7 +88,7 @@ export function toComputerStatus(
 ): ComputerStatus {
   const kind = ((computer?.kind.trim() ?? "fake") || "none") as ComputerStatus["kind"];
   const mode = computer?.scope === "dedicated" ? "dedicated" : "team";
-  const screen = computerScreenSize(computer?.kind);
+  const screen = computerScreenSize(kind);
   const providerDisabled = !computer?.providerRef && sandbox?.describe().id === "none";
   if (kind === "none" || providerDisabled) {
     return {
@@ -135,6 +135,7 @@ export function toComputerStatus(
     state = computerStopClaimIsStale(computer.stopRequestedAt) ? "quarantined" : "stopping";
   }
   const ref =
+    // Recovery and screen RPCs route by the persisted identity.
     computer?.providerRef && computer.homeKey !== undefined
       ? toComputerRef({ ...computer, providerRef: computer.providerRef, homeKey: computer.homeKey })
       : undefined;
