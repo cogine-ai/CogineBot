@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   push: vi.fn(),
   replace: vi.fn(),
+  createPress: undefined as undefined | (() => void),
   back: vi.fn(),
   params: { botId: "bot-1", routineId: "routine-1" } as Record<string, string>,
   apiBase: "https://api.example.test",
@@ -120,11 +121,14 @@ vi.mock("../components/native-action-button", () => ({
     onPress: () => void;
     disabled?: boolean;
     accessibilityLabel?: string;
-  }) => (
-    <button type="button" disabled={disabled} aria-label={accessibilityLabel} onClick={onPress}>
-      {label}
-    </button>
-  ),
+  }) => {
+    if (label === "Create") state.createPress = onPress;
+    return (
+      <button type="button" disabled={disabled} aria-label={accessibilityLabel} onClick={onPress}>
+        {label}
+      </button>
+    );
+  },
 }));
 vi.mock("../components/native-switch", () => ({
   NativeSwitch: ({
@@ -290,6 +294,7 @@ beforeEach(() => {
   resetI18nForTests("en");
   state.push.mockReset();
   state.replace.mockReset();
+  state.createPress = undefined;
   state.back.mockReset();
   vi.mocked(Alert.alert).mockReset();
   state.params = { botId: "bot-1", routineId: "routine-1" };
@@ -1990,3 +1995,130 @@ it("reads the committed state when the save settles while blurred before refocus
   expect(reads).toBe(2);
   expect(button("Resume").disabled).toBe(false);
 });
+
+it("restores a save failure recorded while blurred together with the same-object draft", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saving = deferred<unknown>();
+  state.rpc.mockImplementation((p, input, options) =>
+    p === "routines/update" ? saving.promise : normal(p, input, options),
+  );
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Keep failed draft");
+  await act(async () => button("Save").click());
+  await act(async () => state.blur?.());
+  await act(async () => saving.reject(new Error("Background save failed")));
+  await refocus();
+  expect(routineInput("Name").value).toBe("Keep failed draft");
+  expect(container.textContent).toContain("Background save failed");
+  await refocus();
+  expect(container.textContent).toContain("Background save failed");
+  state.rpc.mockImplementation(async (p, input, options) =>
+    p === "routines/update"
+      ? { ...(await normal("routines/list"))[0], ...input }
+      : normal(p, input, options),
+  );
+  await act(async () => button("Save").click());
+  expect(container.textContent).not.toContain("Background save failed");
+});
+
+it.each(["before refocus", "after refocus"])(
+  "restores the exact created identity when success arrives %s without permitting a second create",
+  async (timing) => {
+    state.params = { botId: "bot-1", botName: "Synthetic bot", origin: "profile" };
+    const normal = state.rpc.getMockImplementation()!;
+    const creating = deferred<unknown>();
+    state.rpc.mockImplementation((p, input, options) =>
+      p === "routines/create" ? creating.promise : normal(p, input, options),
+    );
+    await act(async () => root.render(<RoutineDetail />));
+    await edit(routineInput("Name"), "Created once");
+    await edit(routineInput("Prompt"), "Synthetic instruction");
+    await act(async () => button("Create").click());
+    expect(state.rpc.mock.calls.filter(([p]) => p === "routines/create")).toHaveLength(1);
+    await act(async () => state.blur?.());
+    if (timing === "after refocus") await refocus();
+    const replayCreate = state.createPress;
+    await act(async () => creating.resolve({ id: "created-once", botId: "bot-1" }));
+    if (timing === "before refocus") {
+      expect(state.replace).not.toHaveBeenCalled();
+      await refocus();
+    }
+    expect(state.replace).toHaveBeenCalledWith({
+      pathname: "/routine",
+      params: {
+        botId: "bot-1",
+        botName: "Synthetic bot",
+        origin: "profile",
+        routineId: "created-once",
+      },
+    });
+    // A native callback queued before navigation must not replay an acknowledged create.
+    await act(async () => replayCreate?.());
+    expect(state.rpc.mock.calls.filter(([p]) => p === "routines/create")).toHaveLength(1);
+  },
+);
+
+it.each(["bot", "space", "routine", "away and back"])(
+  "does not carry a blurred mutation failure into a different %s owner",
+  async (target) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const saving = deferred<unknown>();
+    state.rpc.mockImplementation((p, input, options) =>
+      p === "routines/update" ? saving.promise : normal(p, input, options),
+    );
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () => button("Pause").click());
+    await act(async () => state.blur?.());
+    await act(async () => saving.reject(new Error("Private old-object failure")));
+    if (target === "space") {
+      state.spaceId = "space-2";
+      state.spaceGeneration += 1;
+    } else if (target === "routine") state.params = { botId: "bot-1", routineId: "routine-2" };
+    else state.params = { botId: "bot-2", routineId: "routine-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    if (target === "away and back") {
+      state.params = { botId: "bot-1", routineId: "routine-1" };
+      await act(async () => root.render(<RoutineDetail />));
+    }
+    expect(container.textContent).not.toContain("Private old-object failure");
+  },
+);
+
+it.each(
+  ["bot", "space", "routine", "away and back"].flatMap((target) =>
+    ["before switch", "after switch"].map((timing) => [target, timing]),
+  ),
+)(
+  "does not adopt an old creation result after switching %s (success: %s)",
+  async (target, timing) => {
+    state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    const creating = deferred<unknown>();
+    state.rpc.mockImplementation((p, input, options) =>
+      p === "routines/create" ? creating.promise : normal(p, input, options),
+    );
+    await act(async () => root.render(<RoutineDetail />));
+    await edit(routineInput("Name"), "Old intent");
+    await edit(routineInput("Prompt"), "Synthetic instruction");
+    await act(async () => button("Create").click());
+    await act(async () => state.blur?.());
+    if (timing === "before switch")
+      await act(async () => creating.resolve({ id: "old-created", botId: "bot-1" }));
+    expect(state.replace).not.toHaveBeenCalled();
+    if (target === "space") {
+      state.spaceId = "space-2";
+      state.spaceGeneration += 1;
+    } else if (target === "routine") state.params = { botId: "bot-1", routineId: "routine-1" };
+    else state.params = { botId: "bot-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    if (target === "away and back") {
+      state.params = { botId: "bot-1" };
+      await act(async () => root.render(<RoutineDetail />));
+    }
+    if (timing === "after switch")
+      await act(async () => creating.resolve({ id: "old-created", botId: "bot-1" }));
+    await refocus();
+    expect(state.replace).not.toHaveBeenCalled();
+  },
+);

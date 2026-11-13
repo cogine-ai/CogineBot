@@ -31,9 +31,16 @@ import { needsOneShotTime, routineActivation, routineFields } from "../lib/routi
 import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
+// Object/creation-intent identity survives blur, but not route or account/Space changes.
+type RoutineOwner = {
+  key: string;
+  mutationError?: string;
+  createdRoutineId?: string;
+};
+
 type RoutineScope = MobileScope & {
   generation: number;
-  owner: { key: string };
+  owner: RoutineOwner;
   verifiedSpaceId?: string;
 };
 
@@ -57,7 +64,7 @@ export default function RoutineDetail() {
   const readOnly = readOnlyParam === "1";
   const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
   const routeKey = JSON.stringify([botId, routineId, readOnly, scopeKey]);
-  const routeOwner = useRef({ key: routeKey });
+  const routeOwner = useRef<RoutineOwner>({ key: routeKey });
   if (routeOwner.current.key !== routeKey) routeOwner.current = { key: routeKey };
   const router = useRouter();
   const routeGeneration = useRef(0);
@@ -65,7 +72,7 @@ export default function RoutineDetail() {
   const modelRequest = useRef(0);
   const routineRequest = useRef(0);
   const modelDirty = useRef(false);
-  const loadedOwner = useRef<{ key: string } | null>(null);
+  const loadedOwner = useRef<RoutineOwner | null>(null);
   // A dispatched save must settle before another route can write.
   const saveInFlight = useRef(false);
   const [routine, setRoutine] = useState<Routine | null>(null);
@@ -110,6 +117,18 @@ export default function RoutineDetail() {
       scope.generation === routeGeneration.current &&
       isMobileScopeCurrent(scope)
     );
+  }
+
+  function resumeCreatedRoutine(scope: RoutineScope) {
+    const savedId = scope.owner.createdRoutineId;
+    if (!savedId || !current(scope)) return;
+    routineRequest.current += 1;
+    setCreateReady(false);
+    setLoading(false);
+    router.replace({
+      pathname: "/routine",
+      params: { botId: botId!, botName: botName ?? "", routineId: savedId, origin: origin ?? "" },
+    });
   }
 
   async function loadModels(scope: RoutineScope, initialContext?: ApiRequestContext) {
@@ -189,7 +208,7 @@ export default function RoutineDetail() {
       loadedOwner.current = scope.owner;
       scopeRef.current = scope;
       setSaving(saveInFlight.current);
-      setError(null);
+      setError(scope.owner.mutationError ?? null);
       // Refocusing the same object must not unmount its unsaved field draft.
       if (!sameOwner) {
         modelDirty.current = false;
@@ -206,7 +225,9 @@ export default function RoutineDetail() {
         setModelRevision(undefined);
         setThinkingLevel("");
       }
-      if (!botId || (creating && readOnly)) {
+      if (scope.owner.createdRoutineId) {
+        resumeCreatedRoutine(scope);
+      } else if (!botId || (creating && readOnly)) {
         setError(t("Routine link is incomplete"));
         setLoading(false);
       } else {
@@ -254,12 +275,20 @@ export default function RoutineDetail() {
 
   async function mutate(action: (requestContext: ApiRequestContext) => Promise<void>) {
     const scope = shownScope;
-    if (!scope || !current(scope) || readOnly || saveInFlight.current) return;
+    if (
+      !scope ||
+      !current(scope) ||
+      readOnly ||
+      saveInFlight.current ||
+      scope.owner.createdRoutineId
+    )
+      return;
     saveInFlight.current = true;
     // A pre-mutation focus read must not overwrite the acknowledged result.
     routineRequest.current += 1;
     setLoading(false);
     setSaving(true);
+    delete scope.owner.mutationError;
     setError(null);
     try {
       const requestContext = await spaceRequestContext(
@@ -270,12 +299,12 @@ export default function RoutineDetail() {
       if (!current(scope)) return;
       await action({ ...requestContext, isCurrent: () => current(scope) });
     } catch (cause) {
-      const activeScope = scopeRef.current;
-      if (
-        current(scope) ||
-        (activeScope && current(activeScope) && activeScope.owner === scope.owner)
-      ) {
-        setError(errorText(cause, t("Could not save")));
+      if (scope.owner === routeOwner.current && isMobileScopeCurrent(scope)) {
+        scope.owner.mutationError = errorText(cause, t("Could not save"));
+        const activeScope = scopeRef.current;
+        if (activeScope && current(activeScope) && activeScope.owner === scope.owner) {
+          setError(scope.owner.mutationError);
+        }
       }
     } finally {
       saveInFlight.current = false;
@@ -285,7 +314,8 @@ export default function RoutineDetail() {
         activeScope &&
         current(activeScope) &&
         activeScope !== scope &&
-        activeScope.owner.key === scope.owner.key
+        activeScope.owner.key === scope.owner.key &&
+        !activeScope.owner.createdRoutineId
       ) {
         // Read after settlement, invalidate any earlier focus read, and preserve drafts.
         void loadRoutine(activeScope);
@@ -304,18 +334,14 @@ export default function RoutineDetail() {
           : { botId, ...fields, timezone, active: true, notify: true },
         { requestContext },
       );
-      if (!scope || !current(scope)) return;
+      if (!scope || scope.owner !== routeOwner.current || !isMobileScopeCurrent(scope)) return;
       if (!routine) {
-        router.replace({
-          pathname: "/routine",
-          params: {
-            botId: botId!,
-            botName: botName ?? "",
-            routineId: saved.id,
-            origin: origin ?? "",
-          },
-        });
-      } else {
+        // An acknowledged create belongs to the intent, not the focus that sent it.
+        // Retain its identity until navigation replaces this owner; never replay it.
+        scope.owner.createdRoutineId = saved.id;
+        const activeScope = scopeRef.current;
+        if (activeScope?.owner === scope.owner) resumeCreatedRoutine(activeScope);
+      } else if (current(scope)) {
         setRoutine(saved);
         setEditing(false);
       }
