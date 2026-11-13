@@ -411,7 +411,7 @@ export function agentBackupSelectableGroups(
   const contentItems = (paths: readonly string[]) => paths.map((path) => ({ path, label: path }));
   const scheduleLabels = files.routines.map(({ path, name, schedule }) => ({
     path,
-    label: `${name} · ${schedule}`,
+    label: `${name} · ${schedule}`.replace(/\s+/g, " "),
   }));
   const labelCounts = new Map<string, number>();
   for (const { label } of scheduleLabels) labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);

@@ -388,7 +388,11 @@ it("distinguishes backup routines with the same name and schedule", () => {
       { path: "cron/routine-1.json", content: JSON.stringify(routine) },
       {
         path: "cron/routine-2.json",
-        content: JSON.stringify({ ...routine, prompt: "Review the reports." }),
+        content: JSON.stringify({
+          ...routine,
+          prompt: "Review the reports.",
+          crons: ["0  9 * * *"],
+        }),
       },
     ],
   });
@@ -400,7 +404,10 @@ it("distinguishes backup routines with the same name and schedule", () => {
     { label: "Review · 0 9 * * * · UTC · #2", selected: true },
   ]);
   expect(agentBackupPreview(source, false, [], [...selected]).backupRoutines).toEqual([
-    { path: "cron/routine-2.json", routine: { ...routine, prompt: "Review the reports." } },
+    {
+      path: "cron/routine-2.json",
+      routine: { ...routine, prompt: "Review the reports.", crons: ["0  9 * * *"] },
+    },
   ]);
 });
 
