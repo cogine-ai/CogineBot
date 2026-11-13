@@ -83,13 +83,13 @@
     "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
     "tldts": "7.4.19",
-    "unified": "11.0.5"
+    "unified": "11.0.5",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/d3-dsv": "3.0.7",
     "fast-check": "4.10.0",
     "typescript": "7.0.2",
-    "vitest": "4.1.11",
-    "yaml": "2.9.0"
+    "vitest": "4.1.11"
   }
 }

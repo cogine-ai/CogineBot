@@ -30,6 +30,7 @@ import {
   openAgentImportArchive,
 } from "./archive.js";
 import { parseOpenClawIdentity } from "./identity.js";
+import { backupModelConfigPath, backupModelLabel, projectBackupModel } from "./model.js";
 import {
   backupJobsPath,
   backupStateDatabasePath,
@@ -310,20 +311,18 @@ export function encodeAgentBackup(data: Uint8Array): string {
       : undefined;
   const files = selectBackupFiles(source, relative, workspace, archive.declaredWorkspace);
   const jobPath = `${home}${backupJobsPath}`;
+  const configPath = `${home}${backupModelConfigPath(source)}`;
   const hasStateDatabase =
     source === "openclaw" && archive.has(`${home}${backupStateDatabasePath}`);
   // A legacy job file alongside the state database can be a stale migration source.
   const jobs = hasStateDatabase ? undefined : archive.readOptional(jobPath);
+  const workspacePath =
+    archive.workspaceSourcePath ??
+    (archive.stateSourcePath && workspace ? `${archive.stateSourcePath}/${workspace}` : undefined);
+  let declaredConfig =
+    source === "openclaw" && jobs !== undefined ? archive.readOpenClawConfig() : undefined;
   const agentId =
-    source === "openclaw" && jobs !== undefined
-      ? backupWorkspaceAgent(
-          archive.readOpenClawConfig(),
-          archive.workspaceSourcePath ??
-            (archive.stateSourcePath && workspace
-              ? `${archive.stateSourcePath}/${workspace}`
-              : undefined),
-        )
-      : null;
+    declaredConfig !== undefined ? backupWorkspaceAgent(declaredConfig, workspacePath) : null;
   const { routineFiles, routineOmissions } = projectBackupRoutines(source, jobs, agentId);
   if (hasStateDatabase) {
     routineOmissions.push({ path: backupStateDatabasePath, reason: "routineSchedule" });
@@ -335,6 +334,23 @@ export function encodeAgentBackup(data: Uint8Array): string {
     // Show the database omission without opening a new managed-Skill-only import path.
     files.clear();
   }
+  // Reserve the selected content budget before looking for optional model settings.
+  for (const [name, path] of files) {
+    if (!isBackupRuntimeFile(source, name)) archive.read(`${home}${path}`);
+  }
+  let config: string | undefined;
+  try {
+    if (source === "openclaw" && jobs === undefined) declaredConfig = archive.readOpenClawConfig();
+    config = declaredConfig ?? archive.readOptional(configPath);
+  } catch (error) {
+    if (!(error instanceof AgentImportArchiveError)) throw error;
+  }
+  const modelAgent =
+    jobs !== undefined || declaredConfig === undefined
+      ? agentId
+      : backupWorkspaceAgent(declaredConfig, workspacePath);
+  const model = projectBackupModel(source, config, modelAgent);
+  const agentModelPath = modelAgent ? `${home}agents/${modelAgent}/agent/models.json` : null;
   return encodeBackupDocument(
     source,
     files,
@@ -344,6 +360,13 @@ export function encodeAgentBackup(data: Uint8Array): string {
     (path) => archive.read(`${home}${path}`),
     routineFiles,
     routineOmissions,
+    {
+      model:
+        (config === undefined && archive.has(configPath)) ||
+        (model && agentModelPath && archive.has(agentModelPath))
+          ? "unavailable"
+          : model,
+    },
   );
 }
 
@@ -368,7 +391,10 @@ function encodeBackupDocument(
   read: (path: string) => string,
   routineFiles: AgentBackupDocument["files"],
   routineOmissions: NonNullable<AgentBackupDocument["routineOmissions"]>,
-  linkedSkills?: ReadonlySet<string>,
+  options: {
+    linkedSkills?: ReadonlySet<string>;
+    model?: AgentBackupDocument["model"];
+  } = {},
 ): string {
   if (files.size + routineFiles.length > AGENT_BACKUP_MAX_FILES)
     throw new AgentImportArchiveError("too_large");
@@ -386,7 +412,7 @@ function encodeBackupDocument(
     incompleteSkills: [...files].flatMap(([path, inputPath]) => {
       if (!isBackupSkill(path)) return [];
       const folder = inputPath.slice(0, -"SKILL.md".length);
-      return linkedSkills?.has(path) ||
+      return options.linkedSkills?.has(path) ||
         inventory.some((candidate) => candidate !== inputPath && candidate.startsWith(folder))
         ? [path]
         : [];
@@ -398,6 +424,10 @@ function encodeBackupDocument(
   const text = JSON.stringify(parsed.data);
   if (botPackageUtf8Bytes(text) > BOT_PACKAGE_MAX_BYTES)
     throw new AgentImportArchiveError("too_large");
+  if (options.model) {
+    const withModel = JSON.stringify({ ...parsed.data, model: options.model });
+    if (botPackageUtf8Bytes(withModel) <= BOT_PACKAGE_MAX_BYTES) return withModel;
+  }
   return text;
 }
 
@@ -491,21 +521,22 @@ export async function encodeAgentBackupFolder(
     content.set(path, text);
   }
   const jobsEntry = byPath.get(backupJobsPath);
-  let jobs: string | undefined;
-  if (
-    source === "hermes" &&
-    jobsEntry &&
-    jobsEntry.size <= limits.fileBytes &&
-    totalBytes + jobsEntry.size <= limits.readBytes
-  ) {
-    checkSize(jobsEntry.size);
+  async function readOptional(entry: AgentBackupFolderFile | undefined) {
+    if (!entry || entry.size > limits.fileBytes || totalBytes + entry.size > limits.readBytes)
+      return undefined;
+    checkSize(entry.size);
     try {
-      jobs = decoder.decode(await readBytes(jobsEntry));
+      return decoder.decode(await readBytes(entry));
     } catch (error) {
       if (!isCurrent()) throw error;
-      // Report an unreadable schedule alongside the readable text files.
+      return undefined;
     }
   }
+  const jobs = source === "hermes" ? await readOptional(jobsEntry) : undefined;
+  const configEntry = byPath.get(backupModelConfigPath(source));
+  const config = await readOptional(configEntry);
+  const model =
+    configEntry && config === undefined ? "unavailable" : projectBackupModel(source, config, null);
   const { routineFiles, routineOmissions } = projectBackupRoutines(source, jobs, null);
   if (source === "openclaw" && byPath.has(backupStateDatabasePath)) {
     routineOmissions.push({ path: backupStateDatabasePath, reason: "routineSchedule" });
@@ -525,7 +556,7 @@ export async function encodeAgentBackupFolder(
     (path) => content.get(path)!,
     routineFiles,
     routineOmissions,
-    linkedSkills,
+    { linkedSkills, model },
   );
 }
 
@@ -572,6 +603,9 @@ export function agentBackupFileGroups(raw: string) {
   const { source, files, incompleteSkills, routineOmissions } = parsed.data;
   const incomplete = new Set(incompleteSkills);
   const groups = {
+    ...(parsed.data.model && parsed.data.model !== "unavailable"
+      ? { model: backupModelLabel(parsed.data.model) }
+      : {}),
     instructions: [] as string[],
     skills: [] as string[],
     memory: [] as string[],
@@ -633,6 +667,7 @@ export function agentBackupSelectableGroups(
   includeMemory: boolean,
   excluded: ReadonlySet<string>,
   includedRoutines: ReadonlySet<string>,
+  includeModel = false,
 ) {
   const contentItems = (paths: readonly string[]) => paths.map((path) => ({ path, label: path }));
   const scheduleLabels = files.routines.map(({ path, name, schedule }) => ({
@@ -673,6 +708,7 @@ export function agentBackupSelectableGroups(
     }));
   return {
     groups: visible,
+    model: files.model ? { label: files.model, selected: includeModel } : null,
     hasSelection: visible.some(({ items }) => items.some(({ selected }) => selected)),
   };
 }
@@ -703,6 +739,7 @@ export function agentBackupPreview(
   includeMemory: boolean,
   excludedPaths: readonly string[] = [],
   includedRoutinePaths: readonly string[] = [],
+  includeModel = false,
 ): Pick<BotPackagePreviewInput, "source" | "backupOmissions" | "backupRoutines"> {
   const value = botImportJsonObject(source.trim());
   if (value?.format !== AGENT_BACKUP_FORMAT) return { source };
@@ -789,6 +826,9 @@ export function agentBackupPreview(
     files: safeFiles,
     excludedMemoryCount,
     ...(incompleteSkills.length ? { incompleteSkills } : {}),
+    ...(backup.model === "unavailable" || (includeModel && backup.model)
+      ? { model: backup.model }
+      : {}),
   });
   if (
     botPackageUtf8Bytes(serialized) +

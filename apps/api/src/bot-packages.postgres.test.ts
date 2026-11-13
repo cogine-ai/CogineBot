@@ -2,7 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUILTIN_AGENT_SKILLS, canonicalBotPackageJson } from "@rakazo/adapters";
+import {
+  BUILTIN_AGENT_SKILLS,
+  canonicalBotPackageJson,
+  EncryptedSecretStore,
+} from "@rakazo/adapters";
 import type {
   Actor,
   BotPackageExport,
@@ -362,6 +366,118 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: "Chosen backup note." })]);
     },
   );
+  it("binds the reviewed backup model to a single exact current Space connection", async () => {
+    const owner = await account();
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const value = {
+      format: AGENT_BACKUP_FORMAT,
+      source: "hermes",
+      files: [{ path: "HERMES.md", content: "Review rows." }],
+      model,
+    };
+    const addConnection = async (label: string) => {
+      const secret = await new EncryptedSecretStore("offline-package-http-fixture-key").put(
+        "synthetic-connection",
+        {
+          ...owner.actor,
+          operationId: "fixture",
+          traceId: "fixture",
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      await database.prisma.secret.create({
+        data: {
+          id: secret.id,
+          userId: owner.actor.userId,
+          kind: "model",
+          ciphertext: secret.ciphertext,
+        },
+      });
+      return database.prisma.userModelCredential.create({
+        data: { userId: owner.actor.userId, provider: model.provider, label, secretId: secret.id },
+      });
+    };
+    const credential = await addConnection("Selected in this Space");
+    const other = await addConnection("Other available account connection");
+    const missing = await preview(owner, value);
+    expect(missing.model).toBeUndefined();
+    expect(missing.leftOut).toContainEqual(expect.objectContaining({ kind: "model" }));
+    const select = (credentialId: string) =>
+      database.prisma.spaceModelPreference.create({
+        data: {
+          userId: owner.actor.userId,
+          spaceId: owner.actor.spaceId,
+          credentialId,
+          modelId: model.modelId,
+        },
+      });
+    await select(credential.id);
+    const reviewed = await preview(owner, value);
+    expect(reviewed.model).toEqual(model);
+    expect(reviewed.digest).not.toBe(missing.digest);
+    expect(JSON.stringify(reviewed)).not.toContain(credential.id);
+    expect(JSON.stringify(reviewed)).not.toContain("synthetic-connection");
+    const sibling = await createSpaceForMember(database.prisma, {
+      currentSpaceId: owner.actor.spaceId,
+      userId: owner.actor.userId,
+      name: "Unconfigured Space",
+    });
+    await database.prisma.spaceModelPreference.deleteMany({
+      where: { spaceId: sibling.id, userId: owner.actor.userId },
+    });
+    expect(
+      (await preview({ ...owner, actor: { ...owner.actor, spaceId: sibling.id } }, value)).model,
+    ).toBeUndefined();
+
+    const nonce = randomUUID();
+    const receipt = await importPackage(owner, reviewed, nonce);
+    expect(await importPackage(owner, reviewed, nonce)).toEqual(receipt);
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } }),
+    ).toMatchObject({
+      modelProvider: model.provider,
+      modelId: model.modelId,
+      modelCredentialId: credential.id,
+    });
+
+    const priorToAmbiguity = await preview(owner, value);
+    const secondPreference = await select(other.id);
+    const fromAmbiguous = await importPackage(owner, priorToAmbiguity);
+    expect(fromAmbiguous.leftOut).toContainEqual(expect.objectContaining({ kind: "model" }));
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: fromAmbiguous.botId! } }),
+    ).toMatchObject({ modelCredentialId: null });
+    expect((await preview(owner, value)).model).toBeUndefined();
+    await database.prisma.spaceModelPreference.delete({ where: { id: secondPreference.id } });
+
+    const stale = await preview(owner, value);
+    await database.prisma.userModelCredential.update({
+      where: { id: credential.id },
+      data: { connectionRevision: { increment: 1 } },
+    });
+    const changed = await importPackage(owner, stale);
+    expect(changed.leftOut).toContainEqual(
+      expect.objectContaining({
+        kind: "model",
+        reason: expect.stringContaining("no longer available"),
+      }),
+    );
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: changed.botId! } }),
+    ).toMatchObject({
+      modelProvider: null,
+      modelId: null,
+      modelCredentialId: null,
+    });
+    const ordinary = await preview(owner, {
+      ...source(),
+      model,
+      backupModelBinding: { ...model, credentialId: credential.id, revision: 2 },
+    });
+    expect(ordinary.model).toBeUndefined();
+    expect(ordinary.document).not.toHaveProperty("backupModelBinding");
+  });
+
   it("binds the receipt to the selected backup files even when the Bot documents match", async () => {
     const owner = await account();
     const backup = {

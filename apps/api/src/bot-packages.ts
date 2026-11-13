@@ -32,6 +32,11 @@ import {
 } from "@rakazo/db";
 import { redactSecretText } from "@rakazo/logging/redaction";
 import { createAgentSkillsService, resolveSkillContent } from "./agent-skills.js";
+import {
+  BackupModelBindingSchema,
+  findBackupModelBinding,
+  validateBackupModelBinding,
+} from "./bot-package-model.js";
 import type { RouterDeps } from "./router.js";
 import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 
@@ -41,7 +46,10 @@ type Context = {
   signal?: AbortSignal;
   stillAuthorized?: () => Promise<boolean>;
 };
-type Deps = Pick<RouterDeps, "prisma" | "billing">;
+type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets">;
+const packagePlanSchema = BotPackageDocumentSchema.extend({
+  backupModelBinding: BackupModelBindingSchema.optional(),
+});
 const includeChildren = {
   bot: { select: { archivedAt: true } },
   components: { orderBy: { key: "asc" as const } },
@@ -230,7 +238,11 @@ export function createBotPackagesService(deps: Deps) {
         if (marker.status !== "importing" && marker.status !== "failed") return marker;
         if (marker.botId || !marker.plan)
           throw new ORPCError("CONFLICT", { message: "This import cannot be resumed." });
-        const document = BotPackageDocumentSchema.parse(marker.plan);
+        const document = packagePlanSchema.parse(marker.plan);
+        const binding = document.backupModelBinding;
+        const model = binding
+          ? await validateBackupModelBinding(tx, deps.secrets, context.actor, binding, true)
+          : null;
         const bot = await createBotRecordsInTransaction(
           tx,
           context.actor,
@@ -239,6 +251,7 @@ export function createBotPackagesService(deps: Deps) {
             notifyOnFinish: false,
             memoryScope: "isolated",
             disabledBuiltinTools: fleetTools,
+            ...model,
           },
           kind,
         );
@@ -292,6 +305,18 @@ export function createBotPackagesService(deps: Deps) {
             status: "completed",
             botId: bot.id,
             plan: Sql.DbNull,
+            ...(binding && !model
+              ? {
+                  leftOut: [
+                    ...safeLeftOut(marker.leftOut),
+                    note(
+                      `${binding.provider}/${binding.modelId}`.slice(0, 200),
+                      "The reviewed model connection is no longer available. Choose a model in Bot settings.",
+                      "model",
+                    ),
+                  ],
+                }
+              : {}),
             revision: { increment: 1 },
           },
           include: includeChildren,
@@ -330,6 +355,28 @@ export function createBotPackagesService(deps: Deps) {
       } catch (error) {
         return packageError(error);
       }
+      const { backupModel } = parsed;
+      const binding =
+        backupModel && backupModel !== "unavailable"
+          ? await findBackupModelBinding(deps.prisma, deps.secrets, context.actor, backupModel)
+          : null;
+      const leftOut =
+        backupModel && !binding
+          ? [
+              ...parsed.leftOut,
+              backupModel === "unavailable"
+                ? note(
+                    "Model",
+                    "The backup model could not be resolved. Choose a model in Bot settings.",
+                    "model",
+                  )
+                : note(
+                    `${backupModel.provider}/${backupModel.modelId}`.slice(0, 200),
+                    "Connect and select this model in this Space before importing it.",
+                    "model",
+                  ),
+            ]
+          : parsed.leftOut;
       const previewToken = randomBytes(32).toString("base64url");
       // The reviewed backup includes the selected source files, even when two selections
       // produce the same Bot document. Keep the existing digest format for other imports.
@@ -341,7 +388,8 @@ export function createBotPackagesService(deps: Deps) {
                 input.includeMemory,
                 input.backupRoutines ?? [],
                 parsed.json,
-                parsed.leftOut,
+                leftOut,
+                ...(binding ? [binding] : []),
               ]),
             )
           : hash(parsed.json);
@@ -353,8 +401,10 @@ export function createBotPackagesService(deps: Deps) {
             tokenHash: hash(previewToken),
             digest,
             sourceFormat: parsed.sourceFormat,
-            document: parsed.document,
-            leftOut: parsed.leftOut,
+            document: binding
+              ? { ...parsed.document, backupModelBinding: binding }
+              : parsed.document,
+            leftOut,
             includeMemory: input.includeMemory,
             availableMemoryCount: parsed.availableMemoryCount,
             expiresAt,
@@ -367,7 +417,8 @@ export function createBotPackagesService(deps: Deps) {
         expiresAt: expiresAt.toISOString(),
         document: parsed.document,
         sourceFormat: parsed.sourceFormat,
-        leftOut: parsed.leftOut,
+        leftOut,
+        ...(binding && backupModel && backupModel !== "unavailable" ? { model: backupModel } : {}),
         availableMemoryCount: parsed.availableMemoryCount,
         includeMemory: input.includeMemory,
       };
@@ -403,7 +454,7 @@ export function createBotPackagesService(deps: Deps) {
           throw new ORPCError("CONFLICT", {
             message: "This preview already belongs to another import request.",
           });
-        const document = BotPackageDocumentSchema.parse(preview.document);
+        const document = packagePlanSchema.parse(preview.document);
         const marker = await tx.botPackageImport.create({
           data: {
             ...own(context.actor),

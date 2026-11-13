@@ -83,6 +83,7 @@ export type ParsedBotPackage = {
     | "grokbot-bundle/v1";
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
+  backupModel?: AgentBackupDocument["model"];
 };
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -654,7 +655,22 @@ function backupPackage(
     memory: options.includeMemory ? memory : [],
   });
   leftOut.push(...safe.leftOut);
-  return { ...safe, sourceFormat: source, leftOut: leftOut.entries, availableMemoryCount };
+  const model = backup.model;
+  const backupModel =
+    model &&
+    model !== "unavailable" &&
+    [model.provider, model.modelId].some(
+      (value) => redactSecretText(value) !== value || /:\/\//.test(value),
+    )
+      ? "unavailable"
+      : model;
+  return {
+    ...safe,
+    sourceFormat: source,
+    leftOut: leftOut.entries,
+    availableMemoryCount,
+    backupModel,
+  };
 }
 
 export function parseBotPackageSource(

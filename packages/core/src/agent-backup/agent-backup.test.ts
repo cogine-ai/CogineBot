@@ -1,3 +1,4 @@
+import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import { gzipSync, strToU8, zipSync } from "fflate";
 import { expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
@@ -25,7 +26,6 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
   );
   const localOnly = [
     folderEntry(".openclaw/.env", "fixture secret", 9_000_000),
-    folderEntry(".openclaw/openclaw.json", "fixture config"),
     folderEntry(".openclaw/cron/jobs.json", "fixture jobs"),
     folderEntry(".openclaw/workspace-reports/HEARTBEAT.md", "fixture runtime"),
     folderEntry(
@@ -35,7 +35,13 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
     folderEntry(".openclaw/SOUL.md", "home persona"),
     folderEntry(".openclaw/skills/report/SKILL.md", "managed Skill"),
   ];
-  const result = JSON.parse(await encodeAgentBackupFolder([soul, skill, ...localOnly], () => true));
+  const config = folderEntry(
+    ".openclaw/openclaw.json",
+    "{ agents: { defaults: { model: 'openai/gpt-4.1' } } }",
+  );
+  const result = JSON.parse(
+    await encodeAgentBackupFolder([soul, skill, config, ...localOnly], () => true),
+  );
   expect(result).toMatchObject({
     source: "openclaw",
     files: [
@@ -45,11 +51,70 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
     ],
     incompleteSkills: ["skills/report/SKILL.md"],
     routineOmissions: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+    model: "unavailable",
   });
+  expect(config.read).toHaveBeenCalledOnce();
   expect(soul.read).toHaveBeenCalledExactlyOnceWith(soul.size + 1);
   expect(skill.read).toHaveBeenCalledOnce();
   for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
 });
+
+it("projects only the Hermes model from a folder or archive and sends it after selection", async () => {
+  const config = [
+    "model:",
+    "  provider: gemini",
+    "  default: gemini-2.5-pro",
+    "  base_url: ''",
+    "  api_key: fixture-value",
+    "mcp_servers:",
+    "  fixture: { url: 'https://example.test/synthetic' }",
+  ].join("\n");
+  const source = await encodeAgentBackupFolder(
+    [
+      folderEntry("profile/HERMES.md", "Review sources."),
+      folderEntry("profile/config.yaml", config),
+    ],
+    () => true,
+  );
+  const archive = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Review sources."),
+      "config.yaml": strToU8(config),
+    }),
+  );
+  const model = { provider: "google", modelId: "gemini-2.5-pro" };
+  for (const backup of [source, archive]) {
+    expect(JSON.parse(backup).model).toEqual(model);
+    expect(backup).not.toContain("fixture-value");
+    expect(backup).not.toContain("example.test");
+    expect(JSON.parse(agentBackupPreview(backup, false).source)).not.toHaveProperty("model");
+    expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source).model).toEqual(model);
+  }
+});
+
+it.each([
+  "model: { provider: openai, default: gpt-4.1, base_url: 'https://example.test/v1' }",
+  "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { base_url: 'https://example.test' } }",
+  "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { api: 'https://example.test' } }",
+  "model: { provider: openai, default: gpt-4.1 }\napi_base: 'https://example.test'",
+  "model: { provider: openai, default: gpt-4.1 }\nmodel_aliases: { gpt-4.1: { model: other } }",
+  "model: { provider: openai, default: 'https://example.test/unknown' }",
+  "model: { provider: openai, provider: anthropic, default: gpt-4.1 }",
+  "model: &cycle { provider: openai, default: gpt-4.1, child: *cycle }",
+])(
+  "reports nonportable or malformed Hermes config without transmitting it (%s)",
+  async (config) => {
+    const backup = await encodeAgentBackupFolder(
+      [
+        folderEntry("profile/HERMES.md", "Review sources."),
+        folderEntry("profile/config.yaml", config),
+      ],
+      () => true,
+    );
+    expect(JSON.parse(backup).model).toBe("unavailable");
+    expect(backup).not.toContain("example.test");
+  },
+);
 
 it("reads Hermes notes and routines and keeps customized Skills even when names are listed", async () => {
   const customized = folderEntry(
@@ -110,6 +175,28 @@ it("reads Hermes notes and routines and keeps customized Skills even when names 
   expect(jobs.read).toHaveBeenCalledOnce();
   expect(customized.read).toHaveBeenCalledOnce();
   expect(renamed.read).toHaveBeenCalledOnce();
+});
+
+it("preserves a boundary-sized folder when optional model metadata does not fit", async () => {
+  const soul = folderEntry("profile/HERMES.md", "Review sources.");
+  const escapedNotes = Array.from({ length: 6 }, (_, index) =>
+    folderEntry(`profile/skills/review-${index}/SKILL.md`, "\u0001".repeat(100_000)),
+  );
+  const remainder = folderEntry("profile/skills/remainder/SKILL.md");
+  const bytes = (value: string) => new TextEncoder().encode(value).length;
+  const empty = await encodeAgentBackupFolder([soul, ...escapedNotes, remainder], () => true);
+  const missing = BOT_PACKAGE_MAX_BYTES - bytes(empty);
+  const end = folderEntry(
+    remainder.path,
+    "\u0001".repeat(Math.floor(missing / 6)) + "x".repeat(missing % 6),
+  );
+  const config = folderEntry(
+    "profile/config.yaml",
+    "model: { provider: openai-api, default: gpt-4.1 }",
+  );
+  const backup = await encodeAgentBackupFolder([soul, ...escapedNotes, end, config], () => true);
+  expect(bytes(backup)).toBe(BOT_PACKAGE_MAX_BYTES);
+  expect(JSON.parse(backup)).not.toHaveProperty("model");
 });
 
 it("offers Hermes content even if the optional routine store exceeds the read limit", async () => {
@@ -383,7 +470,17 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
     }),
     "backup/state/workspace-research/SOUL.md": "Review the reports.",
     "backup/state/openclaw.json": JSON.stringify({
-      agents: { list: [{ id: "research", workspace: "/state/workspace-research" }] },
+      agents: {
+        defaults: { model: "anthropic/claude-sonnet-4-6" },
+        list: [
+          {
+            id: " research ",
+            workspace: "/state/workspace-research",
+            model: { primary: "openai/gpt-4.1" },
+          },
+          { id: "other", workspace: "/state/other", model: "xai/grok-4" },
+        ],
+      },
       unrelated: "Private configuration fixture.",
     }),
     "backup/state/cron/jobs.json": JSON.stringify({
@@ -411,6 +508,18 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
     }),
   };
   const source = encodeAgentBackup(tar(files));
+  expect(JSON.parse(source).model).toEqual({ provider: "openai", modelId: "gpt-4.1" });
+  const overridden = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/state/agents/research/agent/models.json":
+        '{"providers":{"openai":{"baseUrl":"https://example.test"}}}',
+    }),
+  );
+  expect(JSON.parse(overridden).model).toBe("unavailable");
+  expect(overridden).not.toContain("example.test");
+  expect(source).not.toContain("claude-sonnet");
+  expect(source).not.toContain("grok-4");
   expect(source).not.toContain("Other agent text.");
   expect(source).not.toContain("privateHistory");
   expect(source).not.toContain("Private configuration fixture.");

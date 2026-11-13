@@ -13,7 +13,7 @@ type ModelCredentialScope = { userId: string; spaceId: string };
 
 /** Hold one Space model selection across all recipients of an image send. */
 export async function lockSpaceModelSelection(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   scope: ModelCredentialScope,
   mode: "read" | "write",
 ) {

@@ -70,8 +70,8 @@ export function openAgentImportArchive(data: Uint8Array): {
     if (entry.skipped || !mayBeRead(entry.path)) throw unreadable();
     const bytes = entry.data ?? zip?.read(entry.path);
     if (!bytes) return undefined;
+    if (read + bytes.length > limits.readBytes) throw tooLarge();
     read += bytes.length;
-    if (read > limits.readBytes) throw tooLarge();
     return bytes;
   }
   function readEntry(entry: Entry): string {
@@ -95,10 +95,14 @@ export function openAgentImportArchive(data: Uint8Array): {
   const texts = new Map<string, string>();
   function readOptionalEntry(entry: Entry | undefined) {
     if (!entry || entry.skipped || !mayBeRead(entry.path)) return undefined;
+    const cached = texts.get(entry.path);
+    if (cached !== undefined) return cached;
     const bytes = readEntryBytes(entry);
     if (!bytes) return undefined;
     try {
-      return decoder.decode(bytes);
+      const text = decoder.decode(bytes);
+      texts.set(entry.path, text);
+      return text;
     } catch (error) {
       if (error instanceof TypeError) return undefined;
       throw error;
@@ -118,12 +122,12 @@ export function openAgentImportArchive(data: Uint8Array): {
       return matches.length === 1 ? readOptionalEntry(matches[0]) : undefined;
     },
     read: (path) => {
-      const cached = texts.get(path);
-      if (cached !== undefined) return cached;
       const entry = byVirtual.get(path);
       if (!entry) throw unreadable();
+      const cached = texts.get(entry.path);
+      if (cached !== undefined) return cached;
       const text = readEntry(entry);
-      texts.set(path, text);
+      texts.set(entry.path, text);
       return text;
     },
   };
@@ -173,7 +177,8 @@ function mayBeRead(path: string): boolean {
     ((folder === "memory" || folder === "memories") && name.endsWith(".md")) ||
     name === "manifest.json" ||
     (folder === "cron" && name === "jobs.json") ||
-    name === "openclaw.json"
+    name === "openclaw.json" ||
+    name === "config.yaml"
   );
 }
 
