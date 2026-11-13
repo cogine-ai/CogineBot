@@ -1,4 +1,27 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Disconnect OAuth before authorizing from another app.":
+    "Vor der Autorisierung aus einer anderen App OAuth trennen.",
+  "Access token (optional)": "Zugriffstoken (optional)",
+  "Add server": "Server hinzufügen",
+  Arguments: "Argumente",
+  "Authorization cancelled.": "Autorisierung abgebrochen.",
+  "Authorization expired. Try again.": "Autorisierung abgelaufen. Erneut versuchen.",
+  "Authorization failed. Try again.": "Autorisierung fehlgeschlagen. Erneut versuchen.",
+  "Check status before retrying this server.": "Vor dem erneuten Versuch den Serverstatus prüfen.",
+  "Check the server fields.": "Serverfelder prüfen.",
+  Command: "Befehl",
+  "Connect OAuth": "OAuth verbinden",
+  "Could not update MCP server. Check status and retry.":
+    "MCP-Server konnte nicht aktualisiert werden. Status prüfen und erneut versuchen.",
+  "Reconnect OAuth": "OAuth erneut verbinden",
+  "Remove MCP server?": "MCP-Server entfernen?",
+  "Runs on the connected instance.": "Wird auf der verbundenen Instanz ausgeführt.",
+  "Server name": "Servername",
+  "This server did not request browser authorization.":
+    "Dieser Server hat keine Browserautorisierung angefordert.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Dieser Server ist bereits verbunden. Zum erneuten Autorisieren zuerst trennen.",
+  Transport: "Transport",
   "Sending to channel": "Wird an den Kanal gesendet",
   "Accepted by channel": "Vom Kanal angenommen",
   "Delivered to channel": "Im Kanal zugestellt",

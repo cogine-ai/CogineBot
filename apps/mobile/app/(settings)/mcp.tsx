@@ -1,147 +1,230 @@
-import type { IntegrationSetupState, McpServer } from "@rakazo/contracts";
+import type { McpServer, McpTransport } from "@rakazo/contracts";
+import type {
+  McpAuthorizationResult,
+  McpManagement,
+  McpManagementState,
+  McpServerDraft,
+} from "@rakazo/core";
+import {
+  authorizeMcp,
+  createMcpManagement,
+  emptyMcpServerDraft,
+  initialMcpManagementState,
+} from "@rakazo/core";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useRef, useState } from "react";
-import { Alert, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { MenuPicker } from "../../components/menu-picker";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
-import { rpc } from "../../lib/api";
+import { captureApiRequestContext, rpc } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
-import type { IntegrationsCacheScope } from "../../lib/integrations-cache";
-import { integrationsCacheScope, isIntegrationsScopeCurrent } from "../../lib/integrations-cache";
+import { openMcpBrowser } from "../../lib/mcp-browser";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  subscribeMobileScope,
+} from "../../lib/mobile-scope";
 import { native, useThemedStyles } from "../../lib/native";
-import { errorText } from "../../lib/user-error";
 
 export default function McpSettings() {
   const { t } = useI18n();
   const { serverId } = useLocalSearchParams<{ serverId?: string }>();
   const styles = useThemedStyles(createStyles);
-  const [servers, setServers] = useState<McpServer[]>([]);
+  const [state, setState] = useState<McpManagementState>(initialMcpManagementState);
+  const [draft, setDraft] = useState(emptyMcpServerDraft);
+  const [adding, setAdding] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const [selected, setSelected] = useState<McpServer | null>(null);
   const [all, setAll] = useState(false);
   const [names, setNames] = useState("");
   const [verbatimResults, setVerbatimResults] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  const scope = useRef<IntegrationsCacheScope | null>(null);
-  const active = useRef(false);
-  function isCurrent() {
-    return active.current && !!scope.current && isIntegrationsScopeCurrent(scope.current);
-  }
-  const select = useCallback((server: McpServer) => {
+  const [notice, setNotice] = useState<McpAuthorizationResult | null>(null);
+  const [retry, setRetry] = useState(0);
+  const manager = useRef<McpManagement | null>(null);
+  const selectedInitial = useRef(false);
+  const authorize = useRef<((id: string) => Promise<void>) | null>(null);
+  const select = useCallback((server: McpServer | null) => {
     setSelected(server);
-    setAll(server.allowAllTools);
-    setNames(server.allowedTools.join("\n"));
-    setVerbatimResults(server.verbatimResults ?? false);
+    setAll(server?.allowAllTools ?? false);
+    setNames(server?.allowedTools.join("\n") ?? "");
+    setVerbatimResults(server?.verbatimResults ?? false);
     setSaved(false);
-    setError(null);
+    setNotice(null);
   }, []);
   useFocusEffect(
     useCallback(() => {
-      active.current = true;
-      let cancelled = false;
-      setServers([]);
-      setSelected(null);
-      setError(null);
-      setBusy(false);
-      setSaved(false);
-      void (async () => {
-        try {
-          const current = await integrationsCacheScope();
-          if (cancelled || !isIntegrationsScopeCurrent(current)) return;
-          scope.current = current;
-          const rows = await rpc<McpServer[]>("mcp/servers/list");
-          if (!cancelled && isCurrent()) {
-            setServers(rows);
-            const server = rows.find(({ id }) => id === serverId);
-            if (server) select(server);
-          }
-        } catch (reason) {
-          if (!cancelled && active.current)
-            setError(errorText(reason, t("Could not load MCP servers")));
-        }
-      })();
+      let focused = true;
+      let closeOwner = () => {};
+      function start() {
+        closeOwner();
+        const scope = captureMobileScope();
+        let active = true;
+        const isCurrent = () => focused && active && isMobileScopeCurrent(scope);
+        let review: McpManagement | null = null;
+        selectedInitial.current = false;
+        setState(initialMcpManagementState());
+        setDraft(emptyMcpServerDraft());
+        setAdding(false);
+        setAdvanced(false);
+        select(null);
+        closeOwner = () => {
+          active = false;
+          review?.dispose();
+          if (manager.current === review) manager.current = null;
+          authorize.current = null;
+        };
+        void captureApiRequestContext(scope.spaceId)
+          .then(async (context) => {
+            if (!isCurrent()) return;
+            const me = await rpc<{ userId: string; spaceId: string }>(
+              "me",
+              {},
+              { requestContext: { ...context, isCurrent }, skipSpaceAuthRecovery: true },
+            );
+            if (!isCurrent()) return;
+            if (!me.userId || !me.spaceId) throw new Error("Missing scope");
+            const requestContext = {
+              ...context,
+              isCurrent,
+              headers: { ...context.headers, "x-rakazo-space-id": scope.spaceId || me.spaceId },
+            };
+            const request = <T,>(procedure: string, input: unknown, signal: AbortSignal) =>
+              rpc<T>(procedure, input, {
+                signal,
+                timeoutMs: 35_000,
+                requestContext,
+                skipSpaceAuthRecovery: true,
+              });
+            review = createMcpManagement({ request, isCurrent, changed: setState });
+            manager.current = review;
+            authorize.current = async (id) => {
+              setNotice(null);
+              await review?.authorize(async (signal) => {
+                const result = await authorizeMcp({
+                  serverId: id,
+                  request,
+                  open: openMcpBrowser,
+                  signal,
+                  isCurrent,
+                });
+                if (isCurrent()) setNotice(result);
+              });
+            };
+            await review.refresh();
+          })
+          .catch(() => {
+            if (isCurrent()) setState((value) => ({ ...value, error: "read" }));
+          });
+      }
+      start();
+      const unsubscribe = subscribeMobileScope(start);
       return () => {
-        cancelled = true;
-        active.current = false;
-        scope.current = null;
+        focused = false;
+        unsubscribe();
+        closeOwner();
       };
-    }, [serverId, select]),
+    }, [retry, select]),
   );
-  const changed =
-    !!selected &&
-    servers.find((server) => server.id === selected.id)?.revision !== selected.revision;
+  useEffect(() => {
+    if (state.recovered) {
+      select(state.recovered);
+      setDraft(emptyMcpServerDraft());
+      setAdding(false);
+      setAdvanced(false);
+    }
+  }, [state.recovered, select]);
+  useEffect(() => {
+    if (state.fresh && !selectedInitial.current) {
+      selectedInitial.current = true;
+      if (serverId) select(state.servers.find((row) => row.id === serverId) ?? null);
+    }
+  }, [state.fresh, state.servers, serverId, select]);
+  useEffect(() => {
+    if (state.fresh && selected && !state.servers.some((row) => row.id === selected.id))
+      select(null);
+  }, [state.fresh, state.servers, selected, select]);
+  const currentServer = state.servers.find((row) => row.id === selected?.id);
+  const changed = !!selected && currentServer?.revision !== selected.revision;
+  const locked = state.writing || state.loading || !state.fresh;
+  const writeLocked = locked || state.pendingCreate;
+  function field(key: keyof McpServerDraft, label: string, secret = false) {
+    return (
+      <TextInput
+        accessibilityLabel={label}
+        placeholder={label}
+        value={String(draft[key])}
+        secureTextEntry={secret}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!locked && !state.pendingCreate}
+        onChangeText={(value) => setDraft((previous) => ({ ...previous, [key]: value }))}
+        style={styles.input}
+      />
+    );
+  }
+  function toggle(
+    label: string,
+    value: boolean,
+    onValueChange: (value: boolean) => void,
+    disabled: boolean,
+  ) {
+    return (
+      <View style={styles.switchRow}>
+        <Text style={styles.grow}>{label}</Text>
+        <NativeSwitch
+          accessibilityLabel={label}
+          value={value}
+          onValueChange={onValueChange}
+          disabled={disabled}
+        />
+      </View>
+    );
+  }
   async function save() {
-    if (!selected || changed || !isCurrent()) return;
-    const requestScope = scope.current;
-    setBusy(true);
-    setError(null);
+    const owner = manager.current;
+    if (!owner || !selected || changed || writeLocked) return;
     setSaved(false);
-    try {
-      const next = await rpc<McpServer>("mcp/servers/setTools", {
-        id: selected.id,
-        revision: selected.revision,
-        allowAllTools: all,
-        verbatimResults,
-        allowedTools: all
-          ? []
-          : [
-              ...new Set(
-                names
-                  .split(/\r?\n/)
-                  .map((name) => name.trim())
-                  .filter(Boolean),
-              ),
-            ],
-      });
-      if (!isCurrent() || scope.current !== requestScope) return;
-      setServers((rows) => rows.map((server) => (server.id === next.id ? next : server)));
-      select(next);
+    const result = await owner.write<McpServer>("mcp/servers/setTools", {
+      id: selected.id,
+      revision: selected.revision,
+      allowAllTools: all,
+      verbatimResults,
+      allowedTools: all
+        ? []
+        : [
+            ...new Set(
+              names
+                .split(/\r?\n/)
+                .map((name) => name.trim())
+                .filter(Boolean),
+            ),
+          ],
+    });
+    if (result && manager.current === owner) {
+      select(result);
       setSaved(true);
-    } catch (reason) {
-      if (isCurrent() && scope.current === requestScope)
-        setError(errorText(reason, t("Could not save tool access")));
-    } finally {
-      if (isCurrent() && scope.current === requestScope) setBusy(false);
     }
   }
-  async function openWeb() {
-    if (!isCurrent()) return;
-    const requestScope = scope.current;
-    try {
-      const setup = await rpc<IntegrationSetupState>("integrationSetup/get");
-      if (!isCurrent() || scope.current !== requestScope) return;
-      if (setup.webUrl) await Linking.openURL(setup.webUrl);
-      else
-        Alert.alert(
-          t("MCP servers"),
-          t("Open the web app to manage server configuration and OAuth."),
-        );
-    } catch (reason) {
-      if (isCurrent() && scope.current === requestScope)
-        setError(errorText(reason, t("Could not load integrations")));
-    }
+  function remove() {
+    if (!selected || writeLocked) return;
+    const server = selected;
+    const owner = manager.current;
+    Alert.alert(t("Remove MCP server?"), server.name, [
+      { text: t("Cancel"), style: "cancel" },
+      {
+        text: t("Remove"),
+        style: "destructive",
+        onPress: () => {
+          if (manager.current !== owner) return;
+          void owner?.write("mcp/servers/remove", { id: server.id });
+        },
+      },
+    ]);
   }
-  async function reload() {
-    if (!active.current) return;
-    setError(null);
-    try {
-      const current = await integrationsCacheScope();
-      if (!active.current || !isIntegrationsScopeCurrent(current)) return;
-      scope.current = current;
-      const requestScope = current;
-      const rows = await rpc<McpServer[]>("mcp/servers/list");
-      if (!isCurrent() || scope.current !== requestScope) return;
-      setServers(rows);
-      const server = rows.find((row) => row.id === (selected?.id ?? serverId));
-      if (server) select(server);
-      else setSelected(null);
-    } catch (reason) {
-      if (active.current) setError(errorText(reason, t("Could not load MCP servers")));
-    }
-  }
+  const oauthServer = currentServer ?? selected;
   return (
     <>
       <Stack.Screen options={{ title: t("MCP servers") }} />
@@ -150,115 +233,233 @@ export default function McpSettings() {
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
       >
-        {error ? (
+        {state.error ? (
           <Text accessibilityRole="alert" style={styles.error}>
-            {error}
+            {state.error === "read"
+              ? t("Could not load MCP servers")
+              : state.error === "invalid"
+                ? t("Check the server fields.")
+                : t("Could not update MCP server. Check status and retry.")}
           </Text>
         ) : null}
-        {servers.length && !busy ? (
+        {state.pendingCreate ? (
+          <Text style={styles.secondary}>{t("Check status before retrying this server.")}</Text>
+        ) : null}
+        <NativeActionButton
+          label={state.error || !state.fresh ? t("Retry") : t("Reload settings")}
+          disabled={state.writing}
+          prominence="secondary"
+          onPress={() => {
+            if (manager.current) void manager.current.refresh();
+            else setRetry((value) => value + 1);
+          }}
+        />
+        {state.servers.length ? (
           <MenuPicker
             label={t("MCP server")}
             value={selected?.id ?? ""}
             choices={[
               { key: "", label: t("Choose a server") },
-              ...servers.map((server) => ({ key: server.id, label: server.name })),
+              ...state.servers.map((server) => ({ key: server.id, label: server.name })),
             ]}
             onChange={(id) => {
-              const server = servers.find((row) => row.id === id);
-              if (server) select(server);
-              else setSelected(null);
+              if (!writeLocked) select(state.servers.find((row) => row.id === id) ?? null);
             }}
           />
-        ) : (
-          <Text style={styles.secondary}>{busy ? selected?.name : t("No MCP servers yet.")}</Text>
-        )}
+        ) : state.fresh ? (
+          <Text style={styles.secondary}>{t("No MCP servers yet.")}</Text>
+        ) : null}
         {selected ? (
           <View style={styles.card}>
             <Text style={styles.title}>{selected.name}</Text>
+            <Text style={styles.secondary}>{selected.transport}</Text>
             <Text style={styles.secondary}>
-              {selected.transport} · {selected.endpoint ?? selected.command ?? selected.slug}
-            </Text>
-            <Text style={styles.secondary}>
-              {selected.oauthStatus === "unknown"
+              {oauthServer?.oauthStatus === "unknown"
                 ? t("Connection status unavailable.")
-                : selected.oauthStatus === "connected"
+                : oauthServer?.oauthStatus === "connected"
                   ? t("OAuth connected")
-                  : selected.oauthStatus === "reconnect"
+                  : oauthServer?.oauthStatus === "reconnect"
                     ? t("OAuth expired")
-                    : selected.hasSecret
+                    : oauthServer?.hasSecret
                       ? t("Credential saved")
                       : t("No OAuth connection")}
             </Text>
-            <View style={styles.switchRow}>
-              <Text style={styles.grow}>{t("Keep tool results whole")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Keep tool results whole")}
-                value={verbatimResults}
-                disabled={busy}
-                onValueChange={(value) => {
-                  setVerbatimResults(value);
-                  setSaved(false);
-                }}
-              />
-            </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.grow}>{t("Share all tools with this space")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Share all tools with this space")}
-                value={all}
-                disabled={busy}
-                onValueChange={(value) => {
-                  setAll(value);
-                  setSaved(false);
-                }}
-              />
-            </View>
+            {selected.allowedTools.map((name) => (
+              <Text key={name} style={styles.secondary}>
+                {name}
+              </Text>
+            ))}
+            {toggle(
+              t("Keep tool results whole"),
+              verbatimResults,
+              (value) => {
+                setVerbatimResults(value);
+                setSaved(false);
+              },
+              writeLocked,
+            )}
+            {toggle(
+              t("Share all tools with this space"),
+              all,
+              (value) => {
+                setAll(value);
+                setSaved(false);
+              },
+              writeLocked,
+            )}
             {!all ? (
-              <>
-                <Text style={styles.secondary}>{t("Tool names, one per line")}</Text>
-                <TextInput
-                  accessibilityLabel={t("Tool names, one per line")}
-                  value={names}
-                  multiline
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  editable={!busy}
-                  onChangeText={(value) => {
-                    setNames(value);
-                    setSaved(false);
-                  }}
-                  style={styles.input}
-                />
-              </>
+              <TextInput
+                accessibilityLabel={t("Tool names, one per line")}
+                placeholder={t("Tool names, one per line")}
+                value={names}
+                multiline
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!writeLocked}
+                onChangeText={(value) => {
+                  setNames(value);
+                  setSaved(false);
+                }}
+                style={[styles.input, styles.multiline]}
+              />
             ) : null}
             {changed ? (
-              <Text style={styles.error}>{t("Server changed. Reload settings to review it.")}</Text>
+              <>
+                <Text style={styles.error}>
+                  {t("Server changed. Reload settings to review it.")}
+                </Text>
+                <NativeActionButton
+                  label={t("Review tool access")}
+                  disabled={writeLocked}
+                  onPress={() => select(currentServer ?? null)}
+                />
+              </>
             ) : null}
             {saved ? <Text style={styles.secondary}>{t("Tool access saved.")}</Text> : null}
             <NativeActionButton
               label={t("Save tool access")}
-              disabled={busy || changed}
+              disabled={writeLocked || changed}
               onPress={() => void save()}
+            />
+            {selected.transport !== "stdio" ? (
+              <>
+                <NativeActionButton
+                  label={
+                    oauthServer?.oauthStatus === "unknown"
+                      ? t("Check status")
+                      : oauthServer?.oauthStatus === "none"
+                        ? t("Connect OAuth")
+                        : t("Reconnect OAuth")
+                  }
+                  disabled={writeLocked || !currentServer}
+                  onPress={() => {
+                    if (oauthServer?.oauthStatus === "unknown") void manager.current?.refresh();
+                    else void authorize.current?.(selected.id);
+                  }}
+                />
+                {oauthServer?.oauthStatus === "connected" ||
+                oauthServer?.oauthStatus === "reconnect" ? (
+                  <NativeActionButton
+                    label={t("Disconnect")}
+                    disabled={writeLocked}
+                    prominence="secondary"
+                    onPress={() => {
+                      setNotice(null);
+                      void manager.current?.write("mcp/oauth/disconnect", {
+                        serverId: selected.id,
+                      });
+                    }}
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {notice && notice !== "connected" ? (
+              <Text style={styles.secondary}>
+                {notice === "disconnect_required"
+                  ? t("Disconnect OAuth before authorizing from another app.")
+                  : notice === "already_connected"
+                    ? t("This server is already connected. Disconnect it first to authorize again.")
+                    : notice === "authorization_not_requested"
+                      ? t("This server did not request browser authorization.")
+                      : notice === "expired"
+                        ? t("Authorization expired. Try again.")
+                        : notice === "cancelled"
+                          ? t("Authorization cancelled.")
+                          : t("Authorization failed. Try again.")}
+              </Text>
+            ) : null}
+            <NativeActionButton
+              label={t("Remove")}
+              disabled={writeLocked || !currentServer}
+              prominence="secondary"
+              onPress={remove}
             />
           </View>
         ) : null}
-        <NativeActionButton
-          label={t("Reload settings")}
-          disabled={busy}
-          prominence="secondary"
-          onPress={() => void reload()}
-        />
-        <NativeActionButton
-          label={t("Server configuration and OAuth")}
-          disabled={busy}
-          prominence="secondary"
-          onPress={() => void openWeb()}
-        />
+        {!adding ? (
+          <NativeActionButton
+            label={t("Add server")}
+            disabled={writeLocked}
+            onPress={() => setAdding(true)}
+          />
+        ) : (
+          <View style={styles.card}>
+            {field("name", t("Server name"))}
+            <MenuPicker
+              label={t("Transport")}
+              value={draft.transport}
+              choices={[
+                { key: "streamable_http", label: "HTTP" },
+                { key: "sse", label: "SSE" },
+                { key: "stdio", label: "STDIO" },
+              ]}
+              onChange={(value) => {
+                if (!locked && !state.pendingCreate)
+                  setDraft((previous) => ({ ...previous, transport: value as McpTransport }));
+              }}
+            />
+            {draft.transport === "stdio" ? (
+              <>
+                <Text style={styles.secondary}>{t("Runs on the connected instance.")}</Text>
+                {field("command", t("Command"))}
+                {field("args", t("Arguments"))}
+              </>
+            ) : (
+              field("endpoint", t("Server URL"))
+            )}
+            <NativeActionButton
+              label={t("Advanced")}
+              prominence="secondary"
+              onPress={() => setAdvanced((value) => !value)}
+            />
+            {advanced ? (
+              <>
+                {toggle(
+                  t("Keep tool results whole"),
+                  draft.verbatimResults,
+                  (value) => setDraft((previous) => ({ ...previous, verbatimResults: value })),
+                  locked || state.pendingCreate,
+                )}
+                {field("secret", t("Access token (optional)"), true)}
+                {draft.transport !== "stdio" ? (
+                  <>
+                    {field("headerName", t("Header name"))}
+                    {field("headerValue", t("Header value"), true)}
+                  </>
+                ) : null}
+              </>
+            ) : null}
+            <NativeActionButton
+              label={state.pendingCreate ? t("Retry") : t("Add server")}
+              disabled={locked}
+              onPress={() => void manager.current?.create(draft)}
+            />
+          </View>
+        )}
       </ScrollView>
     </>
   );
 }
-
 function createStyles() {
   const tokens = mobileTokens();
   return StyleSheet.create({
@@ -272,10 +473,10 @@ function createStyles() {
     input: {
       color: native.label,
       backgroundColor: native.fillPressed,
-      minHeight: 120,
+      minHeight: 48,
       padding: 12,
       borderRadius: 12,
-      textAlignVertical: "top",
     },
+    multiline: { minHeight: 120, textAlignVertical: "top" },
   });
 }

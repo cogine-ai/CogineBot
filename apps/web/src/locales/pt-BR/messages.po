@@ -7535,3 +7535,8 @@ msgstr "Não foi possível confirmar o proprietário do agendamento."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "As rotinas importadas começam pausadas."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Desconecte o OAuth antes de autorizar em outro aplicativo."

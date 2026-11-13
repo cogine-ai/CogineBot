@@ -1,4 +1,27 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Disconnect OAuth before authorizing from another app.":
+    "Отключите OAuth перед авторизацией из другого приложения.",
+  "Access token (optional)": "Токен доступа (необязательно)",
+  "Add server": "Добавить сервер",
+  Arguments: "Аргументы",
+  "Authorization cancelled.": "Авторизация отменена.",
+  "Authorization expired. Try again.": "Авторизация истекла. Повторите попытку.",
+  "Authorization failed. Try again.": "Ошибка авторизации. Повторите попытку.",
+  "Check status before retrying this server.": "Проверьте статус сервера перед повторной попыткой.",
+  "Check the server fields.": "Проверьте поля сервера.",
+  Command: "Команда",
+  "Connect OAuth": "Подключить OAuth",
+  "Could not update MCP server. Check status and retry.":
+    "Не удалось обновить MCP-сервер. Проверьте статус и повторите попытку.",
+  "Reconnect OAuth": "Переподключить OAuth",
+  "Remove MCP server?": "Удалить MCP-сервер?",
+  "Runs on the connected instance.": "Выполняется на подключённом экземпляре.",
+  "Server name": "Имя сервера",
+  "This server did not request browser authorization.":
+    "Этот сервер не запросил авторизацию в браузере.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Этот сервер уже подключён. Сначала отключите его для повторной авторизации.",
+  Transport: "Транспорт",
   "Sending to channel": "Отправляется в канал",
   "Accepted by channel": "Принято каналом",
   "Delivered to channel": "Доставлено в канал",

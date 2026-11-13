@@ -190,6 +190,7 @@ import {
   IDENTITY_CONFIRMATION_REQUIRED,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
+  isMcpOAuthRedirectAllowed,
   loginSecretFields,
   MCP_OAUTH_CLIENT_REQUIRED,
   normalizeCreateBotProfile,
@@ -6273,8 +6274,7 @@ export function createRouter(deps: RouterDeps) {
       oauth: {
         begin: authed.mcp.oauth.begin.handler(async ({ context, input }) => {
           try {
-            const expectedRedirect = new URL("/mcp/oauth/callback", deps.env.webOrigin).toString();
-            if (new URL(input.redirectUri).toString() !== expectedRedirect) {
+            if (!isMcpOAuthRedirectAllowed(input.redirectUri, deps.env.webOrigin)) {
               throw new Error("MCP OAuth redirect URI is not allowed");
             }
             return await mcpOAuth.begin({

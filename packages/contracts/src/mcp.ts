@@ -69,3 +69,12 @@ export const PluginServerConnectionInputSchema = z
   })
   .strict();
 export type PluginServerConnectionInput = z.infer<typeof PluginServerConnectionInputSchema>;
+
+/** Exact native callback; arbitrary custom schemes and redirect destinations are not accepted. */
+export const MCP_NATIVE_REDIRECT_URI = "coginebot:///mcp";
+export function isMcpOAuthRedirectAllowed(redirectUri: string, webOrigin: string): boolean {
+  return (
+    redirectUri === MCP_NATIVE_REDIRECT_URI ||
+    redirectUri === new URL("/mcp/oauth/callback", webOrigin).toString()
+  );
+}

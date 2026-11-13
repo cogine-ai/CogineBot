@@ -1027,7 +1027,11 @@ export const appContract = {
             authorizationUrl: z.string().url(),
           }),
           z.object({
-            status: z.enum(["already_connected", "authorization_not_requested"]),
+            status: z.enum([
+              "already_connected",
+              "authorization_not_requested",
+              "disconnect_required",
+            ]),
           }),
         ]),
       ),

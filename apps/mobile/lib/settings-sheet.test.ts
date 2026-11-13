@@ -122,3 +122,15 @@ describe("settings links", () => {
     unregister();
   });
 });
+
+it("keeps MCP auth returns inside settings without retaining codes in route history", () => {
+  expect(isSettingsLink("coginebot:///mcp?state=fixture&code=synthetic")).toBe(true);
+  expect(
+    redirectSystemPath({ path: "coginebot:///mcp?state=fixture&code=synthetic", initial: false }),
+  ).toBe("/mcp");
+  expect(
+    redirectSystemPath({ path: "coginebot:///mcp?state=fixture&code=synthetic", initial: true }),
+  ).toBe("/mcp");
+  const screen = readFileSync(resolve(mobileRoot, "app/(settings)/mcp.tsx"), "utf8");
+  expect(screen).toContain('contentInsetAdjustmentBehavior="automatic"');
+});

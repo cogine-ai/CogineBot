@@ -7535,3 +7535,8 @@ msgstr "일정 소유자를 확인할 수 없습니다."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "가져온 루틴은 일시 중지된 상태로 시작합니다."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "다른 앱에서 인증하기 전에 OAuth 연결을 해제하세요."
