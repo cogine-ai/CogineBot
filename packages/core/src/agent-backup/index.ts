@@ -25,6 +25,7 @@ import { AgentImportArchiveError, openAgentImportArchive } from "./archive.js";
 import { parseOpenClawIdentity } from "./identity.js";
 import {
   backupJobsPath,
+  backupStateDatabasePath,
   backupWorkspaceAgent,
   isBackupRoutine,
   isBackupRoutineOmission,
@@ -252,7 +253,10 @@ export function encodeAgentBackup(data: Uint8Array): string {
     for (const [path, name] of relative) add(path, name);
   }
   const jobPath = `${home}${backupJobsPath}`;
-  const jobs = archive.readOptional(jobPath);
+  const hasStateDatabase =
+    source === "openclaw" && archive.has(`${home}${backupStateDatabasePath}`);
+  // A legacy job file alongside the state database can be a stale migration source.
+  const jobs = hasStateDatabase ? undefined : archive.readOptional(jobPath);
   const agentId =
     source === "openclaw" && jobs !== undefined
       ? backupWorkspaceAgent(
@@ -265,13 +269,19 @@ export function encodeAgentBackup(data: Uint8Array): string {
       : null;
   const projected = jobs === undefined ? [] : projectBackupJobs(source, jobs, agentId);
   const routineOmissions = projected.flatMap((job) => ("reason" in job ? [job] : []));
-  if (jobs === undefined && archive.has(jobPath))
+  if (hasStateDatabase) {
+    routineOmissions.push({ path: backupStateDatabasePath, reason: "routineSchedule" });
+  } else if (jobs === undefined && archive.has(jobPath)) {
     routineOmissions.push({ path: backupJobsPath, reason: "routineSchedule" });
+  }
   const routineFiles = projected.flatMap((job) =>
     "routine" in job ? [{ path: job.path, content: JSON.stringify(job.routine) }] : [],
   );
-  if (source === "openclaw" && archive.declaredWorkspace && !workspace && !routineFiles.length)
-    throw new AgentImportArchiveError("unreadable");
+  if (source === "openclaw" && archive.declaredWorkspace && !workspace && !routineFiles.length) {
+    if (!hasStateDatabase) throw new AgentImportArchiveError("unreadable");
+    // Show the database omission without opening a new managed-Skill-only import path.
+    files.clear();
+  }
   if (files.size + routineFiles.length > AGENT_BACKUP_MAX_FILES)
     throw new AgentImportArchiveError("too_large");
   const backup: AgentBackupDocument = {

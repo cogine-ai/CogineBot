@@ -307,12 +307,40 @@ it("opens a declared workspace with only a portable routine", () => {
   expect(JSON.parse(preview.source).files).toEqual([]);
   expect(preview.backupRoutines).toHaveLength(1);
 
-  const withManagedSkill = encodeAgentBackup(
+  const database = "backup/state/state/openclaw.sqlite";
+  const databaseContents = "Private state database fixture.";
+  const managedSkill = "backup/state/skills/reports/SKILL.md";
+  const managedSkillContents =
+    "---\nname: reports\ndescription: Review reports.\n---\nSummarize the supplied report.";
+  const stateDatabaseBackup = encodeAgentBackup(
+    tar({ ...files, [database]: databaseContents, [managedSkill]: managedSkillContents }),
+  );
+  expect(stateDatabaseBackup).not.toContain(databaseContents);
+  expect(stateDatabaseBackup).not.toContain("Review the reports.");
+  const databaseGroups = agentBackupFileGroups(stateDatabaseBackup)!;
+  expect(databaseGroups).toMatchObject({
+    instructions: [],
+    skills: [],
+    routines: [],
+    unavailable: [{ path: "state/openclaw.sqlite", reason: "routineSchedule" }],
+  });
+  expect(
+    agentBackupSelectableGroups(databaseGroups, false, new Set(), new Set()).hasSelection,
+  ).toBe(false);
+  const mixedDatabaseBackup = encodeAgentBackup(
     tar({
       ...files,
-      "backup/state/skills/reports/SKILL.md":
-        "---\nname: reports\ndescription: Review reports.\n---\nSummarize the supplied report.",
+      [database]: databaseContents,
+      "backup/state/workspace/SOUL.md": "Workspace instructions.",
     }),
+  );
+  const mixedPreview = agentBackupPreview(mixedDatabaseBackup, false);
+  expect(mixedPreview.backupOmissions).toEqual(databaseGroups.unavailable);
+  expect(mixedPreview.backupRoutines).toBeUndefined();
+  expect(mixedPreview.source).not.toContain(databaseContents);
+
+  const withManagedSkill = encodeAgentBackup(
+    tar({ ...files, [managedSkill]: managedSkillContents }),
   );
   expect(agentBackupFileGroups(withManagedSkill)).toMatchObject({
     instructions: [],

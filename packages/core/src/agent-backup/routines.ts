@@ -11,6 +11,7 @@ import { extractForcedSkillName } from "../agent-skill.js";
 import { nextCronDateAcrossStrict } from "../cron.js";
 
 export const backupJobsPath = "cron/jobs.json";
+export const backupStateDatabasePath = "state/openclaw.sqlite";
 export const isBackupRoutine = isBackupRoutinePath;
 type Routine = ReturnType<typeof BotPackageRoutineSchema.parse>;
 type Json = Record<string, unknown>;
@@ -24,7 +25,7 @@ const record = (value: unknown): Json => (isRecord(value) ? value : {});
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 const present = (value: unknown) => value !== undefined && value !== null && value !== "";
 export const isBackupRoutineOmission = (path: string) =>
-  path === backupJobsPath || isBackupRoutine(path);
+  path === backupJobsPath || path === backupStateDatabasePath || isBackupRoutine(path);
 
 /** A folder's name is only a label; the exported agent settings provide the binding. */
 export function backupWorkspaceAgent(
