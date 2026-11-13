@@ -2,13 +2,6 @@ import type { Page, Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { CHAT_DIAGRAM_MAX_TEXT_SIZE, chatMermaidConfig } from "@rakazo/chat-ui/mermaid";
 import { lightTokens } from "@rakazo/ui-tokens";
-import {
-  diagramBootScript,
-  diagramDocument,
-  diagramScriptUrl,
-  MAX_DIAGRAM_HEIGHT,
-  parseDiagramMessage,
-} from "../../mobile/lib/mermaid-webview";
 import { captureScreenshot } from "./helpers";
 
 const fixture = "/e2e/fixtures/markdown-diagram.html";
@@ -303,6 +296,14 @@ test("the loaded diagram engine can draw a new diagram while offline", async ({
 test("the public renderer runs the native document and message contract in a browser", async ({
   page,
 }) => {
+  // Load the native helper as ESM instead of letting Playwright require it during collection.
+  const {
+    diagramBootScript,
+    diagramDocument,
+    diagramScriptUrl,
+    MAX_DIAGRAM_HEIGHT,
+    parseDiagramMessage,
+  } = await import("../../mobile/lib/mermaid-webview");
   // The official harness provides the API. This exercises the WebView document
   // and injected boot script in Chromium; it does not claim native OS coverage.
   const endpoint = diagramScriptUrl(process.env.API_URL ?? "http://127.0.0.1:3110");
