@@ -137,6 +137,10 @@ it("does not offer Skills linking to files absent from the picker inventory", as
       folderEntry("agent/SOUL.md", "Review rows."),
       skill("local-file", "Read [the helper](helper.txt)."),
       skill("local-reference", "Read [the helper][ref].\n\n[ref]: <folder/file name.md>"),
+      skill(
+        "local-first",
+        "> [ref]: helper.txt\n\n[ref]: https://example.test\n\nRead [the helper][ref].",
+      ),
       skill("external", "Read [the docs](https://example.test) and [the heading](#summary)."),
       skill("unused", "Review rows.\n\n[unused]: helper.txt"),
     ],
@@ -146,6 +150,7 @@ it("does not offer Skills linking to files absent from the picker inventory", as
     skills: ["skills/external/SKILL.md", "skills/unused/SKILL.md"],
     unavailable: [
       { path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" },
+      { path: "skills/local-first/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-reference/SKILL.md", reason: "missingSkillFiles" },
     ],
   });

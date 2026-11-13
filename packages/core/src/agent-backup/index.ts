@@ -151,7 +151,8 @@ function hasLocalSkillLink(body: string): boolean {
   const nodes: MarkdownNode[] = [backupSkillMarkdown.parse(body)];
   const references = new Set<string>();
   const definitions = new Map<string, string>();
-  for (const node of nodes) {
+  while (nodes.length) {
+    const node = nodes.pop()!;
     if ((node.type === "link" || node.type === "image") && localSkillUrl(node.url)) return true;
     if (node.identifier) {
       if (node.type === "linkReference" || node.type === "imageReference")
@@ -159,7 +160,8 @@ function hasLocalSkillLink(body: string): boolean {
       if (node.type === "definition" && !definitions.has(node.identifier))
         definitions.set(node.identifier, node.url ?? "");
     }
-    for (const child of node.children ?? []) nodes.push(child);
+    const children = node.children ?? [];
+    for (let index = children.length - 1; index >= 0; index--) nodes.push(children[index]!);
   }
   return [...references].some((id) => localSkillUrl(definitions.get(id)));
 }
