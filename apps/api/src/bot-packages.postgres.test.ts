@@ -361,6 +361,15 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       expect(new Headers(options?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
       return Response.json({ data: [{ id: model.modelId }] });
     };
+    afterMarkerAccepted = async () => {
+      const pending = await call<BotPackageReceipt>(owner, "status", { clientNonce });
+      expect(pending.status).toBe("importing");
+      expect(
+        (await request(owner, "resume", { clientNonce, apiKey: "different-synthetic-key" })).status,
+      ).toBe(400);
+      expect(await call<BotPackageReceipt>(owner, "status", { clientNonce })).toEqual(pending);
+      expect(outbound).not.toHaveBeenCalled();
+    };
     outbound.mockImplementationOnce(check);
     loseCommitAck = true;
     const imported = await call<BotPackageReceipt>(owner, "import", confirm);

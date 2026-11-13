@@ -282,23 +282,23 @@ export function createBotPackagesService(deps: Deps) {
   }
   async function finish(context: Context, marker: Row, apiKey?: string) {
     const { clientNonce } = marker;
+    const plan = marker.plan ? packagePlanSchema.parse(marker.plan) : undefined;
+    const modelKey = plan?.backupModelKey;
+    if (
+      modelKey &&
+      (!apiKey ||
+        !plan.modelKeyBinding ||
+        !timingSafeEqual(
+          bindModelKey(context.actor, clientNonce, apiKey),
+          Buffer.from(plan.modelKeyBinding, "hex"),
+        ))
+    )
+      throw new ORPCError("BAD_REQUEST", {
+        message: "Select the original backup to resume this model connection.",
+      });
     const kind = await botCreationComputerKind(deps.prisma);
     try {
-      const plan = marker.plan ? packagePlanSchema.parse(marker.plan) : undefined;
-      const modelKey = plan?.backupModelKey;
       let prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined;
-      if (
-        modelKey &&
-        (!apiKey ||
-          !plan.modelKeyBinding ||
-          !timingSafeEqual(
-            bindModelKey(context.actor, clientNonce, apiKey),
-            Buffer.from(plan.modelKeyBinding, "hex"),
-          ))
-      )
-        throw new ORPCError("BAD_REQUEST", {
-          message: "Select the original backup to resume this model connection.",
-        });
       if (
         modelKey &&
         apiKey &&
