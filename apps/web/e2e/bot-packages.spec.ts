@@ -306,6 +306,15 @@ test("agent backup import previews supported text and saves only the selected co
   expect(uploaded).not.toContain("Read references/guide.md.");
   await expect(document.getByText("Skills · 0", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "agent-backup-import");
+  await panel.getByText("Choose backup content", { exact: true }).click();
+  await document.getByText("Memory · 1", { exact: true }).click();
+  await document.getByText("Routines · 1", { exact: true }).click();
+  await document.getByText("Morning review", { exact: true }).click();
+  await expect(document.getByText("0 9 * * 1-5 · Asia/Taipei", { exact: true })).toBeVisible();
+  await panel
+    .getByText("Imported routines start paused.", { exact: true })
+    .scrollIntoViewIfNeeded();
+  await captureScreenshot(page, testInfo, "d021-package-paused-routine");
   await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
   await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
   const bots = await rpc<Bot[]>(page, "bots/list", {});

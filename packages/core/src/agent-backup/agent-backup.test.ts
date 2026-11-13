@@ -265,6 +265,51 @@ it("does not infer a schedule owner from an unrelated workspace's name", () => {
   });
 });
 
+it("opens a declared workspace with only a portable routine", () => {
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: {
+        stateDir: "/state",
+        configPath: "/state/openclaw.json",
+        workspaceDirs: ["/state/workspace"],
+      },
+      assets: [{ kind: "state", archivePath: "state" }],
+    }),
+    "backup/state/openclaw.json": JSON.stringify({
+      agents: { entries: { main: { workspace: "/state/workspace" } } },
+    }),
+    "backup/state/workspace/notes.txt": "Unsupported workspace note.",
+    "backup/state/SOUL.md": "Text outside the chosen workspace.",
+    "backup/state/cron/jobs.json": JSON.stringify({
+      jobs: [
+        {
+          agentId: "main",
+          name: "Review reports",
+          schedule: { kind: "cron", expr: "30 9 * * *", tz: "UTC" },
+          payload: { kind: "agentTurn", message: "Review the reports." },
+          sessionTarget: "isolated",
+          delivery: { mode: "none" },
+        },
+      ],
+    }),
+  };
+  const source = encodeAgentBackup(tar(files));
+  expect(source).not.toContain("Text outside the chosen workspace.");
+  expect(source).not.toContain("Unsupported workspace note.");
+  expect(agentBackupFileGroups(source)).toMatchObject({
+    instructions: [],
+    routines: [{ path: "cron/routine-1.json", name: "Review reports" }],
+  });
+  const preview = agentBackupPreview(source, false, [], ["cron/routine-1.json"]);
+  expect(JSON.parse(preview.source).files).toEqual([]);
+  expect(preview.backupRoutines).toHaveLength(1);
+  expect(() => encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": "{}" }))).toThrow(
+    "could not be read",
+  );
+});
+
 it("keeps supported text usable if the optional job store cannot be read", () => {
   const source = encodeAgentBackup(
     zipSync({

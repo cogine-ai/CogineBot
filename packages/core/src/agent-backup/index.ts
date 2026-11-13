@@ -231,8 +231,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     }),
   );
   const [workspace] = workspaces;
-  if (source === "openclaw" && (workspaces.size > 1 || (archive.declaredWorkspace && !workspace)))
-    throw new AgentImportArchiveError("unreadable");
+  if (source === "openclaw" && workspaces.size > 1) throw new AgentImportArchiveError("unreadable");
   const files = new Map<string, string>();
   const add = (path: string, name: string) => {
     if (!isBackupTextFile(source, name)) return;
@@ -247,7 +246,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     for (const [path, name] of relative) {
       if (name.startsWith("skills/") && !files.has(name)) add(path, name);
     }
-  } else {
+  } else if (source !== "openclaw" || !archive.declaredWorkspace) {
     for (const [path, name] of relative) add(path, name);
   }
   const jobPath = `${home}${backupJobsPath}`;
@@ -269,6 +268,8 @@ export function encodeAgentBackup(data: Uint8Array): string {
   const routineFiles = projected.flatMap((job) =>
     "routine" in job ? [{ path: job.path, content: JSON.stringify(job.routine) }] : [],
   );
+  if (source === "openclaw" && archive.declaredWorkspace && !workspace && !routineFiles.length)
+    throw new AgentImportArchiveError("unreadable");
   if (files.size + routineFiles.length > AGENT_BACKUP_MAX_FILES)
     throw new AgentImportArchiveError("too_large");
   const backup: AgentBackupDocument = {
