@@ -1,5 +1,5 @@
 import { gzipSync, strToU8, zipSync } from "fflate";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { parseSkillMd } from "../agent-skill.js";
 import {
@@ -7,9 +7,282 @@ import {
   agentBackupPreview,
   agentBackupSelectableGroups,
   encodeAgentBackup,
+  encodeAgentBackupFolder,
   readBotImportBytes,
   renameBackupSkill,
 } from "./index.js";
+
+function folderEntry(path: string, text: string | Uint8Array = "", size?: number) {
+  const bytes = typeof text === "string" ? strToU8(text) : text;
+  return { path, size: size ?? bytes.length, read: vi.fn(async () => bytes) };
+}
+
+it("reads only the selected workspace and flags Skill dependencies by name", async () => {
+  const soul = folderEntry(".openclaw/workspace-reports/SOUL.md", "\uFEFFReview rows.\r\n");
+  const skill = folderEntry(
+    ".openclaw/workspace-reports/skills/report/SKILL.md",
+    "---\nname: report\ndescription: Read a report.\n---\nCheck each row.\n",
+  );
+  const localOnly = [
+    folderEntry(".openclaw/.env", "fixture secret", 9_000_000),
+    folderEntry(".openclaw/openclaw.json", "fixture config"),
+    folderEntry(".openclaw/cron/jobs.json", "fixture jobs"),
+    folderEntry(".openclaw/workspace-reports/HEARTBEAT.md", "fixture runtime"),
+    folderEntry(
+      ".openclaw/workspace-reports/skills/report/references/table.md",
+      "fixture reference",
+    ),
+    folderEntry(".openclaw/SOUL.md", "home persona"),
+    folderEntry(".openclaw/skills/report/SKILL.md", "managed Skill"),
+  ];
+  const result = JSON.parse(await encodeAgentBackupFolder([soul, skill, ...localOnly], () => true));
+  expect(result).toMatchObject({
+    source: "openclaw",
+    files: [
+      { path: "HEARTBEAT.md", content: "" },
+      { path: "SOUL.md", content: "\uFEFFReview rows.\r\n" },
+      { path: "skills/report/SKILL.md" },
+    ],
+    incompleteSkills: ["skills/report/SKILL.md"],
+    routineOmissions: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+  });
+  expect(soul.read).toHaveBeenCalledExactlyOnceWith(soul.size + 1);
+  expect(skill.read).toHaveBeenCalledOnce();
+  for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
+});
+
+it("reads Hermes notes and portable routines while keeping the installed Skill library on-device", async () => {
+  const bundled = folderEntry("agent/skills/report/SKILL.md", "built-in", 9_000_000);
+  const renamed = folderEntry(
+    "agent/skills/renamed/SKILL.md",
+    "---\nname: report\ndescription: Built-in report.\n---\nInstalled Skill.\n",
+  );
+  const manifest = folderEntry("agent/skills/.bundled_manifest", "REPORT:fixture-origin\r\n");
+  const jobs = folderEntry(
+    "agent/cron/jobs.json",
+    JSON.stringify({
+      jobs: [
+        {
+          name: "Daily report",
+          prompt: "Review rows.",
+          schedule: { kind: "cron", expr: "0 9 * * *" },
+          timezone: "UTC",
+          deliver: "local",
+        },
+      ],
+    }),
+  );
+  const files = [
+    folderEntry("agent/.hermes.md", "Review sources."),
+    folderEntry("agent/memories/MEMORY.md", "Private note"),
+    folderEntry("agent/skills/custom/SKILL.md", "custom Skill"),
+    manifest,
+    bundled,
+    renamed,
+    jobs,
+  ];
+  const result = JSON.parse(await encodeAgentBackupFolder(files, () => true));
+  expect(result).toMatchObject({
+    source: "hermes",
+    files: [
+      { path: ".hermes.md", content: "Review sources." },
+      { path: "memories/MEMORY.md", content: "Private note" },
+      { path: "skills/custom/SKILL.md", content: "custom Skill" },
+      { path: "cron/routine-1.json", content: expect.stringContaining("Review rows.") },
+    ],
+  });
+  expect(manifest.read).toHaveBeenCalledOnce();
+  expect(jobs.read).toHaveBeenCalledOnce();
+  expect(bundled.read).not.toHaveBeenCalled();
+  expect(renamed.read).toHaveBeenCalledOnce();
+});
+
+it("offers Hermes content even if the optional routine store exceeds the read limit", async () => {
+  const soul = folderEntry(".hermes/SOUL.md", "Review the source.");
+  const jobs = folderEntry(".hermes/cron/jobs.json", "", 400_001);
+  expect(JSON.parse(await encodeAgentBackupFolder([soul, jobs], () => true))).toMatchObject({
+    source: "hermes",
+    files: [{ path: "SOUL.md", content: "Review the source." }],
+    routineOmissions: [{ path: "cron/jobs.json", reason: "routineSchedule" }],
+  });
+  expect(jobs.read).not.toHaveBeenCalled();
+});
+
+it("preserves Hermes text when the optional jobs file becomes unreadable", async () => {
+  const soul = folderEntry(".hermes/SOUL.md", "Review the source.");
+  const jobs = folderEntry(".hermes/cron/jobs.json", "{}");
+  jobs.read.mockRejectedValueOnce(new DOMException("File missing", "NotFoundError"));
+  expect(JSON.parse(await encodeAgentBackupFolder([soul, jobs], () => true))).toMatchObject({
+    files: [{ path: "SOUL.md", content: "Review the source." }],
+    routineOmissions: [{ path: "cron/jobs.json", reason: "routineSchedule" }],
+  });
+  let current = true;
+  jobs.read.mockImplementationOnce(async () => {
+    current = false;
+    return strToU8("{}");
+  });
+  await expect(encodeAgentBackupFolder([soul, jobs], () => current)).rejects.toMatchObject({
+    reason: "unreadable",
+  });
+});
+
+it("does not offer Skills linking to files absent from the picker inventory", async () => {
+  const skill = (name: string, body: string) =>
+    folderEntry(
+      `agent/skills/${name}/SKILL.md`,
+      `---\nname: ${name}\ndescription: Review the source.\n---\n${body}\n`,
+    );
+  const folder = await encodeAgentBackupFolder(
+    [
+      folderEntry("agent/SOUL.md", "Review rows."),
+      skill("local-file", "Read [the helper](helper.txt)."),
+      skill("local-reference", "Read [the helper][ref].\n\n[ref]: <folder/file name.md>"),
+      skill("external", "Read [the docs](https://example.test) and [the heading](#summary)."),
+      skill("unused", "Review rows.\n\n[unused]: helper.txt"),
+    ],
+    () => true,
+  );
+  expect(agentBackupFileGroups(folder)).toMatchObject({
+    skills: ["skills/external/SKILL.md", "skills/unused/SKILL.md"],
+    unavailable: [
+      { path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" },
+      { path: "skills/local-reference/SKILL.md", reason: "missingSkillFiles" },
+    ],
+  });
+  const archiveSkill = skill("local-file", "Read [the helper](helper.txt).");
+  const archive = zipSync({
+    "IDENTITY.md": strToU8("- Name: Review"),
+    "skills/local-file/SKILL.md": await archiveSkill.read(),
+  });
+  expect(agentBackupFileGroups(encodeAgentBackup(archive))?.skills).toEqual([
+    "skills/local-file/SKILL.md",
+  ]);
+});
+
+it.each([
+  ["other/AGENTS.md", "mixed roots"],
+  ["agent/../AGENTS.md", "parent segments"],
+  ["agent/SOUL.md", "duplicate entries"],
+  ["agent/soul.md", "case collisions"],
+  ["agent/dir\\AGENTS.md", "nonportable separators"],
+])("rejects %s before reading either file (%s)", async (path) => {
+  const first = folderEntry("agent/SOUL.md", "Review rows.");
+  const second = folderEntry(path);
+  await expect(encodeAgentBackupFolder([first, second], () => true)).rejects.toMatchObject({
+    reason: "unreadable",
+  });
+  expect(first.read).not.toHaveBeenCalled();
+  expect(second.read).not.toHaveBeenCalled();
+});
+
+it.each([["agent/AGENTS.md"], ["SOUL.md"]])(
+  "requires a relative path and an identifiable agent folder for %s",
+  async (path) => {
+    const file = folderEntry(path);
+    await expect(encodeAgentBackupFolder([file], () => true)).rejects.toMatchObject({
+      reason: "unreadable",
+    });
+    expect(file.read).not.toHaveBeenCalled();
+  },
+);
+
+it("rejects ambiguous workspaces before opening files", async () => {
+  const first = folderEntry("agent/workspace-a/SOUL.md");
+  const second = folderEntry("agent/workspace-b/SOUL.md");
+  await expect(encodeAgentBackupFolder([first, second], () => true)).rejects.toMatchObject({
+    reason: "unreadable",
+  });
+  expect(first.read).not.toHaveBeenCalled();
+  expect(second.read).not.toHaveBeenCalled();
+});
+
+it("does not mistake generic workspace or memories folders for an agent", async () => {
+  const instructions = folderEntry("project/AGENTS.md", "Project instructions.");
+  for (const path of ["workspace/README.md", "memories/README.md", "config.yaml"]) {
+    const unrelated = folderEntry(`project/${path}`);
+    await expect(
+      encodeAgentBackupFolder([instructions, unrelated], () => true),
+    ).rejects.toMatchObject({ reason: "unreadable" });
+    expect(unrelated.read).not.toHaveBeenCalled();
+  }
+  expect(instructions.read).not.toHaveBeenCalled();
+});
+
+it("does not switch from a workspace to home instructions or a different workspace", async () => {
+  const home = folderEntry(".openclaw/SOUL.md", "Home instructions.");
+  const unrelated = folderEntry(".openclaw/workspace/README\u2028notes.md");
+  const otherWorkspace = folderEntry(".openclaw/workspace-else/SOUL.md", "Other agent.");
+  await expect(encodeAgentBackupFolder([home, unrelated], () => true)).rejects.toMatchObject({
+    reason: "unreadable",
+  });
+  await expect(
+    encodeAgentBackupFolder([home, unrelated, otherWorkspace], () => true),
+  ).rejects.toMatchObject({ reason: "unreadable" });
+  for (const entry of [home, unrelated, otherWorkspace]) expect(entry.read).not.toHaveBeenCalled();
+});
+
+it("checks inventory, selected file count and byte budgets before reading", async () => {
+  const soul = folderEntry("agent/SOUL.md", "Review rows.");
+  const rows = (count: number, directory: string, size = 0) =>
+    Array.from({ length: count }, (_, index) =>
+      folderEntry(`agent/${directory}/${index}.md`, "", size),
+    );
+  const rejected = [
+    rows(2_000, "notes"),
+    rows(500, "memory"),
+    rows(11, "memory", 400_000),
+    rows(1, "memory", 400_001),
+  ];
+  for (const files of rejected) {
+    await expect(encodeAgentBackupFolder([soul, ...files], () => true)).rejects.toMatchObject({
+      reason: "too_large",
+    });
+    for (const file of files) expect(file.read).not.toHaveBeenCalled();
+  }
+  expect(soul.read).not.toHaveBeenCalled();
+});
+
+it("bounds decoded and serialized text and rejects changed or invalid bytes", async () => {
+  const soul = folderEntry("agent/SOUL.md", "x".repeat(100_000));
+  await expect(encodeAgentBackupFolder([soul], () => true)).resolves.toContain("agent-backup/v1");
+  const cases = [
+    { files: [folderEntry("agent/SOUL.md", "x".repeat(100_001))], reason: "too_large" },
+    { files: [folderEntry("agent/SOUL.md", "Changed", 1)], reason: "unreadable" },
+    { files: [folderEntry("agent/SOUL.md", Uint8Array.of(0xff))] },
+    {
+      files: [
+        soul,
+        ...Array.from({ length: 8 }, (_, index) =>
+          folderEntry(`agent/memory/${index}.md`, "\t".repeat(100_000)),
+        ),
+        ...Array.from({ length: 7 }, (_, index) =>
+          folderEntry(`agent/memory/escape-${index}.md`, "\u0001".repeat(100_000)),
+        ),
+      ],
+      reason: "too_large",
+    },
+  ];
+  for (const { files, reason } of cases) {
+    const result = expect(encodeAgentBackupFolder(files, () => true));
+    if (reason) await result.rejects.toMatchObject({ reason });
+    else await result.rejects.toThrow();
+  }
+});
+
+it("stops reading as soon as the editor's scope expires", async () => {
+  const soul = folderEntry("agent/SOUL.md", "Review rows.");
+  const memory = folderEntry("agent/memory/one.md", "Fixture note");
+  let current = true;
+  soul.read.mockImplementationOnce(async () => {
+    current = false;
+    return strToU8("Review rows.");
+  });
+  await expect(encodeAgentBackupFolder([soul, memory], () => current)).rejects.toMatchObject({
+    reason: "unreadable",
+  });
+  expect(soul.read).toHaveBeenCalledOnce();
+  expect(memory.read).not.toHaveBeenCalled();
+});
 
 function tar(files: Record<string, string>, links: Record<string, string> = {}): Uint8Array {
   const chunks: Uint8Array[] = [];

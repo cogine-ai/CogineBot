@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
 import type {
@@ -343,6 +346,87 @@ test("agent backup import previews supported text and saves only the selected co
   expect(
     await rpc<MemoryDocument[]>(page, "memory/list", { botId: bot!.id, scope: "bot" }),
   ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: note })]);
+});
+
+test("agent backup folder previews only selected content and preserves the draft after a bad pick", async ({
+  page,
+}, testInfo) => {
+  const fixture = await mkdtemp(join(tmpdir(), "bot-package-folder-"));
+  try {
+    const root = join(fixture, "review-agent");
+    const unrelated = join(fixture, "ordinary-project");
+    await mkdir(join(root, "memories"), { recursive: true });
+    await mkdir(join(unrelated, "workspace"), { recursive: true });
+    const instructions = "Summarize the folder's research notes.";
+    const note = "Keep this note private unless selected.";
+    const secret = "Local fixture credential value.";
+    await Promise.all([
+      writeFile(join(root, "HERMES.md"), instructions),
+      writeFile(join(root, "memories", "MEMORY.md"), note),
+      writeFile(join(root, "auth.json"), secret),
+      writeFile(join(unrelated, "AGENTS.md"), "Ordinary project instructions."),
+      writeFile(join(unrelated, "workspace", "README.md"), "Ordinary project workspace."),
+    ]);
+
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await signup(page, `backup-folder-${Date.now()}@example.test`, "password12", "Folder reviewer");
+    await completeOnboarding(page);
+    await openNewBot(page);
+    await page
+      .getByTestId("create-bot-form")
+      .getByRole("button", { name: "Import bot", exact: true })
+      .click();
+    const panel = page.getByTestId("bot-package-import");
+    const picker = panel.getByRole("button", { name: "Choose backup folder", exact: true });
+    const name = panel.getByLabel("Imported bot name");
+    const memory = panel.getByRole("switch", { name: "Include memory", exact: true });
+    async function choose(directory: string) {
+      const [chooser] = await Promise.all([page.waitForEvent("filechooser"), picker.click()]);
+      await chooser.setFiles(directory);
+    }
+    const previews: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/botPackages/preview"))
+        previews.push(request.postData() ?? "");
+    });
+    await choose(root);
+    await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+    await name.fill("Research folder Bot");
+    await memory.click();
+    await panel.getByText("Choose backup content", { exact: true }).click();
+    await expect(panel.getByRole("checkbox", { name: "MEMORY.md", exact: false })).toBeChecked();
+    await choose(unrelated);
+    await expect(
+      panel.getByText("Could not read this backup folder.", { exact: false }),
+    ).toBeVisible();
+    await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+    await expect(name).toHaveValue("Research folder Bot");
+    await expect(memory).toBeChecked();
+    await expect(panel.getByRole("checkbox", { name: "HERMES.md", exact: true })).toBeChecked();
+    await choose(root);
+    await expect(
+      panel.getByText("Could not read this backup folder.", { exact: false }),
+    ).toHaveCount(0);
+    await expect(memory).not.toBeChecked();
+    await panel.getByText("Choose backup content", { exact: true }).click();
+    expect(previews).toHaveLength(0);
+
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
+    const document = panel.getByTestId("bot-package-document");
+    await expect(document.getByText(instructions, { exact: true })).toBeVisible();
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).not.toContain(note);
+    expect(previews[0]).not.toContain(secret);
+    expect(previews[0]).not.toContain("Ordinary project instructions.");
+    await captureScreenshot(page, testInfo, "d021-package-folder");
+    await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
+    await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
+    expect(
+      (await rpc<Bot[]>(page, "bots/list", {})).some(({ name }) => name === "Research folder Bot"),
+    ).toBe(true);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test("package import survives a committed reply loss and can be recovered explicitly from recent receipts", async ({
