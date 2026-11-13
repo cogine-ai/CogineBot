@@ -76,7 +76,7 @@ describe("readBackupModelApiKey", () => {
       models: {
         providers: {
           openai: {
-            models: [{ id: "gpt-4.1", baseUrl: "https://proxy.example.test/v1" }],
+            models: [{ id: " gpt-4.1 ", baseUrl: "https://proxy.example.test/v1" }],
           },
         },
       },
@@ -115,6 +115,14 @@ describe("readBackupModelApiKey", () => {
     },
   ])("does not read a model key routed to a separate endpoint", (files) => {
     expect(readBackupModelApiKey("hermes", "openai", files)).toBeUndefined();
+  });
+
+  it("does not miss a dotenv colon-style endpoint override", () => {
+    expect(
+      readBackupModelApiKey("openclaw", "openai", {
+        env: `OPENAI_API_KEY=${apiKey}\nOPENAI_BASE_URL: https://proxy.example.test/v1`,
+      }),
+    ).toBeUndefined();
   });
 
   it("does not execute references or turn unresolved values into a key", () => {

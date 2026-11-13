@@ -792,6 +792,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@noble/hashes':
+        specifier: 2.3.0
+        version: 2.3.0
       '@observablehq/plot':
         specifier: 0.6.17
         version: 0.6.17

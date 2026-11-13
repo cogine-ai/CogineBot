@@ -71,16 +71,29 @@ export async function prepareBackupModelKey(
       throw new Error("Unavailable model");
     const check = keyChecks.get(model.provider);
     if (check) {
-      const response = await fetcher(check.url, {
-        headers: {
-          [check.header]: check.header === "Authorization" ? `Bearer ${apiKey}` : apiKey,
-          ...(model.provider === "anthropic" ? { "anthropic-version": "2023-06-01" } : {}),
+      const modelLookup = model.provider === "anthropic" || model.provider === "google";
+      const response = await fetcher(
+        modelLookup ? `${check.url}/${encodeURIComponent(model.modelId)}` : check.url,
+        {
+          headers: {
+            [check.header]: check.header === "Authorization" ? `Bearer ${apiKey}` : apiKey,
+            ...(model.provider === "anthropic" ? { "anthropic-version": "2023-06-01" } : {}),
+          },
+          redirect: "error",
+          signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])]),
         },
-        redirect: "error",
-        signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])]),
-      });
-      void response.body?.cancel().catch(() => undefined);
-      if (!response.ok) throw new Error("Provider did not accept the key");
+      );
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("Provider did not accept the key or the reviewed model");
+      }
+      if (model.provider === "deepseek") {
+        const listing = (await response.json()) as { data?: { id?: string }[] };
+        if (!listing.data?.some(({ id }) => id === model.modelId))
+          throw new Error("The key cannot use the reviewed model");
+      } else {
+        void response.body?.cancel().catch(() => undefined);
+      }
     } else {
       const models = await probeCatalogProviderModels(
         { provider: model.provider, apiKey },

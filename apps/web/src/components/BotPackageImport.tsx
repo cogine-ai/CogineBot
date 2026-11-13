@@ -2,7 +2,11 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { BackupModelKeyUnavailable, createBotPackageImport } from "@rakazo/core";
+import {
+  BackupModelKeyUnavailable,
+  backupModelKeySourceDigest,
+  createBotPackageImport,
+} from "@rakazo/core";
 import {
   agentBackupFileGroups,
   agentBackupSelectableGroups,
@@ -64,7 +68,7 @@ export function BotPackageImport({
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const current = useRef<() => boolean>(() => false);
   const fileGeneration = useRef(0);
-  const localSource = useRef<File | readonly File[] | null>(null);
+  const localSource = useRef<{ file: File | readonly File[]; projection: string } | null>(null);
   const folderInput = useRef<HTMLInputElement | null>(null);
   const canPickFolder = supportsBotBackupFolder();
   const imported = useRef<string | null>(null);
@@ -80,10 +84,15 @@ export function BotPackageImport({
     const review = createBotPackageImport({
       preview: (input, signal) => client.botPackages.preview(input, { signal }),
       import: (input, signal) => client.botPackages.import(input, { signal }),
-      readModelKey: (model, signal) => {
+      readModelKey: (model, sourceDigest, signal) => {
         const source = localSource.current;
-        return source
-          ? readBotPackageModelKey(source, model, () => valid() && !signal.aborted)
+        const version = fileGeneration.current;
+        return source && backupModelKeySourceDigest(source.projection) === sourceDigest
+          ? readBotPackageModelKey(
+              source.file,
+              model,
+              () => valid() && !signal.aborted && version === fileGeneration.current,
+            )
           : Promise.resolve(undefined);
       },
       status: (input, signal) => client.botPackages.status(input, { signal }),
@@ -123,7 +132,7 @@ export function BotPackageImport({
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
   const reattachingKey = phase === "unknown" && Boolean(receipt?.modelKey ?? preview?.modelKey);
-  const pickDisabled = reading || (locked && !reattachingKey);
+  const pickDisabled = reading || phase === "previewing" || (locked && !reattachingKey);
   const backupNotice = preview?.document.routines.length
     ? t`Imported routines start paused.`
     : preview?.model ||
@@ -171,7 +180,7 @@ export function BotPackageImport({
     try {
       const source = await read(valid);
       if (valid()) {
-        localSource.current = selected;
+        localSource.current = { file: selected, projection: source };
         if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
     } catch {

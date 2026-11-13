@@ -65,6 +65,10 @@ type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets" | "remoteConnector
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
   backupModelKey: AgentBackupModelSchema.optional(),
+  modelKeySourceDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   backupMcp: AgentBackupMcpSchema.array().max(BOT_PACKAGE_MAX_CONNECTIONS).optional(),
   modelOnly: z.literal(true).optional(),
 });
@@ -178,9 +182,9 @@ export function createBotPackagesService(deps: Deps) {
         })
       : [];
     const targetById = new Map(targets.map((skill) => [skill.id, skill]));
-    const modelKey =
+    const pendingPlan =
       row.status === "importing" || row.status === "failed"
-        ? packagePlanSchema.safeParse(row.plan).data?.backupModelKey
+        ? packagePlanSchema.safeParse(row.plan).data
         : undefined;
     return {
       importId: row.id,
@@ -191,7 +195,12 @@ export function createBotPackagesService(deps: Deps) {
       botId: removed ? null : row.botId,
       botName: redactSecretText(row.botName),
       createdAt: row.createdAt.toISOString(),
-      ...(modelKey ? { modelKey } : {}),
+      ...(pendingPlan?.backupModelKey
+        ? {
+            modelKey: pendingPlan.backupModelKey,
+            modelKeySourceDigest: pendingPlan.modelKeySourceDigest,
+          }
+        : {}),
       skills: removed
         ? []
         : row.components
@@ -456,6 +465,7 @@ export function createBotPackagesService(deps: Deps) {
           : null;
       const modelKey =
         input.importModelKey &&
+        input.modelKeySourceDigest &&
         !binding &&
         backupModel &&
         backupModel !== "unavailable" &&
@@ -496,7 +506,7 @@ export function createBotPackagesService(deps: Deps) {
                 parsed.json,
                 leftOut,
                 ...(binding ? [binding] : []),
-                ...(modelKey ? [{ modelKey }] : []),
+                ...(modelKey ? [{ modelKey, sourceDigest: input.modelKeySourceDigest }] : []),
               ]),
             )
           : hash(parsed.json);
@@ -513,7 +523,9 @@ export function createBotPackagesService(deps: Deps) {
               ...parsed.document,
               ...(parsed.backupMcp ? { backupMcp: parsed.backupMcp } : {}),
               ...(binding ? { backupModelBinding: binding } : {}),
-              ...(modelKey ? { backupModelKey: modelKey } : {}),
+              ...(modelKey
+                ? { backupModelKey: modelKey, modelKeySourceDigest: input.modelKeySourceDigest }
+                : {}),
               ...(modelOnly ? { modelOnly: true } : {}),
             },
             leftOut,

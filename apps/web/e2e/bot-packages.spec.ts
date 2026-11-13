@@ -356,8 +356,10 @@ test("agent backup folder previews only selected content and preserves the draft
   try {
     const root = join(fixture, "review-agent");
     const unrelated = join(fixture, "ordinary-project");
+    const otherBackup = join(fixture, "other-review-agent");
     await mkdir(join(root, "memories"), { recursive: true });
     await mkdir(join(unrelated, "workspace"), { recursive: true });
+    await mkdir(otherBackup);
     const instructions = "Summarize the folder's research notes.";
     const note = "Keep this note private unless selected.";
     const secret = "Local fixture credential value.";
@@ -371,6 +373,11 @@ test("agent backup folder previews only selected content and preserves the draft
       ),
       writeFile(join(unrelated, "AGENTS.md"), "Ordinary project instructions."),
       writeFile(join(unrelated, "workspace", "README.md"), "Ordinary project workspace."),
+      writeFile(join(otherBackup, "HERMES.md"), "Use a different account's notes."),
+      writeFile(
+        join(otherBackup, "config.yaml"),
+        "model: { provider: anthropic, default: claude-sonnet-4-6, api_key: another-config-fixture }\n",
+      ),
     ]);
 
     await page.setViewportSize({ width: 1280, height: 1100 });
@@ -502,12 +509,18 @@ test("agent backup folder previews only selected content and preserves the draft
     await expect(
       panel.getByText("Choose the backup again to resume importing the API key."),
     ).toBeVisible();
-    await choose(root);
     const resumes: string[] = [];
     await page.route("**/rpc/botPackages/resume", async (route) => {
       resumes.push(route.request().postData() ?? "");
       await route.abort("failed");
     });
+    await choose(otherBackup);
+    await resume.click();
+    await expect(
+      panel.getByText("Could not read the API key. Choose the backup again."),
+    ).toBeVisible();
+    expect(resumes).toHaveLength(0);
+    await choose(root);
     await resume.click();
     await expect.poll(() => resumes.length).toBe(1);
     expect(JSON.parse(resumes[0]!).json).toEqual({

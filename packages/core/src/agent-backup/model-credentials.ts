@@ -41,14 +41,17 @@ function hasAlternateEndpoint(entry: Config, endpoints: readonly string[]) {
 
 function parseEnv(content: string | undefined) {
   const values = new Map<string, string>();
-  for (const line of (content ?? "").split(/\r?\n/)) {
-    const assignment = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (!assignment) continue;
-    const name = assignment[1]!;
-    const raw = assignment[2]!;
-    const quoted = /^(['"])(.*?)\1(?:\s*#.*)?$/.exec(raw);
-    if (!quoted && /^['"]/.test(raw)) continue;
-    values.set(name, quoted?.[2] ?? raw.replace(/\s+#.*$/, ""));
+  // Match dotenv assignments without loading its Node filesystem entry point on clients.
+  const assignment =
+    /^\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?$/gm;
+  for (const [, name, raw = ""] of (content ?? "").replace(/\r\n?/g, "\n").matchAll(assignment)) {
+    const value = raw.trim();
+    const quote = value[0];
+    const unquoted = value.replace(/^(['"`])([\s\S]*)\1$/, "$2");
+    values.set(
+      name!,
+      quote === '"' ? unquoted.replace(/\\n/g, "\n").replace(/\\r/g, "\r") : unquoted,
+    );
   }
   return values;
 }

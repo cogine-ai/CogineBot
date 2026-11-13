@@ -243,7 +243,7 @@ export function projectBackupModel(
           return (
             hasEndpoint(entry) ||
             (Array.isArray(entry.models) &&
-              entry.models.map(record).some((row) => row.id === modelId && hasEndpoint(row)))
+              entry.models.map(record).some((row) => text(row.id) === modelId && hasEndpoint(row)))
           );
         })
       )

@@ -7,7 +7,11 @@ import {
   BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { BackupModelKeyUnavailable, createBotPackageImport } from "@rakazo/core";
+import {
+  BackupModelKeyUnavailable,
+  backupModelKeySourceDigest,
+  createBotPackageImport,
+} from "@rakazo/core";
 import {
   agentBackupFileGroups,
   agentBackupSelectableGroups,
@@ -50,7 +54,10 @@ export function NativeBotPackageImport({
   const [backupContentOpen, setBackupContentOpen] = useState(false);
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const fileGeneration = useRef(0);
-  const localModelKey = useRef<((model: AgentBackupModel) => string | undefined) | null>(null);
+  const localModelKey = useRef<{
+    read(model: AgentBackupModel): string | undefined;
+    projection: string;
+  } | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -69,9 +76,12 @@ export function NativeBotPackageImport({
           review = createBotPackageImport({
             preview: (input, signal) => next.request("botPackages/preview", input, signal),
             import: (input, signal) => next.request("botPackages/import", input, signal),
-            readModelKey: async (model, signal) => {
+            readModelKey: async (model, sourceDigest, signal) => {
               if (!next.isCurrent() || signal.aborted) return undefined;
-              return localModelKey.current?.(model);
+              const source = localModelKey.current;
+              return source && backupModelKeySourceDigest(source.projection) === sourceDigest
+                ? source.read(model)
+                : undefined;
             },
             status: (input, signal) => next.request("botPackages/status", input, signal),
             recent: (signal) => next.request("botPackages/recent", {}, signal),
@@ -158,10 +168,12 @@ export function NativeBotPackageImport({
     setReading(true);
     setFileError(false);
     try {
+      let readKey: ((model: AgentBackupModel) => string | undefined) | undefined;
       const source = await pickBotPackageFile(valid, (read) => {
-        if (valid()) localModelKey.current = read;
+        readKey = read;
       });
       if (valid() && source !== null) {
+        localModelKey.current = readKey ? { read: readKey, projection: source } : null;
         setBackupContentOpen(false);
         if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
@@ -221,7 +233,7 @@ export function NativeBotPackageImport({
           </Text>
           <NativeActionButton
             label={t("Choose package file")}
-            disabled={reading || (locked && !reattachingKey)}
+            disabled={reading || phase === "previewing" || (locked && !reattachingKey)}
             busy={reading}
             onPress={() => void pick()}
             prominence="secondary"

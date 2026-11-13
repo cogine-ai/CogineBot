@@ -115,6 +115,10 @@ export const BotPackagePreviewInput = z.object({
   name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH).optional(),
   includeMemory: z.boolean().default(false),
   importModelKey: z.boolean().optional(),
+  modelKeySourceDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   backupOmissions: AgentBackupOmissionsSchema.optional(),
   backupRoutines: z
     .array(
@@ -184,6 +188,10 @@ export const BotPackageReceiptSchema = z.object({
   botName: z.string(),
   createdAt: z.string(),
   modelKey: AgentBackupModelSchema.optional(),
+  modelKeySourceDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   skills: z.array(BotPackageSkillReceiptSchema),
   connections: z.array(
     BotPackageConnectionSchema.extend({

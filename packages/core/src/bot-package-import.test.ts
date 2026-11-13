@@ -7,7 +7,11 @@ import {
   recentReceipt,
 } from "./bot-package.test-helpers.js";
 import type { BotPackageImportState } from "./bot-package-import.js";
-import { createBotPackageImport, initialBotPackageImport } from "./bot-package-import.js";
+import {
+  backupModelKeySourceDigest,
+  createBotPackageImport,
+  initialBotPackageImport,
+} from "./bot-package-import.js";
 
 function fixture() {
   type Deps = Parameters<typeof createBotPackageImport>[0];
@@ -71,10 +75,17 @@ describe("bot package import review", () => {
     f.manager.edit({ includeBackupModel: true, importModelKey: true });
     await f.manager.preview();
     expect(f.deps.preview).toHaveBeenCalledWith(
-      expect.objectContaining({ importModelKey: true }),
+      expect.objectContaining({
+        importModelKey: true,
+        modelKeySourceDigest: backupModelKeySourceDigest(source),
+      }),
       expect.any(AbortSignal),
     );
-    expect(f.deps.readModelKey).toHaveBeenCalledExactlyOnceWith(model, expect.any(AbortSignal));
+    expect(f.deps.readModelKey).toHaveBeenCalledExactlyOnceWith(
+      model,
+      backupModelKeySourceDigest(source),
+      expect.any(AbortSignal),
+    );
     expect(JSON.stringify(f.deps.preview.mock.calls)).not.toContain("synthetic-model-key");
     const confirm = f.manager.confirm();
     f.switchScope();
@@ -104,8 +115,9 @@ describe("bot package import review", () => {
   it("reattaches a key to the original nonce after reopening a pending receipt", async () => {
     const f = fixture();
     const modelKey = { provider: "openai", modelId: "gpt-4.1" };
+    const modelKeySourceDigest = "f".repeat(64);
     f.deps.status.mockResolvedValueOnce(
-      packageReceipt({ status: "failed", botId: null, modelKey }),
+      packageReceipt({ status: "failed", botId: null, modelKey, modelKeySourceDigest }),
     );
     await f.manager.recover("nonce-1");
     expect(f.state).toMatchObject({ phase: "unknown", preview: null, receipt: { modelKey } });
@@ -114,6 +126,11 @@ describe("bot package import review", () => {
     expect(f.state.canRetry).toBe(true);
     f.deps.readModelKey.mockResolvedValueOnce("synthetic-model-key");
     await f.manager.resume();
+    expect(f.deps.readModelKey).toHaveBeenLastCalledWith(
+      modelKey,
+      modelKeySourceDigest,
+      expect.any(AbortSignal),
+    );
     expect(f.deps.resume).toHaveBeenCalledExactlyOnceWith(
       { clientNonce: "nonce-1", apiKey: "synthetic-model-key" },
       expect.any(AbortSignal),

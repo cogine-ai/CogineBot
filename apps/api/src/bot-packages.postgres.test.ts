@@ -338,7 +338,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const apiKey = "synthetic-key-for-model-backup";
     const model = { provider: "openai", modelId: "gpt-4.1" };
     const fixture = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
-    const input = { source: JSON.stringify(fixture), importModelKey: true };
+    const input = {
+      source: JSON.stringify(fixture),
+      importModelKey: true,
+      modelKeySourceDigest: "a".repeat(64),
+    };
     const unavailable = await call<BotPackagePreview>(owner, "preview", {
       ...input,
       importModelKey: false,
@@ -397,6 +401,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const plan = await call<BotPackagePreview>(owner, "preview", {
       source: JSON.stringify(fixture),
       importModelKey: true,
+      modelKeySourceDigest: "b".repeat(64),
     });
     const clientNonce = randomUUID();
     const confirm = { previewToken: plan.previewToken, clientNonce, apiKey };
@@ -407,7 +412,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const accountFilter = { userId: owner.actor.userId, provider: model.provider };
     expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
     const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce });
-    expect(failed).toMatchObject({ status: "failed", botId: null, modelKey: model });
+    expect(failed).toMatchObject({
+      status: "failed",
+      botId: null,
+      modelKey: model,
+      modelKeySourceDigest: "b".repeat(64),
+    });
     expect(JSON.stringify(failed)).not.toContain(apiKey);
     outbound.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-4.1-mini" }] }));
     expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(400);
@@ -441,6 +451,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const input = {
       source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
       importModelKey: true,
+      modelKeySourceDigest: "c".repeat(64),
     };
     const first = await call<BotPackagePreview>(owner, "preview", input);
     const second = await call<BotPackagePreview>(target, "preview", input);
@@ -486,6 +497,35 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         where: { userId: owner.actor.userId, kind: "model" },
       }),
     ).toBe(1);
+    expect(outbound).toHaveBeenCalledTimes(2);
+    outbound.mockClear();
+  });
+
+  it("requires the exact Anthropic model before saving a connection", async () => {
+    const owner = await account();
+    const model = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+      modelKeySourceDigest: "d".repeat(64),
+    });
+    const apiKey = "synthetic-anthropic-key";
+    const clientNonce = randomUUID();
+    const verify = (status: number) => async (url: RequestInfo | URL, options?: RequestInit) => {
+      expect(String(url)).toBe(`https://api.anthropic.com/v1/models/${model.modelId}`);
+      expect(new Headers(options?.headers).get("x-api-key")).toBe(apiKey);
+      expect(options?.redirect).toBe("error");
+      return new Response(null, { status });
+    };
+    outbound.mockImplementationOnce(verify(404)).mockImplementationOnce(verify(200));
+    expect(
+      (await request(owner, "import", { previewToken: plan.previewToken, clientNonce, apiKey }))
+        .status,
+    ).toBe(400);
+    expect((await call<BotPackageReceipt>(owner, "status", { clientNonce })).status).toBe("failed");
+    expect((await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey })).status).toBe(
+      "completed",
+    );
     expect(outbound).toHaveBeenCalledTimes(2);
     outbound.mockClear();
   });

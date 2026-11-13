@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import type {
   AgentBackupModel,
   BotPackageImportInput,
@@ -19,6 +21,11 @@ export class BackupModelKeyUnavailable extends Error {
   constructor() {
     super("Could not read the selected backup model key.");
   }
+}
+
+/** The projection excludes credentials and preserves the source kind and reviewed content. */
+export function backupModelKeySourceDigest(source: string) {
+  return bytesToHex(sha256(new TextEncoder().encode(source)));
 }
 
 export type BotPackageImportState = {
@@ -70,7 +77,11 @@ type Deps = {
     input: { clientNonce: string; apiKey?: string },
     signal: AbortSignal,
   ): Promise<BotPackageReceipt>;
-  readModelKey?(model: AgentBackupModel, signal: AbortSignal): Promise<string | undefined>;
+  readModelKey?(
+    model: AgentBackupModel,
+    sourceDigest: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined>;
   cancel(input: { clientNonce: string }, signal: AbortSignal): Promise<BotPackageReceipt>;
   newNonce(): string;
   isCurrent(): boolean;
@@ -108,9 +119,13 @@ export function createBotPackageImport(deps: Deps) {
     publish({ ...state, phase, clientNonce, error: null, canRetry: false });
     return { controller, version };
   }
-  async function readModelKey(model: AgentBackupModel, signal: AbortSignal) {
+  async function readModelKey(
+    model: AgentBackupModel,
+    sourceDigest: string | null | undefined,
+    signal: AbortSignal,
+  ) {
     try {
-      return await deps.readModelKey?.(model, signal);
+      return sourceDigest ? await deps.readModelKey?.(model, sourceDigest, signal) : undefined;
     } catch {
       return undefined;
     }
@@ -292,13 +307,16 @@ export function createBotPackageImport(deps: Deps) {
         const model = state.importModelKey
           ? AgentBackupModelSchema.safeParse(botImportJsonObject(projection.source)?.model).data
           : undefined;
+        const sourceDigest = model ? backupModelKeySourceDigest(state.source) : null;
+        const available = Boolean(
+          model && (await readModelKey(model, sourceDigest, controller.signal)),
+        );
         const input = {
           ...projection,
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
-          ...(state.importModelKey
-            ? { importModelKey: Boolean(model && (await readModelKey(model, controller.signal))) }
-            : {}),
+          ...(state.importModelKey ? { importModelKey: available } : {}),
+          ...(available && sourceDigest ? { modelKeySourceDigest: sourceDigest } : {}),
         };
         if (!current(version)) return;
         const preview = await deps.preview(input, controller.signal);
@@ -337,7 +355,11 @@ export function createBotPackageImport(deps: Deps) {
       let apiKey: string | undefined;
       if (preview.modelKey) {
         const { controller, version } = begin("previewing");
-        apiKey = await readModelKey(preview.modelKey, controller.signal);
+        apiKey = await readModelKey(
+          preview.modelKey,
+          backupModelKeySourceDigest(state.source),
+          controller.signal,
+        );
         if (!current(version)) return;
         pending = null;
         if (!apiKey) {
@@ -410,7 +432,7 @@ export function createBotPackageImport(deps: Deps) {
       let apiKey: string | undefined;
       if (model) {
         const { controller, version } = begin("checking");
-        apiKey = await readModelKey(model, controller.signal);
+        apiKey = await readModelKey(model, state.receipt?.modelKeySourceDigest, controller.signal);
         if (!current(version)) return;
         pending = null;
         if (!apiKey) {
