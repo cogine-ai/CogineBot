@@ -113,6 +113,13 @@ describe("settings links", () => {
     expect(redirectSystemPath({ path: "coginebot:///plugins", initial: false })).toBe(
       "coginebot:///plugins",
     );
+    for (const path of [
+      "coginebot://slack-workspaces?state=synthetic&code=synthetic",
+      "coginebot:///slack-workspaces",
+      "/slack-workspaces",
+    ]) {
+      expect(redirectSystemPath({ path, initial: false })).toBe(path);
+    }
     expect(close).not.toHaveBeenCalled();
 
     expect(redirectSystemPath({ path: "coginebot:///thread?botId=bot-1", initial: false })).toBe(

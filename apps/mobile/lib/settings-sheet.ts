@@ -10,6 +10,7 @@ const settingsScreens = new Set([
   "change-password",
   "integration-setup",
   "integrations",
+  "slack-workspaces",
   "models",
   "plugins",
   "space-credentials",

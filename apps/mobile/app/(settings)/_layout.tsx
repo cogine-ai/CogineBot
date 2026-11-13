@@ -73,6 +73,7 @@ export default function SettingsLayout() {
       <Stack.Screen name="space-credentials" options={glassHeaderOptions(t("Credentials"))} />
       <Stack.Screen name="models" options={glassHeaderOptions(t("Models"))} />
       <Stack.Screen name="voice" options={glassHeaderOptions(t("Voice"))} />
+      <Stack.Screen name="slack-workspaces" options={glassHeaderOptions(t("Slack workspaces"))} />
       <Stack.Screen name="integrations" options={glassHeaderOptions(t("Integrations"))} />
       <Stack.Screen name="plugins" options={glassHeaderOptions(t("GitHub plugins"))} />
       <Stack.Screen

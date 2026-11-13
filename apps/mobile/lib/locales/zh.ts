@@ -1,4 +1,20 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  Resume: "恢复",
+  "Slack workspaces": "Slack 工作区",
+  "Slack installation is unavailable.": "Slack 安装不可用。",
+  "Slack request unconfirmed": "Slack 请求结果待确认",
+  "Slack authorization expired. Try again.": "Slack 授权已过期，请重试。",
+  "Slack authorization cancelled. Try again.": "Slack 授权已取消，请重试。",
+  "Disconnect Slack?": "断开 Slack 连接？",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "Bot 将停止在此工作区收发消息。对话历史将保留在 CogineBot 中。",
+  "Bot unavailable": "Bot 不可用",
+  Unavailable: "不可用",
+  "Reconnect required": "需要重新连接",
+  "Bot for Slack": "Slack 使用的 Bot",
+  "Choose a bot…": "选择 Bot…",
+  "Connect Slack": "连接 Slack",
+  "Waiting for Slack authorization": "等待 Slack 授权",
   "Ask the recipient to send a new WhatsApp message before replying.":
     "请让收件人先发一条新的 WhatsApp 消息，再回复。",
   "An attachment could not be sent.": "有一个附件发送失败。",

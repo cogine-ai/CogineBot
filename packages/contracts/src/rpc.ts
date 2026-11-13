@@ -1,3 +1,4 @@
+import type { InferContractRouterInputs, InferContractRouterOutputs } from "@orpc/contract";
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
@@ -1144,12 +1145,21 @@ export const appContract = {
         .input(
           z.object({
             botId: Id,
+            returnTo: z.literal("mobile").optional(),
             reconnect: z
               .object({ id: Id, expectedRevision: z.number().int().positive() })
               .optional(),
           }),
         )
         .output(z.object({ url: z.url(), attemptId: Id, expiresAt: IsoDate })),
+      completeMobile: oc
+        .input(
+          z.object({
+            state: z.string().regex(/^m\.[A-Za-z0-9_-]{43}$/),
+            code: z.string().max(4096).optional(),
+          }),
+        )
+        .output(z.object({ ok: z.literal(true) })),
       attempt: oc
         .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
         .output(
@@ -1401,3 +1411,8 @@ export const appContract = {
 };
 
 export type AppContract = typeof appContract;
+
+export type SlackInstallationInputs =
+  InferContractRouterInputs<AppContract>["messaging"]["installations"];
+export type SlackInstallationOutputs =
+  InferContractRouterOutputs<AppContract>["messaging"]["installations"];

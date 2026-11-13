@@ -777,6 +777,13 @@ async function buildApp(
     app.get(SLACK_INSTALL_CALLBACK, async (c) => {
       c.header("cache-control", "no-store");
       c.header("referrer-policy", "no-referrer");
+      // Native callbacks only relay a short-lived code. The authenticated App completes
+      // the exchange in the initiating user/Space; no browser session is transferred.
+      const nativeReturn = await slackMessaging.installations.mobileCallback(
+        c.req.query("state") ?? "",
+        c.req.query("error") ? undefined : c.req.query("code"),
+      );
+      if (nativeReturn) return c.redirect(nativeReturn, 303);
       const returnUrl = new URL("/app", env.webOrigin);
       let outcome = "failed";
       try {

@@ -7446,11 +7446,29 @@ export function createRouter(deps: RouterDeps) {
               context.actor,
               input.botId,
               input.reconnect,
+              input.returnTo,
             );
           } catch {
             throw new ORPCError("BAD_REQUEST", { message: "Slack authorization could not start." });
           }
         }),
+        completeMobile: authed.messaging.installations.completeMobile.handler(
+          async ({ context, input }) => {
+            if (!deps.messagingInstallations?.available) throw new ORPCError("SERVICE_UNAVAILABLE");
+            try {
+              await deps.messagingInstallations.completeMobile(
+                context.actor,
+                input.state,
+                input.code,
+              );
+              return { ok: true as const };
+            } catch {
+              throw new ORPCError("BAD_REQUEST", {
+                message: "Slack authorization could not complete.",
+              });
+            }
+          },
+        ),
         attempt: authed.messaging.installations.attempt.handler(async ({ context, input }) => ({
           status:
             (await deps.messagingInstallations?.attempt(context.actor, input.attemptId)) ??
