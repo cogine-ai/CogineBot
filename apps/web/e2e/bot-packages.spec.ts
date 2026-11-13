@@ -206,13 +206,16 @@ test("agent backup import previews supported text and saves only the selected co
     buffer: gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)])),
   };
   const picker = panel.getByLabel("Choose package file", { exact: true });
+  const memory = panel.getByRole("switch", { name: "Include memory", exact: true });
   await picker.setInputFiles(archive);
   await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+  await memory.click();
+  await expect(memory).toBeChecked();
   await panel.getByRole("button", { name: "Use JSON instead", exact: true }).click();
   await expect(panel.getByLabel("Bot package or Grok JSON", { exact: true })).toBeEmpty();
+  await expect(memory).not.toBeChecked();
   await picker.setInputFiles(archive);
   await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
-  const memory = panel.getByRole("switch", { name: "Include memory", exact: true });
   await expect(memory).not.toBeChecked();
   let uploaded = "";
   page.on("request", (request) => {

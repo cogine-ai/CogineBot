@@ -139,7 +139,7 @@ export function NativeBotPackageImport({
               <NativeActionButton
                 label={t("Use JSON instead")}
                 disabled={locked}
-                onPress={() => edit({ source: "" })}
+                onPress={() => edit({ source: "", includeMemory: false })}
                 prominence="secondary"
               />
             </View>

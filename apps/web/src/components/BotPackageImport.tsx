@@ -127,7 +127,11 @@ export function BotPackageImport({
               <p role="status" className="text-sm">
                 <Trans>Agent backup selected</Trans>
               </p>
-              <Button variant="ghost" disabled={locked} onClick={() => edit({ source: "" })}>
+              <Button
+                variant="ghost"
+                disabled={locked}
+                onClick={() => edit({ source: "", includeMemory: false })}
+              >
                 <Trans>Use JSON instead</Trans>
               </Button>
             </div>
