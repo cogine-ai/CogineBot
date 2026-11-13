@@ -41,7 +41,6 @@ export const MemoryScope = z.enum(["bot", "user"]);
 export type MemoryScope = z.infer<typeof MemoryScope>;
 
 export const SandboxKind = z.enum([
-  "none",
   "docker",
   "e2b",
   "daytona",

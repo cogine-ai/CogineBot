@@ -86,15 +86,17 @@ export function toComputerStatus(
   busyBotName: string | null = null,
   sandbox?: SandboxProvider,
 ): ComputerStatus {
-  const kind = (computer?.kind ?? "fake") as ComputerStatus["kind"];
+  const kind = ((computer?.kind.trim() ?? "fake") || "none") as ComputerStatus["kind"];
   const mode = computer?.scope === "dedicated" ? "dedicated" : "team";
   const screen = computerScreenSize(computer?.kind);
-  if (kind === "none") {
+  const providerDisabled = !computer?.providerRef && sandbox?.describe().id === "none";
+  if (kind === "none" || providerDisabled) {
     return {
       botId,
       mode,
       kind,
       state: "stopped",
+      ...(providerDisabled ? { providerDisabled: true as const } : {}),
       controlHolder: "none",
       controlBotId: null,
       takeoverRequested: false,

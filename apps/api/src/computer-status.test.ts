@@ -36,9 +36,11 @@ describe("toComputerStatus", () => {
         homeRevision: "r1",
       },
       "Previous bot",
+      createRunSandbox("none", {}),
     );
     expect(ComputerStatusSchema.parse(status)).toMatchObject({
       kind: "none",
+      providerDisabled: true,
       mode: "dedicated",
       state: "stopped",
       screenAvailable: false,
@@ -51,6 +53,46 @@ describe("toComputerStatus", () => {
       homeRevision: "r1",
     });
     expect(status.powerState).toBeUndefined();
+  });
+
+  it("reports an unavailable provider for an unprovisioned computer without rewriting its kind", () => {
+    const status = toComputerStatus(
+      "bot-1",
+      {
+        kind: "docker",
+        state: "error",
+        scope: "team",
+        controlHolder: "none",
+        homeRevision: "empty",
+      },
+      null,
+      createRunSandbox("none", {}),
+    );
+    expect(ComputerStatusSchema.parse(status)).toMatchObject({
+      kind: "docker",
+      providerDisabled: true,
+      state: "stopped",
+      screenAvailable: false,
+      canUpdate: false,
+      terminalAvailable: false,
+    });
+  });
+
+  it("allows a previously disabled computer to boot after configuring a provider", () => {
+    const status = toComputerStatus(
+      "bot-1",
+      {
+        kind: " ",
+        state: "stopped",
+        scope: "team",
+        controlHolder: "none",
+        homeRevision: "empty",
+      },
+      null,
+      createRunSandbox("fake", {}),
+    );
+    expect(ComputerStatusSchema.parse(status)).toMatchObject({ kind: "none", state: "stopped" });
+    expect(status.providerDisabled).toBeUndefined();
   });
 
   it("passes through the busy bot name when takeover is blocked", () => {

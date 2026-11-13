@@ -292,6 +292,48 @@ describe("computer screen", () => {
     expect(fullWindow?.querySelector("[data-keyboard-bar]")).not.toBeNull();
   });
 
+  it("does not boot or offer controls on a server with computers disabled", async () => {
+    let resolveStatus: (status: ComputerStatus) => void = () => undefined;
+    const status = new Promise<ComputerStatus>((resolve) => {
+      resolveStatus = resolve;
+    });
+    rpc.mockImplementation(async (method: string) => (method === "computer/status" ? status : {}));
+    const view = await render();
+    expect(view.querySelector('[aria-label="Open computer"]')).toBeNull();
+    expect(takeControlButtons(view)).toHaveLength(0);
+    await act(async () => {
+      resolveStatus({
+        ...botWorking,
+        kind: "none",
+        providerDisabled: true,
+        state: "stopped",
+        screenAvailable: false,
+        homeRevision: "empty",
+        busyBotName: null,
+      });
+    });
+    await settle();
+    expect(view.textContent).toContain("Computers are disabled on this server.");
+    expect(view.querySelector('[aria-label="Open computer"]')).toBeNull();
+    expect(takeControlButtons(view)).toHaveLength(0);
+    expect(calls("computer/boot")).toEqual([]);
+    expect(calls("computer/screenUrl")).toEqual([]);
+  });
+
+  it("boots an old disabled record once a computer provider is configured", async () => {
+    respond({
+      ...botWorking,
+      kind: "none",
+      state: "stopped",
+      screenAvailable: false,
+      homeRevision: "empty",
+      busyBotName: null,
+    });
+    const view = await render();
+    expect(view.textContent).not.toContain("Computers are disabled on this server.");
+    expect(calls("computer/boot")).toHaveLength(1);
+  });
+
   it("wakes a sleeping computer from the preview without taking control", async () => {
     respond({ ...botWorking, state: "suspended", busyBotName: null });
     const view = await render();
