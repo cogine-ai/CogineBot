@@ -383,17 +383,26 @@ export class MemoryCommitIdentityError extends Error {
   }
 }
 
-export interface MemoryCommitRequest {
+export interface MemoryCommitTarget {
   scope: "bot" | "user";
   botId?: string;
   path: string;
+  sourceRunId?: string;
+  sourceThreadId?: string;
+}
+
+export interface MemoryCommitRequest extends MemoryCommitTarget {
   content: string;
   /** When set, commit fails if the live document revision is no longer this value. */
   expectedRevision?: number;
-  sourceRunId?: string;
-  sourceThreadId?: string;
+  /** A Run write must still own this lease when its transaction starts. */
+  runLease?: { owner: string; fence: number };
   /** Verified key replays return the first result before revision checks; a different request fails. */
   idempotencyKey?: string;
+}
+
+export interface MemoryCommitReceiptRequest extends MemoryCommitTarget {
+  idempotencyKey: string;
 }
 
 export interface MemoryRevision {

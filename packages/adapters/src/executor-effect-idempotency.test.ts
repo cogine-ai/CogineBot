@@ -2,11 +2,16 @@ import type {
   AdapterContext,
   AgentContextStrategy,
   AgentRunRequest,
+  MemoryCommitReceiptRequest,
   MemoryCommitRequest,
   MemoryReadRequest,
+  MemoryRevision,
+  SemanticMemoryProvider,
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
+import type { ActionApprovalRule } from "@rakazo/core";
 import {
+  approvalEffectKey,
   legacyScopedToolEffectIdempotencyKey,
   toolEffectIdempotencyKey,
 } from "@rakazo/core/node/approval-effect-key";
@@ -56,6 +61,7 @@ function fixture(
     toolResultHistory?: boolean;
     ticketBoard?: boolean;
     secrets?: string[];
+    semanticMemory?: SemanticMemoryProvider;
   } = {},
 ) {
   const effects: Effect[] = [];
@@ -105,12 +111,24 @@ function fixture(
     { id: string; path: string; content: string; revision: number }
   >();
   const memoryHistory: MemoryCommitRequest[] = [];
+  const memoryReceipts = new Map<string, MemoryRevision>();
   const memoryKey = (request: MemoryReadRequest, context: AdapterContext) =>
     JSON.stringify([context.spaceId, context.userId, request.scope, request.botId, request.path]);
   const memoryRead = vi.fn(async (request: MemoryReadRequest, context: AdapterContext) => {
     const document = memoryDocuments.get(memoryKey(request, context));
     return { documents: document ? [{ ...document }] : [] };
   });
+  const receiptKey = (request: MemoryCommitReceiptRequest, context: AdapterContext) =>
+    JSON.stringify([
+      memoryKey(request, context),
+      request.idempotencyKey,
+      request.sourceRunId,
+      request.sourceThreadId,
+    ]);
+  const readCommitReceipt = vi.fn(
+    async (request: MemoryCommitReceiptRequest, context: AdapterContext) =>
+      memoryReceipts.get(receiptKey(request, context)),
+  );
   const persistMemory = async (request: MemoryCommitRequest, context: AdapterContext) => {
     const key = memoryKey(request, context);
     const previous = memoryDocuments.get(key);
@@ -127,6 +145,12 @@ function fixture(
     };
     memoryDocuments.set(key, document);
     memoryHistory.push({ ...request });
+    if (request.idempotencyKey) {
+      memoryReceipts.set(
+        receiptKey({ ...request, idempotencyKey: request.idempotencyKey }, context),
+        { ...document },
+      );
+    }
     return { ...document };
   };
   const memoryCommit = vi.fn(persistMemory);
@@ -152,14 +176,15 @@ function fixture(
           where.id ? effect.id === where.id : effect.idempotencyKey === where.idempotencyKey,
         ) ?? null,
     ),
-    create: vi.fn(async ({ data }: { data: Omit<Effect, "id"> }) => {
-      const effect = { ...data, id: `effect-${effects.length + 1}` };
+    create: vi.fn(async ({ data }: { data: Omit<Effect, "id"> & { id?: string } }) => {
+      const effect = { ...data, id: data.id ?? `effect-${effects.length + 1}` };
       effects.push(effect);
       return { ...effect };
     }),
     update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Effect> }) => {
       Object.assign(effects.find((effect) => effect.id === where.id)!, data);
     }),
+    deleteMany: vi.fn(async () => ({ count: 0 })),
     updateMany: vi.fn(
       async ({ where, data }: { where: { id: string; status: string }; data: Partial<Effect> }) => {
         const effect = effects.find(
@@ -263,7 +288,7 @@ function fixture(
         },
       ),
     },
-    actionApprovalRule: { findMany: vi.fn(async () => []) },
+    actionApprovalRule: { findMany: vi.fn(async (): Promise<ActionApprovalRule[]> => []) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: false })) },
     externalEffect,
     board: {
@@ -333,9 +358,15 @@ function fixture(
       read: memoryRead,
       search: async () => [],
       commit: memoryCommit,
+      readCommitReceipt,
       exportMarkdown: async function* () {},
     },
-    memoryProviders: { resolve: async () => null },
+    memoryProviders: {
+      resolve: async () =>
+        options.semanticMemory
+          ? { provider: options.semanticMemory, defaultScope: "isolated" }
+          : null,
+    },
     events: { append: vi.fn(async () => undefined), pauseRunForInput, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
     secrets: options.secrets ?? [],
@@ -353,8 +384,10 @@ function fixture(
     memoryRead,
     memoryDocuments,
     memoryHistory,
+    readCommitReceipt,
     persistMemory,
     externalEffect,
+    pauseRunForInput,
     shutdown,
     setBeforeTool(callback: () => void) {
       beforeTool = callback;
@@ -773,23 +806,26 @@ describe("mutating tool effect idempotency keys", () => {
     expect(f.memoryCommit).not.toHaveBeenCalled();
   });
 
-  it("stops after an awaited read when cancellation arrives before commit", async () => {
-    const f = fixture("run-cancel-read", { catchToolErrors: true });
-    const read = f.memoryRead.getMockImplementation()!;
-    f.memoryRead.mockImplementation(async (request, context) => {
-      const snapshot = await read(request, context);
-      if (request.path) {
-        f.shutdown.abort();
-        expect(context.signal.aborted).toBe(true);
-      }
-      return snapshot;
-    });
-    f.setCalls([{ name: "remember", args: { content: "fact" }, executionId: "append" }]);
-    await f.run();
-    expect(f.memoryCommit).not.toHaveBeenCalled();
-    expect(f.memoryHistory).toHaveLength(0);
-    expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
-  });
+  it.each(["remember", "save_shared_memory"])(
+    "stops %s after an awaited read when cancellation arrives before commit",
+    async (name) => {
+      const f = fixture("run-cancel-read", { catchToolErrors: true });
+      const read = f.memoryRead.getMockImplementation()!;
+      f.memoryRead.mockImplementation(async (request, context) => {
+        const snapshot = await read(request, context);
+        if (request.path) {
+          f.shutdown.abort();
+          expect(context.signal.aborted).toBe(true);
+        }
+        return snapshot;
+      });
+      f.setCalls([{ name, args: { path: "MEMORY.md", content: "fact" }, executionId: "append" }]);
+      await f.run();
+      expect(f.memoryCommit).not.toHaveBeenCalled();
+      expect(f.memoryHistory).toHaveLength(0);
+      expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
+    },
+  );
 
   it("retains a commit already started when cancellation arrives", async () => {
     const f = fixture("run-cancel-commit", { catchToolErrors: true });
@@ -841,6 +877,181 @@ describe("mutating tool effect idempotency keys", () => {
     expect(f.results).toEqual([expect.objectContaining({ uncertain: true })]);
     expect(f.effects.every((effect) => effect.status !== "completed")).toBe(true);
   });
+
+  it.each([
+    ["remember", "executing"],
+    ["save_shared_memory", "executing"],
+    ["save_shared_memory", "uncertain"],
+  ])(
+    "recovers a %s revision from a %s effect without replacing a later edit",
+    async (name, status) => {
+      const f = fixture("run-recover-memory");
+      const call = {
+        name,
+        args: { path: "MEMORY.md", content: "original" },
+        executionId: "first-save",
+      };
+      const update = f.externalEffect.updateMany.getMockImplementation()!;
+      f.externalEffect.updateMany.mockImplementation(async (request) =>
+        request.data.status === "completed" ? { count: 0 } : update(request),
+      );
+      f.setCalls([call]);
+      await f.run();
+      expect(f.memoryHistory).toHaveLength(1);
+      expect(f.results[0]).toMatchObject({ uncertain: true });
+      f.effects[0]!.status = status;
+
+      const [request, context] = f.memoryCommit.mock.calls[0]!;
+      await f.persistMemory(
+        { ...request, content: "later edit", expectedRevision: 1, idempotencyKey: undefined },
+        context,
+      );
+      f.externalEffect.updateMany.mockImplementation(update);
+      f.setCalls([{ ...call, executionId: "after-restart" }]);
+      await f.run();
+
+      expect(f.memoryCommit).toHaveBeenCalledOnce();
+      expect(f.readCommitReceipt).toHaveBeenCalledOnce();
+      expect(f.memoryHistory).toHaveLength(2);
+      expect([...f.memoryDocuments.values()][0]).toMatchObject({
+        content: "later edit",
+        revision: 2,
+      });
+      const expected =
+        name === "remember" ? { ok: true } : { ok: true, path: "MEMORY.md", revision: 1 };
+      expect(f.results.at(-1)).toEqual(expected);
+      expect(f.effects[0]).toMatchObject({ status: "completed", result: expected });
+    },
+  );
+
+  it("does not re-execute a legacy intended save with no bound receipt", async () => {
+    const f = fixture("run-legacy-shared-memory");
+    const args = { path: "MEMORY.md", content: "old text" };
+    f.effects.push({
+      id: "old-write",
+      spaceId: "space-1",
+      runId: "run-legacy-shared-memory",
+      kind: "save_shared_memory",
+      idempotencyKey: toolEffectIdempotencyKey(
+        "run-legacy-shared-memory",
+        "save_shared_memory",
+        args,
+      ),
+      status: "intended",
+      request: args,
+    });
+    f.setCalls([{ name: "save_shared_memory", args, executionId: "retry" }]);
+    await f.run();
+    expect(f.memoryCommit).not.toHaveBeenCalled();
+    expect(f.results).toEqual([expect.objectContaining({ uncertain: true })]);
+  });
+
+  it("replays a new memory intent that was recorded before any dispatch", async () => {
+    const f = fixture("run-undispatched-memory");
+    const args = { path: "MEMORY.md", content: "new fact" };
+    f.effects.push({
+      id: "memory-write:pre-dispatch",
+      spaceId: "space-1",
+      runId: "run-undispatched-memory",
+      kind: "remember",
+      idempotencyKey: toolEffectIdempotencyKey("run-undispatched-memory", "remember", args),
+      status: "intended",
+      request: args,
+    });
+    f.setCalls([{ name: "remember", args, executionId: "after-restart" }]);
+    await f.run();
+    expect(f.memoryCommit).toHaveBeenCalledOnce();
+    expect(f.effects[0]).toMatchObject({ status: "completed", result: { ok: true } });
+  });
+
+  it("restores approval for a legacy forget intent without calling the provider", async () => {
+    const forget = vi
+      .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
+      .mockResolvedValue({ ok: true, value: { id: "fact-1", expired: true, reason: null } });
+    const runId = "run-legacy-forget-memory";
+    const f = fixture(runId, {
+      semanticMemory: {
+        describe: () => ({
+          id: "fixture",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+        }),
+        recall: async () => ({ ok: true, value: [] }),
+        save: async () => ({ ok: true, value: undefined }),
+        purgeHistory: async () => ({ ok: true, value: undefined }),
+        forget,
+      },
+    });
+    const args = { id: "fact-1" };
+    f.prisma.actionApprovalRule.findMany.mockResolvedValue([
+      { effect: "require_approval", matchKind: "tool", matchValue: "forget_memory" },
+    ]);
+    f.effects.push({
+      id: "legacy-forget",
+      spaceId: "space-1",
+      runId,
+      kind: "forget_memory",
+      idempotencyKey: approvalEffectKey(runId, "forget_memory", args),
+      status: "intended",
+      request: args,
+    });
+    f.setCalls([{ name: "forget_memory", args, executionId: "after-restart" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(forget).not.toHaveBeenCalled();
+    expect(f.effects).toHaveLength(1);
+    expect(f.effects[0]?.status).toBe("intended");
+  });
+
+  it.each(["intended", "executing"])(
+    "does not repeat a semantic save whose %s effect has an unknown outcome",
+    async (status) => {
+      const save = vi
+        .fn<SemanticMemoryProvider["save"]>()
+        .mockResolvedValue({ ok: true, value: undefined });
+      const f = fixture("run-semantic-memory", {
+        semanticMemory: {
+          describe: () => ({
+            id: "fixture",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+          }),
+          recall: async () => ({ ok: true, value: [] }),
+          save,
+          purgeHistory: async () => ({ ok: true, value: undefined }),
+        },
+      });
+      const args = { content: "synthetic fact" };
+      const call = { name: "save_memory", args, executionId: "first-save" };
+      const update = f.externalEffect.updateMany.getMockImplementation()!;
+      if (status === "intended") {
+        f.effects.push({
+          id: "legacy-semantic-save",
+          spaceId: "space-1",
+          runId: "run-semantic-memory",
+          kind: "save_memory",
+          idempotencyKey: toolEffectIdempotencyKey("run-semantic-memory", "save_memory", args),
+          status,
+          request: args,
+        });
+      } else {
+        f.externalEffect.updateMany.mockImplementation(async (request) =>
+          request.data.status === "completed" ? { count: 0 } : update(request),
+        );
+        f.setCalls([call]);
+        await f.run();
+        expect(save).toHaveBeenCalledOnce();
+        expect(f.effects[0]?.status).toBe("executing");
+        f.externalEffect.updateMany.mockImplementation(update);
+      }
+      f.setCalls([{ ...call, executionId: "after-restart" }]);
+      await f.run();
+      expect(save).toHaveBeenCalledTimes(status === "intended" ? 0 : 1);
+      expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+    },
+  );
 
   it("does not replay an existing uncertain memory effect", async () => {
     const f = fixture("run-uncertain");

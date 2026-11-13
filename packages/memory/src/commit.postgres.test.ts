@@ -195,7 +195,30 @@ describePostgres("memory commits (PostgreSQL)", () => {
       racing.commit(write, context),
     ]);
     expect(results[1]).toEqual(results[0]);
-    expect((await document(path)).revisions).toHaveLength(1);
+    const current = await document(path);
+    expect(current.revisions).toHaveLength(1);
+    expect(await prisma.memoryDocument.count({ where: { spaceId: context.spaceId, path } })).toBe(
+      1,
+    );
+  });
+
+  it("reads a committed revision by its key and scope after a later edit", async () => {
+    const path = "idempotent-lookup.md";
+    const original = { ...request(path, "first"), idempotencyKey: "lookup" };
+    const first = await store.commit(original, context);
+    await store.commit({ ...request(path, "later"), expectedRevision: 1 }, context);
+
+    await expect(store.readCommitReceipt(original, context)).resolves.toEqual(first);
+    await expect(
+      store.readCommitReceipt(original, { ...context, userId: "other" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.readCommitReceipt(original, { ...context, spaceId: "other" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.readCommitReceipt({ ...original, path: "wrong.md" }, context),
+    ).rejects.toThrow("Memory commit identity does not match its saved revision");
+    expect(await document(path)).toMatchObject({ revision: 2, content: "later" });
   });
 
   it("rejects overlapping idempotent requests with different contents", async () => {
