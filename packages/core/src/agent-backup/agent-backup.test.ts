@@ -190,7 +190,13 @@ it("keeps the source remote transport default and rejects a policy it cannot pre
   expect(agentBackupFileGroups(backup(config))?.connections).toMatchObject([
     { name: "Docs", transport: "sse" },
   ]);
-  const restricted = backup(config.replace("{ mcp:", '{ tools: { deny: ["docs__*"] }, mcp:'));
+  const fullProfile = backup(config.replace("{ mcp:", '{ tools: { profile: "full" }, mcp:'));
+  expect(agentBackupFileGroups(fullProfile)?.connections).toMatchObject([
+    { name: "Docs", transport: "sse" },
+  ]);
+  const restricted = backup(
+    config.replace("{ mcp:", '{ tools: { profile: "full", deny: ["docs__*"] }, mcp:'),
+  );
   expect(agentBackupFileGroups(restricted)).toMatchObject({
     connections: [],
     unavailableConnections: [{ name: "Docs", reason: "toolPolicy" }],

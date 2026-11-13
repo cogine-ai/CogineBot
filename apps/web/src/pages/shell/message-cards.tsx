@@ -568,7 +568,7 @@ export function McpApprovalCard({
             </p>
           ) : null}
           {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <Button
               className="rounded-full"
               disabled={state !== "pending" || busy}

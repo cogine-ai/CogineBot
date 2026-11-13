@@ -60,6 +60,7 @@ function openClawHasToolPolicy(config: Record<string, unknown>) {
       "subagents",
     ].some((field) => {
       const value = policy[field];
+      if (field === "profile") return value !== undefined && value !== "full";
       return value !== undefined && (!Array.isArray(value) || value.length !== 0);
     });
   };

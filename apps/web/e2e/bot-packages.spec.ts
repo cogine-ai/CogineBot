@@ -587,6 +587,13 @@ test("reviews an imported remote connection before sharing any tools", async ({
     const card = page.getByTestId("mcp-approval-card");
     await expect(card).toContainText(endpoint);
     await expect(card.getByRole("button", { name: "Review tool access" })).toBeVisible();
+    const dismiss = card.getByRole("button", { name: "Not now" });
+    await expect(dismiss).toBeVisible();
+    const bounds = await card.boundingBox();
+    const dismissBounds = await dismiss.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(dismissBounds).not.toBeNull();
+    expect(dismissBounds!.x + dismissBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
     await captureScreenshot(page, testInfo, "d021-package-backup-mcp-pending");
     await card.getByRole("button", { name: "Review tool access" }).click();
     const settings = page.getByRole("dialog", { name: "MCP servers" });
