@@ -1,4 +1,20 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  Knowledge: "知识",
+  "Bot memory": "Bot 记忆",
+  "Shared documents": "共享文档",
+  "Shared skills": "共享技能",
+  "Could not load": "无法加载",
+  "Could not delete skill": "无法删除技能",
+  "Could not export memory": "无法导出记忆",
+  "Read only": "只读",
+  "No skills yet": "暂无技能",
+  "Nothing remembered yet": "暂无记忆",
+  "Export Markdown": "导出 Markdown",
+  "Delete skill?": "删除技能？",
+  "New skill": "新建技能",
+  "What this skill does and when to use it.": "此技能的用途及使用时机。",
+  "Steps the agent should follow.": "智能体应遵循的步骤。",
+
   "Ask the recipient to send a new WhatsApp message before replying.":
     "请让收件人先发一条新的 WhatsApp 消息，再回复。",
   "An attachment could not be sent.": "有一个附件发送失败。",

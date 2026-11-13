@@ -115,6 +115,7 @@ import {
   BotPackageFileError,
   pickBotPackageFile,
   shareBotPackageFile,
+  shareMemoryMarkdown,
 } from "./bot-package-file";
 
 const chosen = (size?: number) => ({
@@ -509,4 +510,24 @@ it("uses typed file errors without embedding local file paths or user data", asy
   const error = await pickBotPackageFile(() => true).catch((value: unknown) => value);
   expect(error).toBeInstanceOf(BotPackageFileError);
   expect((error as Error).message).toBe("read_failed");
+});
+
+it("shares committed Markdown as exact UTF-8 with a Markdown filename and native type", async () => {
+  const text = "# MEMORY.md\n\nSaved 中文 🐦\n";
+  await shareMemoryMarkdown(text, () => true);
+  const [uri, options] = io.share.mock.calls[0]!;
+  expect(uri).toMatch(/\/memory\.md$/);
+  expect(options).toEqual({ mimeType: "text/markdown", UTI: "net.daringfireball.markdown" });
+  expect(new TextDecoder().decode(io.files.get(uri))).toBe(text);
+});
+it("does not hand off Markdown after the current object changes during availability", async () => {
+  let current = true;
+  io.available.mockImplementationOnce(async () => {
+    current = false;
+    return true;
+  });
+  await expect(shareMemoryMarkdown("Saved", () => current)).rejects.toMatchObject({
+    code: "scope_changed",
+  });
+  expect(io.share).not.toHaveBeenCalled();
 });

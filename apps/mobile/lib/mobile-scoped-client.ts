@@ -1,0 +1,54 @@
+import type { Me } from "@rakazo/contracts";
+import { captureApiRequestContext, rpc } from "./api";
+import type { MobileScope } from "./mobile-scope";
+import { isMobileScopeCurrent } from "./mobile-scope";
+import { currentReadySessionGeneration } from "./session";
+
+/** Pin the authenticated session and an implicit Space before editing scoped resources. */
+export async function mobileScopedClient(scope: MobileScope, isMounted: () => boolean) {
+  const isCurrent = () =>
+    isMounted() &&
+    isMobileScopeCurrent(scope) &&
+    currentReadySessionGeneration() === scope.sessionGeneration;
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new Error("This editor is no longer current.");
+  };
+  assertCurrent();
+  const context = await captureApiRequestContext(scope.spaceId);
+  assertCurrent();
+  if (context.apiBase !== scope.apiBase || context.sessionGeneration !== scope.sessionGeneration)
+    throw new Error("This editor is no longer current.");
+  const me = await rpc<Me>(
+    "me",
+    {},
+    {
+      requestContext: { ...context, isCurrent },
+      skipSpaceAuthRecovery: true,
+    },
+  );
+  assertCurrent();
+  if (!me.userId || !me.spaceId || (scope.spaceId && scope.spaceId !== me.spaceId))
+    throw new Error("This editor is no longer current.");
+  const requestContext = {
+    ...context,
+    isCurrent,
+    headers: { ...context.headers, "x-rakazo-space-id": me.spaceId },
+  };
+  return {
+    isCurrent,
+    async request<T>(procedure: string, input: unknown, signal?: AbortSignal): Promise<T> {
+      assertCurrent();
+      signal?.throwIfAborted();
+      const value = await rpc<T>(procedure, input, {
+        requestContext,
+        skipSpaceAuthRecovery: true,
+        signal,
+      });
+      assertCurrent();
+      signal?.throwIfAborted();
+      return value;
+    },
+  };
+}
+
+export type MobileScopedClient = Awaited<ReturnType<typeof mobileScopedClient>>;

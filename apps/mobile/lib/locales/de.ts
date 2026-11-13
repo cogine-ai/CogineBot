@@ -1,4 +1,21 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Knowledge: "Wissen",
+  "Bot memory": "Bot-Erinnerungen",
+  "Shared documents": "Geteilte Dokumente",
+  "Shared skills": "Geteilte Skills",
+  "Could not load": "Laden fehlgeschlagen",
+  "Could not delete skill": "Skill konnte nicht gelöscht werden",
+  "Could not export memory": "Erinnerungen konnten nicht exportiert werden",
+  "Read only": "Schreibgeschützt",
+  "No skills yet": "Noch keine Skills",
+  "Nothing remembered yet": "Noch keine Erinnerungen",
+  "Export Markdown": "Markdown exportieren",
+  "Delete skill?": "Skill löschen?",
+  "New skill": "Neuer Skill",
+  "What this skill does and when to use it.":
+    "Was dieser Skill tut und wann er verwendet werden soll.",
+  "Steps the agent should follow.": "Schritte, die der Agent befolgen soll.",
+
   "Sending to channel": "Wird an den Kanal gesendet",
   "Accepted by channel": "Vom Kanal angenommen",
   "Delivered to channel": "Im Kanal zugestellt",
