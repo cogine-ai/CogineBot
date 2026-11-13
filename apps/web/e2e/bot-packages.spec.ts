@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import type { Route } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type {
   Bot,
@@ -442,7 +443,32 @@ test("agent backup folder previews only selected content and preserves the draft
     expect(previews[1]).toContain("gpt-4.1");
     expect(previews[1]).not.toContain("local-config-fixture");
     await captureScreenshot(page, testInfo, "d021-package-backup-model");
-    await instructionsChoice.click();
+    const key = panel.getByRole("checkbox", { name: "Also import this model’s API key" });
+    await expect(key).not.toBeChecked();
+    await key.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
+    await expect(panel.getByText("Import API key · openai/gpt-4.1", { exact: true })).toBeVisible();
+    expect(previews).toHaveLength(3);
+    expect(previews[2]).not.toContain("local-config-fixture");
+    expect(JSON.parse(previews[2]!).json.importModelKey).toBe(true);
+    await captureScreenshot(page, testInfo, "d021-package-backup-model-key");
+    const writes: string[] = [];
+    const capture = async (route: Route) => {
+      writes.push(route.request().postData() ?? "");
+      await route.abort("failed");
+    };
+    await page.route("**/rpc/botPackages/import", capture);
+    await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Check status", exact: true })).toBeVisible();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]!).json.apiKey).toBe("local-config-fixture");
+    await page.unroute("**/rpc/botPackages/import", capture);
+    await panel.getByRole("button", { name: "Cancel import", exact: true }).click();
+    await expect(panel.getByText("Import cancelled.", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Import another bot", exact: true }).click();
+    await choose(root);
+    await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+    await name.fill("Research folder Bot");
     await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
     await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();

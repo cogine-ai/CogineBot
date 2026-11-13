@@ -1,3 +1,4 @@
+import type { AgentBackupModel } from "@rakazo/contracts";
 import {
   agentBackupMcpOmissionReasons,
   agentBackupOmissionReasons,
@@ -7,7 +8,11 @@ import {
 } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
-import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
+import {
+  agentBackupFileGroups,
+  agentBackupSelectableGroups,
+  isBackupModelKeyProvider,
+} from "@rakazo/core/agent-backup";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
@@ -45,6 +50,7 @@ export function NativeBotPackageImport({
   const [backupContentOpen, setBackupContentOpen] = useState(false);
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const fileGeneration = useRef(0);
+  const localModelKey = useRef<((model: AgentBackupModel) => string | undefined) | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -63,6 +69,10 @@ export function NativeBotPackageImport({
           review = createBotPackageImport({
             preview: (input, signal) => next.request("botPackages/preview", input, signal),
             import: (input, signal) => next.request("botPackages/import", input, signal),
+            readModelKey: async (model, signal) => {
+              if (!next.isCurrent() || signal.aborted) return undefined;
+              return localModelKey.current?.(model);
+            },
             status: (input, signal) => next.request("botPackages/status", input, signal),
             recent: (signal) => next.request("botPackages/recent", {}, signal),
             resume: (input, signal) => next.request("botPackages/resume", input, signal),
@@ -80,6 +90,7 @@ export function NativeBotPackageImport({
         });
       return () => {
         active = false;
+        localModelKey.current = null;
         fileGeneration.current++;
         review?.dispose();
         manager.current = null;
@@ -93,7 +104,10 @@ export function NativeBotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t("Imported routines start paused.")
-    : preview?.model || preview?.document.connections.length || preview?.canImport === false
+    : preview?.model ||
+        preview?.modelKey ||
+        preview?.document.connections.length ||
+        preview?.canImport === false
       ? null
       : t("This import includes supported text only.");
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -122,11 +136,15 @@ export function NativeBotPackageImport({
     name?: string;
     includeMemory?: boolean;
     includeBackupModel?: boolean;
+    importModelKey?: boolean;
   }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(false);
-    if (input.source !== undefined) setBackupContentOpen(false);
+    if (input.source !== undefined) {
+      setBackupContentOpen(false);
+      localModelKey.current = null;
+    }
     manager.current?.edit(input);
   }
   async function pick() {
@@ -136,7 +154,9 @@ export function NativeBotPackageImport({
     setReading(true);
     setFileError(false);
     try {
-      const source = await pickBotPackageFile(valid);
+      const source = await pickBotPackageFile(valid, (read) => {
+        if (valid()) localModelKey.current = read;
+      });
       if (valid() && source !== null) {
         setBackupContentOpen(false);
         manager.current?.edit({
@@ -242,6 +262,20 @@ export function NativeBotPackageImport({
                   />
                 </View>
               ) : null}
+              {selection.model?.selected &&
+              fileGroups.modelProvider &&
+              isBackupModelKeyProvider(fileGroups.modelProvider) &&
+              localModelKey.current ? (
+                <View style={styles.row}>
+                  <Text style={styles.text}>{t("Also import this model’s API key")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Also import this model’s API key")}
+                    value={state?.importModelKey ?? false}
+                    disabled={locked || reading}
+                    onValueChange={(importModelKey) => edit({ importModelKey })}
+                  />
+                </View>
+              ) : null}
               {selection.groups.map(({ kind, items }) => (
                 <View key={kind} style={styles.section}>
                   <Text style={styles.heading}>
@@ -325,6 +359,11 @@ export function NativeBotPackageImport({
           {preview.model ? (
             <Text selectable style={styles.text}>
               {t("Model")} · {preview.model.provider}/{preview.model.modelId}
+            </Text>
+          ) : null}
+          {preview.modelKey ? (
+            <Text selectable style={styles.text}>
+              {t("Import API key")} · {preview.modelKey.provider}/{preview.modelKey.modelId}
             </Text>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />

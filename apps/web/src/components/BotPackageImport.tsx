@@ -3,12 +3,17 @@ import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
-import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
+import {
+  agentBackupFileGroups,
+  agentBackupSelectableGroups,
+  isBackupModelKeyProvider,
+} from "@rakazo/core/agent-backup";
 import { Button, Checkbox, Input, Switch, Textarea } from "@rakazo/ui-web";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   readBotBackupFolder,
   readBotPackageFile,
+  readBotPackageModelKey,
   supportsBotBackupFolder,
 } from "../lib/bot-package-file";
 import { newClientId } from "../lib/client-id";
@@ -59,6 +64,7 @@ export function BotPackageImport({
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const current = useRef<() => boolean>(() => false);
   const fileGeneration = useRef(0);
+  const localSource = useRef<File | readonly File[] | null>(null);
   const folderInput = useRef<HTMLInputElement | null>(null);
   const canPickFolder = supportsBotBackupFolder();
   const imported = useRef<string | null>(null);
@@ -74,6 +80,12 @@ export function BotPackageImport({
     const review = createBotPackageImport({
       preview: (input, signal) => client.botPackages.preview(input, { signal }),
       import: (input, signal) => client.botPackages.import(input, { signal }),
+      readModelKey: (model, signal) => {
+        const source = localSource.current;
+        return source
+          ? readBotPackageModelKey(source, model, () => valid() && !signal.aborted)
+          : Promise.resolve(undefined);
+      },
       status: (input, signal) => client.botPackages.status(input, { signal }),
       recent: (signal) => client.botPackages.recent(undefined, { signal }),
       resume: (input, signal) => client.botPackages.resume(input, { signal }),
@@ -85,6 +97,7 @@ export function BotPackageImport({
     manager.current = review;
     return () => {
       active = false;
+      localSource.current = null;
       fileGeneration.current++;
       review.dispose();
       manager.current = null;
@@ -108,7 +121,10 @@ export function BotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t`Imported routines start paused.`
-    : preview?.model || preview?.document.connections.length || preview?.canImport === false
+    : preview?.model ||
+        preview?.modelKey ||
+        preview?.document.connections.length ||
+        preview?.canImport === false
       ? null
       : t`This import includes supported text only.`;
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -130,20 +146,29 @@ export function BotPackageImport({
     name?: string;
     includeMemory?: boolean;
     includeBackupModel?: boolean;
+    importModelKey?: boolean;
   }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(null);
+    if (input.source !== undefined) localSource.current = null;
     manager.current?.edit(input);
   }
-  async function readSource(read: (valid: () => boolean) => Promise<string>, errorMessage: string) {
+  async function readSource(
+    selected: File | readonly File[],
+    read: (valid: () => boolean) => Promise<string>,
+    errorMessage: string,
+  ) {
     const version = ++fileGeneration.current;
     const valid = () => version === fileGeneration.current && current.current();
     setReading(true);
     setFileError(null);
     try {
       const source = await read(valid);
-      if (valid()) manager.current?.edit({ source, includeMemory: false });
+      if (valid()) {
+        localSource.current = selected;
+        manager.current?.edit({ source, includeMemory: false });
+      }
     } catch {
       if (valid()) setFileError(errorMessage);
     } finally {
@@ -203,6 +228,7 @@ export function BotPackageImport({
               event.target.value = "";
               if (file)
                 void readSource(
+                  file,
                   (valid) => readBotPackageFile(file, valid),
                   t`Could not read this package. Use a JSON file or an agent backup up to 4 MiB.`,
                 );
@@ -223,6 +249,7 @@ export function BotPackageImport({
                   event.currentTarget.value = "";
                   if (files.length)
                     void readSource(
+                      files,
                       (valid) => readBotBackupFolder(files, valid),
                       t`Could not read this backup folder. Choose a supported agent folder or use a backup file.`,
                     );
@@ -283,6 +310,20 @@ export function BotPackageImport({
                   <span className="min-w-0 break-all" dir="auto">
                     <Trans>Model</Trans> · {selection.model.label}
                   </span>
+                </label>
+              ) : null}
+              {selection.model?.selected &&
+              fileGroups.modelProvider &&
+              isBackupModelKeyProvider(fileGroups.modelProvider) &&
+              localSource.current ? (
+                <label className="mt-3 flex items-start gap-2" htmlFor={`${ids}-backup-model-key`}>
+                  <Checkbox
+                    id={`${ids}-backup-model-key`}
+                    checked={state?.importModelKey ?? false}
+                    disabled={locked || reading}
+                    onCheckedChange={(checked) => edit({ importModelKey: checked === true })}
+                  />
+                  <Trans>Also import this model’s API key</Trans>
                 </label>
               ) : null}
               {selection.groups.map(({ kind, items }) => (
@@ -378,6 +419,11 @@ export function BotPackageImport({
           {preview.model ? (
             <p className="break-all text-sm" dir="auto">
               <Trans>Model</Trans> · {preview.model.provider}/{preview.model.modelId}
+            </p>
+          ) : null}
+          {preview.modelKey ? (
+            <p className="break-all text-sm" dir="auto">
+              <Trans>Import API key</Trans> · {preview.modelKey.provider}/{preview.modelKey.modelId}
             </p>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />

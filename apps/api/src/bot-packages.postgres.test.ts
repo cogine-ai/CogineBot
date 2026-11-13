@@ -46,7 +46,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   const users: string[] = [];
   const organizations: string[] = [];
   const readCodexCatalog = vi.fn<CodexLiveCatalog["read"]>();
-  const outbound = vi.fn(async () => {
+  const outbound = vi.fn<typeof fetch>(async () => {
     throw new Error("JSON packages must stay offline");
   });
   function faultable(prisma: PrismaClient): PrismaClient {
@@ -331,6 +331,91 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     readCodexCatalog.mockReset();
     vi.unstubAllEnvs();
     expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("imports a reviewed model key only on confirm and replays its committed receipt", async () => {
+    const owner = await account();
+    const apiKey = "synthetic-key-for-model-backup";
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const fixture = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
+    const input = { source: JSON.stringify(fixture), importModelKey: true };
+    const plan = await call<BotPackagePreview>(owner, "preview", input);
+    expect(plan.modelKey).toEqual(model);
+    expect(JSON.stringify(plan)).not.toContain(apiKey);
+    expect(outbound).not.toHaveBeenCalled();
+    const clientNonce = randomUUID();
+    const confirm = { previewToken: plan.previewToken, clientNonce, apiKey };
+    expect((await request(owner, "import", { ...confirm, apiKey: undefined })).status).toBe(400);
+    const check = async (url: RequestInfo | URL, options?: RequestInit) => {
+      expect(String(url)).toBe("https://api.openai.com/v1/models");
+      expect(new Headers(options?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
+      return Response.json({ data: [{ id: model.modelId }] });
+    };
+    outbound.mockImplementationOnce(check);
+    loseCommitAck = true;
+    const imported = await call<BotPackageReceipt>(owner, "import", confirm);
+    expect(await call<BotPackageReceipt>(owner, "import", confirm)).toEqual(imported);
+    expect(outbound).toHaveBeenCalledTimes(1);
+    outbound.mockClear();
+    const row = await database.prisma.userModelCredential.findFirstOrThrow({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    expect(await database.prisma.bot.findUnique({ where: { id: imported.botId! } })).toMatchObject({
+      modelProvider: model.provider,
+      modelId: model.modelId,
+      modelCredentialId: row.id,
+    });
+    const secret = await database.prisma.secret.findUniqueOrThrow({ where: { id: row.secretId } });
+    expect(secret.ciphertext).not.toContain(apiKey);
+    expect(JSON.stringify(imported)).not.toContain(apiKey);
+    expect(
+      (await call<BotPackageExport>(owner, "export", { botId: imported.botId })).json,
+    ).not.toContain(apiKey);
+    const replay = await call<BotPackagePreview>(owner, "preview", input);
+    expect(replay.modelKey).toBeUndefined();
+    expect(replay.model).toEqual(model);
+  });
+
+  it("rolls a rejected or failed backup connection back and resumes using the original nonce", async () => {
+    const owner = await account();
+    const foreign = await account();
+    const apiKey = "synthetic-backup-retry-key";
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const { skills } = source();
+    const fixture = {
+      format: AGENT_BACKUP_FORMAT,
+      source: "hermes",
+      files: [{ path: `skills/${skills[0]!.name}/SKILL.md`, content: skills[0]!.content }],
+      model,
+    };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify(fixture),
+      importModelKey: true,
+    });
+    const clientNonce = randomUUID();
+    const confirm = { previewToken: plan.previewToken, clientNonce, apiKey };
+    expect((await request(foreign, "import", confirm)).status).toBe(400);
+    expect(outbound).not.toHaveBeenCalled();
+    outbound.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    expect((await request(owner, "import", confirm)).status).toBe(400);
+    const accountFilter = { userId: owner.actor.userId, provider: model.provider };
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
+    const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce });
+    expect(failed).toMatchObject({ status: "failed", botId: null });
+    const succeed = () => Response.json({ data: [{ id: model.modelId }] });
+    failComponents = true;
+    outbound.mockResolvedValueOnce(succeed());
+    expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(500);
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
+    expect(
+      await database.prisma.secret.count({ where: { userId: owner.actor.userId, kind: "model" } }),
+    ).toBe(0);
+    outbound.mockResolvedValueOnce(succeed());
+    const imported = await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey });
+    expect(imported).toMatchObject({ status: "completed", importId: failed.importId, clientNonce });
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(1);
+    expect(outbound).toHaveBeenCalledTimes(3);
+    outbound.mockClear();
   });
   afterAll(async () => {
     if (database) {

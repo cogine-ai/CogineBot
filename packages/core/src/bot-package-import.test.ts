@@ -20,6 +20,7 @@ function fixture() {
       packagePreview({ includeMemory: input.includeMemory }),
     ),
     import: vi.fn<Deps["import"]>(async () => packageReceipt()),
+    readModelKey: vi.fn<NonNullable<Deps["readModelKey"]>>(async () => undefined),
     status: vi.fn<Deps["status"]>(async () => packageReceipt()),
     recent: vi.fn<Deps["recent"]>(async () => [recentReceipt()]),
     resume: vi.fn<Deps["resume"]>(async () => packageReceipt()),
@@ -52,6 +53,34 @@ async function review(f: ReturnType<typeof fixture>, source = "{\n  source: orig
 }
 
 describe("bot package import review", () => {
+  it("keeps the model key outside preview and editor state and fences the confirm read", async () => {
+    const f = fixture();
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const source = JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [],
+      model,
+    });
+    const key = deferred<string>();
+    f.deps.readModelKey.mockReturnValueOnce(key.promise);
+    f.deps.preview.mockResolvedValueOnce(packagePreview({ modelKey: model }));
+    f.manager.edit({ source });
+    f.manager.edit({ includeBackupModel: true, importModelKey: true });
+    await f.manager.preview();
+    expect(f.deps.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ importModelKey: true }),
+      expect.any(AbortSignal),
+    );
+    expect(f.deps.readModelKey).not.toHaveBeenCalled();
+    const confirm = f.manager.confirm();
+    f.switchScope();
+    key.resolve("synthetic-model-key");
+    await confirm;
+    expect(f.deps.import).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.changes)).not.toContain("synthetic-model-key");
+  });
+
   it("previews original text with memory off and performs no write until confirmation", async () => {
     const f = fixture();
     const source = '\uFEFF{ "instructions": "first\\r\\nnext" }\n';

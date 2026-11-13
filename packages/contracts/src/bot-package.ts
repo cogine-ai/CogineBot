@@ -114,6 +114,7 @@ export const BotPackagePreviewInput = z.object({
   source: z.string().min(1).max(BOT_PACKAGE_MAX_BYTES),
   name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH).optional(),
   includeMemory: z.boolean().default(false),
+  importModelKey: z.literal(true).optional(),
   backupOmissions: AgentBackupOmissionsSchema.optional(),
   backupRoutines: z
     .array(
@@ -142,12 +143,22 @@ export const BotPackagePreviewSchema = z.object({
   availableMemoryCount: z.number().int().nonnegative(),
   document: BotPackageDocumentSchema,
   model: AgentBackupModelSchema.optional(),
+  modelKey: AgentBackupModelSchema.optional(),
   canImport: z.literal(false).optional(),
   leftOut: z.array(BotPackageLeftOutSchema),
 });
 export type BotPackagePreview = z.infer<typeof BotPackagePreviewSchema>;
 
-export const BotPackageImportInput = z.object({
+export const BotPackageModelKeyInput = z.object({
+  apiKey: z
+    .string()
+    .trim()
+    .min(8)
+    .max(4096)
+    .regex(/^[\x21-\x7e]+$/),
+});
+
+export const BotPackageImportInput = BotPackageModelKeyInput.partial().extend({
   previewToken: z.string().min(1).max(200),
   clientNonce: BotPackageNonceSchema,
 });

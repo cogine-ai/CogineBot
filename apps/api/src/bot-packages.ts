@@ -4,6 +4,7 @@ import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   BotPackageError,
   parseBotPackageSource,
+  persistPreparedSecret,
   prepareBotPackageDocument,
 } from "@rakazo/adapters";
 import type {
@@ -18,6 +19,7 @@ import type {
 } from "@rakazo/contracts";
 import {
   AgentBackupMcpSchema,
+  AgentBackupModelSchema,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_CONNECTIONS,
   BotPackageDocumentSchema,
@@ -42,6 +44,12 @@ import {
   findBackupModelBinding,
   validateBackupModelBinding,
 } from "./bot-package-model.js";
+import {
+  createBackupModelKey,
+  hasBackupModelAccount,
+  prepareBackupModelKey,
+  supportsBackupModelKey,
+} from "./bot-package-model-key.js";
 import type { RouterDeps } from "./router.js";
 import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 
@@ -51,9 +59,12 @@ type Context = {
   signal?: AbortSignal;
   stillAuthorized?: () => Promise<boolean>;
 };
-type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets"> & { codexCatalog: CodexLiveCatalog };
+type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets" | "remoteConnectors"> & {
+  codexCatalog: CodexLiveCatalog;
+};
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
+  backupModelKey: AgentBackupModelSchema.optional(),
   backupMcp: AgentBackupMcpSchema.array().max(BOT_PACKAGE_MAX_CONNECTIONS).optional(),
   modelOnly: z.literal(true).optional(),
 });
@@ -211,7 +222,11 @@ export function createBotPackagesService(deps: Deps) {
       leftOut: safeLeftOut(row.leftOut),
     };
   }
-  async function transact<T>(context: Context, fn: (tx: Prisma.TransactionClient) => Promise<T>) {
+  async function transact<T>(
+    context: Context,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    serializable = false,
+  ) {
     await authorized(context);
     return withTransactionRetry(() =>
       deps.prisma.$transaction(
@@ -221,7 +236,7 @@ export function createBotPackagesService(deps: Deps) {
           await authorized(context);
           return value;
         },
-        { timeout: 30_000 },
+        { timeout: 30_000, ...(serializable ? { isolationLevel: "Serializable" as const } : {}) },
       ),
     ).catch((error: unknown) => {
       throw mapSpaceLifecycleError(error);
@@ -237,125 +252,36 @@ export function createBotPackagesService(deps: Deps) {
       include: includeChildren,
     });
   }
-  async function finish(context: Context, clientNonce: string) {
+  async function finish(context: Context, marker: Row, apiKey?: string) {
+    const { clientNonce } = marker;
     const kind = await botCreationComputerKind(deps.prisma);
     try {
-      const row = await transact(context, async (tx) => {
-        const marker = await lockedNonce(tx, context.actor, clientNonce);
-        if (!marker) throw new ORPCError("NOT_FOUND");
-        if (marker.status !== "importing" && marker.status !== "failed") return marker;
-        if (marker.botId || !marker.plan)
-          throw new ORPCError("CONFLICT", { message: "This import cannot be resumed." });
-        const document = packagePlanSchema.parse(marker.plan);
-        const binding = document.backupModelBinding;
-        const model = binding
-          ? await validateBackupModelBinding(
-              tx,
-              deps.secrets,
-              context.actor,
-              binding,
-              deps.codexCatalog,
-              true,
-            )
-          : null;
-        const modelOmission =
-          binding && !model
-            ? note(
-                `${binding.provider}/${binding.modelId}`.slice(0, 200),
-                document.modelOnly
-                  ? "The reviewed model connection is no longer available. Select an available model in this Space and preview the backup again."
-                  : "The reviewed model connection is no longer available. Choose a model in Bot settings.",
-                "model",
-              )
-            : null;
-        if (document.modelOnly && !model)
-          return tx.botPackageImport.update({
-            where: { id: marker.id },
-            data: {
-              status: "cancelled",
-              plan: Sql.DbNull,
-              ...(modelOmission
-                ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] }
-                : {}),
-              revision: { increment: 1 },
-            },
-            include: includeChildren,
+      const modelKey = marker.plan
+        ? packagePlanSchema.parse(marker.plan).backupModelKey
+        : undefined;
+      let prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined;
+      if (
+        modelKey &&
+        !(await hasBackupModelAccount(deps.prisma, context.actor, modelKey.provider))
+      ) {
+        if (!apiKey)
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Select the backup again to import its model key.",
           });
-        const bot = await createBotRecordsInTransaction(
-          tx,
+        prepared = await prepareBackupModelKey(
+          deps.secrets,
           context.actor,
-          {
-            ...document.profile,
-            notifyOnFinish: false,
-            memoryScope: "isolated",
-            disabledBuiltinTools: fleetTools,
-            ...model,
-          },
-          kind,
+          modelKey,
+          apiKey,
+          context.signal,
+          deps.remoteConnectors?.fetch,
         );
-        if (document.routines.length)
-          await tx.routine.createMany({
-            data: document.routines.map((routine) => ({
-              ...routine,
-              ...own(context.actor),
-              botId: bot.id,
-              threadId: bot.thread!.id,
-              active: false,
-              notify: false,
-            })),
-          });
-        const components: Prisma.BotPackageComponentCreateManyInput[] = [
-          ...document.skills.map((skill, index) => ({
-            ...skill,
-            importId: marker.id,
-            botId: bot.id,
-            key: `skill:${index}`,
-            kind: "skill",
-          })),
-          ...(document.backupMcp?.length
-            ? await importPendingMcpServers(
-                tx,
-                context.actor,
-                { botId: bot.id, threadId: bot.thread!.id, importId: marker.id },
-                document.backupMcp,
-              )
-            : document.connections.map((connection, index) => ({
-                importId: marker.id,
-                botId: bot.id,
-                key: `connection:${index}`,
-                kind: "connection",
-                name: connection.name,
-                description: connection.note,
-              }))),
-        ];
-        if (components.length) await tx.botPackageComponent.createMany({ data: components });
-        if (document.memory.length) {
-          await tx.memoryDocument.deleteMany({
-            where: { ...own(context.actor), botId: bot.id, scope: "bot" },
-          });
-          for (const memory of document.memory)
-            await tx.memoryDocument.create({
-              data: {
-                ...memory,
-                ...own(context.actor),
-                botId: bot.id,
-                scope: "bot",
-                revisions: { create: { revision: 1, content: memory.content } },
-              },
-            });
-        }
-        return tx.botPackageImport.update({
-          where: { id: marker.id },
-          data: {
-            status: "completed",
-            botId: bot.id,
-            plan: Sql.DbNull,
-            ...(modelOmission ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] } : {}),
-            revision: { increment: 1 },
-          },
-          include: includeChildren,
-        });
-      });
+      }
+      const commit = (tx: Prisma.TransactionClient) =>
+        finishTransaction(tx, context, clientNonce, kind, prepared);
+      const row = await persistPreparedSecret(deps.prisma, deps.secrets, prepared, () =>
+        transact(context, commit, modelKey !== undefined),
+      );
       return receipt(context.actor, row);
     } catch (error) {
       // An acknowledgement failure may follow a successful commit. Never turn it into a new write.
@@ -372,6 +298,129 @@ export function createBotPackagesService(deps: Deps) {
       }
       throw mapSpaceLifecycleError(error);
     }
+  }
+  async function finishTransaction(
+    tx: Prisma.TransactionClient,
+    context: Context,
+    clientNonce: string,
+    kind: string,
+    prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined,
+  ) {
+    const marker = await lockedNonce(tx, context.actor, clientNonce);
+    if (!marker) throw new ORPCError("NOT_FOUND");
+    if (marker.status !== "importing" && marker.status !== "failed") return marker;
+    if (marker.botId || !marker.plan)
+      throw new ORPCError("CONFLICT", { message: "This import cannot be resumed." });
+    const document = packagePlanSchema.parse(marker.plan);
+    const binding = document.backupModelBinding;
+    const model = binding
+      ? await validateBackupModelBinding(
+          tx,
+          deps.secrets,
+          context.actor,
+          binding,
+          deps.codexCatalog,
+          true,
+        )
+      : document.backupModelKey && prepared
+        ? await createBackupModelKey(tx, context.actor, document.backupModelKey, prepared)
+        : null;
+    const reviewedModel = binding ?? document.backupModelKey;
+    const modelOmission =
+      reviewedModel && !model
+        ? note(
+            `${reviewedModel.provider}/${reviewedModel.modelId}`.slice(0, 200),
+            document.modelOnly
+              ? "The reviewed model connection is no longer available. Select an available model in this Space and preview the backup again."
+              : "The reviewed model connection is no longer available. Choose a model in Bot settings.",
+            "model",
+          )
+        : null;
+    if (document.modelOnly && !model)
+      return tx.botPackageImport.update({
+        where: { id: marker.id },
+        data: {
+          status: "cancelled",
+          plan: Sql.DbNull,
+          ...(modelOmission ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] } : {}),
+          revision: { increment: 1 },
+        },
+        include: includeChildren,
+      });
+    const bot = await createBotRecordsInTransaction(
+      tx,
+      context.actor,
+      {
+        ...document.profile,
+        notifyOnFinish: false,
+        memoryScope: "isolated",
+        disabledBuiltinTools: fleetTools,
+        ...model,
+      },
+      kind,
+    );
+    if (document.routines.length)
+      await tx.routine.createMany({
+        data: document.routines.map((routine) => ({
+          ...routine,
+          ...own(context.actor),
+          botId: bot.id,
+          threadId: bot.thread!.id,
+          active: false,
+          notify: false,
+        })),
+      });
+    const components: Prisma.BotPackageComponentCreateManyInput[] = [
+      ...document.skills.map((skill, index) => ({
+        ...skill,
+        importId: marker.id,
+        botId: bot.id,
+        key: `skill:${index}`,
+        kind: "skill",
+      })),
+      ...(document.backupMcp?.length
+        ? await importPendingMcpServers(
+            tx,
+            context.actor,
+            { botId: bot.id, threadId: bot.thread!.id, importId: marker.id },
+            document.backupMcp,
+          )
+        : document.connections.map((connection, index) => ({
+            importId: marker.id,
+            botId: bot.id,
+            key: `connection:${index}`,
+            kind: "connection",
+            name: connection.name,
+            description: connection.note,
+          }))),
+    ];
+    if (components.length) await tx.botPackageComponent.createMany({ data: components });
+    if (document.memory.length) {
+      await tx.memoryDocument.deleteMany({
+        where: { ...own(context.actor), botId: bot.id, scope: "bot" },
+      });
+      for (const memory of document.memory)
+        await tx.memoryDocument.create({
+          data: {
+            ...memory,
+            ...own(context.actor),
+            botId: bot.id,
+            scope: "bot",
+            revisions: { create: { revision: 1, content: memory.content } },
+          },
+        });
+    }
+    return tx.botPackageImport.update({
+      where: { id: marker.id },
+      data: {
+        status: "completed",
+        botId: bot.id,
+        plan: Sql.DbNull,
+        ...(modelOmission ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] } : {}),
+        revision: { increment: 1 },
+      },
+      include: includeChildren,
+    });
   }
   return {
     async preview(context: Context, input: BotPackagePreviewInput) {
@@ -400,9 +449,18 @@ export function createBotPackagesService(deps: Deps) {
               deps.codexCatalog,
             )
           : null;
+      const modelKey =
+        input.importModelKey &&
+        !binding &&
+        backupModel &&
+        backupModel !== "unavailable" &&
+        supportsBackupModelKey(backupModel) &&
+        !(await hasBackupModelAccount(deps.prisma, context.actor, backupModel.provider))
+          ? backupModel
+          : undefined;
       const modelOnly = parsed.modelOnly === true;
       const leftOut =
-        backupModel && !binding
+        backupModel && !binding && !modelKey
           ? [
               ...parsed.leftOut,
               backupModel === "unavailable"
@@ -413,7 +471,9 @@ export function createBotPackagesService(deps: Deps) {
                   )
                 : note(
                     `${backupModel.provider}/${backupModel.modelId}`.slice(0, 200),
-                    "Connect and select this model in this Space before importing it.",
+                    input.importModelKey
+                      ? "This model key needs manual setup in model settings."
+                      : "Connect and select this model in this Space before importing it.",
                     "model",
                   ),
             ]
@@ -431,12 +491,13 @@ export function createBotPackagesService(deps: Deps) {
                 parsed.json,
                 leftOut,
                 ...(binding ? [binding] : []),
+                ...(modelKey ? [{ modelKey }] : []),
               ]),
             )
           : hash(parsed.json);
       const expiresAt = new Date(Date.now() + 10 * 60_000);
       await transact(context, async (tx) => {
-        if (modelOnly && !binding) return;
+        if (modelOnly && !binding && !modelKey) return;
         await tx.botPackagePreview.create({
           data: {
             ...own(context.actor),
@@ -447,6 +508,7 @@ export function createBotPackagesService(deps: Deps) {
               ...parsed.document,
               ...(parsed.backupMcp ? { backupMcp: parsed.backupMcp } : {}),
               ...(binding ? { backupModelBinding: binding } : {}),
+              ...(modelKey ? { backupModelKey: modelKey } : {}),
               ...(modelOnly ? { modelOnly: true } : {}),
             },
             leftOut,
@@ -464,7 +526,8 @@ export function createBotPackagesService(deps: Deps) {
         sourceFormat: parsed.sourceFormat,
         leftOut,
         ...(binding && backupModel && backupModel !== "unavailable" ? { model: backupModel } : {}),
-        ...(modelOnly && !binding ? { canImport: false as const } : {}),
+        ...(modelKey ? { modelKey } : {}),
+        ...(modelOnly && !binding && !modelKey ? { canImport: false as const } : {}),
         availableMemoryCount: parsed.availableMemoryCount,
         includeMemory: input.includeMemory,
       };
@@ -501,6 +564,10 @@ export function createBotPackagesService(deps: Deps) {
             message: "This preview already belongs to another import request.",
           });
         const document = packagePlanSchema.parse(preview.document);
+        if (Boolean(input.apiKey) !== Boolean(document.backupModelKey))
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Confirm the reviewed model key selection.",
+          });
         const marker = await tx.botPackageImport.create({
           data: {
             ...own(context.actor),
@@ -521,7 +588,7 @@ export function createBotPackagesService(deps: Deps) {
       if (existing.status !== "importing" && existing.status !== "failed")
         return receipt(context.actor, existing);
       await deps.billing?.assertAccess(context.actor);
-      return finish(context, input.clientNonce);
+      return finish(context, existing, input.apiKey);
     },
     async status(context: Context, input: { clientNonce: string }) {
       await scope(context);
@@ -575,13 +642,13 @@ export function createBotPackagesService(deps: Deps) {
       });
       return row ? receipt(context.actor, row) : null;
     },
-    async resume(context: Context, input: { clientNonce: string }) {
+    async resume(context: Context, input: { clientNonce: string; apiKey?: string }) {
       await scope(context);
       const row = await findNonce(context.actor, input.clientNonce);
       if (!row) throw new ORPCError("NOT_FOUND");
       if (row.status !== "importing" && row.status !== "failed") return receipt(context.actor, row);
       await deps.billing?.assertAccess(context.actor);
-      return finish(context, input.clientNonce);
+      return finish(context, row, input.apiKey);
     },
     async cancel(context: Context, input: { clientNonce: string }) {
       await scope(context);
