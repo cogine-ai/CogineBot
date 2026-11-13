@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
+import { Alert } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Models from "../app/(settings)/models";
 import SpaceSettings from "../app/(settings)/space-settings";
@@ -16,6 +17,8 @@ import { useSpaceSettings } from "./space-settings";
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   push: vi.fn(),
+  replace: vi.fn(),
+  back: vi.fn(),
   params: { botId: "bot-1", routineId: "routine-1" } as Record<string, string>,
   apiBase: "https://api.example.test",
   spaceGeneration: 0,
@@ -56,7 +59,7 @@ vi.mock("./mobile-scope", () => {
 });
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
-  useRouter: () => ({ back: vi.fn(), push: state.push }),
+  useRouter: () => ({ back: state.back, push: state.push, replace: state.replace }),
   useLocalSearchParams: () => state.params,
   useFocusEffect: (effect: () => () => void) =>
     useEffect(() => {
@@ -64,6 +67,11 @@ vi.mock("expo-router", () => ({
       state.blur = effect();
       return state.blur;
     }, [effect]),
+}));
+vi.mock("../components/routine-run-time", () => ({
+  RoutineRunTime: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
+    <input aria-label="Run time" value={value} onChange={(event) => onChange(event.target.value)} />
+  ),
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => undefined) }));
 vi.mock("./message-action-sheet", () => ({ presentMessageActionSheet: vi.fn() }));
@@ -281,6 +289,9 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
   state.push.mockReset();
+  state.replace.mockReset();
+  state.back.mockReset();
+  vi.mocked(Alert.alert).mockReset();
   state.params = { botId: "bot-1", routineId: "routine-1" };
   state.apiBase = "https://api.example.test";
   state.spaceGeneration = 0;
@@ -1536,4 +1547,262 @@ it("shows and selects a legacy Azure connection through the catalog alias while 
     expectedRevision: 7,
     modelId: "azure-model",
   });
+});
+
+function routineInput(label: string) {
+  const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  if (!input) throw new Error(`Missing input: ${label}`);
+  return input;
+}
+
+it("creates a routine with the account timezone and navigates to its saved identity", async () => {
+  state.params = { botId: "bot-1", origin: "profile" };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "me") return { timezone: "Asia/Shanghai" };
+    if (p === "routines/create") return { ...input, id: "new-routine" };
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  expect(container.textContent).toContain("Asia/Shanghai");
+  await edit(routineInput("Name"), "Daily review");
+  await edit(routineInput("Prompt"), "Review synthetic tasks");
+  await act(async () => button("Create").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/create")?.[1]).toEqual({
+    botId: "bot-1",
+    name: "Daily review",
+    prompt: "Review synthetic tasks",
+    crons: ["0 9 * * *"],
+    timezone: "Asia/Shanghai",
+    active: true,
+    notify: true,
+  });
+  expect(state.replace).toHaveBeenCalledWith(
+    expect.objectContaining({
+      params: expect.objectContaining({ routineId: "new-routine", botId: "bot-1" }),
+    }),
+  );
+});
+
+it("keeps ordinary edits and exact schedules on failure without sending model or trigger fields", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/list")
+      return [{ ...(await normal(p))[0], crons: ["0 0 9 * * MON-FRI"], webhookEnabled: true }];
+    if (p === "routines/update") throw new Error("Save unavailable");
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Changed");
+  await act(async () => button("Save").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+    routineId: "routine-1",
+    name: "Changed",
+    prompt: "Review",
+    crons: ["0 0 9 * * MON-FRI"],
+  });
+  expect(routineInput("Name").value).toBe("Changed");
+  expect(container.textContent).toContain("Save unavailable");
+});
+
+it("requires a future instant before enabling an imported one-shot", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let routine = {
+    ...(await normal("routines/list"))[0],
+    active: false,
+    crons: ["@once"],
+    nextRunAt: null,
+    lastRunAt: null,
+  };
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/list") return [routine];
+    if (p === "routines/update") {
+      routine = { ...routine, ...input };
+      return routine;
+    }
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Resume").click());
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+  expect(container.textContent).toContain("Run time must be in the future.");
+  await edit(routineInput("Run time"), "2099-01-01T12:00:00Z");
+  await act(async () => button("Resume").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+    routineId: "routine-1",
+    active: true,
+    runAt: "2099-01-01T12:00:00.000Z",
+  });
+  expect(button("Pause")).toBeDefined();
+});
+
+it("confirms removal and ignores a confirmation after changing Bot", async () => {
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Delete").click());
+  const confirm = vi
+    .mocked(Alert.alert)
+    .mock.calls.at(-1)?.[2]
+    ?.find((entry) => entry.style === "destructive")?.onPress;
+  expect(confirm).toBeDefined();
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/remove")).toBe(false);
+  state.params = { botId: "bot-2", routineId: "routine-2" };
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => confirm?.());
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/remove")).toBe(false);
+  expect(state.back).not.toHaveBeenCalled();
+});
+
+it("discards a save response after switching Space and does not retry it on the new object", async () => {
+  const saving = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  state.rpc.mockImplementation((p, input) =>
+    p === "routines/update" ? saving.promise : normal(p, input),
+  );
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Old scope draft");
+  await act(async () => button("Save").click());
+  state.spaceId = "space-2";
+  state.spaceGeneration += 1;
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => saving.resolve({ ...original, prompt: "Obsolete response" }));
+  expect(container.textContent).not.toContain("Obsolete response");
+  const writes = state.rpc.mock.calls.filter(([p]) => p === "routines/update");
+  expect(writes).toHaveLength(1);
+  expect(writes[0]?.[2]?.requestContext.headers["x-rakazo-space-id"]).toBe("space-1");
+});
+
+it("refreshes history after an explicit test run and opens its result", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let tested = false;
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/testRun") {
+      tested = true;
+      return { runId: "run-1" };
+    }
+    if (p === "routines/history")
+      return {
+        nextCursor: null,
+        runs: tested
+          ? [
+              {
+                id: "run-1",
+                botId: "bot-1",
+                status: "succeeded",
+                createdAt: "2030-01-01T00:00:00Z",
+                messageId: "result-1",
+              },
+            ]
+          : [],
+      };
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Test run").click());
+  await act(async () => button("View chat").click());
+  expect(state.push).toHaveBeenCalledWith({
+    pathname: "/thread",
+    params: { botId: "bot-1", messageId: "result-1" },
+  });
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+});
+
+it.each([
+  ["Every hour", "0 * * * *"],
+  ["Every day", "0 9 * * *"],
+  ["Weekdays", "0 9 * * 1-5"],
+  ["Every week", "0 9 * * 1"],
+  ["Every month", "0 9 1 * *"],
+  ["Interval", "*/3 * * * *"],
+  ["Advanced", "0 9 * * *"],
+])("saves the shared %s preset", async (frequency, cron) => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/list") return [{ ...(await normal(p))[0], crons: ["0 9 * * *"] }];
+    if (p === "routines/update") return { ...(await normal("routines/list"))[0], ...input };
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  const select = container.querySelector<HTMLSelectElement>('select[aria-label="How often"]')!;
+  await act(async () => {
+    select.value = frequency;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => button("Save").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+    routineId: "routine-1",
+    name: "Daily",
+    prompt: "Review",
+    crons: [cron],
+  });
+});
+
+it("preserves multiple schedules when editing one advanced expression", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/list")
+      return [{ ...(await normal(p))[0], crons: ["0 9 * * *", "0 12 * * *"] }];
+    if (p === "routines/update") return { ...(await normal("routines/list"))[0], ...input };
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  const select = container.querySelector<HTMLSelectElement>('select[aria-label="How often"]')!;
+  await act(async () => {
+    select.value = "Advanced";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await edit(routineInput("Cron expression"), "0 10 * * 2");
+  expect(select.value).toBe("Advanced");
+  await act(async () => button("Save").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1].crons).toEqual([
+    "0 10 * * 2",
+    "0 12 * * *",
+  ]);
+});
+
+it("pauses and resumes a recurring routine without modifying its other settings", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let routine = { ...(await normal("routines/list"))[0], crons: ["0 9 * * *"] };
+  state.rpc.mockImplementation(async (p, input) => {
+    if (p === "routines/list") return [routine];
+    if (p === "routines/update") {
+      routine = { ...routine, ...input };
+      return routine;
+    }
+    return normal(p, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Pause").click());
+  await act(async () => button("Resume").click());
+  expect(
+    state.rpc.mock.calls.filter(([p]) => p === "routines/update").map(([, input]) => input),
+  ).toEqual([
+    { routineId: "routine-1", active: false },
+    { routineId: "routine-1", active: true },
+  ]);
+});
+
+it("deletes only after confirmation and returns after the server succeeds", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p, input) =>
+    p === "routines/remove" ? { ok: true } : normal(p, input),
+  );
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Delete").click());
+  expect(state.back).not.toHaveBeenCalled();
+  await act(async () =>
+    vi
+      .mocked(Alert.alert)
+      .mock.calls.at(-1)?.[2]
+      ?.find((entry) => entry.style === "destructive")
+      ?.onPress?.(),
+  );
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/remove")?.[1]).toEqual({
+    routineId: "routine-1",
+  });
+  expect(state.back).toHaveBeenCalledOnce();
 });

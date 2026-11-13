@@ -5,13 +5,15 @@ import {
   modelOptionKey,
   parseModelOptionKey,
 } from "@rakazo/core";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
 import { glassHeaderOptions } from "../components/glass-title";
 import { MenuPicker } from "../components/menu-picker";
 import { NativeActionButton } from "../components/native-action-button";
+import { RoutineFields } from "../components/routine-fields";
 import { RoutineRunHistory } from "../components/routine-run-history";
+import { RoutineRunTime } from "../components/routine-run-time";
 import type { ApiRequestContext } from "../lib/api";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
@@ -24,7 +26,8 @@ import {
 } from "../lib/mobile-scope";
 import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
-import { routineStatusLine } from "../lib/routine";
+import { deviceTimeZone, routineStatusLine } from "../lib/routine";
+import { needsOneShotTime, routineActivation, routineFields } from "../lib/routine-editor";
 import { spaceRequestContext } from "../lib/space-request-context";
 import { errorText } from "../lib/user-error";
 
@@ -50,6 +53,7 @@ export default function RoutineDetail() {
     origin?: string;
     readOnly?: string;
   }>();
+  const creating = !routineId;
   const readOnly = readOnlyParam === "1";
   const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
   const routeKey = JSON.stringify([botId, routineId, readOnly, scopeKey]);
@@ -59,7 +63,6 @@ export default function RoutineDetail() {
   const routeGeneration = useRef(0);
   const scopeRef = useRef<RoutineScope | null>(null);
   const modelRequest = useRef(0);
-  const saveRequest = useRef(0);
   // A dispatched save must settle before another route can write.
   const saveInFlight = useRef(false);
   const [routine, setRoutine] = useState<Routine | null>(null);
@@ -73,7 +76,13 @@ export default function RoutineDetail() {
   const [modelKey, setModelKey] = useState("");
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
-  const [savingModel, setSavingModel] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [createReady, setCreateReady] = useState(false);
+  const [timezone, setTimezone] = useState("UTC");
+  const [runAt, setRunAt] = useState("");
+  const [loadRevision, setLoadRevision] = useState(0);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const modelOptions = connectedModelChoices(credentials, catalog);
   const selectedModel = modelKey ? parseModelOptionKey(modelKey) : null;
   const selectedCredential = credentialForModel(
@@ -125,57 +134,71 @@ export default function RoutineDetail() {
     }
   }
 
-  useEffect(() => {
-    const scope: RoutineScope = {
-      ...captureMobileScope(),
-      generation: ++routeGeneration.current,
-      owner: routeOwner.current,
-    };
-    scopeRef.current = scope;
-    setRoutine(null);
-    setError(null);
-    setCredentials([]);
-    setCatalog([]);
-    setModelsReady(false);
-    setModelsError(null);
-    setModelsLoading(!readOnly);
-    setModelKey("");
-    setModelRevision(undefined);
-    setThinkingLevel("");
-    if (!botId || !routineId) {
-      setError(t("Routine link is incomplete"));
-      setLoading(false);
-    } else {
-      setLoading(true);
-      void (async () => {
-        const requestContext = await spaceRequestContext(scope, () => current(scope));
-        if (!current(scope)) return;
-        if (!readOnly) void loadModels(scope, requestContext);
-        const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
-        if (!current(scope)) return;
-        const match = routines.find((item) => item.id === routineId && item.botId === botId);
-        if (match) {
+  useFocusEffect(
+    useCallback(() => {
+      const scope: RoutineScope = {
+        ...captureMobileScope(),
+        generation: ++routeGeneration.current,
+        owner: routeOwner.current,
+      };
+      scopeRef.current = scope;
+      setSaving(saveInFlight.current);
+      setRoutine(null);
+      setEditing(false);
+      setCreateReady(false);
+      setRunAt("");
+      setError(null);
+      setCredentials([]);
+      setCatalog([]);
+      setModelsReady(false);
+      setModelsError(null);
+      setModelsLoading(!readOnly);
+      setModelKey("");
+      setModelRevision(undefined);
+      setThinkingLevel("");
+      if (!botId || (creating && readOnly)) {
+        setError(t("Routine link is incomplete"));
+        setLoading(false);
+      } else {
+        setLoading(true);
+        void (async () => {
+          const requestContext = await spaceRequestContext(scope, () => current(scope));
+          if (!current(scope)) return;
+          if (!readOnly && !creating) void loadModels(scope, requestContext);
+          const routines = await rpc<Routine[]>("routines/list", { botId }, { requestContext });
+          if (!current(scope)) return;
           scope.verifiedSpaceId = requestContext.headers["x-rakazo-space-id"];
-          setRoutine(match);
-          setModelKey(
-            match.modelProvider && match.modelId
-              ? modelOptionKey(match.modelProvider, match.modelId, match.modelCredentialId)
-              : "",
-          );
-          setThinkingLevel(match.thinkingLevel ?? "");
-        } else setError(t("This routine no longer exists"));
-      })()
-        .catch((loadError) => {
-          if (current(scope)) setError(errorText(loadError, t("Could not load routine")));
-        })
-        .finally(() => {
-          if (current(scope)) setLoading(false);
-        });
-    }
-    return () => {
-      if (scopeRef.current === scope) scopeRef.current = null;
-    };
-  }, [botId, routineId, readOnly, scopeKey]);
+          if (creating) {
+            const me = await rpc<{ timezone: string | null }>("me", {}, { requestContext });
+            if (current(scope)) {
+              setTimezone(me.timezone ?? deviceTimeZone() ?? "UTC");
+              setCreateReady(true);
+            }
+            return;
+          }
+          const match = routines.find((item) => item.id === routineId && item.botId === botId);
+          if (match) {
+            setRoutine(match);
+            setModelKey(
+              match.modelProvider && match.modelId
+                ? modelOptionKey(match.modelProvider, match.modelId, match.modelCredentialId)
+                : "",
+            );
+            setThinkingLevel(match.thinkingLevel ?? "");
+          } else setError(t("This routine no longer exists"));
+        })()
+          .catch((loadError) => {
+            if (current(scope)) setError(errorText(loadError, t("Could not load routine")));
+          })
+          .finally(() => {
+            if (current(scope)) setLoading(false);
+          });
+      }
+      return () => {
+        if (scopeRef.current === scope) scopeRef.current = null;
+      };
+    }, [botId, routineId, readOnly, scopeKey, loadRevision]),
+  );
 
   const shownScope = scopeRef.current;
   async function saveModel() {
@@ -191,14 +214,7 @@ export default function RoutineDetail() {
       modelsError
     )
       return;
-    const request = ++saveRequest.current;
-    const eligible = () => current(scope) && request === saveRequest.current;
-    saveInFlight.current = true;
-    setSavingModel(true);
-    setError(null);
-    try {
-      const requestContext = await spaceRequestContext(scope, eligible, scope.verifiedSpaceId);
-      if (!eligible()) return;
+    await mutate(async (requestContext) => {
       const saved = await rpc<Routine>(
         "routines/update",
         {
@@ -211,13 +227,94 @@ export default function RoutineDetail() {
         },
         { requestContext },
       );
-      if (eligible()) setRoutine(saved);
-    } catch (err) {
-      if (eligible()) setError(errorText(err, t("Could not save")));
+      if (current(scope)) setRoutine(saved);
+    });
+  }
+
+  async function mutate(action: (requestContext: ApiRequestContext) => Promise<void>) {
+    const scope = shownScope;
+    if (!scope || !current(scope) || readOnly || saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      const requestContext = await spaceRequestContext(
+        scope,
+        () => current(scope),
+        scope.verifiedSpaceId,
+      );
+      if (!current(scope)) return;
+      await action(requestContext);
+    } catch (cause) {
+      if (current(scope)) setError(errorText(cause, t("Could not save")));
     } finally {
       saveInFlight.current = false;
-      if (scopeRef.current) setSavingModel(false);
+      if (scopeRef.current) setSaving(false);
     }
+  }
+
+  function saveFields(name: string, prompt: string, crons: string[]) {
+    const scope = shownScope;
+    void mutate(async (requestContext) => {
+      const fields = routineFields(name, prompt, crons);
+      const saved = await rpc<Routine>(
+        routine ? "routines/update" : "routines/create",
+        routine
+          ? { routineId: routine.id, ...fields }
+          : { botId, ...fields, timezone, active: true, notify: true },
+        { requestContext },
+      );
+      if (!scope || !current(scope)) return;
+      if (!routine) {
+        router.replace({
+          pathname: "/routine",
+          params: {
+            botId: botId!,
+            botName: botName ?? "",
+            routineId: saved.id,
+            origin: origin ?? "",
+          },
+        });
+      } else {
+        setRoutine(saved);
+        setEditing(false);
+      }
+    });
+  }
+
+  function toggleActive() {
+    const scope = shownScope;
+    if (!routine) return;
+    void mutate(async (requestContext) => {
+      const saved = await rpc<Routine>(
+        "routines/update",
+        { routineId: routine.id, ...routineActivation(routine, runAt) },
+        { requestContext },
+      );
+      if (scope && current(scope)) {
+        setRoutine(saved);
+        setRunAt("");
+      }
+    });
+  }
+
+  function confirmDelete() {
+    const scope = shownScope;
+    if (!routine || !scope || !current(scope) || saveInFlight.current) return;
+    Alert.alert(t("Delete routine?"), routine.name, [
+      { text: t("Cancel"), style: "cancel" },
+      {
+        text: t("Delete"),
+        style: "destructive",
+        onPress: () => {
+          if (!current(scope)) return;
+          void mutate(async (requestContext) => {
+            await rpc("routines/remove", { routineId: routine.id }, { requestContext });
+            if (current(scope)) router.back();
+          });
+        },
+      },
+    ]);
   }
 
   return (
@@ -229,6 +326,22 @@ export default function RoutineDetail() {
       <Stack.Screen options={glassHeaderOptions(routine?.name ?? t("Routine"))} />
       {loading ? <ActivityIndicator color={tokens.mutedForeground} /> : null}
       {error ? <Text style={{ color: tokens.destructive, fontSize: 15 }}>{error}</Text> : null}
+      {!loading && error && !routine && !createReady ? (
+        <NativeActionButton
+          label={t("Retry")}
+          onPress={() => setLoadRevision((value) => value + 1)}
+        />
+      ) : null}
+      {!loading && createReady && creating && !readOnly ? (
+        <RoutineFields
+          key={routeKey}
+          routine={null}
+          timezone={timezone}
+          disabled={saving}
+          onSave={saveFields}
+          onCancel={() => router.back()}
+        />
+      ) : null}
       {routine ? (
         <>
           <View
@@ -242,26 +355,73 @@ export default function RoutineDetail() {
               {routineStatusLine(routine)}
             </Text>
           </View>
-          <View style={{ gap: 8 }}>
-            <Text
-              style={{ color: tokens.mutedForeground, fontSize: 13, textTransform: "uppercase" }}
-            >
-              {t("Prompt")}
-            </Text>
-            <Text
-              selectable
-              style={{
-                color: tokens.foreground,
-                fontSize: 15,
-                lineHeight: 23,
-                borderRadius: 16,
-                backgroundColor: native.fill,
-                padding: 18,
-              }}
-            >
-              {routine.prompt}
-            </Text>
-          </View>
+          {!editing ? (
+            <View style={{ gap: 8 }}>
+              <Text
+                style={{ color: tokens.mutedForeground, fontSize: 13, textTransform: "uppercase" }}
+              >
+                {t("Prompt")}
+              </Text>
+              <Text
+                selectable
+                style={{
+                  color: tokens.foreground,
+                  fontSize: 15,
+                  lineHeight: 23,
+                  borderRadius: 16,
+                  backgroundColor: native.fill,
+                  padding: 18,
+                }}
+              >
+                {routine.prompt}
+              </Text>
+            </View>
+          ) : null}
+          {!readOnly ? (
+            <>
+              {editing ? (
+                <RoutineFields
+                  key={routeKey}
+                  routine={routine}
+                  timezone={routine.timezone}
+                  disabled={saving}
+                  onSave={saveFields}
+                  onCancel={() => setEditing(false)}
+                />
+              ) : (
+                <NativeActionButton
+                  label={t("Edit")}
+                  disabled={saving}
+                  onPress={() => setEditing(true)}
+                />
+              )}
+              {!routine.active && needsOneShotTime(routine) ? (
+                <RoutineRunTime value={runAt} onChange={setRunAt} disabled={saving} />
+              ) : null}
+              <NativeActionButton
+                label={routine.active ? t("Pause") : t("Resume")}
+                disabled={saving}
+                onPress={toggleActive}
+              />
+              <NativeActionButton
+                label={t("Test run")}
+                disabled={saving}
+                onPress={() => {
+                  const scope = shownScope;
+                  void mutate(async (requestContext) => {
+                    await rpc("routines/testRun", { routineId: routine.id }, { requestContext });
+                    if (scope && current(scope)) setHistoryRevision((value) => value + 1);
+                  });
+                }}
+              />
+              <NativeActionButton
+                label={t("Delete")}
+                prominence="destructive"
+                disabled={saving}
+                onPress={confirmDelete}
+              />
+            </>
+          ) : null}
           {!readOnly && modelsLoading ? <ActivityIndicator color={tokens.mutedForeground} /> : null}
           {!readOnly && modelsError ? (
             <View style={{ gap: 8 }}>
@@ -289,7 +449,7 @@ export default function RoutineDetail() {
                     ...modelOptions.map((entry) => ({ key: entry.key, label: entry.label })),
                   ]}
                   onChange={(key) => {
-                    if (!shownScope || !current(shownScope) || savingModel) return;
+                    if (!shownScope || !current(shownScope) || saving) return;
                     setModelKey(key);
                     setModelRevision(
                       modelOptions.find((entry) => entry.key === key)?.connectionRevision,
@@ -309,7 +469,7 @@ export default function RoutineDetail() {
                       })),
                     ]}
                     onChange={(level) => {
-                      if (!shownScope || !current(shownScope) || savingModel) return;
+                      if (!shownScope || !current(shownScope) || saving) return;
                       setThinkingLevel(level);
                       setModelRevision(modelRevision ?? selectedCredential?.connectionRevision);
                     }}
@@ -318,9 +478,9 @@ export default function RoutineDetail() {
                 ) : null}
               </View>
               <NativeActionButton
-                label={savingModel ? t("Saving…") : t("Save model")}
+                label={saving ? t("Saving…") : t("Save model")}
                 disabled={
-                  savingModel ||
+                  saving ||
                   ((selectedModel?.provider ?? null) === routine.modelProvider &&
                     (selectedModel?.modelId ?? null) === routine.modelId &&
                     (selectedModel?.modelCredentialId ?? null) ===
@@ -333,7 +493,7 @@ export default function RoutineDetail() {
           ) : null}
           {!readOnly && shownScope?.verifiedSpaceId && routineId ? (
             <RoutineRunHistory
-              key={routeKey}
+              key={`${routeKey}:${historyRevision}`}
               routineId={routineId}
               owner={shownScope}
               spaceId={shownScope.verifiedSpaceId}

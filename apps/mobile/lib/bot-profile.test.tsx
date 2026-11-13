@@ -230,16 +230,17 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("shows identity and description, hides empty Routines and opens native destinations", async () => {
+it("shows identity, offers the first routine and opens native destinations", async () => {
   await render();
   expect(container.textContent).toContain("Collect useful references");
-  expect(container.textContent).not.toContain("Routines");
-  for (const label of ["Chat settings", "Artifacts", "Computer"])
+  expect(container.textContent).toContain("Routines");
+  for (const label of ["Chat settings", "Artifacts", "Computer", "Create routine"])
     await act(async () => button(label).click());
   expect(state.push.mock.calls.map(([destination]) => destination)).toMatchObject([
     { pathname: "/bot-settings", params: { botId: "bot-1" } },
     { pathname: "/artifacts", params: { botId: "bot-1" } },
     { pathname: "/computer", params: { botId: "bot-1", name: "Assistant" } },
+    { pathname: "/routine", params: { botId: "bot-1", botName: "Assistant", origin: "profile" } },
   ]);
 });
 
