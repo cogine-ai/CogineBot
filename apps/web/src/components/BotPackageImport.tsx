@@ -99,6 +99,11 @@ export function BotPackageImport({
   const locked =
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
+  const backupNotice = preview?.document.routines.length
+    ? t`Imported routines start paused.`
+    : preview?.model || preview?.canImport === false
+      ? null
+      : t`This import includes supported text only.`;
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
   const backup = fileGroups !== null;
   const excluded = new Set(state?.excludedBackupPaths);
@@ -109,9 +114,15 @@ export function BotPackageImport({
         state?.includeMemory ?? false,
         excluded,
         includedRoutines,
+        state?.includeBackupModel,
       )
     : null;
-  function edit(input: { source?: string; name?: string; includeMemory?: boolean }) {
+  function edit(input: {
+    source?: string;
+    name?: string;
+    includeMemory?: boolean;
+    includeBackupModel?: boolean;
+  }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(null);
@@ -253,6 +264,19 @@ export function BotPackageImport({
               <summary className="cursor-pointer">
                 <Trans>Choose backup content</Trans>
               </summary>
+              {selection.model ? (
+                <label className="mt-3 flex items-start gap-2" htmlFor={`${ids}-backup-model`}>
+                  <Checkbox
+                    id={`${ids}-backup-model`}
+                    checked={selection.model.selected}
+                    disabled={locked || reading}
+                    onCheckedChange={(checked) => edit({ includeBackupModel: checked === true })}
+                  />
+                  <span className="min-w-0 break-all" dir="auto">
+                    <Trans>Model</Trans> · {selection.model.label}
+                  </span>
+                </label>
+              ) : null}
               {selection.groups.map(({ kind, items }) => (
                 <fieldset key={kind} className="mt-3 space-y-2">
                   <legend className="font-medium">
@@ -332,13 +356,16 @@ export function BotPackageImport({
       {preview && phase !== "completed" ? (
         <>
           <BotPackageDocumentView document={preview.document} />
+          {preview.model ? (
+            <p className="break-all text-sm" dir="auto">
+              <Trans>Model</Trans> · {preview.model.provider}/{preview.model.modelId}
+            </p>
+          ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
           {backup ? (
-            <p className="text-sm text-muted-foreground">
-              {preview.document.routines.length
-                ? t`Imported routines start paused.`
-                : t`This import includes supported text only.`}
-            </p>
+            backupNotice ? (
+              <p className="text-sm text-muted-foreground">{backupNotice}</p>
+            ) : null
           ) : (
             <>
               <p className="text-sm text-muted-foreground">
@@ -349,7 +376,7 @@ export function BotPackageImport({
               </p>
             </>
           )}
-          {phase === "review" ? (
+          {phase === "review" && preview.canImport !== false ? (
             <Button disabled={reading} onClick={() => void manager.current?.confirm()}>
               <Trans>Import as new bot</Trans>
             </Button>

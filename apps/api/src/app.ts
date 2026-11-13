@@ -17,6 +17,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SandboxRateLimitError } from "@rakazo/adapter-kit";
 import type {
+  CodexLiveCatalog,
   ComposioProvider,
   ConnectorRegistry,
   DeploymentTransferPeer,
@@ -205,6 +206,7 @@ async function buildApp(
     contextStrategy?: AgentContextStrategy;
     readinessCheck?: () => Promise<unknown>;
     secretStore?: SecretStore;
+    codexCatalog?: CodexLiveCatalog;
     openApiNow?: () => number;
     pluginRead?: PluginRead;
     deploymentTransferPeer?: DeploymentTransferPeer;
@@ -225,6 +227,7 @@ async function buildApp(
     contextStrategy,
     readinessCheck: readinessCheckOverride,
     secretStore: secretStoreOverride,
+    codexCatalog: codexCatalogOverride,
     openApiNow,
     pluginRead,
     deploymentTransferPeer,
@@ -562,7 +565,7 @@ async function buildApp(
   });
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
-  const codexCatalog = new CodexCatalogCache();
+  const codexCatalog = codexCatalogOverride ?? new CodexCatalogCache();
   const executor = createRunExecutor({
     contextStrategy,
     prisma,

@@ -308,6 +308,24 @@ describe("CodexCatalogCache", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("uses settled cache state without fetching on cold or stale reads", async () => {
+    let now = 1_000_000;
+    const fetchImpl = listFetch();
+    const cache = new CodexCatalogCache({ fetch: fetchImpl, now: () => now, waitMs: 50 });
+    const options = { cacheOnly: true };
+
+    expect(await cache.read("user-1", account(), options)).toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const first = await cache.read("user-1", account());
+    expect(first?.map(({ slug }) => slug)).toEqual([SPARK]);
+    now += 16 * 60_000;
+    expect(await cache.read("user-1", account(), options)).toEqual(first);
+    expect(await cache.read("other-user", account(), options)).toBeUndefined();
+    now += 4 * 60 * 60_000;
+    expect(await cache.read("user-1", account(), options)).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("serves stale entries while revalidating in the background", async () => {
     let now = 1_000_000;
     let resolveSecond: ((response: Response) => void) | undefined;

@@ -83,6 +83,8 @@ export type ParsedBotPackage = {
     | "grokbot-bundle/v1";
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
+  backupModel?: AgentBackupDocument["model"];
+  modelOnly?: boolean;
 };
 const record = (value: unknown): value is RecordValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -630,14 +632,23 @@ function backupPackage(
     if (routine) routines.push(routine);
     else addNote("routine", path, agentBackupOmissionReasons.routineSchedule);
   }
-  if (
+  const model = backup.model;
+  const backupModel =
+    model &&
+    model !== "unavailable" &&
+    [model.provider, model.modelId].some(
+      (value) => redactSecretText(value) !== value || /:\/\//.test(value),
+    )
+      ? "unavailable"
+      : model;
+  const modelOnly =
     !instructions.length &&
     !skills.length &&
     !routines.length &&
     !(options.includeMemory && memory.length) &&
     !identity?.name &&
-    !identity?.description
-  )
+    !identity?.description;
+  if (modelOnly && (!backupModel || backupModel === "unavailable"))
     throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({
     format: BOT_PACKAGE_FORMAT,
@@ -654,7 +665,14 @@ function backupPackage(
     memory: options.includeMemory ? memory : [],
   });
   leftOut.push(...safe.leftOut);
-  return { ...safe, sourceFormat: source, leftOut: leftOut.entries, availableMemoryCount };
+  return {
+    ...safe,
+    sourceFormat: source,
+    leftOut: leftOut.entries,
+    availableMemoryCount,
+    backupModel,
+    modelOnly,
+  };
 }
 
 export function parseBotPackageSource(

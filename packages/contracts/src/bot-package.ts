@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { AgentBackupModelSchema } from "./agent-backup-model.js";
 import { AgentBackupOmissionsSchema, isBackupRoutinePath } from "./agent-backup-omissions.js";
 import { BotAvatarValueSchema } from "./bot-avatar.js";
 import {
@@ -99,6 +100,7 @@ export const BotPackageLeftOutSchema = z.object({
     "skill",
     "routine",
     "connection",
+    "model",
     "memory",
     "secrets",
     "unsupported",
@@ -139,6 +141,8 @@ export const BotPackagePreviewSchema = z.object({
   includeMemory: z.boolean(),
   availableMemoryCount: z.number().int().nonnegative(),
   document: BotPackageDocumentSchema,
+  model: AgentBackupModelSchema.optional(),
+  canImport: z.literal(false).optional(),
   leftOut: z.array(BotPackageLeftOutSchema),
 });
 export type BotPackagePreview = z.infer<typeof BotPackagePreviewSchema>;

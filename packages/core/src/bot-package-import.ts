@@ -16,6 +16,7 @@ export type BotPackageImportState = {
   source: string;
   name: string;
   includeMemory: boolean;
+  includeBackupModel: boolean;
   excludedBackupPaths: readonly string[];
   includedBackupRoutines: readonly string[];
   phase: "editing" | "previewing" | "review" | "importing" | "checking" | "unknown" | "completed";
@@ -33,6 +34,7 @@ export const initialBotPackageImport: BotPackageImportState = {
   source: "",
   name: "",
   includeMemory: false,
+  includeBackupModel: false,
   excludedBackupPaths: [],
   includedBackupRoutines: [],
   phase: "editing",
@@ -107,6 +109,7 @@ export function createBotPackageImport(deps: Deps) {
             source: "",
             name: "",
             includeMemory: false,
+            includeBackupModel: false,
             excludedBackupPaths: [],
             includedBackupRoutines: [],
             preview: null,
@@ -168,14 +171,22 @@ export function createBotPackageImport(deps: Deps) {
     }
   }
   return {
-    edit(input: Partial<Pick<BotPackageImportState, "source" | "name" | "includeMemory">>) {
+    edit(
+      input: Partial<
+        Pick<BotPackageImportState, "source" | "name" | "includeMemory" | "includeBackupModel">
+      >,
+    ) {
       if (!active() || state.clientNonce !== null) return;
       const replacingSource = input.source !== undefined;
       const includeMemory = replacingSource ? false : (input.includeMemory ?? state.includeMemory);
+      const includeBackupModel = replacingSource
+        ? false
+        : (input.includeBackupModel ?? state.includeBackupModel);
       if (
         (input.source === undefined || input.source === state.source) &&
         (input.name === undefined || input.name === state.name) &&
         includeMemory === state.includeMemory &&
+        includeBackupModel === state.includeBackupModel &&
         !(
           replacingSource &&
           (state.excludedBackupPaths.length || state.includedBackupRoutines.length)
@@ -187,6 +198,7 @@ export function createBotPackageImport(deps: Deps) {
         ...state,
         ...input,
         includeMemory,
+        includeBackupModel,
         ...(replacingSource ? { excludedBackupPaths: [], includedBackupRoutines: [] } : {}),
         phase: "editing",
         preview: null,
@@ -235,6 +247,7 @@ export function createBotPackageImport(deps: Deps) {
             state.includeMemory,
             state.excludedBackupPaths,
             state.includedBackupRoutines,
+            state.includeBackupModel,
           ),
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
@@ -260,6 +273,7 @@ export function createBotPackageImport(deps: Deps) {
       if (
         !active() ||
         !preview ||
+        preview.canImport === false ||
         (state.phase !== "review" &&
           !(state.phase === "unknown" && state.canRetry && state.receipt === null))
       )
@@ -288,6 +302,7 @@ export function createBotPackageImport(deps: Deps) {
         source: "",
         name: "",
         includeMemory: false,
+        includeBackupModel: false,
         excludedBackupPaths: [],
         includedBackupRoutines: [],
         preview: null,

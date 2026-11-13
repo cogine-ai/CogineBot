@@ -364,6 +364,10 @@ test("agent backup folder previews only selected content and preserves the draft
       writeFile(join(root, "HERMES.md"), instructions),
       writeFile(join(root, "memories", "MEMORY.md"), note),
       writeFile(join(root, "auth.json"), secret),
+      writeFile(
+        join(root, "config.yaml"),
+        "model: { provider: openai, default: gpt-4.1, api_key: local-config-fixture }\n",
+      ),
       writeFile(join(unrelated, "AGENTS.md"), "Ordinary project instructions."),
       writeFile(join(unrelated, "workspace", "README.md"), "Ordinary project workspace."),
     ]);
@@ -418,7 +422,28 @@ test("agent backup folder previews only selected content and preserves the draft
     expect(previews[0]).not.toContain(note);
     expect(previews[0]).not.toContain(secret);
     expect(previews[0]).not.toContain("Ordinary project instructions.");
+    expect(previews[0]).not.toContain("gpt-4.1");
     await captureScreenshot(page, testInfo, "d021-package-folder");
+    await panel.getByText("Choose backup content", { exact: true }).click();
+    const model = panel.getByRole("checkbox", { name: "Model · openai/gpt-4.1", exact: true });
+    await expect(model).not.toBeChecked();
+    await model.click();
+    const instructionsChoice = panel.getByRole("checkbox", { name: "HERMES.md", exact: true });
+    await instructionsChoice.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
+    await expect(
+      panel.getByTestId("bot-package-left-out").getByText("openai/gpt-4.1"),
+    ).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
+      0,
+    );
+    await expect(panel.getByText("This import includes supported text only.")).toHaveCount(0);
+    expect(previews).toHaveLength(2);
+    expect(previews[1]).toContain("gpt-4.1");
+    expect(previews[1]).not.toContain("local-config-fixture");
+    await captureScreenshot(page, testInfo, "d021-package-backup-model");
+    await instructionsChoice.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
     await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
     expect(

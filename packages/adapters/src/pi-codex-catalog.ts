@@ -67,7 +67,7 @@ export interface CodexLiveCatalog {
   read(
     userId: string,
     account: CodexCatalogAccount,
-    opts?: { waitMs?: number },
+    opts?: { waitMs?: number; cacheOnly?: boolean },
   ): Promise<CodexCatalogModel[] | undefined>;
 }
 
@@ -75,11 +75,13 @@ export interface CodexLiveCatalog {
  * Options for a live catalog check. `waitMs` bounds how long a cold read waits
  * for an in-flight fetch (`0` consults only settled cache state while still
  * kicking a background revalidation on a miss — safe inside a transaction).
+ * `cacheOnly` reads settled cache state without triggering or awaiting a refresh.
  * `onExpiredToken` fires when the stored bearer is expired so the caller can
  * kick a detached refresh through the runtime's credential lock.
  */
 export type CodexLiveReadOptions = {
   waitMs?: number;
+  cacheOnly?: boolean;
   onExpiredToken?: () => void;
 };
 
@@ -294,10 +296,11 @@ export class CodexCatalogCache implements CodexLiveCatalog {
   async read(
     userId: string,
     account: CodexCatalogAccount,
-    opts?: { waitMs?: number },
+    opts?: { waitMs?: number; cacheOnly?: boolean },
   ): Promise<CodexCatalogModel[] | undefined> {
     const key = `${userId}:${account.accountId}`;
     const entry = this.entries.get(key);
+    if (opts?.cacheOnly) return entry?.ok ? this.trusted(entry) : undefined;
     if (entry && entry.expiresAt > this.now()) {
       return entry.ok ? this.trusted(entry) : undefined;
     }

@@ -90,6 +90,11 @@ export function NativeBotPackageImport({
   const phase = state?.phase ?? "editing";
   const receipt = state?.receipt;
   const preview = state?.preview;
+  const backupNotice = preview?.document.routines.length
+    ? t("Imported routines start paused.")
+    : preview?.model || preview?.canImport === false
+      ? null
+      : t("This import includes supported text only.");
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
   const backup = fileGroups !== null;
   const excluded = new Set(state?.excludedBackupPaths);
@@ -100,6 +105,7 @@ export function NativeBotPackageImport({
         state?.includeMemory ?? false,
         excluded,
         includedRoutines,
+        state?.includeBackupModel,
       )
     : null;
   const busy = phase === "importing" || phase === "checking";
@@ -109,7 +115,12 @@ export function NativeBotPackageImport({
     phase === "unknown" ||
     receipt?.status === "importing" ||
     receipt?.status === "failed";
-  function edit(input: { source?: string; name?: string; includeMemory?: boolean }) {
+  function edit(input: {
+    source?: string;
+    name?: string;
+    includeMemory?: boolean;
+    includeBackupModel?: boolean;
+  }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(false);
@@ -216,6 +227,19 @@ export function NativeBotPackageImport({
               expanded={backupContentOpen}
               onExpandedChange={setBackupContentOpen}
             >
+              {selection.model ? (
+                <View style={styles.row}>
+                  <Text style={[styles.text, styles.backupPath]}>
+                    {t("Model")} · {selection.model.label}
+                  </Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Model")}
+                    value={selection.model.selected}
+                    disabled={locked || reading}
+                    onValueChange={(includeBackupModel) => edit({ includeBackupModel })}
+                  />
+                </View>
+              ) : null}
               {selection.groups.map(({ kind, items }) => (
                 <View key={kind} style={styles.section}>
                   <Text style={styles.heading}>
@@ -289,13 +313,16 @@ export function NativeBotPackageImport({
       {preview && phase !== "completed" ? (
         <>
           <BotPackageDocumentView document={preview.document} />
+          {preview.model ? (
+            <Text selectable style={styles.text}>
+              {t("Model")} · {preview.model.provider}/{preview.model.modelId}
+            </Text>
+          ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
           {backup ? (
-            <Text style={styles.secondary}>
-              {preview.document.routines.length
-                ? t("Imported routines start paused.")
-                : t("This import includes supported text only.")}
-            </Text>
+            backupNotice ? (
+              <Text style={styles.secondary}>{backupNotice}</Text>
+            ) : null
           ) : (
             <>
               <Text style={styles.secondary}>
@@ -306,7 +333,7 @@ export function NativeBotPackageImport({
               </Text>
             </>
           )}
-          {phase === "review" ? (
+          {phase === "review" && preview.canImport !== false ? (
             <NativeActionButton
               label={t("Import as new bot")}
               disabled={reading}

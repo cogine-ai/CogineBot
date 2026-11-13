@@ -1,3 +1,4 @@
+import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import { gzipSync, strToU8, zipSync } from "fflate";
 import { expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
@@ -25,7 +26,6 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
   );
   const localOnly = [
     folderEntry(".openclaw/.env", "fixture secret", 9_000_000),
-    folderEntry(".openclaw/openclaw.json", "fixture config"),
     folderEntry(".openclaw/cron/jobs.json", "fixture jobs"),
     folderEntry(".openclaw/workspace-reports/HEARTBEAT.md", "fixture runtime"),
     folderEntry(
@@ -35,7 +35,13 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
     folderEntry(".openclaw/SOUL.md", "home persona"),
     folderEntry(".openclaw/skills/report/SKILL.md", "managed Skill"),
   ];
-  const result = JSON.parse(await encodeAgentBackupFolder([soul, skill, ...localOnly], () => true));
+  const config = folderEntry(
+    ".openclaw/openclaw.json",
+    "{ agents: { defaults: { model: 'openai/gpt-4.1' } } }",
+  );
+  const result = JSON.parse(
+    await encodeAgentBackupFolder([soul, skill, config, ...localOnly], () => true),
+  );
   expect(result).toMatchObject({
     source: "openclaw",
     files: [
@@ -45,11 +51,291 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
     ],
     incompleteSkills: ["skills/report/SKILL.md"],
     routineOmissions: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+    model: "unavailable",
   });
+  expect(config.read).toHaveBeenCalledOnce();
   expect(soul.read).toHaveBeenCalledExactlyOnceWith(soul.size + 1);
   expect(skill.read).toHaveBeenCalledOnce();
   for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
 });
+
+it("projects only the Hermes model from a folder or archive and sends it after selection", async () => {
+  const config = [
+    "model:",
+    "  provider: gemini",
+    "  default: gemini-2.5-pro",
+    "  base_url: ''",
+    "  api_key: fixture-value",
+    "mcp_servers:",
+    "  fixture: { url: 'https://example.test/synthetic' }",
+  ].join("\n");
+  const source = await encodeAgentBackupFolder(
+    [
+      folderEntry("profile/HERMES.md", "Review sources."),
+      folderEntry("profile/config.yaml", config),
+    ],
+    () => true,
+  );
+  const archive = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Review sources."),
+      "config.yaml": strToU8(config),
+    }),
+  );
+  const model = { provider: "google", modelId: "gemini-2.5-pro" };
+  for (const backup of [source, archive]) {
+    expect(JSON.parse(backup).model).toEqual(model);
+    expect(backup).not.toContain("fixture-value");
+    expect(backup).not.toContain("example.test");
+    expect(JSON.parse(agentBackupPreview(backup, false).source)).not.toHaveProperty("model");
+    expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source).model).toEqual(model);
+    const modelOnly = agentBackupPreview(backup, false, ["HERMES.md"], [], true);
+    expect(JSON.parse(modelOnly.source)).toMatchObject({ files: [], model });
+  }
+});
+
+it.each([
+  ["model: { default: { provider: openai, model: gpt-4.1 } }", "openai"],
+  ["model: { provider: auto, model: { provider: openai, default: gpt-4.1 } }", "openai"],
+  ["model: { provider: azure, default: { provider: openai, model: gpt-4.1 } }", "azure"],
+  ["model: { name: { provider: openai, model: gpt-4.1 } }", "openai"],
+  ["model: gpt-4.1\nprovider: openai", "openai"],
+  ["model: { provider: ai-gateway, default: gpt-4.1 }", "vercel-ai-gateway", "openai/gpt-4.1"],
+  ["model: { provider: vercel, default: gpt-4.1 }", "vercel-ai-gateway", "openai/gpt-4.1"],
+  ["model: { provider: openai, default: { model: '  ', default: old }, name: gpt-4.1 }", "openai"],
+  ["model: { provider: openai, default: gpt-4.1, model: old, name: older }", "openai"],
+])(
+  "normalizes a supported Hermes model preference (%s)",
+  (config, provider, modelId = "gpt-4.1") => {
+    const backup = encodeAgentBackup(
+      zipSync({
+        "HERMES.md": strToU8("Review sources."),
+        "config.yaml": strToU8(config),
+      }),
+    );
+    expect(JSON.parse(backup).model).toEqual({ provider, modelId });
+  },
+);
+
+it.each([
+  ["anthropic", "anthropic/claude-opus-4.6", "claude-opus-4-6"],
+  ["anthropic", "anthropic:claude-opus-4.6", "claude-opus-4-6"],
+  ["anthropic", "other/claude-opus-4.6", "other/claude-opus-4.6"],
+  ["openai-codex", "openai:gpt-4.1", "gpt-4.1"],
+  ["openrouter", "anthropic/claude-opus-4.6", "anthropic/claude-opus-4.6"],
+  ["openrouter", "claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"],
+  ["openrouter", "gemma4:free", "google/gemma4:free"],
+  ["openrouter", "unknown-model", "unknown-model"],
+  ["openrouter", "other/claude-sonnet-4.6", "other/claude-sonnet-4.6"],
+  ["deepseek", "deepseek:deepseek-chat", "deepseek-flash"],
+  ["deepseek", "deepseek-reasoner", "deepseek-flash"],
+  ["xiaomi", "xiaomi/MiMo-V2.5-Pro", "mimo-v2.5-pro"],
+])("keeps the provider's model naming convention (%s %s)", (provider, value, modelId) => {
+  const config = `model: { provider: ${provider}, default: '${value}' }`;
+  const backup = encodeAgentBackup(
+    zipSync({ "HERMES.md": strToU8("Read this."), "config.yaml": strToU8(config) }),
+  );
+  expect(JSON.parse(backup).model).toEqual({ provider, modelId });
+});
+
+it.each([
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1/' }",
+  "base_url: 'https://openrouter.ai/api/v1'\nmodel: { provider: openrouter, default: anthropic/claude-opus-4.6 }",
+])("projects a saved canonical endpoint without copying the address (%s)", (config) => {
+  const backup = encodeAgentBackup(
+    zipSync({ "HERMES.md": strToU8("Read this."), "config.yaml": strToU8(config) }),
+  );
+  expect(JSON.parse(backup).model).toEqual({
+    provider: "openrouter",
+    modelId: "anthropic/claude-opus-4.6",
+  });
+  expect(backup).not.toContain("openrouter.ai");
+});
+
+it.each([
+  ["openai-api", "https://api.openai.com/v1", "gpt-4.1", "openai"],
+  [
+    "ai-gateway",
+    "https://ai-gateway.vercel.sh/v1",
+    "anthropic/claude-sonnet-4.6",
+    "vercel-ai-gateway",
+  ],
+  ["opencode-zen", "https://opencode.ai/zen/v1", "claude-sonnet-4-6", "opencode"],
+  ["opencode-go", "https://opencode.ai/zen/go/v1", "glm-5.2", "opencode-go"],
+  ["openai-codex", "https://chatgpt.com/backend-api/codex", "gpt-5.3-codex-spark", "openai-codex"],
+  ["gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-pro", "google"],
+  ["kimi-coding", "https://api.kimi.com/coding", "kimi-for-coding", "kimi-coding"],
+  ["kimi-coding", "https://api.moonshot.ai/v1", "kimi-k2.6", "moonshotai"],
+  ["kimi-coding-cn", "https://api.moonshot.cn/v1", "kimi-k2.6", "moonshotai-cn"],
+  ["zai", "https://api.z.ai/api/coding/paas/v4", "glm-5.2", "zai"],
+  ["zai", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.3", "zai-coding-cn"],
+  ["deepseek", "https://api.deepseek.com/v1", "deepseek-flash", "deepseek"],
+  ["minimax", "https://api.minimax.io/anthropic", "MiniMax-M2.7", "minimax"],
+  ["minimax-cn", "https://api.minimaxi.com/anthropic", "MiniMax-M2.7", "minimax-cn"],
+  ["huggingface", "https://router.huggingface.co/v1", "openai/gpt-oss-20b", "huggingface"],
+  ["nvidia", "https://integrate.api.nvidia.com/v1", "nvidia/nemotron", "nvidia"],
+  ["xai", "https://api.x.ai/v1", "grok-4", "xai"],
+  ["xiaomi", "https://api.xiaomimimo.com/v1", "mimo-v2.5-pro", "xiaomi"],
+])("uses the configured built-in account family (%s %s)", (provider, endpoint, modelId, target) => {
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(
+        `model: { provider: ${provider}, default: ${modelId}, base_url: '${endpoint}' }`,
+      ),
+    }),
+  );
+  expect(JSON.parse(backup).model).toEqual({ provider: target, modelId });
+  expect(backup).not.toContain(endpoint);
+});
+
+it("uses flat model IDs and preserves the two OpenCode plans", () => {
+  for (const [provider, modelId, target, expected] of [
+    ["opencode-zen", "anthropic/claude-sonnet-4.6", "opencode", "claude-sonnet-4-6"],
+    ["go", "z-ai/glm-5.2", "opencode-go", "glm-5.2"],
+  ]) {
+    const backup = encodeAgentBackup(
+      zipSync({
+        "HERMES.md": strToU8("Read this."),
+        "config.yaml": strToU8(`model: { provider: ${provider}, default: '${modelId}' }`),
+      }),
+    );
+    expect(JSON.parse(backup).model).toEqual({ provider: target, modelId: expected });
+  }
+});
+
+it("omits a credential-shaped model ID before normalization", () => {
+  const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig";
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(`model: { provider: anthropic, default: 'anthropic:${token}' }`),
+    }),
+  );
+  expect(JSON.parse(backup).model).toBe("unavailable");
+  expect(backup).not.toContain(token);
+  expect(backup).not.toContain(token.replaceAll(".", "-"));
+});
+
+it("omits a model ID that becomes credential-shaped after normalization", () => {
+  const candidate = "SK-FIXTURENOTACREDENTIAL123";
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(`model: { provider: deepseek, default: '${candidate}' }`),
+    }),
+  );
+  expect(JSON.parse(backup).model).toBe("unavailable");
+  expect(backup).not.toContain(candidate);
+  expect(backup).not.toContain(candidate.toLowerCase());
+});
+
+it("accepts a declared workspace containing only an attributable model preference", () => {
+  const model = { provider: "openai", modelId: "gpt-4.1" };
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: { stateDir: "/state", workspaceDirs: ["/state/workspace"] },
+      assets: [{ kind: "state", archivePath: "state" }],
+    }),
+    "backup/state/openclaw.json": JSON.stringify({
+      agents: { entries: { main: { workspace: "/state/workspace", model: "openai/gpt-4.1" } } },
+    }),
+    "backup/state/workspace/notes.txt": "Unsupported file.",
+    "backup/state/skills/reports/SKILL.md": "Managed Skill outside the selected workspace.",
+  };
+  const backup = encodeAgentBackup(tar(files));
+  expect(JSON.parse(backup)).toMatchObject({ files: [], model });
+  expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source)).toMatchObject({
+    files: [],
+    model,
+  });
+  expect(backup).not.toContain("Managed Skill");
+  expect(() => encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": "{}" }))).toThrow(
+    "The backup could not be read.",
+  );
+  expect(() =>
+    encodeAgentBackup(tar({ ...files, "backup/state/agents/main/agent/models.json": "{}" })),
+  ).toThrow("The backup could not be read.");
+});
+
+it("reports an unavailable declared active configuration without using the home fallback", () => {
+  const root = "backup";
+  const value = encodeAgentBackup(
+    tar({
+      [`${root}/manifest.json`]: JSON.stringify({
+        schemaVersion: 1,
+        archiveRoot: root,
+        paths: {
+          stateDir: "/state",
+          configPath: "/external/openclaw.json",
+          workspaceDirs: ["/state/workspace"],
+        },
+        assets: [
+          { kind: "state", archivePath: "state" },
+          {
+            kind: "config",
+            archivePath: "external/openclaw.json",
+            sourcePath: "/external/openclaw.json",
+          },
+        ],
+      }),
+      [`${root}/external/openclaw.json`]: "x".repeat(400_001),
+      [`${root}/state/openclaw.json`]: JSON.stringify({
+        agents: { defaults: { model: "openai/gpt-4.1" } },
+      }),
+      [`${root}/state/workspace/SOUL.md`]: "Review the source.",
+    }),
+  );
+  expect(JSON.parse(value)).toMatchObject({ model: "unavailable", files: [{ path: "SOUL.md" }] });
+  expect(value).not.toContain("gpt-4.1");
+});
+
+it.each([
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6 }\nproviders: { openrouter: { base_url: 'https://openrouter.ai/api/v1' } }",
+  "model: { provider: zai, default: glm-5.2, base_url: 'https://api.z.ai/api/paas/v4' }",
+  "model: { provider: opencode-zen, default: claude-sonnet-4-6, base_url: 'https://opencode.ai/zen/go/v1' }",
+  "model: { provider: vercel, default: claude-sonnet-4.6, base_url: 'https://ai-gateway.vercel.sh/v1?key=fixture' }",
+  "model: { provider: ai-gateway, default: claude-sonnet-4.6 }\nproviders: { vercel-ai-gateway: { api: 'https://example.test' } }",
+  "model: { provider: zai, default: glm-5.2 }",
+  "model: { provider: kimi-coding, default: kimi-for-coding }",
+  "model: { provider: kimi-coding-cn, default: kimi-k2.6 }",
+  "model: { provider: kimi-coding, default: kimi-k2.6, base_url: 'https://api.moonshot.ai/v1' }\nbase_url: 'https://api.kimi.com/coding'",
+  "model: { provider: kimi-coding, default: kimi-k2.6, base_url: 'https://api.moonshot.ai/v1' }\nproviders: { moonshotai: { api: 'https://example.test' } }",
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/other' }",
+  "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1?token=fixture' }",
+  "model: { provider: anthropic, default: claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1' }",
+  "provider: openai\nmodel: { provider: '   ', default: gpt-4.1 }",
+  "provider: openai\nmodel: { provider: 123, default: gpt-4.1 }",
+  "model: { provider: 123, default: { provider: openai, model: gpt-4.1 } }",
+  "model: { provider: openai, default: '   ', model: gpt-4.1 }",
+  "model: { provider: openai, default: 123, model: gpt-4.1 }",
+  "model: { provider: openai, default: { model: 123, default: gpt-4.1 } }",
+  "model: { default: { provider: openai, model: gpt-4.1, api_base: 'https://example.test' } }",
+  "model: { default: { provider: openai, model: gpt-4.1 } }\nproviders: { openai: { api: 'https://example.test' } }",
+  "model: { provider: openai, default: gpt-4.1, base_url: 'https://example.test/v1' }",
+  "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { base_url: 'https://example.test' } }",
+  "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { api: 'https://example.test' } }",
+  "model: { provider: openai, default: gpt-4.1 }\napi_base: 'https://example.test'",
+  "model: { provider: openai, default: gpt-4.1 }\nmodel_aliases: { gpt-4.1: { model: other } }",
+  "model: { provider: openai, default: 'https://example.test/unknown' }",
+  "model: { provider: openai, provider: anthropic, default: gpt-4.1 }",
+  "model: &cycle { provider: openai, default: gpt-4.1, child: *cycle }",
+])(
+  "reports nonportable or malformed Hermes config without transmitting it (%s)",
+  async (config) => {
+    const backup = await encodeAgentBackupFolder(
+      [
+        folderEntry("profile/HERMES.md", "Review sources."),
+        folderEntry("profile/config.yaml", config),
+      ],
+      () => true,
+    );
+    expect(JSON.parse(backup).model).toBe("unavailable");
+    expect(backup).not.toContain("example.test");
+  },
+);
 
 it("reads Hermes notes and routines and keeps customized Skills even when names are listed", async () => {
   const customized = folderEntry(
@@ -110,6 +396,28 @@ it("reads Hermes notes and routines and keeps customized Skills even when names 
   expect(jobs.read).toHaveBeenCalledOnce();
   expect(customized.read).toHaveBeenCalledOnce();
   expect(renamed.read).toHaveBeenCalledOnce();
+});
+
+it("preserves a boundary-sized folder when optional model metadata does not fit", async () => {
+  const soul = folderEntry("profile/HERMES.md", "Review sources.");
+  const escapedNotes = Array.from({ length: 6 }, (_, index) =>
+    folderEntry(`profile/skills/review-${index}/SKILL.md`, "\u0001".repeat(100_000)),
+  );
+  const remainder = folderEntry("profile/skills/remainder/SKILL.md");
+  const bytes = (value: string) => new TextEncoder().encode(value).length;
+  const empty = await encodeAgentBackupFolder([soul, ...escapedNotes, remainder], () => true);
+  const missing = BOT_PACKAGE_MAX_BYTES - bytes(empty);
+  const end = folderEntry(
+    remainder.path,
+    "\u0001".repeat(Math.floor(missing / 6)) + "x".repeat(missing % 6),
+  );
+  const config = folderEntry(
+    "profile/config.yaml",
+    "model: { provider: openai-api, default: gpt-4.1 }",
+  );
+  const backup = await encodeAgentBackupFolder([soul, ...escapedNotes, end, config], () => true);
+  expect(bytes(backup)).toBe(BOT_PACKAGE_MAX_BYTES);
+  expect(JSON.parse(backup)).not.toHaveProperty("model");
 });
 
 it("offers Hermes content even if the optional routine store exceeds the read limit", async () => {
@@ -383,7 +691,17 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
     }),
     "backup/state/workspace-research/SOUL.md": "Review the reports.",
     "backup/state/openclaw.json": JSON.stringify({
-      agents: { list: [{ id: "research", workspace: "/state/workspace-research" }] },
+      agents: {
+        defaults: { model: "anthropic/claude-sonnet-4-6" },
+        list: [
+          {
+            id: " research ",
+            workspace: "/state/workspace-research",
+            model: { primary: "openai/gpt-4.1" },
+          },
+          { id: "other", workspace: "/state/other", model: "xai/grok-4" },
+        ],
+      },
       unrelated: "Private configuration fixture.",
     }),
     "backup/state/cron/jobs.json": JSON.stringify({
@@ -411,6 +729,18 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
     }),
   };
   const source = encodeAgentBackup(tar(files));
+  expect(JSON.parse(source).model).toEqual({ provider: "openai", modelId: "gpt-4.1" });
+  const overridden = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/state/agents/research/agent/models.json":
+        '{"providers":{"openai":{"baseUrl":"https://example.test"}}}',
+    }),
+  );
+  expect(JSON.parse(overridden).model).toBe("unavailable");
+  expect(overridden).not.toContain("example.test");
+  expect(source).not.toContain("claude-sonnet");
+  expect(source).not.toContain("grok-4");
   expect(source).not.toContain("Other agent text.");
   expect(source).not.toContain("privateHistory");
   expect(source).not.toContain("Private configuration fixture.");
