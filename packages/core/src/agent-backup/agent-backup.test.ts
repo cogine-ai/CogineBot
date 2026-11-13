@@ -5,6 +5,7 @@ import { parseSkillMd } from "../agent-skill.js";
 import {
   agentBackupFileGroups,
   agentBackupPreview,
+  agentBackupSelectableGroups,
   encodeAgentBackup,
   readBotImportBytes,
   renameBackupSkill,
@@ -57,8 +58,398 @@ it("recognizes wrapped backup JSON and lists missing Skill dependencies separate
     instructions: ["SOUL.md"],
     skills: [],
     memory: [],
+    routines: [],
     unavailable: [{ path: "skills/review/SKILL.md", reason: "missingSkillFiles" }],
   });
+});
+
+it("projects and selects only jobs bound to the selected OpenClaw workspace", () => {
+  const definition = {
+    agentId: "research",
+    name: "Review reports",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * 1-5", tz: "Asia/Taipei" },
+    payload: { kind: "agentTurn", message: "Review today's reports." },
+    delivery: { mode: "none" },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    state: { privateHistory: "Do not send the job's state." },
+  };
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: {
+        stateDir: "/state",
+        configPath: "/state/openclaw.json",
+        workspaceDirs: ["/state/workspace-research"],
+      },
+      assets: [{ kind: "state", archivePath: "state" }],
+    }),
+    "backup/state/workspace-research/SOUL.md": "Review the reports.",
+    "backup/state/openclaw.json": JSON.stringify({
+      agents: { list: [{ id: "research", workspace: "/state/workspace-research" }] },
+      unrelated: "Private configuration fixture.",
+    }),
+    "backup/state/cron/jobs.json": JSON.stringify({
+      jobs: [
+        definition,
+        {
+          ...definition,
+          agentId: "main",
+          payload: { ...definition.payload, message: "Other agent text." },
+        },
+        { ...definition, agentId: undefined },
+        { ...definition, payload: { ...definition.payload, toolsAllow: [] } },
+        { ...definition, schedule: { kind: "every", everyMs: 60_000 } },
+        { ...definition, payload: { ...definition.payload, message: "Use @Weekly review." } },
+        { ...definition, payload: { ...definition.payload, message: "Use skill: Review" } },
+        { ...definition, schedule: { ...definition.schedule, expr: "0 * * * *" } },
+        { ...definition, schedule: { ...definition.schedule, expr: "0 * * * *", staggerMs: 0 } },
+        { ...definition, delivery: undefined },
+        { ...definition, sessionTarget: undefined },
+        {
+          ...definition,
+          schedule: { ...definition.schedule, expr: "30 2 * * *", tz: "Europe/Oslo" },
+        },
+      ],
+    }),
+  };
+  const source = encodeAgentBackup(tar(files));
+  expect(source).not.toContain("Other agent text.");
+  expect(source).not.toContain("privateHistory");
+  expect(source).not.toContain("Private configuration fixture.");
+  const groups = agentBackupFileGroups(source);
+  expect(groups?.routines).toMatchObject([
+    { path: "cron/routine-1.json", name: "Review reports" },
+    { path: "cron/routine-9.json", name: "Review reports" },
+  ]);
+  expect(groups?.unavailable).toEqual(
+    expect.arrayContaining([
+      { path: "cron/routine-10.json", reason: "routineSchedule" },
+      { path: "cron/routine-11.json", reason: "routineSchedule" },
+      { path: "cron/routine-12.json", reason: "routineSchedule" },
+      { path: "cron/routine-3.json", reason: "routineOwner" },
+      { path: "cron/routine-4.json", reason: "routineSchedule" },
+      { path: "cron/routine-5.json", reason: "routineSchedule" },
+      { path: "cron/routine-6.json", reason: "routineSchedule" },
+      { path: "cron/routine-7.json", reason: "routineSchedule" },
+      { path: "cron/routine-8.json", reason: "routineSchedule" },
+    ]),
+  );
+  const sent = agentBackupPreview(source, false, ["cron/routine-1.json"]);
+  expect(sent.source).not.toContain("Review today's reports.");
+  expect(sent.backupOmissions).toEqual(expect.arrayContaining(groups!.unavailable));
+  const chosen = agentBackupPreview(source, false, [], ["cron/routine-1.json"]);
+  expect(chosen.source).not.toContain("cron/routine-1.json");
+  expect(chosen.backupRoutines).toEqual([
+    {
+      path: "cron/routine-1.json",
+      routine: {
+        name: "Review reports",
+        prompt: "Review today's reports.",
+        crons: ["0 9 * * 1-5"],
+        timezone: "Asia/Taipei",
+      },
+    },
+  ]);
+});
+
+it("does not infer a schedule owner from an unrelated workspace's name", () => {
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: {
+        stateDir: "/state",
+        configPath: "/linked/openclaw.json",
+        configSourcePath: "/configuration/openclaw.json",
+        workspaceDirs: ["/external/workspace-main"],
+      },
+      assets: [
+        { kind: "state", archivePath: "state" },
+        { kind: "workspace", archivePath: "external", sourcePath: "/external/workspace-main" },
+        {
+          kind: "config",
+          archivePath: "config/openclaw.json",
+          sourcePath: "/configuration/openclaw.json",
+        },
+      ],
+    }),
+    "backup/external/SOUL.md": "Review the reports.",
+    "backup/config/openclaw.json":
+      "{ agents: { entries: { research: { workspace: '/external/workspace-main' } } } }",
+    "backup/state/cron/jobs.json": JSON.stringify({
+      jobs: [
+        {
+          agentId: "main",
+          name: "Wrong owner",
+          schedule: { kind: "cron", expr: "30 9 * * *", tz: "UTC" },
+          payload: { kind: "agentTurn", message: "Other agent text." },
+          sessionTarget: "isolated",
+          delivery: { mode: "none" },
+        },
+        {
+          agentId: "research",
+          name: "Correct owner",
+          schedule: { kind: "cron", expr: "30 9 * * *", tz: "UTC" },
+          payload: { kind: "agentTurn", message: "Review the reports." },
+          sessionTarget: "isolated",
+          delivery: { mode: "none" },
+        },
+      ],
+    }),
+  };
+  const source = encodeAgentBackup(tar(files));
+  expect(source).not.toContain("Other agent text.");
+  expect(agentBackupFileGroups(source)?.routines).toMatchObject([
+    { path: "cron/routine-2.json", name: "Correct owner" },
+  ]);
+
+  const customConfig = encodeAgentBackup(
+    tar({
+      "backup/manifest.json": files["backup/manifest.json"].replaceAll(
+        "openclaw.json",
+        "custom.json",
+      ),
+      "backup/config/custom.json": files["backup/config/openclaw.json"],
+      "backup/external/SOUL.md": files["backup/external/SOUL.md"],
+      "backup/state/cron/jobs.json": files["backup/state/cron/jobs.json"],
+    }),
+  );
+  expect(agentBackupFileGroups(customConfig)).toMatchObject({
+    instructions: ["SOUL.md"],
+    routines: [],
+    unavailable: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+  });
+
+  const unresolvedOwner = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/config/openclaw.json":
+        "{ agents: { entries: { main: {}, research: { workspace: '/external/workspace-main' } } } }",
+    }),
+  );
+  expect(agentBackupFileGroups(unresolvedOwner)).toMatchObject({
+    instructions: ["SOUL.md"],
+    routines: [],
+    unavailable: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+  });
+
+  const sharedWorkspace = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/config/openclaw.json":
+        "{ agents: { entries: { main: { workspace: '/external//workspace-main ' }, research: { workspace: '/external/workspace-main' } } } }",
+    }),
+  );
+  expect(agentBackupFileGroups(sharedWorkspace)).toMatchObject({
+    instructions: ["SOUL.md"],
+    routines: [],
+    unavailable: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+  });
+
+  const externalInclude = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/manifest.json": files["backup/manifest.json"].replace(
+        "/configuration/openclaw.json",
+        "/state/openclaw.json",
+      ),
+      "backup/state/openclaw.json": '{ $include: "/configuration/openclaw.json" }',
+    }),
+  );
+  expect(agentBackupFileGroups(externalInclude)).toMatchObject({
+    instructions: ["SOUL.md"],
+    routines: [],
+    unavailable: [{ path: "cron/jobs.json", reason: "routineOwner" }],
+  });
+});
+
+it("opens a declared workspace with only a portable routine", () => {
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: {
+        stateDir: "/state",
+        configPath: "/state/openclaw.json",
+        workspaceDirs: ["/state/workspace"],
+      },
+      assets: [{ kind: "state", archivePath: "state" }],
+    }),
+    "backup/state/openclaw.json": JSON.stringify({
+      agents: { entries: { main: { workspace: "/state/workspace" } } },
+    }),
+    "backup/state/workspace/notes.txt": "Unsupported workspace note.",
+    "backup/state/SOUL.md": "Text outside the chosen workspace.",
+    "backup/state/cron/jobs.json": JSON.stringify({
+      jobs: [
+        {
+          agentId: "main",
+          name: "Review reports",
+          schedule: { kind: "cron", expr: "30 9 * * *", tz: "UTC" },
+          payload: { kind: "agentTurn", message: "Review the reports." },
+          sessionTarget: "isolated",
+          delivery: { mode: "none" },
+        },
+      ],
+    }),
+  };
+  const source = encodeAgentBackup(tar(files));
+  expect(source).not.toContain("Text outside the chosen workspace.");
+  expect(source).not.toContain("Unsupported workspace note.");
+  expect(agentBackupFileGroups(source)).toMatchObject({
+    instructions: [],
+    routines: [{ path: "cron/routine-1.json", name: "Review reports" }],
+  });
+  const preview = agentBackupPreview(source, false, [], ["cron/routine-1.json"]);
+  expect(JSON.parse(preview.source).files).toEqual([]);
+  expect(preview.backupRoutines).toHaveLength(1);
+
+  const database = "backup/state/state/openclaw.sqlite";
+  const databaseContents = "Private state database fixture.";
+  const managedSkill = "backup/state/skills/reports/SKILL.md";
+  const managedSkillContents =
+    "---\nname: reports\ndescription: Review reports.\n---\nSummarize the supplied report.";
+  const stateDatabaseBackup = encodeAgentBackup(
+    tar({ ...files, [database]: databaseContents, [managedSkill]: managedSkillContents }),
+  );
+  expect(stateDatabaseBackup).not.toContain(databaseContents);
+  expect(stateDatabaseBackup).not.toContain("Review the reports.");
+  const databaseGroups = agentBackupFileGroups(stateDatabaseBackup)!;
+  expect(databaseGroups).toMatchObject({
+    instructions: [],
+    skills: [],
+    routines: [],
+    unavailable: [{ path: "state/openclaw.sqlite", reason: "routineSchedule" }],
+  });
+  expect(
+    agentBackupSelectableGroups(databaseGroups, false, new Set(), new Set()).hasSelection,
+  ).toBe(false);
+  const mixedDatabaseBackup = encodeAgentBackup(
+    tar({
+      ...files,
+      [database]: databaseContents,
+      "backup/state/workspace/SOUL.md": "Workspace instructions.",
+    }),
+  );
+  const mixedPreview = agentBackupPreview(mixedDatabaseBackup, false);
+  expect(mixedPreview.backupOmissions).toEqual(databaseGroups.unavailable);
+  expect(mixedPreview.backupRoutines).toBeUndefined();
+  expect(mixedPreview.source).not.toContain(databaseContents);
+
+  const withManagedSkill = encodeAgentBackup(
+    tar({ ...files, [managedSkill]: managedSkillContents }),
+  );
+  expect(agentBackupFileGroups(withManagedSkill)).toMatchObject({
+    instructions: [],
+    skills: ["skills/reports/SKILL.md"],
+    routines: [{ path: "cron/routine-1.json", name: "Review reports" }],
+  });
+  for (const config of [
+    { agents: { defaults: { workspace: "/state/workspace" }, entries: { main: {} } } },
+    { agents: { defaults: { workspace: "/state/workspace" } } },
+  ]) {
+    const inherited = encodeAgentBackup(
+      tar({ ...files, "backup/state/openclaw.json": JSON.stringify(config) }),
+    );
+    expect(agentBackupFileGroups(inherited)?.routines).toMatchObject([
+      { path: "cron/routine-1.json", name: "Review reports" },
+    ]);
+  }
+  for (const config of [
+    {},
+    { agents: { defaults: { workspace: "/state/workspace" }, entries: { main: null } } },
+    { agents: { defaults: { workspace: "/state/workspace" }, ownership: "explicit" } },
+  ]) {
+    expect(() =>
+      encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": JSON.stringify(config) })),
+    ).toThrow("could not be read");
+  }
+});
+
+it("keeps supported text usable if the optional job store cannot be read", () => {
+  const source = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Review assistant."),
+      "cron/jobs.json": new Uint8Array([255]),
+    }),
+  );
+  expect(agentBackupFileGroups(source)).toMatchObject({
+    instructions: ["HERMES.md"],
+    routines: [],
+    unavailable: [{ path: "cron/jobs.json", reason: "routineSchedule" }],
+  });
+});
+
+it("projects a Hermes cron with a source timezone and omits finite or restricted jobs", () => {
+  const job = {
+    name: "Daily review",
+    prompt: "Review the supplied notes.",
+    schedule: { kind: "cron", expr: "0 9 * * *", display: "Every day at 9" },
+    timezone: "Asia/Taipei",
+    repeat: { times: null, completed: 1 },
+    enabled_toolsets: null,
+    deliver: "local",
+  };
+  const source = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Review assistant."),
+      "cron/jobs.json": strToU8(
+        JSON.stringify({
+          jobs: [
+            job,
+            { ...job, enabled_toolsets: [] },
+            { ...job, repeat: { times: 3 } },
+            { ...job, timezone: undefined },
+            { ...job, script: "test-script" },
+          ],
+        }),
+      ),
+    }),
+  );
+  expect(agentBackupFileGroups(source)?.routines).toMatchObject([
+    { path: "cron/routine-1.json", name: "Daily review" },
+  ]);
+  expect(agentBackupFileGroups(source)?.unavailable).toHaveLength(4);
+});
+
+it("distinguishes backup routines with the same name and schedule", () => {
+  const routine = {
+    name: "Review",
+    prompt: "Review the notes.",
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+  };
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "cron/routine-1.json", content: JSON.stringify(routine) },
+      {
+        path: "cron/routine-2.json",
+        content: JSON.stringify({
+          ...routine,
+          prompt: "Review the reports.",
+          crons: ["0  9 * * *"],
+        }),
+      },
+    ],
+  });
+  const files = agentBackupFileGroups(source)!;
+  const selected = new Set(["cron/routine-2.json"]);
+  const { groups } = agentBackupSelectableGroups(files, false, new Set(), selected);
+  expect(groups[0]?.items).toMatchObject([
+    { label: "Review · 0 9 * * * · UTC · #1", selected: false },
+    { label: "Review · 0 9 * * * · UTC · #2", selected: true },
+  ]);
+  expect(agentBackupPreview(source, false, [], [...selected]).backupRoutines).toEqual([
+    {
+      path: "cron/routine-2.json",
+      routine: { ...routine, prompt: "Review the reports.", crons: ["0  9 * * *"] },
+    },
+  ]);
 });
 
 it("counts every valid locally omitted note without applying the saved-memory limit", () => {

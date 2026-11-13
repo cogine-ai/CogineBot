@@ -7670,3 +7670,15 @@ msgstr "此 Skill 需要附属文件。"
 #: src/components/BotPackageImport.tsx
 msgid "This runtime file is not used."
 msgstr "此运行时文件不会使用。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This schedule needs manual setup."
+msgstr "此安排需要手动设置。"
+
+#: src/components/BotPackageImport.tsx
+msgid "The schedule owner could not be confirmed."
+msgstr "无法确认此安排的归属。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported routines start paused."
+msgstr "导入的例行任务默认暂停。"

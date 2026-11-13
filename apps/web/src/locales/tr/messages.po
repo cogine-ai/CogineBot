@@ -7515,3 +7515,15 @@ msgstr "Bu beceri ek dosyalar gerektirir."
 #: src/components/BotPackageImport.tsx
 msgid "This runtime file is not used."
 msgstr "Bu çalışma zamanı dosyası kullanılmaz."
+
+#: src/components/BotPackageImport.tsx
+msgid "This schedule needs manual setup."
+msgstr "Bu zamanlama elle ayarlanmalıdır."
+
+#: src/components/BotPackageImport.tsx
+msgid "The schedule owner could not be confirmed."
+msgstr "Zamanlamanın sahibi doğrulanamadı."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported routines start paused."
+msgstr "İçe aktarılan rutinler duraklatılmış olarak başlar."

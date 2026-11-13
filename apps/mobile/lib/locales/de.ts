@@ -1364,6 +1364,10 @@ export const DE_MESSAGES: Record<string, string> = {
     "Diese Identitätsdatei enthält keine unterstützten Felder.",
   "This Skill needs additional files.": "Dieser Skill benötigt zusätzliche Dateien.",
   "This runtime file is not used.": "Diese Laufzeitdatei wird nicht verwendet.",
+  "This schedule needs manual setup.": "Dieser Zeitplan muss manuell eingerichtet werden.",
+  "The schedule owner could not be confirmed.":
+    "Der Eigentümer des Zeitplans konnte nicht bestätigt werden.",
+  "Imported routines start paused.": "Importierte Routinen sind zunächst pausiert.",
   "Unavailable backup files": "Nicht verfügbare Sicherungsdateien",
   "Agent backup selected": "Agent-Sicherung ausgewählt",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

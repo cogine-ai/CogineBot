@@ -209,6 +209,35 @@ describe("bot package import review", () => {
     );
   });
 
+  it("requires explicit routine selection and refuses a preview that dropped it", async () => {
+    const f = fixture();
+    const routine = {
+      name: "Morning",
+      prompt: "Review the reports.",
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+    };
+    const path = "cron/routine-1.json";
+    const source = JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [
+        { path: "HERMES.md", content: "Review assistant." },
+        { path, content: JSON.stringify(routine) },
+      ],
+    });
+    await review(f, source);
+    expect(f.deps.preview.mock.lastCall?.[0].backupRoutines).toBeUndefined();
+    f.manager.setBackupFileIncluded(path, true);
+    await f.manager.preview();
+    expect(f.deps.preview.mock.lastCall?.[0].backupRoutines).toEqual([{ path, routine }]);
+    expect(f.state.phase).toBe("editing");
+    await f.manager.confirm();
+    expect(f.deps.import).not.toHaveBeenCalled();
+    f.manager.edit({ source });
+    expect(f.state.includedBackupRoutines).toEqual([]);
+  });
+
   it("refuses malformed backup memory before the default preview request", async () => {
     const f = fixture();
     f.manager.edit({

@@ -1,5 +1,9 @@
 import * as z from "zod";
-import { AGENT_BACKUP_MAX_FILES, isAgentBackupPath } from "./agent-backup-omissions.js";
+import {
+  AGENT_BACKUP_MAX_FILES,
+  AgentBackupOmissionsSchema,
+  isAgentBackupPath,
+} from "./agent-backup-omissions.js";
 
 export * from "./agent-backup-omissions.js";
 
@@ -32,6 +36,7 @@ export const AgentBackupDocumentSchema = z
       .array(z.string().refine(isAgentBackupPath))
       .max(AGENT_BACKUP_MAX_FILES)
       .default([]),
+    routineOmissions: AgentBackupOmissionsSchema.optional(),
   })
   .superRefine(({ files, excludedMemoryCount }, ctx) => {
     const paths = new Set(files.map(({ path }) => path.toLowerCase()));
@@ -39,7 +44,6 @@ export const AgentBackupDocumentSchema = z
     const bytes = files.reduce((sum, { content }) => sum + botPackageUtf8Bytes(content), 0);
     if (
       files.length + excludedMemoryCount > AGENT_BACKUP_MAX_FILES ||
-      (files.length === 0 && excludedMemoryCount === 0) ||
       paths.size !== files.length ||
       chars > AGENT_BACKUP_MAX_TOTAL_LENGTH ||
       bytes > BOT_PACKAGE_MAX_BYTES

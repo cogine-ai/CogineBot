@@ -7571,3 +7571,15 @@ msgstr "Dieser Skill benötigt zusätzliche Dateien."
 #: src/components/BotPackageImport.tsx
 msgid "This runtime file is not used."
 msgstr "Diese Laufzeitdatei wird nicht verwendet."
+
+#: src/components/BotPackageImport.tsx
+msgid "This schedule needs manual setup."
+msgstr "Dieser Zeitplan muss manuell eingerichtet werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "The schedule owner could not be confirmed."
+msgstr "Der Eigentümer des Zeitplans konnte nicht bestätigt werden."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported routines start paused."
+msgstr "Importierte Routinen sind zunächst pausiert."

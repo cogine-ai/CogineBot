@@ -5,14 +5,19 @@ import type {
   BotPackageReceipt,
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
-import { BOT_PACKAGE_MAX_BYTES, botPackageUtf8Bytes } from "@rakazo/contracts";
-import { agentBackupPreview } from "./agent-backup/index.js";
+import {
+  BOT_PACKAGE_MAX_BYTES,
+  BOT_PACKAGE_MAX_ROUTINES,
+  botPackageUtf8Bytes,
+} from "@rakazo/contracts";
+import { agentBackupPreview, isBackupRoutine } from "./agent-backup/index.js";
 
 export type BotPackageImportState = {
   source: string;
   name: string;
   includeMemory: boolean;
   excludedBackupPaths: readonly string[];
+  includedBackupRoutines: readonly string[];
   phase: "editing" | "previewing" | "review" | "importing" | "checking" | "unknown" | "completed";
   preview: BotPackagePreview | null;
   receipt: BotPackageReceipt | null;
@@ -29,6 +34,7 @@ export const initialBotPackageImport: BotPackageImportState = {
   name: "",
   includeMemory: false,
   excludedBackupPaths: [],
+  includedBackupRoutines: [],
   phase: "editing",
   preview: null,
   receipt: null,
@@ -97,7 +103,14 @@ export function createBotPackageImport(deps: Deps) {
     publish({
       ...state,
       ...(done
-        ? { source: "", name: "", includeMemory: false, excludedBackupPaths: [], preview: null }
+        ? {
+            source: "",
+            name: "",
+            includeMemory: false,
+            excludedBackupPaths: [],
+            includedBackupRoutines: [],
+            preview: null,
+          }
         : {}),
       phase: done ? "completed" : "unknown",
       receipt,
@@ -163,7 +176,10 @@ export function createBotPackageImport(deps: Deps) {
         (input.source === undefined || input.source === state.source) &&
         (input.name === undefined || input.name === state.name) &&
         includeMemory === state.includeMemory &&
-        !(replacingSource && state.excludedBackupPaths.length)
+        !(
+          replacingSource &&
+          (state.excludedBackupPaths.length || state.includedBackupRoutines.length)
+        )
       )
         return;
       invalidate();
@@ -171,7 +187,7 @@ export function createBotPackageImport(deps: Deps) {
         ...state,
         ...input,
         includeMemory,
-        ...(replacingSource ? { excludedBackupPaths: [] } : {}),
+        ...(replacingSource ? { excludedBackupPaths: [], includedBackupRoutines: [] } : {}),
         phase: "editing",
         preview: null,
         error: null,
@@ -180,14 +196,19 @@ export function createBotPackageImport(deps: Deps) {
     },
     setBackupFileIncluded(path: string, included: boolean) {
       if (!active() || state.clientNonce !== null) return;
-      const excluded = new Set(state.excludedBackupPaths);
-      if (included === !excluded.has(path)) return;
-      if (included) excluded.delete(path);
-      else excluded.add(path);
+      const routine = isBackupRoutine(path);
+      const choices = new Set(routine ? state.includedBackupRoutines : state.excludedBackupPaths);
+      const store = routine ? included : !included;
+      if (store === choices.has(path)) return;
+      if (routine && store && choices.size >= BOT_PACKAGE_MAX_ROUTINES) return;
+      if (store) choices.add(path);
+      else choices.delete(path);
       invalidate();
       publish({
         ...state,
-        excludedBackupPaths: [...excluded],
+        ...(routine
+          ? { includedBackupRoutines: [...choices] }
+          : { excludedBackupPaths: [...choices] }),
         phase: "editing",
         preview: null,
         error: null,
@@ -209,7 +230,12 @@ export function createBotPackageImport(deps: Deps) {
       if (!current(version)) return;
       try {
         const input = {
-          ...agentBackupPreview(state.source, state.includeMemory, state.excludedBackupPaths),
+          ...agentBackupPreview(
+            state.source,
+            state.includeMemory,
+            state.excludedBackupPaths,
+            state.includedBackupRoutines,
+          ),
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
         };
@@ -217,6 +243,11 @@ export function createBotPackageImport(deps: Deps) {
         if (!current(version)) return;
         if (preview.includeMemory !== input.includeMemory)
           throw new Error("Could not confirm the preview options.");
+        if (
+          input.backupRoutines?.length &&
+          preview.document.routines.length !== input.backupRoutines.length
+        )
+          throw new Error("Could not confirm the reviewed schedules.");
         publish({ ...state, phase: "review", preview, receipt: null, error: null });
       } catch (error) {
         if (current(version)) publish({ ...state, phase: "editing", preview: null, error });
@@ -258,6 +289,7 @@ export function createBotPackageImport(deps: Deps) {
         name: "",
         includeMemory: false,
         excludedBackupPaths: [],
+        includedBackupRoutines: [],
         preview: null,
         receipt: null,
         clientNonce,
