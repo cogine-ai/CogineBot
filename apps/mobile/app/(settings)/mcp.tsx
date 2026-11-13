@@ -135,7 +135,7 @@ export default function McpSettings() {
       const rows = await rpc<McpServer[]>("mcp/servers/list");
       if (!isCurrent() || scope.current !== requestScope) return;
       setServers(rows);
-      const server = rows.find((row) => row.id === selected?.id);
+      const server = rows.find((row) => row.id === (selected?.id ?? serverId));
       if (server) select(server);
       else setSelected(null);
     } catch (reason) {
