@@ -408,8 +408,6 @@ type AgentBackupFolderFile = {
   read(maxBytes: number): Promise<Uint8Array>;
 };
 
-const hermesBundledSkillsPath = "skills/.bundled_manifest";
-
 function identifyFolderSource(root: string, paths: readonly string[]): AgentBackupSource {
   if (root === ".openclaw") return "openclaw";
   if (root === ".hermes") return "hermes";
@@ -470,23 +468,7 @@ export async function encodeAgentBackupFolder(
       throw new AgentImportArchiveError("unreadable");
     return bytes;
   }
-  const manifest = source === "hermes" ? byPath.get(hermesBundledSkillsPath) : undefined;
-  const bundled = new Set<string>();
-  if (manifest) {
-    checkSize(manifest.size);
-    const text = decoder.decode(await readBytes(manifest));
-    for (const line of text.split(/\r?\n/)) {
-      const name = line.split(":", 1)[0]?.trim().toLowerCase();
-      if (name) bundled.add(name);
-    }
-  }
-  const files = selectBackupFiles(
-    source,
-    paths.filter(
-      (path) => !isBackupSkill(path) || !bundled.has(path.split("/").at(-2)!.toLowerCase()),
-    ),
-    workspace,
-  );
+  const files = selectBackupFiles(source, paths, workspace);
   if (
     workspace &&
     ![...files].some(
@@ -505,13 +487,7 @@ export async function encodeAgentBackupFolder(
     if (text.length > AGENT_BACKUP_MAX_FILE_LENGTH) throw new AgentImportArchiveError("too_large");
     if (isBackupSkill(name)) {
       const skill = parseSkillMd(text);
-      if (!("error" in skill)) {
-        if (bundled.has(skill.name.toLowerCase())) {
-          files.delete(name);
-          continue;
-        }
-        if (hasLocalSkillLink(skill.body)) linkedSkills.add(name);
-      }
+      if (!("error" in skill) && hasLocalSkillLink(skill.body)) linkedSkills.add(name);
     }
     content.set(path, text);
   }

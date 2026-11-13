@@ -51,13 +51,19 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
   for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
 });
 
-it("reads Hermes notes and portable routines while keeping the installed Skill library on-device", async () => {
-  const bundled = folderEntry("agent/skills/report/SKILL.md", "built-in", 9_000_000);
+it("reads Hermes notes and routines and keeps customized Skills even when names are listed", async () => {
+  const customized = folderEntry(
+    "agent/skills/report/SKILL.md",
+    "---\nname: report\ndescription: Review a report.\n---\nUser-edited checklist.\n",
+  );
   const renamed = folderEntry(
     "agent/skills/renamed/SKILL.md",
-    "---\nname: report\ndescription: Built-in report.\n---\nInstalled Skill.\n",
+    "---\nname: earlier\ndescription: Review a report.\n---\nRenamed local Skill.\n",
   );
-  const manifest = folderEntry("agent/skills/.bundled_manifest", "REPORT:fixture-origin\r\n");
+  const manifest = folderEntry(
+    "agent/skills/.bundled_manifest",
+    "report:fixture-origin\r\nearlier\r\n",
+  );
   const jobs = folderEntry(
     "agent/cron/jobs.json",
     JSON.stringify({
@@ -77,23 +83,32 @@ it("reads Hermes notes and portable routines while keeping the installed Skill l
     folderEntry("agent/memories/MEMORY.md", "Private note"),
     folderEntry("agent/skills/custom/SKILL.md", "custom Skill"),
     manifest,
-    bundled,
+    customized,
     renamed,
     jobs,
   ];
-  const result = JSON.parse(await encodeAgentBackupFolder(files, () => true));
-  expect(result).toMatchObject({
+  const result = await encodeAgentBackupFolder(files, () => true);
+  expect(JSON.parse(result)).toMatchObject({
     source: "hermes",
     files: [
       { path: ".hermes.md", content: "Review sources." },
       { path: "memories/MEMORY.md", content: "Private note" },
       { path: "skills/custom/SKILL.md", content: "custom Skill" },
+      { path: "skills/renamed/SKILL.md", content: expect.stringContaining("Renamed local Skill.") },
+      {
+        path: "skills/report/SKILL.md",
+        content: expect.stringContaining("User-edited checklist."),
+      },
       { path: "cron/routine-1.json", content: expect.stringContaining("Review rows.") },
     ],
   });
-  expect(manifest.read).toHaveBeenCalledOnce();
+  expect(agentBackupFileGroups(result)?.skills).toEqual([
+    "skills/renamed/SKILL.md",
+    "skills/report/SKILL.md",
+  ]);
+  expect(manifest.read).not.toHaveBeenCalled();
   expect(jobs.read).toHaveBeenCalledOnce();
-  expect(bundled.read).not.toHaveBeenCalled();
+  expect(customized.read).toHaveBeenCalledOnce();
   expect(renamed.read).toHaveBeenCalledOnce();
 });
 
