@@ -46,6 +46,7 @@ model User {
   secrets                     Secret[]
   nativeOAuthSessions         NativeOAuthSession[]
   nativeOAuthGrants           NativeOAuthGrant[]
+  mcpCreateRequests           McpCreateRequest[]
   mcpServers                  McpServer[]
   botSections                 BotSection[]
   actionApprovalRules         ActionApprovalRule[]
@@ -255,6 +256,7 @@ model Space {
   notificationPreferences     NotificationPreference[]
   computers                   Computer[]
   externalEffects             ExternalEffect[]
+  mcpCreateRequests           McpCreateRequest[]
   mcpServers                  McpServer[]
   mcpOAuthSessions            McpOAuthSession[]
   botMcpServers               BotMcpServer[]
@@ -1490,6 +1492,21 @@ model McpServer {
   @@index([spaceId, userId])
   @@index([installId])
   @@map("mcp_servers")
+  @@schema("public")
+}
+
+// Durable request identity survives removal of the created server. A null serverId is a cancellation fence.
+model McpCreateRequest {
+  spaceId   String
+  space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestId String
+  serverId  String?
+  createdAt DateTime @default(now())
+
+  @@id([spaceId, userId, requestId])
+  @@map("mcp_create_requests")
   @@schema("public")
 }
 

@@ -26,8 +26,28 @@ function setup() {
   let state = initialMcpManagementState();
   let live = true;
   const request = vi.fn().mockResolvedValue([]);
+  const requestId = "00000000-0000-4000-8000-000000000001";
+  let receipt: { requestId: string; serverId: string | null } | null = null;
+  const wire = vi.fn(async (procedure: string, input: unknown, signal: AbortSignal) => {
+    if (procedure === "mcp/servers/newCreateRequest") return { requestId };
+    if (procedure === "mcp/servers/creation") return receipt;
+    if (procedure === "mcp/servers/cancelCreate") {
+      receipt ??= { requestId, serverId: null };
+      return receipt;
+    }
+    if (procedure === "mcp/servers/createOnce") {
+      const row = await request(
+        "mcp/servers/create",
+        (input as { config: unknown }).config,
+        signal,
+      );
+      receipt = { requestId, serverId: row.id };
+      return receipt;
+    }
+    return request(procedure, input, signal);
+  });
   const manager = createMcpManagement({
-    request,
+    request: wire as never,
     isCurrent: () => live,
     changed: (value) => {
       state = value;
@@ -36,6 +56,10 @@ function setup() {
   return {
     manager,
     request,
+    wire,
+    committed: (serverId: string) => {
+      receipt = { requestId, serverId };
+    },
     state: () => state,
     leave: () => {
       live = false;
@@ -99,9 +123,10 @@ describe("MCP management", () => {
     next.resolve([]);
     await b;
   });
-  it("recovers a committed create with lost response by slug instead of creating twice", async () => {
+  it("recovers a committed create with lost response by request receipt instead of creating twice", async () => {
     const x = setup();
     await x.manager.refresh();
+    x.committed(server.id);
     x.request.mockRejectedValueOnce(new Error("lost response")).mockResolvedValueOnce([server]);
     await x.manager.create(draft);
     expect(x.state()).toMatchObject({ pendingCreate: false, recovered: server, error: null });
@@ -176,4 +201,128 @@ describe("MCP management", () => {
     expect(signal.aborted).toBe(true);
     expect(x.request).toHaveBeenCalledTimes(2);
   });
+});
+
+describe("independent acceptance regressions", () => {
+  it.each(["conflict", "acknowledged", "lost-response"])(
+    "never adopts a same-slug replacement after %s",
+    async (outcome) => {
+      const x = setup();
+      await x.manager.refresh();
+      const replacement = {
+        ...server,
+        id: "replacement",
+        endpoint: "https://other.example.test/mcp",
+        transport: "sse",
+      };
+      if (outcome === "lost-response") x.committed(server.id);
+      if (outcome === "acknowledged") x.request.mockResolvedValueOnce(server);
+      else
+        x.request.mockRejectedValueOnce(
+          Object.assign(new Error("uncertain"), {
+            status: outcome === "conflict" ? 409 : undefined,
+          }),
+        );
+      x.request.mockResolvedValueOnce([replacement]);
+      await x.manager.create(draft);
+      expect(x.state().recovered).toBeNull();
+    },
+  );
+  it.each([400, 401, 403, 422])(
+    "allows correcting a draft after uncertain send then definitive %s rejection only through a server fence",
+    async (status) => {
+      const x = setup();
+      await x.manager.refresh();
+      x.request.mockRejectedValueOnce(new Error("lost response")).mockResolvedValueOnce([]);
+      await x.manager.create(draft);
+      x.request
+        .mockRejectedValueOnce(Object.assign(new Error("denied"), { status }))
+        .mockResolvedValueOnce([]);
+      await x.manager.create(draft);
+      expect(x.state().pendingCreate).toBe(false);
+      expect(draft.name).toBe("Fixture");
+    },
+  );
+});
+
+describe("durable creation cancellation", () => {
+  it("does not unlock an uncertain request when its rejection fence fails", async () => {
+    const x = setup();
+    await x.manager.refresh();
+    x.request.mockRejectedValueOnce(new Error("lost send")).mockResolvedValueOnce([]);
+    await x.manager.create(draft);
+    const wire = x.wire.getMockImplementation()!;
+    x.wire.mockImplementation(async (procedure, input, signal) => {
+      if (procedure === "mcp/servers/cancelCreate") throw new Error("fence unavailable");
+      return wire(procedure, input, signal);
+    });
+    x.request
+      .mockRejectedValueOnce(Object.assign(new Error("rejected"), { status: 400 }))
+      .mockResolvedValueOnce([]);
+    await x.manager.create(draft);
+    expect(x.state()).toMatchObject({ pendingCreate: true, recovered: null });
+    await x.manager.write("mcp/servers/remove", { id: "other" });
+    expect(x.request.mock.calls.some(([procedure]) => procedure === "mcp/servers/remove")).toBe(
+      false,
+    );
+  });
+  it("can fence cancellation while list recovery fails and keeps writes locked until a new read succeeds", async () => {
+    const x = setup();
+    await x.manager.refresh();
+    x.request
+      .mockRejectedValueOnce(new Error("lost send"))
+      .mockRejectedValueOnce(new Error("list unavailable"));
+    await x.manager.create(draft);
+    expect(x.state()).toMatchObject({ pendingCreate: true, fresh: false });
+    x.request.mockRejectedValueOnce(new Error("list still unavailable"));
+    await x.manager.cancelCreate();
+    expect(x.state()).toMatchObject({ pendingCreate: false, fresh: false, error: "read" });
+    await x.manager.refresh();
+    expect(x.state()).toMatchObject({ pendingCreate: false, fresh: true });
+    expect(draft.name).toBe("Fixture");
+  });
+  it("recovers an earlier commit when a later invocation is rejected instead of canceling its object", async () => {
+    const x = setup();
+    await x.manager.refresh();
+    x.request.mockRejectedValueOnce(new Error("lost send")).mockResolvedValueOnce([]);
+    await x.manager.create(draft);
+    x.committed(server.id);
+    x.request
+      .mockRejectedValueOnce(Object.assign(new Error("rejected"), { status: 403 }))
+      .mockResolvedValueOnce([server]);
+    await x.manager.create(draft);
+    expect(x.state()).toMatchObject({ pendingCreate: false, recovered: server });
+  });
+  it("rejects a changed receipt after an acknowledged ID and preserves the draft", async () => {
+    const x = setup();
+    await x.manager.refresh();
+    const wire = x.wire.getMockImplementation()!;
+    x.wire.mockImplementation(async (procedure, input, signal) => {
+      if (procedure === "mcp/servers/creation")
+        return { requestId: "00000000-0000-4000-8000-000000000001", serverId: "replacement" };
+      return wire(procedure, input, signal);
+    });
+    x.request.mockResolvedValueOnce(server);
+    await x.manager.create(draft);
+    expect(x.state()).toMatchObject({
+      pendingCreate: true,
+      fresh: false,
+      error: "read",
+      recovered: null,
+    });
+  });
+});
+
+it("fails closed before sending config to a server without request-receipt support", async () => {
+  const x = setup();
+  await x.manager.refresh();
+  x.wire.mockRejectedValueOnce(Object.assign(new Error("Unknown procedure"), { status: 404 }));
+  await x.manager.create(draft);
+  expect(
+    x.wire.mock.calls.some(
+      ([procedure]) => procedure === "mcp/servers/createOnce" || procedure === "mcp/servers/create",
+    ),
+  ).toBe(false);
+  expect(x.state()).toMatchObject({ pendingCreate: false, recovered: null, error: "write" });
+  expect(draft.name).toBe("Fixture");
 });

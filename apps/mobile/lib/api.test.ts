@@ -3501,11 +3501,27 @@ describe("mobile API authentication", () => {
 
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(rpcErrorResponse(401, "UNAUTHORIZED", "Unauthorized"))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            json: {
+              message: "Unauthorized",
+              code: "UNAUTHORIZED",
+              data: { reason: "synthetic-access-denial" },
+            },
+          },
+          { status: 401 },
+        ),
+      )
       .mockResolvedValueOnce(jsonResponse({ json: { spaces: [] } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(rpc("bots/create", { name: "Wrong space bot" })).rejects.toThrow("Unauthorized");
+    await expect(rpc("bots/create", { name: "Wrong space bot" })).rejects.toMatchObject({
+      message: "Unauthorized",
+      status: 401,
+      code: "UNAUTHORIZED",
+      data: { reason: "synthetic-access-denial" },
+    });
     expect(selectedSpaceId()).toBeNull();
     expect(storage.has("rakazo.space_id")).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(2);

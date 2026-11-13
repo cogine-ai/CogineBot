@@ -1,5 +1,14 @@
-import type { McpServer, McpServerConfigInput, McpTransport } from "@rakazo/contracts";
-import { McpServerConfigInput as McpInputSchema } from "@rakazo/contracts";
+import type {
+  McpCreateReceipt,
+  McpServer,
+  McpServerConfigInput,
+  McpTransport,
+} from "@rakazo/contracts";
+import {
+  McpCreateReceiptSchema,
+  McpCreateRequestSchema,
+  McpServerConfigInput as McpInputSchema,
+} from "@rakazo/contracts";
 import { deriveMcpSlug } from "./mcp.js";
 
 export type McpServerDraft = {
@@ -62,7 +71,7 @@ export type McpManagementState = {
   loading: boolean;
   writing: boolean;
   fresh: boolean;
-  error: "read" | "write" | "invalid" | null;
+  error: "read" | "write" | "invalid" | "removed" | null;
   recovered: McpServer | null;
   pendingCreate: boolean;
 };
@@ -77,7 +86,7 @@ export function initialMcpManagementState(): McpManagementState {
     pendingCreate: false,
   };
 }
-/** Read generations own their locks. Uncertain creates retain their unique slug until reconciled. */
+/** Read generations own their locks. Uncertain creates retain their durable request identity until reconciled or fenced. */
 export function createMcpManagement(options: {
   request<T>(procedure: string, input: unknown, signal: AbortSignal): Promise<T>;
   isCurrent(): boolean;
@@ -88,12 +97,40 @@ export function createMcpManagement(options: {
   let readGeneration = 0;
   let reading: AbortController | null = null;
   let writing: AbortController | null = null;
-  let submitted: McpServerConfigInput | null = null;
+  let submitted: { requestId: string; config: McpServerConfigInput; serverId?: string } | null =
+    null;
   const current = () => !closed && options.isCurrent();
   function update(patch: Partial<McpManagementState>) {
     if (!current()) return;
     state = { ...state, ...patch };
     options.changed(state);
+  }
+  function verifyReceipt(value: McpCreateReceipt, intent: NonNullable<typeof submitted>) {
+    const receipt = McpCreateReceiptSchema.parse(value);
+    if (
+      receipt.requestId !== intent.requestId ||
+      (intent.serverId && receipt.serverId !== intent.serverId)
+    )
+      throw new Error("MCP creation identity mismatch");
+    return receipt;
+  }
+  async function fence(signal: AbortSignal) {
+    if (!submitted) return;
+    const intent = submitted;
+    const receipt = verifyReceipt(
+      await options.request<McpCreateReceipt>(
+        "mcp/servers/cancelCreate",
+        { requestId: intent.requestId },
+        signal,
+      ),
+      intent,
+    );
+    if (!current()) return;
+    if (receipt.serverId) intent.serverId = receipt.serverId;
+    else {
+      submitted = null;
+      update({ pendingCreate: false });
+    }
   }
   async function refresh() {
     if (!current() || writing) return;
@@ -103,13 +140,28 @@ export function createMcpManagement(options: {
     reading = controller;
     update({ loading: true, fresh: false, error: null });
     try {
+      const intent = submitted;
+      const receipt = intent
+        ? await options.request<McpCreateReceipt | null>(
+            "mcp/servers/creation",
+            { requestId: intent.requestId },
+            controller.signal,
+          )
+        : null;
+      if (!current() || generation !== readGeneration) return;
+      if (receipt) verifyReceipt(receipt, intent!);
       const servers = await options.request<McpServer[]>("mcp/servers/list", {}, controller.signal);
       if (!current() || generation !== readGeneration) return;
-      const recovered = submitted
-        ? (servers.find((server) => server.slug === submitted?.slug) ?? null)
-        : null;
-      if (recovered) submitted = null;
-      update({ servers, fresh: true, recovered, pendingCreate: !!submitted });
+      let recovered: McpServer | null = null;
+      let error: McpManagementState["error"] = null;
+      if (receipt) {
+        recovered = receipt.serverId
+          ? (servers.find((server) => server.id === receipt.serverId) ?? null)
+          : null;
+        if (receipt.serverId && !recovered) error = "removed";
+        submitted = null;
+      }
+      update({ servers, fresh: true, recovered, pendingCreate: !!submitted, error });
     } catch {
       if (generation === readGeneration) update({ error: "read", fresh: false });
     } finally {
@@ -119,8 +171,11 @@ export function createMcpManagement(options: {
       }
     }
   }
-  async function mutate<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
-    if (!current() || writing || !state.fresh || state.loading) return;
+  async function mutate<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    recovery = false,
+  ): Promise<T | undefined> {
+    if (!current() || writing || (!recovery && (!state.fresh || state.loading))) return;
     const controller = new AbortController();
     writing = controller;
     // Invalidate any outstanding read before a write can start.
@@ -138,7 +193,7 @@ export function createMcpManagement(options: {
       if (current()) {
         update({ writing: false });
         await refresh();
-        if (failed && !state.recovered && state.error !== "read") update({ error: "write" });
+        if (failed && !state.recovered && state.error === null) update({ error: "write" });
       }
     }
     return current() ? result : undefined;
@@ -147,29 +202,44 @@ export function createMcpManagement(options: {
     refresh,
     async create(draft: McpServerDraft) {
       if (!current() || writing || !state.fresh || state.loading) return;
-      const retrying = !!submitted;
-      const input = submitted ?? mcpServerInput(draft);
+      const input = submitted?.config ?? mcpServerInput(draft);
       if (!McpInputSchema.safeParse(input).success) {
         update({ error: "invalid" });
         return;
       }
-      // A pre-existing duplicate must go through backend validation, never masquerade as recovery.
-      const preexisting = state.servers.some((server) => server.slug === input.slug);
-      if (!preexisting) submitted = input;
-      update({ pendingCreate: !!submitted });
       return mutate(async (signal) => {
+        if (!submitted) {
+          const { requestId } = McpCreateRequestSchema.parse(
+            await options.request("mcp/servers/newCreateRequest", {}, signal),
+          );
+          if (!current()) return;
+          submitted = { requestId, config: input };
+        }
+        const intent = submitted;
+        update({ pendingCreate: true });
         try {
-          return await options.request<McpServer>("mcp/servers/create", input, signal);
+          const receipt = verifyReceipt(
+            await options.request<McpCreateReceipt>(
+              "mcp/servers/createOnce",
+              { requestId: intent.requestId, config: intent.config },
+              signal,
+            ),
+            intent,
+          );
+          if (current() && receipt.serverId) intent.serverId = receipt.serverId;
         } catch (error) {
           const status =
             error && typeof error === "object" && "status" in error ? error.status : undefined;
-          if (!retrying && (status === 400 || status === 401 || status === 403 || status === 422)) {
-            submitted = null;
-            update({ pendingCreate: false });
-          }
+          // A rejection only describes this invocation. Fence every older invocation
+          // before releasing its identity, even when a successful list is empty.
+          if ([400, 401, 403, 409, 422].includes(status as number)) await fence(signal);
           throw error;
         }
       });
+    },
+    async cancelCreate() {
+      if (!submitted) return;
+      return mutate(fence, true);
     },
     async write<T>(procedure: string, input: unknown) {
       if (submitted) return;

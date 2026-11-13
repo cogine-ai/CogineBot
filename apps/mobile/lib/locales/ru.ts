@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Cancel creation": "Отменить создание",
+  "Created server is no longer available. Review the draft.":
+    "Созданный сервер больше недоступен. Проверьте черновик.",
   "Disconnect OAuth before authorizing from another app.":
     "Отключите OAuth перед авторизацией из другого приложения.",
   "Access token (optional)": "Токен доступа (необязательно)",

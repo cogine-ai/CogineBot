@@ -237,13 +237,23 @@ export default function McpSettings() {
           <Text accessibilityRole="alert" style={styles.error}>
             {state.error === "read"
               ? t("Could not load MCP servers")
-              : state.error === "invalid"
-                ? t("Check the server fields.")
-                : t("Could not update MCP server. Check status and retry.")}
+              : state.error === "removed"
+                ? t("Created server is no longer available. Review the draft.")
+                : state.error === "invalid"
+                  ? t("Check the server fields.")
+                  : t("Could not update MCP server. Check status and retry.")}
           </Text>
         ) : null}
         {state.pendingCreate ? (
           <Text style={styles.secondary}>{t("Check status before retrying this server.")}</Text>
+        ) : null}
+        {state.pendingCreate ? (
+          <NativeActionButton
+            label={t("Cancel creation")}
+            disabled={state.writing}
+            prominence="secondary"
+            onPress={() => void manager.current?.cancelCreate()}
+          />
         ) : null}
         <NativeActionButton
           label={state.error || !state.fresh ? t("Retry") : t("Reload settings")}

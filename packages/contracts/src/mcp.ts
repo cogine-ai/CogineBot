@@ -78,3 +78,11 @@ export function isMcpOAuthRedirectAllowed(redirectUri: string, webOrigin: string
     redirectUri === new URL("/mcp/oauth/callback", webOrigin).toString()
   );
 }
+
+export const McpCreateRequestSchema = z.object({ requestId: z.string().uuid() });
+export const McpCreateReceiptSchema = z.object({
+  requestId: z.string().uuid(),
+  // null is an acknowledged cancellation, not an absence of a receipt.
+  serverId: z.string().nullable(),
+});
+export type McpCreateReceipt = z.infer<typeof McpCreateReceiptSchema>;

@@ -1,4 +1,6 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Cancel creation": "取消创建",
+  "Created server is no longer available. Review the draft.": "已创建的服务已不存在，请检查草稿。",
   "Disconnect OAuth before authorizing from another app.": "从其他应用授权前，请先断开 OAuth。",
   "Access token (optional)": "访问令牌（可选）",
   "Add server": "添加服务",

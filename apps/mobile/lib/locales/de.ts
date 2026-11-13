@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Cancel creation": "Erstellung abbrechen",
+  "Created server is no longer available. Review the draft.":
+    "Der erstellte Server ist nicht mehr verfügbar. Entwurf prüfen.",
   "Disconnect OAuth before authorizing from another app.":
     "Vor der Autorisierung aus einer anderen App OAuth trennen.",
   "Access token (optional)": "Zugriffstoken (optional)",
