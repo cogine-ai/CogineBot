@@ -1,7 +1,6 @@
 import type { AgentBackupModel, AgentBackupSource } from "@rakazo/contracts";
 import { AgentBackupModelSchema, canonicalPiProviderId } from "@rakazo/contracts";
 import { redactSecretText } from "@rakazo/logging/redaction";
-import { readBackupConfig } from "./config.js";
 
 const providerAliases = new Map([
   ["gemini", "google"],
@@ -144,13 +143,12 @@ export function backupModelLabel(model: AgentBackupModel | "unavailable" | undef
 /** Config data stays on the device. A provider endpoint override requires a separate setup. */
 export function projectBackupModel(
   source: AgentBackupSource,
-  content: string | undefined,
+  config: Record<string, unknown> | null | undefined,
   selectedAgent: string | null,
 ): AgentBackupModel | "unavailable" | undefined {
-  if (content === undefined) return undefined;
+  if (config === undefined) return undefined;
+  if (!config) return "unavailable";
   try {
-    const config = readBackupConfig(source, content);
-    if (!config) return "unavailable";
     let provider: string;
     let modelId: string;
     let routedProvider: string | undefined;

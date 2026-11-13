@@ -214,7 +214,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       data: {
         ...scope,
         name: "Docs",
-        slug: "docs",
+        slug: "unrelated-slug",
         transport: "sse",
         endpoint: "https://original.example.test/sse",
         allowAllTools: true,
@@ -284,14 +284,16 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         needsOAuth: false,
       },
     ]);
-    const quickApprove = await handles.app.request("/rpc/mcp/assignments/approve", {
-      method: "POST",
-      headers: { "content-type": "application/json", origin, cookie: owner.cookie },
-      body: JSON.stringify({
-        json: { botId, serverId: server.id, threadId: message.threadId, revision: server.revision },
-      }),
-    });
-    expect(quickApprove.status).toBe(409);
+    for (const threadId of [message.threadId, undefined]) {
+      const quickApprove = await handles.app.request("/rpc/mcp/assignments/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: owner.cookie },
+        body: JSON.stringify({
+          json: { botId, serverId: server.id, threadId, revision: server.revision },
+        }),
+      });
+      expect(quickApprove.status).toBe(409);
+    }
     expect(await database.prisma.mcpServer.findUnique({ where: { id: server.id } })).toEqual(
       server,
     );

@@ -10,7 +10,7 @@ export function isBackupMcpPath(path: string) {
 
 export function hasUnsafeBackupMcpUrlCharacters(value: string): boolean {
   return (
-    /[?#@\\\s]/.test(value) ||
+    /[?#@{}$\\\s]/.test(value) ||
     Array.from(value).some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || (code >= 127 && code <= 159);
@@ -30,7 +30,7 @@ export const agentBackupMcpOmissionReasons = {
   setup: "This connection needs manual setup.",
   toolPolicy: "This connection's tool restrictions cannot be carried over.",
   disabled: "This connection is disabled in the backup.",
-  endpoint: "This connection needs a public HTTPS endpoint without credentials or URL parameters.",
+  endpoint: "This connection needs a public HTTPS MCP address with a supported path.",
   limit: "Additional connections exceed the import limit.",
 } as const;
 const reasons = Object.keys(
@@ -43,14 +43,20 @@ export const AgentBackupMcpSchema = z.strictObject({
   transport: z.enum(["streamable_http", "sse"]),
   endpoint: McpRemoteEndpointSchema.max(2000).refine((value) => {
     if (!/^https:\/\//i.test(value) || hasUnsafeBackupMcpUrlCharacters(value)) return false;
-    let host: string;
+    let url: URL;
     try {
-      host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+      url = new URL(value);
     } catch {
       return false;
     }
+    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    const rawPath = /^https:\/\/[^/]+(\/.*)?$/i.exec(value)?.[1] ?? "/";
+    // Arbitrary path segments can be opaque bearer credentials. Keep only conventional MCP routes.
+    const route = /^\/(?:api\/)?(?:v[1-9]\d*\/)?(?:mcp(?:\/sse)?|sse|events|stream)\/?$/i;
     // This portable format takes public DNS names. Explicit connection still checks resolved IPs.
     return (
+      rawPath === url.pathname &&
+      (rawPath === "/" || route.test(rawPath)) &&
       host.includes(".") &&
       !/^[\d.]+$/.test(host) &&
       !isCloudMetadataHost(host) &&

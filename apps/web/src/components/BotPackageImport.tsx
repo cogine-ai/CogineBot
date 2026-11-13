@@ -48,7 +48,7 @@ export function BotPackageImport({
     setup: t`This connection needs manual setup.`,
     toolPolicy: t`This connection's tool restrictions cannot be carried over.`,
     disabled: t`This connection is disabled in the backup.`,
-    endpoint: t`This connection needs a public HTTPS endpoint without credentials or URL parameters.`,
+    endpoint: t`This connection needs a public HTTPS MCP address with a supported path.`,
     limit: t`Additional connections exceed the import limit.`,
   };
   const ids = useId();

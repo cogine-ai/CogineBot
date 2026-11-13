@@ -1,5 +1,5 @@
 import type { IntegrationSetupState, McpServer } from "@rakazo/contracts";
-import { Stack, useFocusEffect } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { Alert, Linking, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { MenuPicker } from "../../components/menu-picker";
@@ -15,6 +15,7 @@ import { errorText } from "../../lib/user-error";
 
 export default function McpSettings() {
   const { t } = useI18n();
+  const { serverId } = useLocalSearchParams<{ serverId?: string }>();
   const styles = useThemedStyles(createStyles);
   const [servers, setServers] = useState<McpServer[]>([]);
   const [selected, setSelected] = useState<McpServer | null>(null);
@@ -29,14 +30,14 @@ export default function McpSettings() {
   function isCurrent() {
     return active.current && !!scope.current && isIntegrationsScopeCurrent(scope.current);
   }
-  function select(server: McpServer) {
+  const select = useCallback((server: McpServer) => {
     setSelected(server);
     setAll(server.allowAllTools);
     setNames(server.allowedTools.join("\n"));
     setVerbatimResults(server.verbatimResults ?? false);
     setSaved(false);
     setError(null);
-  }
+  }, []);
   useFocusEffect(
     useCallback(() => {
       active.current = true;
@@ -52,7 +53,11 @@ export default function McpSettings() {
           if (cancelled || !isIntegrationsScopeCurrent(current)) return;
           scope.current = current;
           const rows = await rpc<McpServer[]>("mcp/servers/list");
-          if (!cancelled && isCurrent()) setServers(rows);
+          if (!cancelled && isCurrent()) {
+            setServers(rows);
+            const server = rows.find(({ id }) => id === serverId);
+            if (server) select(server);
+          }
         } catch (reason) {
           if (!cancelled && active.current)
             setError(errorText(reason, t("Could not load MCP servers")));
@@ -63,7 +68,7 @@ export default function McpSettings() {
         active.current = false;
         scope.current = null;
       };
-    }, []),
+    }, [serverId, select]),
   );
   const changed =
     !!selected &&

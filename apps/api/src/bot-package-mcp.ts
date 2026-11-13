@@ -8,17 +8,20 @@ async function savePendingServer(
   tx: Prisma.TransactionClient,
   actor: Actor,
   connection: AgentBackupMcp,
+  usedNames: Set<string>,
 ) {
   const base = /^[a-z0-9]/.test(connection.name.toLowerCase())
     ? deriveMcpSlug(connection.name)
     : deriveMcpSlug(`mcp-${connection.name}`);
   for (let number = 1; number <= 100; number++) {
     const suffix = number === 1 ? "" : `-${number}`;
+    const name = number === 1 ? connection.name : `${connection.name} (${number})`;
+    if (usedNames.has(name.toLowerCase())) continue;
     const [server] = await tx.mcpServer.createManyAndReturn({
       data: {
         userId: actor.userId,
         spaceId: actor.spaceId,
-        name: number === 1 ? connection.name : `${connection.name} (${number})`,
+        name,
         slug: base.slice(0, 64 - suffix.length) + suffix,
         transport: connection.transport,
         endpoint: connection.endpoint,
@@ -29,7 +32,10 @@ async function savePendingServer(
       select: { id: true, name: true },
       skipDuplicates: true,
     });
-    if (server) return server;
+    if (server) {
+      usedNames.add(server.name.toLowerCase());
+      return server;
+    }
   }
   throw new ORPCError("CONFLICT", { message: "Could not reserve a name for this connection." });
 }
@@ -40,10 +46,15 @@ export async function importPendingMcpServers(
   target: { botId: string; threadId: string; importId: string },
   connections: readonly AgentBackupMcp[],
 ): Promise<Prisma.BotPackageComponentCreateManyInput[]> {
+  const names = await tx.mcpServer.findMany({
+    where: { userId: actor.userId, spaceId: actor.spaceId },
+    select: { name: true },
+  });
+  const usedNames = new Set(names.map(({ name }) => name.toLowerCase()));
   const blocks: MessageBlock[] = [];
   const components: Prisma.BotPackageComponentCreateManyInput[] = [];
   for (const connection of connections) {
-    const server = await savePendingServer(tx, actor, connection);
+    const server = await savePendingServer(tx, actor, connection, usedNames);
     blocks.push({
       kind: "mcp_approval",
       name: server.name,

@@ -180,7 +180,8 @@ export async function resolveMcpApprovalCards<T>(
         const painted = await rewriteCards(tx, actor, threads, input, selectable);
         // Only a card decision can lose to a dismissal that already committed.
         // Settings and onboarding approve without a threadId and can still enable tools.
-        const assign = input.threadId === undefined || painted.flipped > 0 || painted.connected;
+        const settingsDecision = input.threadId === undefined && input.serverRevision === undefined;
+        const assign = settingsDecision || painted.flipped > 0 || painted.connected;
         const value = effect ? await effect(tx, { assign }) : undefined;
         const sharedSeqs =
           input.status === "connected" && assign && effect

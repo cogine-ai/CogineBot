@@ -70,6 +70,9 @@ it("projects only selected remote connections and never carries source credentia
     "  Reports:",
     "    url: https://reports.example.test/mcp",
     "    tools: { include: [read_report] }",
+    "  Empty:",
+    "    url: https://empty.example.test/mcp",
+    "    tools: { include: [] }",
     "  Archive:",
     "    url: https://archive.example.test/mcp",
     "    tools: { exclude: ['change_*'] }",
@@ -112,6 +115,7 @@ it("projects only selected remote connections and never carries source credentia
   ]);
   expect(groups.unavailableConnections.map(({ name, reason }) => [name, reason])).toEqual([
     ["Reports", "toolPolicy"],
+    ["Empty", "toolPolicy"],
     ["Archive", "toolPolicy"],
     ["Private", "setup"],
     ["Login", "setup"],
@@ -125,6 +129,59 @@ it("projects only selected remote connections and never carries source credentia
   expect(chosen).toContain("https://docs.example.test/mcp");
   expect(chosen).not.toContain("monitor.example.test");
   expect(() => agentBackupPreview(raw, false)).toThrow();
+});
+
+it("omits connections restricted by global and platform toolset settings", () => {
+  const raw = [
+    "agent: { disabled_toolsets: [mcp-disabled] }",
+    "platform_toolsets: { acp: [file, allowed, disabled] }",
+    "mcp_servers:",
+    "  allowed: { url: 'https://allowed.example.test/mcp' }",
+    "  disabled: { url: 'https://disabled.example.test/mcp' }",
+    "  outside: { url: 'https://outside.example.test/mcp' }",
+  ];
+  const backup = (lines: string[]) =>
+    agentBackupFileGroups(encodeAgentBackup(zipSync({ "config.yaml": strToU8(lines.join("\n")) })));
+  expect(backup(raw)).toMatchObject({
+    connections: [{ name: "allowed" }],
+    unavailableConnections: [
+      { name: "disabled", reason: "toolPolicy" },
+      { name: "outside", reason: "toolPolicy" },
+    ],
+  });
+  expect(
+    backup([...raw.slice(0, 1), "platform_toolsets: { acp: [no_mcp] }", ...raw.slice(2)])
+      ?.connections,
+  ).toEqual([]);
+});
+
+it("reports unreadable connection settings without exposing config or resolving placeholders", async () => {
+  const invalid = ".openclaw/openclaw.json";
+  const raw = await encodeAgentBackupFolder(
+    [
+      folderEntry(invalid, '{ mcp: { $include: "/fixture/private-config.json" } }'),
+      folderEntry(".openclaw/workspace/SOUL.md", "Review sources."),
+    ],
+    () => true,
+  );
+  expect(raw).not.toContain("private-config");
+  expect(agentBackupFileGroups(raw)?.unavailableConnections).toEqual([
+    { path: "mcp/server-1", name: "MCP", reason: "setup" },
+  ]);
+  const projected = encodeAgentBackup(
+    zipSync({
+      "config.yaml": strToU8(
+        [
+          "mcp_servers:",
+          "  Interpolated: { url: 'https://docs.example.test/" + "$" + "{SECRET_ROUTE}' }",
+          "  CustomRoute: { url: 'https://docs.example.test/custom/opaque/mcp' }",
+          "  Encoded: { url: 'https://docs.example.test/%24%7BSECRET_ROUTE%7D' }",
+        ].join("\n"),
+      ),
+    }),
+  );
+  expect(projected).not.toContain("SECRET_ROUTE");
+  expect(agentBackupFileGroups(projected)?.unavailableConnections).toHaveLength(3);
 });
 
 it("keeps the source remote transport default and rejects a policy it cannot preserve", async () => {
@@ -149,7 +206,7 @@ it("projects the Hermes model from a folder or archive and sends only the select
     "  base_url: ''",
     "  api_key: fixture-value",
     "mcp_servers:",
-    "  fixture: { url: 'https://example.test/synthetic' }",
+    "  fixture: { url: 'https://example.test/mcp' }",
   ].join("\n");
   const source = await encodeAgentBackupFolder(
     [

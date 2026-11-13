@@ -1343,8 +1343,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "This connection's tool restrictions cannot be carried over.":
     "Ограничения инструментов этого подключения перенести нельзя.",
   "This connection is disabled in the backup.": "Это подключение отключено в резервной копии.",
-  "This connection needs a public HTTPS endpoint without credentials or URL parameters.":
-    "Для этого подключения нужен общедоступный HTTPS-адрес без учётных данных и параметров URL.",
+  "This connection needs a public HTTPS MCP address with a supported path.":
+    "Для этого подключения нужен общедоступный HTTPS-адрес MCP с поддерживаемым путём.",
   "Additional connections exceed the import limit.":
     "Остальные подключения превышают лимит импорта.",
   "Review tool access in the imported bot before using these connections.":

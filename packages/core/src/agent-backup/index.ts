@@ -31,6 +31,7 @@ import {
   AgentImportArchiveError,
   openAgentImportArchive,
 } from "./archive.js";
+import { readBackupConfig } from "./config.js";
 import { parseOpenClawIdentity } from "./identity.js";
 import { isPortableBackupMcp, projectBackupMcp } from "./mcp.js";
 
@@ -354,12 +355,17 @@ export function encodeAgentBackup(data: Uint8Array): string {
     source === "openclaw" && config !== undefined
       ? backupWorkspaceAgent(config, workspacePath)
       : null;
-  const mcp = projectBackupMcp(source, config);
-  const projectedModel = projectBackupModel(source, config, modelAgent);
+  const settings =
+    config !== undefined
+      ? readBackupConfig(source, config)
+      : archive.declaredConfig || archive.has(configPath)
+        ? null
+        : undefined;
+  const mcp = projectBackupMcp(source, settings);
+  const projectedModel = projectBackupModel(source, settings, modelAgent);
   const agentModelPath = modelAgent ? `${home}agents/${modelAgent}/agent/models.json` : null;
   const model =
-    (config === undefined && (archive.declaredConfig || archive.has(configPath))) ||
-    (projectedModel && agentModelPath && archive.has(agentModelPath))
+    projectedModel && agentModelPath && archive.has(agentModelPath)
       ? "unavailable"
       : projectedModel;
   if (
@@ -555,9 +561,10 @@ export async function encodeAgentBackupFolder(
   const jobs = source === "hermes" ? await readOptional(jobsEntry) : undefined;
   const configEntry = byPath.get(backupModelConfigPath(source));
   const config = await readOptional(configEntry);
-  const mcp = projectBackupMcp(source, config);
-  const model =
-    configEntry && config === undefined ? "unavailable" : projectBackupModel(source, config, null);
+  const settings =
+    config !== undefined ? readBackupConfig(source, config) : configEntry ? null : undefined;
+  const mcp = projectBackupMcp(source, settings);
+  const model = projectBackupModel(source, settings, null);
   const { routineFiles, routineOmissions } = projectBackupRoutines(source, jobs, null);
   if (source === "openclaw" && byPath.has(backupStateDatabasePath)) {
     routineOmissions.push({ path: backupStateDatabasePath, reason: "routineSchedule" });

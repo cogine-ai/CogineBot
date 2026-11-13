@@ -1283,8 +1283,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "This connection needs manual setup.": "此连接需要手动设置。",
   "This connection's tool restrictions cannot be carried over.": "无法保留此连接的工具限制。",
   "This connection is disabled in the backup.": "此连接在备份中已停用。",
-  "This connection needs a public HTTPS endpoint without credentials or URL parameters.":
-    "此连接需要不含凭据或 URL 参数的公网 HTTPS 地址。",
+  "This connection needs a public HTTPS MCP address with a supported path.":
+    "此连接需要路径受支持的公网 HTTPS MCP 地址。",
   "Additional connections exceed the import limit.": "其他连接超出导入上限。",
   "Review tool access in the imported bot before using these connections.":
     "使用这些连接前，请在导入的 Bot 中检查工具权限。",

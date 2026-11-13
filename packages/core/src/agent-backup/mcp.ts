@@ -6,7 +6,6 @@ import {
   hasUnsafeBackupMcpUrlCharacters,
 } from "@rakazo/contracts";
 import { redactSecretText } from "@rakazo/logging/redaction";
-import { readBackupConfig } from "./config.js";
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value)
@@ -30,14 +29,16 @@ const portableFields = new Set([
 ]);
 
 // An empty list or an explicitly enabled utility leaves the server catalog unrestricted.
-function unrestricted(value: unknown): boolean {
+function unrestricted(value: unknown, emptyIncludeRestricts = false): boolean {
   if (value === undefined) return true;
   const filter = record(value);
   return (
     !!filter &&
     Object.entries(filter).every(([field, setting]) =>
       field === "include" || field === "exclude"
-        ? Array.isArray(setting) && setting.length === 0
+        ? Array.isArray(setting) &&
+          setting.length === 0 &&
+          !(field === "include" && emptyIncludeRestricts)
         : (field === "prompts" || field === "resources") && setting === true,
     )
   );
@@ -48,7 +49,16 @@ function openClawHasToolPolicy(config: Record<string, unknown>) {
     if (tools === undefined) return false;
     const policy = record(tools);
     if (!policy) return true;
-    return ["allow", "deny", "alsoAllow", "profile", "byProvider", "sandbox"].some((field) => {
+    return [
+      "allow",
+      "deny",
+      "alsoAllow",
+      "profile",
+      "byProvider",
+      "sandbox",
+      "toolsBySender",
+      "subagents",
+    ].some((field) => {
       const value = policy[field];
       return value !== undefined && (!Array.isArray(value) || value.length !== 0);
     });
@@ -64,6 +74,37 @@ function openClawHasToolPolicy(config: Record<string, unknown>) {
       record(owner?.sandbox)?.mode === "all" ||
       record(owner?.sandbox)?.mode === "non-main",
   );
+}
+
+function hermesHasMcpPolicy(
+  config: Record<string, unknown>,
+  serverName: string,
+  names: ReadonlySet<string>,
+): boolean {
+  const disabled = record(config.agent)?.disabled_toolsets;
+  if (disabled !== undefined) {
+    if (!Array.isArray(disabled) || disabled.some((value) => typeof value !== "string"))
+      return true;
+    if (
+      disabled.includes("mcp") ||
+      disabled.includes("no_mcp") ||
+      disabled.includes(`mcp-${serverName}`)
+    )
+      return true;
+  }
+  if (config.platform_toolsets === undefined) return false;
+  const platforms = record(config.platform_toolsets);
+  if (!platforms) return true;
+  return Object.values(platforms).some((tools) => {
+    if (!Array.isArray(tools) || tools.some((value) => typeof value !== "string")) return true;
+    if (tools.includes("no_mcp")) return true;
+    const explicit = tools.filter((value) => names.has(value) || value.startsWith("mcp-"));
+    return (
+      explicit.length > 0 &&
+      !explicit.includes(serverName) &&
+      !explicit.includes(`mcp-${serverName}`)
+    );
+  });
 }
 
 function transport(value: unknown) {
@@ -88,17 +129,17 @@ export function isPortableBackupMcp(connection: AgentBackupMcp): boolean {
 
 export function projectBackupMcp(
   source: AgentBackupSource,
-  content: string | undefined,
+  config: Record<string, unknown> | null | undefined,
 ): (AgentBackupMcp | AgentBackupMcpOmission)[] {
-  if (content === undefined) return [];
-  const config = readBackupConfig(source, content);
-  if (!config) return [];
+  if (config === undefined) return [];
+  if (!config) return [{ path: "mcp/server-1", name: "MCP", reason: "setup" }];
   const sourceMcp = record(config.mcp);
   const value = source === "hermes" ? config.mcp_servers : sourceMcp?.servers;
   if (value === undefined) return [];
   const servers = record(value);
   if (!servers) return [{ path: "mcp/server-1", name: "MCP", reason: "setup" }];
   const entries = Object.entries(servers);
+  const names = new Set(Object.keys(servers));
   const outerPolicy = source === "openclaw" && openClawHasToolPolicy(config);
   return entries.slice(0, AGENT_BACKUP_MAX_MCP).map(([rawName, rawServer], index) => {
     const path = `mcp/server-${index + 1}`;
@@ -111,7 +152,12 @@ export function projectBackupMcp(
     const server = record(rawServer);
     if (!server || name !== rawName) return omit("setup");
     if (server.enabled === false) return omit("disabled");
-    if (outerPolicy || !unrestricted(server.tools) || !unrestricted(server.toolFilter))
+    if (
+      outerPolicy ||
+      (source === "hermes" && hermesHasMcpPolicy(config, rawName, names)) ||
+      !unrestricted(server.tools, source === "hermes") ||
+      !unrestricted(server.toolFilter)
+    )
       return omit("toolPolicy");
     if (
       Object.keys(server).some((field) => !portableFields.has(field)) ||

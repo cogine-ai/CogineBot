@@ -1347,8 +1347,8 @@ export const DE_MESSAGES: Record<string, string> = {
     "Die Tool-Beschränkungen dieser Verbindung können nicht übernommen werden.",
   "This connection is disabled in the backup.":
     "Diese Verbindung ist in der Sicherung deaktiviert.",
-  "This connection needs a public HTTPS endpoint without credentials or URL parameters.":
-    "Diese Verbindung benötigt einen öffentlichen HTTPS-Endpunkt ohne Zugangsdaten oder URL-Parameter.",
+  "This connection needs a public HTTPS MCP address with a supported path.":
+    "Diese Verbindung benötigt eine öffentliche HTTPS-MCP-Adresse mit einem unterstützten Pfad.",
   "Additional connections exceed the import limit.":
     "Weitere Verbindungen überschreiten das Importlimit.",
   "Review tool access in the imported bot before using these connections.":

@@ -560,11 +560,13 @@ export function McpApprovalCard({
       <p className="mt-1.5 truncate text-[12px] text-muted-foreground">{summary}</p>
       {state === "pending" || state === "connecting" ? (
         <>
-          <p className="mt-2 text-[13px] leading-[1.5] text-foreground/75">
-            {needsOAuth
-              ? t`Authorize this server so agents can use its tools. A popup opens.`
-              : t`Share this server's tools with all bots in this space.`}
-          </p>
+          {block.serverRevision !== undefined ? (
+            <p className="mt-2 text-[13px] leading-[1.5] text-foreground/75">
+              {needsOAuth
+                ? t`Authorize this server so agents can use its tools. A popup opens.`
+                : t`Share this server's tools with all bots in this space.`}
+            </p>
+          ) : null}
           {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
           <div className="mt-3 flex gap-2">
             <Button
@@ -606,7 +608,12 @@ export function McpApprovalCard({
           <Trans>Dismissed. Reconnect anytime from MCP settings.</Trans>
         </p>
       ) : null}
-      {settingsOpen ? <McpServersOverlay onClose={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen ? (
+        <McpServersOverlay
+          onClose={() => setSettingsOpen(false)}
+          reviewServerId={block.serverRevision === undefined ? serverId : undefined}
+        />
+      ) : null}
     </BuiCard>
   );
 }
