@@ -147,6 +147,35 @@ it.each([
   expect(backup).not.toContain("openrouter.ai");
 });
 
+it.each([
+  ["openai-api", "https://api.openai.com/v1", "gpt-4.1", "openai"],
+  ["openai-codex", "https://chatgpt.com/backend-api/codex", "gpt-5.3-codex-spark", "openai-codex"],
+  ["gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-2.5-pro", "google"],
+  ["kimi-coding", "https://api.kimi.com/coding", "kimi-for-coding", "kimi-coding"],
+  ["kimi-coding", "https://api.moonshot.ai/v1", "kimi-k2.6", "moonshotai"],
+  ["kimi-coding-cn", "https://api.moonshot.cn/v1", "kimi-k2.6", "moonshotai-cn"],
+  ["zai", "https://api.z.ai/api/coding/paas/v4", "glm-5.2", "zai"],
+  ["zai", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.3", "zai-coding-cn"],
+  ["deepseek", "https://api.deepseek.com/v1", "deepseek-flash", "deepseek"],
+  ["minimax", "https://api.minimax.io/anthropic", "MiniMax-M2.7", "minimax"],
+  ["minimax-cn", "https://api.minimaxi.com/anthropic", "MiniMax-M2.7", "minimax-cn"],
+  ["huggingface", "https://router.huggingface.co/v1", "openai/gpt-oss-20b", "huggingface"],
+  ["nvidia", "https://integrate.api.nvidia.com/v1", "nvidia/nemotron", "nvidia"],
+  ["xai", "https://api.x.ai/v1", "grok-4", "xai"],
+  ["xiaomi", "https://api.xiaomimimo.com/v1", "mimo-v2.5-pro", "xiaomi"],
+])("uses the configured built-in account family (%s %s)", (provider, endpoint, modelId, target) => {
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(
+        `model: { provider: ${provider}, default: ${modelId}, base_url: '${endpoint}' }`,
+      ),
+    }),
+  );
+  expect(JSON.parse(backup).model).toEqual({ provider: target, modelId });
+  expect(backup).not.toContain(endpoint);
+});
+
 it("omits a credential-shaped model ID before normalization", () => {
   const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig";
   const backup = encodeAgentBackup(
@@ -237,6 +266,12 @@ it("reports an unavailable declared active configuration without using the home 
 
 it.each([
   "model: { provider: openrouter, default: anthropic/claude-opus-4.6 }\nproviders: { openrouter: { base_url: 'https://openrouter.ai/api/v1' } }",
+  "model: { provider: zai, default: glm-5.2, base_url: 'https://api.z.ai/api/paas/v4' }",
+  "model: { provider: zai, default: glm-5.2 }",
+  "model: { provider: kimi-coding, default: kimi-for-coding }",
+  "model: { provider: kimi-coding-cn, default: kimi-k2.6 }",
+  "model: { provider: kimi-coding, default: kimi-k2.6, base_url: 'https://api.moonshot.ai/v1' }\nbase_url: 'https://api.kimi.com/coding'",
+  "model: { provider: kimi-coding, default: kimi-k2.6, base_url: 'https://api.moonshot.ai/v1' }\nproviders: { moonshotai: { api: 'https://example.test' } }",
   "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/other' }",
   "model: { provider: openrouter, default: anthropic/claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1?token=fixture' }",
   "model: { provider: anthropic, default: claude-opus-4.6, base_url: 'https://openrouter.ai/api/v1' }",

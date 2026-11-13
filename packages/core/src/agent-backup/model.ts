@@ -15,10 +15,43 @@ const providerAliases = new Map([
   ["z-ai", "zai"],
   ["zhipu", "zai"],
 ]);
-const hermesDefaultEndpoints = new Map([
-  ["anthropic", "https://api.anthropic.com"],
-  ["openrouter", "https://openrouter.ai/api/v1"],
+// A saved address can disambiguate the account family. Only portable built-in routes are listed.
+const hermesDefaultEndpoints = new Map<string, ReadonlyMap<string, string>>([
+  ["anthropic", new Map([["https://api.anthropic.com", "anthropic"]])],
+  [
+    "deepseek",
+    new Map([
+      ["https://api.deepseek.com/v1", "deepseek"],
+      ["https://api.deepseek.com", "deepseek"],
+    ]),
+  ],
+  ["google", new Map([["https://generativelanguage.googleapis.com/v1beta", "google"]])],
+  ["huggingface", new Map([["https://router.huggingface.co/v1", "huggingface"]])],
+  [
+    "kimi-coding",
+    new Map([
+      ["https://api.kimi.com/coding", "kimi-coding"],
+      ["https://api.moonshot.ai/v1", "moonshotai"],
+    ]),
+  ],
+  ["kimi-coding-cn", new Map([["https://api.moonshot.cn/v1", "moonshotai-cn"]])],
+  ["minimax", new Map([["https://api.minimax.io/anthropic", "minimax"]])],
+  ["minimax-cn", new Map([["https://api.minimaxi.com/anthropic", "minimax-cn"]])],
+  ["nvidia", new Map([["https://integrate.api.nvidia.com/v1", "nvidia"]])],
+  ["openai", new Map([["https://api.openai.com/v1", "openai"]])],
+  ["openai-codex", new Map([["https://chatgpt.com/backend-api/codex", "openai-codex"]])],
+  ["openrouter", new Map([["https://openrouter.ai/api/v1", "openrouter"]])],
+  ["xai", new Map([["https://api.x.ai/v1", "xai"]])],
+  ["xiaomi", new Map([["https://api.xiaomimimo.com/v1", "xiaomi"]])],
+  [
+    "zai",
+    new Map([
+      ["https://api.z.ai/api/coding/paas/v4", "zai"],
+      ["https://open.bigmodel.cn/api/coding/paas/v4", "zai-coding-cn"],
+    ]),
+  ],
 ]);
+const hermesEndpointRequired = new Set(["kimi-coding", "kimi-coding-cn", "zai"]);
 const hermesAggregatorProviders = new Set(["openrouter", "nous", "ai-gateway", "kilocode"]);
 const hermesAggregatorVendors = new Map([
   ["claude", "anthropic"],
@@ -90,6 +123,7 @@ export function projectBackupModel(
     if (Object.hasOwn(config, "$include")) return "unavailable";
     let provider: string;
     let modelId: string;
+    let routedProvider: string | undefined;
     if (source === "hermes") {
       const model = record(config.model);
       if (!Object.hasOwn(config, "model")) return undefined;
@@ -116,9 +150,13 @@ export function projectBackupModel(
       modelId = text(selected);
       provider = text(providerValue || config.provider);
       const canonicalProvider = providerId(source, provider);
-      const canonicalEndpoint = hermesDefaultEndpoints.get(canonicalProvider);
-      if (hasEndpoint(model, canonicalEndpoint) || hasEndpoint(config, canonicalEndpoint))
-        return "unavailable";
+      const endpoints = [...endpointOverrides(model), ...endpointOverrides(config)];
+      if (!endpoints.length && hermesEndpointRequired.has(canonicalProvider)) return "unavailable";
+      const routes = endpoints.map((endpoint) =>
+        hermesDefaultEndpoints.get(canonicalProvider)?.get(text(endpoint).replace(/\/+$/, "")),
+      );
+      routedProvider = routes[0];
+      if (routes.some((route) => !route || route !== routedProvider)) return "unavailable";
       const overrides = [
         ...Object.entries(record(config.providers)),
         ...(Array.isArray(config.custom_providers)
@@ -128,7 +166,7 @@ export function projectBackupModel(
       if (
         overrides.some(
           ([name, entry]) =>
-            providerId(source, name) === canonicalProvider &&
+            [canonicalProvider, routedProvider].includes(providerId(source, name)) &&
             (hasEndpoint(record(entry)) || hasOverride(own(record(entry), "api"))),
         )
       )
@@ -182,9 +220,9 @@ export function projectBackupModel(
       [provider, modelId].some((value) => redactSecretText(value) !== value || /:\/\//.test(value))
     )
       return "unavailable";
-    const canonicalProvider = providerId(source, provider);
+    const canonicalProvider = routedProvider ?? providerId(source, provider);
     if (source === "hermes") {
-      const normalized = normalizeHermesModelId(canonicalProvider, modelId);
+      const normalized = normalizeHermesModelId(providerId(source, provider), modelId);
       if (normalized !== modelId && redactSecretText(normalized) !== normalized)
         return "unavailable";
       modelId = normalized;
@@ -250,13 +288,14 @@ function normalizeHermesModelId(provider: string, modelId: string): string {
   return modelId;
 }
 
-function hasEndpoint(value: Record<string, unknown>, canonical?: string) {
-  return ["baseUrl", "base_url", "endpoint", "api_base", "apiBase", "url"].some((key) => {
-    const endpoint = own(value, key);
-    return (
-      hasOverride(endpoint) && (!canonical || text(endpoint).replace(/\/+$/, "") !== canonical)
-    );
-  });
+function endpointOverrides(value: Record<string, unknown>) {
+  return ["baseUrl", "base_url", "endpoint", "api_base", "apiBase", "url"]
+    .map((key) => own(value, key))
+    .filter(hasOverride);
+}
+
+function hasEndpoint(value: Record<string, unknown>) {
+  return endpointOverrides(value).length > 0;
 }
 
 const hasOverride = (value: unknown) =>
