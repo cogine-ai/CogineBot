@@ -3,6 +3,7 @@ import {
   AGENT_BACKUP_MAX_MCP,
   AgentBackupMcpOmissionSchema,
   AgentBackupMcpSchema,
+  hasUnsafeBackupMcpUrlCharacters,
 } from "@rakazo/contracts";
 import { redactSecretText } from "@rakazo/logging/redaction";
 import { readBackupConfig } from "./config.js";
@@ -76,7 +77,7 @@ export function isPortableBackupMcp(connection: AgentBackupMcp): boolean {
     const endpoint = decodeURIComponent(connection.endpoint);
     return (
       redactSecretText(connection.name) === connection.name &&
-      !/[?#@\\\s\u0000-\u001f\u007f]/.test(endpoint) &&
+      !hasUnsafeBackupMcpUrlCharacters(endpoint) &&
       redactSecretText(connection.endpoint) === connection.endpoint &&
       redactSecretText(endpoint) === endpoint
     );

@@ -389,6 +389,52 @@ it("previews only explicitly chosen backup schedules", async () => {
   expect(node.textContent).toContain("Imported routines start paused.");
 });
 
+it("sends only explicitly selected remote connections for backup preview", async () => {
+  const connection = {
+    path: "mcp/server-1",
+    name: "Docs",
+    endpoint: "https://docs.example.test/mcp",
+    transport: "streamable_http",
+  };
+  const withheld = {
+    ...connection,
+    path: "mcp/server-2",
+    name: "Withheld",
+    endpoint: "https://withheld.example.test/mcp",
+  };
+  api.pick.mockResolvedValueOnce(
+    JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [],
+      mcp: [connection, withheld],
+    }),
+  );
+  const normal = api.request.getMockImplementation()!;
+  api.request.mockImplementation(async (procedure, input) => {
+    if (procedure !== "botPackages/preview") return normal(procedure, input);
+    return {
+      ...preview,
+      sourceFormat: "hermes",
+      document: { ...doc, connections: [{ name: connection.name, note: connection.endpoint }] },
+    };
+  });
+  await mountImport();
+  await click("Choose package file");
+  await click("Choose backup content");
+  const selected = field(`Docs · ${connection.endpoint}`) as HTMLInputElement;
+  expect(selected.checked).toBe(false);
+  expect(button("Preview").disabled).toBe(true);
+  await act(async () => selected.click());
+  await click("Preview");
+  const input = api.request.mock.lastCall?.[1];
+  expect(JSON.parse(input.source).mcp).toEqual([connection]);
+  expect(input.source).not.toContain(withheld.endpoint);
+  expect(node.textContent).toContain(
+    "Review tool access in the imported bot before using these connections.",
+  );
+});
+
 it("keeps a cancelled file picker from clearing typed input", async () => {
   await mountImport();
   await fill("Bot package or Grok JSON", "keep this draft");

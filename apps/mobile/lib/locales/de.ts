@@ -1321,6 +1321,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Retry search": "Suche wiederholen",
   "Save credentials": "Zugangsdaten speichern",
   "Search plugins": "Plugins suchen",
+  " · Review tool access in the imported bot": " · Tool-Zugriff im importierten Bot prüfen",
   "Set up connections": "Verbindungen einrichten",
   "Sign-in required": "Anmeldung erforderlich",
   "Some registries are unavailable.": "Einige Registries sind nicht verfügbar.",
@@ -1341,6 +1342,17 @@ export const DE_MESSAGES: Record<string, string> = {
   "Cancel import": "Import abbrechen",
   "Check imported skills": "Importierte Skills prüfen",
   "Choose package file": "Paketdatei auswählen",
+  "This connection needs manual setup.": "Diese Verbindung muss manuell eingerichtet werden.",
+  "This connection's tool restrictions cannot be carried over.":
+    "Die Tool-Beschränkungen dieser Verbindung können nicht übernommen werden.",
+  "This connection is disabled in the backup.":
+    "Diese Verbindung ist in der Sicherung deaktiviert.",
+  "This connection needs a public HTTPS endpoint without credentials or URL parameters.":
+    "Diese Verbindung benötigt einen öffentlichen HTTPS-Endpunkt ohne Zugangsdaten oder URL-Parameter.",
+  "Additional connections exceed the import limit.":
+    "Weitere Verbindungen überschreiten das Importlimit.",
+  "Review tool access in the imported bot before using these connections.":
+    "Prüfe vor der Nutzung dieser Verbindungen den Tool-Zugriff im importierten Bot.",
   Connections: "Verbindungen",
   "Could not confirm import. Check status before trying again.":
     "Import konnte nicht bestätigt werden. Prüfe vor einem erneuten Versuch den Status.",

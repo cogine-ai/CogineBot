@@ -8,6 +8,16 @@ export function isBackupMcpPath(path: string) {
   return /^mcp\/server-[1-9]\d?$/.test(path);
 }
 
+export function hasUnsafeBackupMcpUrlCharacters(value: string): boolean {
+  return (
+    /[?#@\\\s]/.test(value) ||
+    Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || (code >= 127 && code <= 159);
+    })
+  );
+}
+
 const path = z.string().refine(isBackupMcpPath);
 const name = z
   .string()
@@ -31,9 +41,14 @@ export const AgentBackupMcpSchema = z.strictObject({
   path,
   name,
   transport: z.enum(["streamable_http", "sse"]),
-  endpoint: McpRemoteEndpointSchema.refine((value) => {
-    if (!/^https:\/\//i.test(value) || /[?#@\\\s\u0000-\u001f\u007f]/.test(value)) return false;
-    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+  endpoint: McpRemoteEndpointSchema.max(2000).refine((value) => {
+    if (!/^https:\/\//i.test(value) || hasUnsafeBackupMcpUrlCharacters(value)) return false;
+    let host: string;
+    try {
+      host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+    } catch {
+      return false;
+    }
     // This portable format takes public DNS names. Explicit connection still checks resolved IPs.
     return (
       host.includes(".") &&

@@ -1,5 +1,7 @@
 import type {
   AgentBackupDocument,
+  AgentBackupMcp,
+  AgentBackupMcpOmission,
   AgentBackupOmissionReason,
   AgentBackupSource,
   BotPackagePreviewInput,
@@ -30,6 +32,10 @@ import {
   openAgentImportArchive,
 } from "./archive.js";
 import { parseOpenClawIdentity } from "./identity.js";
+import { isPortableBackupMcp, projectBackupMcp } from "./mcp.js";
+
+export { isPortableBackupMcp } from "./mcp.js";
+
 import { backupModelConfigPath, backupModelLabel, projectBackupModel } from "./model.js";
 import {
   backupJobsPath,
@@ -348,6 +354,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     source === "openclaw" && config !== undefined
       ? backupWorkspaceAgent(config, workspacePath)
       : null;
+  const mcp = projectBackupMcp(source, config);
   const projectedModel = projectBackupModel(source, config, modelAgent);
   const agentModelPath = modelAgent ? `${home}agents/${modelAgent}/agent/models.json` : null;
   const model =
@@ -355,7 +362,12 @@ export function encodeAgentBackup(data: Uint8Array): string {
     (projectedModel && agentModelPath && archive.has(agentModelPath))
       ? "unavailable"
       : projectedModel;
-  if (emptyDeclaredWorkspace && !hasStateDatabase && (!model || model === "unavailable"))
+  if (
+    emptyDeclaredWorkspace &&
+    !hasStateDatabase &&
+    !mcp.length &&
+    (!model || model === "unavailable")
+  )
     throw new AgentImportArchiveError("unreadable");
   return encodeBackupDocument(
     source,
@@ -366,7 +378,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     (path) => archive.read(`${home}${path}`),
     routineFiles,
     routineOmissions,
-    { model },
+    { model, mcp },
   );
 }
 
@@ -394,6 +406,7 @@ function encodeBackupDocument(
   options: {
     linkedSkills?: ReadonlySet<string>;
     model?: AgentBackupDocument["model"];
+    mcp?: AgentBackupDocument["mcp"];
   } = {},
 ): string {
   if (files.size + routineFiles.length > AGENT_BACKUP_MAX_FILES)
@@ -424,11 +437,18 @@ function encodeBackupDocument(
   const text = JSON.stringify(parsed.data);
   if (botPackageUtf8Bytes(text) > BOT_PACKAGE_MAX_BYTES)
     throw new AgentImportArchiveError("too_large");
-  if (options.model) {
-    const withModel = JSON.stringify({ ...parsed.data, model: options.model });
-    if (botPackageUtf8Bytes(withModel) <= BOT_PACKAGE_MAX_BYTES) return withModel;
+  const optional = { ...parsed.data };
+  for (const settings of [
+    options.model ? { model: options.model } : null,
+    options.mcp?.length ? { mcp: options.mcp } : null,
+  ]) {
+    if (
+      settings &&
+      botPackageUtf8Bytes(JSON.stringify({ ...optional, ...settings })) <= BOT_PACKAGE_MAX_BYTES
+    )
+      Object.assign(optional, settings);
   }
-  return text;
+  return JSON.stringify(optional);
 }
 
 type AgentBackupFolderFile = {
@@ -535,6 +555,7 @@ export async function encodeAgentBackupFolder(
   const jobs = source === "hermes" ? await readOptional(jobsEntry) : undefined;
   const configEntry = byPath.get(backupModelConfigPath(source));
   const config = await readOptional(configEntry);
+  const mcp = projectBackupMcp(source, config);
   const model =
     configEntry && config === undefined ? "unavailable" : projectBackupModel(source, config, null);
   const { routineFiles, routineOmissions } = projectBackupRoutines(source, jobs, null);
@@ -551,6 +572,7 @@ export async function encodeAgentBackupFolder(
     !content.size &&
     !routineFiles.length &&
     !routineOmissions.length &&
+    !mcp.length &&
     (!model || model === "unavailable")
   )
     throw new AgentImportArchiveError("unreadable");
@@ -561,7 +583,7 @@ export async function encodeAgentBackupFolder(
     (path) => content.get(path)!,
     routineFiles,
     routineOmissions,
-    { linkedSkills, model },
+    { linkedSkills, model, mcp },
   );
 }
 
@@ -615,6 +637,12 @@ export function agentBackupFileGroups(raw: string) {
     skills: [] as string[],
     memory: [] as string[],
     routines: [] as { path: string; name: string; schedule: string }[],
+    connections: (parsed.data.mcp ?? []).filter(
+      (entry): entry is AgentBackupMcp => !("reason" in entry) && isPortableBackupMcp(entry),
+    ),
+    unavailableConnections: (parsed.data.mcp ?? []).filter(
+      (entry): entry is AgentBackupMcpOmission => "reason" in entry,
+    ),
     unavailable: (routineOmissions ?? []).filter(({ path }) => isBackupRoutineOmission(path)) as {
       path: string;
       reason?: AgentBackupOmissionReason;
@@ -673,6 +701,7 @@ export function agentBackupSelectableGroups(
   excluded: ReadonlySet<string>,
   includedRoutines: ReadonlySet<string>,
   includeModel = false,
+  includedConnections: ReadonlySet<string> = new Set(),
 ) {
   const contentItems = (paths: readonly string[]) => paths.map((path) => ({ path, label: path }));
   const scheduleLabels = files.routines.map(({ path, name, schedule }) => ({
@@ -685,6 +714,13 @@ export function agentBackupSelectableGroups(
     { kind: "instructions", items: contentItems(files.instructions) },
     { kind: "skills", items: contentItems(files.skills) },
     { kind: "memory", items: includeMemory ? contentItems(files.memory) : [] },
+    {
+      kind: "connections",
+      items: files.connections.map(({ path, name, endpoint }) => ({
+        path,
+        label: `${name} · ${endpoint}`,
+      })),
+    },
     {
       kind: "routines",
       items: scheduleLabels.map(({ path, label }) => ({
@@ -701,7 +737,12 @@ export function agentBackupSelectableGroups(
     .map(({ kind, items }) => ({
       kind,
       items: items.map(({ path, label }) => {
-        const selected = kind === "routines" ? includedRoutines.has(path) : !excluded.has(path);
+        const selected =
+          kind === "connections"
+            ? includedConnections.has(path)
+            : kind === "routines"
+              ? includedRoutines.has(path)
+              : !excluded.has(path);
         return {
           path,
           label,
@@ -747,6 +788,7 @@ export function agentBackupPreview(
   excludedPaths: readonly string[] = [],
   includedRoutinePaths: readonly string[] = [],
   includeModel = false,
+  includedConnectionPaths: readonly string[] = [],
 ): Pick<BotPackagePreviewInput, "source" | "backupOmissions" | "backupRoutines"> {
   const value = botImportJsonObject(source.trim());
   if (value?.format !== AGENT_BACKUP_FORMAT) return { source };
@@ -761,6 +803,10 @@ export function agentBackupPreview(
     throw new AgentImportArchiveError("unreadable");
   const excluded = new Set(excludedPaths);
   const includedRoutines = new Set(includedRoutinePaths);
+  const includedConnections = new Set(includedConnectionPaths);
+  const mcp = (backup.mcp ?? []).filter((entry) =>
+    "reason" in entry ? true : includedConnections.has(entry.path) && isPortableBackupMcp(entry),
+  );
   const incomplete = new Set(backup.incompleteSkills);
   const omissions = new Map<string, AgentBackupOmissionReason>(
     backup.routineOmissions
@@ -822,6 +868,7 @@ export function agentBackupPreview(
     !safeFiles.length &&
     !excludedMemoryCount &&
     !backupRoutines.length &&
+    !mcp.some((entry) => "endpoint" in entry) &&
     !(includeModel && backup.model && backup.model !== "unavailable")
   )
     throw new AgentImportArchiveError("unreadable");
@@ -838,6 +885,7 @@ export function agentBackupPreview(
     files: safeFiles,
     excludedMemoryCount,
     ...(incompleteSkills.length ? { incompleteSkills } : {}),
+    ...(mcp.length ? { mcp } : {}),
     ...(backup.model === "unavailable" || (includeModel && backup.model)
       ? { model: backup.model }
       : {}),

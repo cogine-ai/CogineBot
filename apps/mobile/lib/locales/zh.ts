@@ -1259,6 +1259,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Retry search": "重试搜索",
   "Save credentials": "保存凭据",
   "Search plugins": "搜索插件",
+  " · Review tool access in the imported bot": " · 在导入的 Bot 中检查工具权限",
   "Set up connections": "设置连接",
   "Sign-in required": "需要登录",
   "Some registries are unavailable.": "部分注册表暂不可用。",
@@ -1279,6 +1280,14 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Cancel import": "取消导入",
   "Check imported skills": "检查导入的技能",
   "Choose package file": "选择包文件",
+  "This connection needs manual setup.": "此连接需要手动设置。",
+  "This connection's tool restrictions cannot be carried over.": "无法保留此连接的工具限制。",
+  "This connection is disabled in the backup.": "此连接在备份中已停用。",
+  "This connection needs a public HTTPS endpoint without credentials or URL parameters.":
+    "此连接需要不含凭据或 URL 参数的公网 HTTPS 地址。",
+  "Additional connections exceed the import limit.": "其他连接超出导入上限。",
+  "Review tool access in the imported bot before using these connections.":
+    "使用这些连接前，请在导入的 Bot 中检查工具权限。",
   Connections: "连接",
   "Could not confirm import. Check status before trying again.":
     "无法确认导入结果，请先检查状态再重试。",

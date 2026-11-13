@@ -9,6 +9,7 @@ import {
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_ROUTINES,
   botPackageUtf8Bytes,
+  isBackupMcpPath,
 } from "@rakazo/contracts";
 import { agentBackupPreview, isBackupRoutine } from "./agent-backup/index.js";
 
@@ -19,6 +20,7 @@ export type BotPackageImportState = {
   includeBackupModel: boolean;
   excludedBackupPaths: readonly string[];
   includedBackupRoutines: readonly string[];
+  includedBackupConnections: readonly string[];
   phase: "editing" | "previewing" | "review" | "importing" | "checking" | "unknown" | "completed";
   preview: BotPackagePreview | null;
   receipt: BotPackageReceipt | null;
@@ -37,6 +39,7 @@ export const initialBotPackageImport: BotPackageImportState = {
   includeBackupModel: false,
   excludedBackupPaths: [],
   includedBackupRoutines: [],
+  includedBackupConnections: [],
   phase: "editing",
   preview: null,
   receipt: null,
@@ -112,6 +115,7 @@ export function createBotPackageImport(deps: Deps) {
             includeBackupModel: false,
             excludedBackupPaths: [],
             includedBackupRoutines: [],
+            includedBackupConnections: [],
             preview: null,
           }
         : {}),
@@ -189,7 +193,9 @@ export function createBotPackageImport(deps: Deps) {
         includeBackupModel === state.includeBackupModel &&
         !(
           replacingSource &&
-          (state.excludedBackupPaths.length || state.includedBackupRoutines.length)
+          (state.excludedBackupPaths.length ||
+            state.includedBackupRoutines.length ||
+            state.includedBackupConnections.length)
         )
       )
         return;
@@ -199,7 +205,9 @@ export function createBotPackageImport(deps: Deps) {
         ...input,
         includeMemory,
         includeBackupModel,
-        ...(replacingSource ? { excludedBackupPaths: [], includedBackupRoutines: [] } : {}),
+        ...(replacingSource
+          ? { excludedBackupPaths: [], includedBackupRoutines: [], includedBackupConnections: [] }
+          : {}),
         phase: "editing",
         preview: null,
         error: null,
@@ -209,8 +217,14 @@ export function createBotPackageImport(deps: Deps) {
     setBackupFileIncluded(path: string, included: boolean) {
       if (!active() || state.clientNonce !== null) return;
       const routine = isBackupRoutine(path);
-      const choices = new Set(routine ? state.includedBackupRoutines : state.excludedBackupPaths);
-      const store = routine ? included : !included;
+      const connection = isBackupMcpPath(path);
+      const key = connection
+        ? "includedBackupConnections"
+        : routine
+          ? "includedBackupRoutines"
+          : "excludedBackupPaths";
+      const choices = new Set(state[key]);
+      const store = routine || connection ? included : !included;
       if (store === choices.has(path)) return;
       if (routine && store && choices.size >= BOT_PACKAGE_MAX_ROUTINES) return;
       if (store) choices.add(path);
@@ -218,9 +232,7 @@ export function createBotPackageImport(deps: Deps) {
       invalidate();
       publish({
         ...state,
-        ...(routine
-          ? { includedBackupRoutines: [...choices] }
-          : { excludedBackupPaths: [...choices] }),
+        [key]: [...choices],
         phase: "editing",
         preview: null,
         error: null,
@@ -248,6 +260,7 @@ export function createBotPackageImport(deps: Deps) {
             state.excludedBackupPaths,
             state.includedBackupRoutines,
             state.includeBackupModel,
+            state.includedBackupConnections,
           ),
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
@@ -305,6 +318,7 @@ export function createBotPackageImport(deps: Deps) {
         includeBackupModel: false,
         excludedBackupPaths: [],
         includedBackupRoutines: [],
+        includedBackupConnections: [],
         preview: null,
         receipt: null,
         clientNonce,

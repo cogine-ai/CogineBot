@@ -205,6 +205,102 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     });
     return { ...member, actor: { ...member.actor, spaceId: space.id } };
   }
+  it("atomically saves reviewed remote connections without granting tools or making a network request", async () => {
+    const owner = await account();
+    const foreign = await account();
+    const scope = { spaceId: owner.actor.spaceId, userId: owner.actor.userId };
+    const endpoint = "https://docs.example.test/mcp";
+    const original = await database.prisma.mcpServer.create({
+      data: {
+        ...scope,
+        name: "Docs",
+        slug: "docs",
+        transport: "sse",
+        endpoint: "https://original.example.test/sse",
+        allowAllTools: true,
+      },
+    });
+    const plan = await preview(owner, {
+      format: AGENT_BACKUP_FORMAT,
+      source: "hermes",
+      files: [],
+      mcp: [
+        { path: "mcp/server-1", name: "Docs", endpoint, transport: "streamable_http" },
+        { path: "mcp/server-2", name: "Restricted", reason: "toolPolicy" },
+      ],
+    });
+    expect(plan.document.connections).toEqual([{ name: "Docs", note: endpoint }]);
+    expect(plan.leftOut).toContainEqual(
+      expect.objectContaining({ name: "Restricted", kind: "connection" }),
+    );
+    const nonce = randomUUID();
+    expect(
+      (await request(foreign, "import", { previewToken: plan.previewToken, clientNonce: nonce }))
+        .status,
+    ).toBe(400);
+    expect(await database.prisma.mcpServer.count({ where: scope })).toBe(1);
+    failComponents = true;
+    expect(
+      (await request(owner, "import", { previewToken: plan.previewToken, clientNonce: nonce }))
+        .status,
+    ).toBe(500);
+    expect(await database.prisma.mcpServer.count({ where: scope })).toBe(1);
+    loseCommitAck = true;
+    const imported = await call<BotPackageReceipt>(owner, "resume", { clientNonce: nonce });
+    expect(imported).toMatchObject({
+      status: "completed",
+      connections: [{ name: "Docs (2)", setup: "mcp" }],
+    });
+    expect(await importPackage(owner, plan, nonce)).toEqual(imported);
+    const server = await database.prisma.mcpServer.findFirstOrThrow({
+      where: { ...scope, slug: "docs-2" },
+    });
+    expect(server).toMatchObject({
+      endpoint,
+      allowAllTools: false,
+      allowedTools: [],
+      headers: {},
+      env: {},
+      command: null,
+      secretId: null,
+    });
+    expect(await database.prisma.mcpServer.findUnique({ where: { id: original.id } })).toEqual(
+      original,
+    );
+    expect(await database.prisma.botMcpServer.count({ where: { serverId: server.id } })).toBe(0);
+    const botId = imported.botId!;
+    expect(await database.prisma.run.count({ where: { botId } })).toBe(0);
+    const message = await database.prisma.message.findFirstOrThrow({
+      where: { botId, role: "bot" },
+    });
+    expect(message.blocks).toEqual([
+      {
+        kind: "mcp_approval",
+        serverId: server.id,
+        name: "Docs (2)",
+        endpoint,
+        transport: "streamable_http",
+        status: "pending",
+        needsOAuth: false,
+      },
+    ]);
+    const quickApprove = await handles.app.request("/rpc/mcp/assignments/approve", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin, cookie: owner.cookie },
+      body: JSON.stringify({
+        json: { botId, serverId: server.id, threadId: message.threadId, revision: server.revision },
+      }),
+    });
+    expect(quickApprove.status).toBe(409);
+    expect(await database.prisma.mcpServer.findUnique({ where: { id: server.id } })).toEqual(
+      server,
+    );
+    const exported = await call<BotPackageExport>(owner, "export", { botId });
+    expect(exported.json).not.toContain(endpoint);
+    expect(exported.document.connections).toEqual([{ name: "Docs (2)", note: "" }]);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
   beforeAll(async () => {
     database = createDb(process.env.DATABASE_URL!);
     dataDir = await mkdtemp(join(tmpdir(), "bot-packages-http-"));

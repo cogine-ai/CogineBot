@@ -17,7 +17,9 @@ import type {
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
 import {
+  AgentBackupMcpSchema,
   BOT_PACKAGE_FORMAT,
+  BOT_PACKAGE_MAX_CONNECTIONS,
   BotPackageDocumentSchema,
   BotPackageLeftOutSchema,
 } from "@rakazo/contracts";
@@ -34,6 +36,7 @@ import {
 import { redactSecretText } from "@rakazo/logging/redaction";
 import * as z from "zod";
 import { createAgentSkillsService, resolveSkillContent } from "./agent-skills.js";
+import { importPendingMcpServers } from "./bot-package-mcp.js";
 import {
   BackupModelBindingSchema,
   findBackupModelBinding,
@@ -51,6 +54,7 @@ type Context = {
 type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets"> & { codexCatalog: CodexLiveCatalog };
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
+  backupMcp: AgentBackupMcpSchema.array().max(BOT_PACKAGE_MAX_CONNECTIONS).optional(),
   modelOnly: z.literal(true).optional(),
 });
 const includeChildren = {
@@ -196,12 +200,13 @@ export function createBotPackagesService(deps: Deps) {
       connections: removed
         ? []
         : row.components
-            .filter((component) => component.kind === "connection")
+            .filter((component) => component.kind === "connection" || component.kind === "mcp")
             .map((component) => ({
               id: component.id,
               key: component.key,
               name: component.name,
               note: component.description,
+              ...(component.kind === "mcp" ? { setup: "mcp" as const } : {}),
             })),
       leftOut: safeLeftOut(row.leftOut),
     };
@@ -307,14 +312,21 @@ export function createBotPackagesService(deps: Deps) {
             key: `skill:${index}`,
             kind: "skill",
           })),
-          ...document.connections.map((connection, index) => ({
-            importId: marker.id,
-            botId: bot.id,
-            key: `connection:${index}`,
-            kind: "connection",
-            name: connection.name,
-            description: connection.note,
-          })),
+          ...(document.backupMcp?.length
+            ? await importPendingMcpServers(
+                tx,
+                context.actor,
+                { botId: bot.id, threadId: bot.thread!.id, importId: marker.id },
+                document.backupMcp,
+              )
+            : document.connections.map((connection, index) => ({
+                importId: marker.id,
+                botId: bot.id,
+                key: `connection:${index}`,
+                kind: "connection",
+                name: connection.name,
+                description: connection.note,
+              }))),
         ];
         if (components.length) await tx.botPackageComponent.createMany({ data: components });
         if (document.memory.length) {
@@ -431,13 +443,12 @@ export function createBotPackagesService(deps: Deps) {
             tokenHash: hash(previewToken),
             digest,
             sourceFormat: parsed.sourceFormat,
-            document: binding
-              ? {
-                  ...parsed.document,
-                  backupModelBinding: binding,
-                  ...(modelOnly ? { modelOnly: true } : {}),
-                }
-              : parsed.document,
+            document: {
+              ...parsed.document,
+              ...(parsed.backupMcp ? { backupMcp: parsed.backupMcp } : {}),
+              ...(binding ? { backupModelBinding: binding } : {}),
+              ...(modelOnly ? { modelOnly: true } : {}),
+            },
             leftOut,
             includeMemory: input.includeMemory,
             availableMemoryCount: parsed.availableMemoryCount,
@@ -767,7 +778,7 @@ export function createBotPackagesService(deps: Deps) {
           );
       const connections = [
         ...components
-          .filter((component) => component.kind === "connection")
+          .filter((component) => component.kind === "connection" || component.kind === "mcp")
           .map((component) => ({ name: component.name, note: component.description })),
         ...assignments.map((assignment) => ({
           name: assignment.server.name,
