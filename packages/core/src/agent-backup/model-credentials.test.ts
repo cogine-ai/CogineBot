@@ -32,6 +32,35 @@ describe("readBackupModelApiKey", () => {
     expect(readBackupModelApiKey("hermes", "openai-codex", { auth })).toBeUndefined();
   });
 
+  it("requires distinct provider aliases and manual pool rows to identify one account", () => {
+    const config = JSON.stringify({
+      providers: { openai: { apiKey }, "openai-api": { apiKey: "different-synthetic-key" } },
+    });
+    expect(readBackupModelApiKey("hermes", "openai", { config })).toBeUndefined();
+    expect(
+      readBackupModelApiKey("hermes", "openai", {
+        config: JSON.stringify({
+          model: { provider: "openai", apiKey, api_key: "different-synthetic-key" },
+        }),
+      }),
+    ).toBeUndefined();
+
+    const row = { auth_type: "api_key", source: "manual", access_token: apiKey };
+    const pool = (rows: unknown[]) => JSON.stringify({ credential_pool: { "openai-api": rows } });
+    expect(
+      readBackupModelApiKey("hermes", "openai", {
+        auth: pool([row, { ...row, access_token: "different-synthetic-key" }]),
+      }),
+    ).toBeUndefined();
+    expect(readBackupModelApiKey("hermes", "openai", { auth: pool([row, row]) })).toBe(apiKey);
+    expect(
+      readBackupModelApiKey("hermes", "openai", {
+        auth: pool([row]),
+        env: "OPENAI_API_KEY=different-synthetic-key",
+      }),
+    ).toBeUndefined();
+  });
+
   it("follows a desktop model's named key before the standard environment keys", () => {
     const env = [
       "DESKTOP_MODEL_KEY=fixture-desktop-key",

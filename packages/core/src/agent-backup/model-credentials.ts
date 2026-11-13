@@ -151,17 +151,27 @@ export function readBackupModelApiKey(
     source === "hermes" && backupProviderId(source, text(model.provider)) === provider
       ? text(model.key_env || model.api_key_env)
       : "";
-  const keys = [
-    ...(keyEnv ? [env.get(keyEnv)] : []),
-    ...matching.map((entry) => entry.apiKey ?? entry.api_key),
-    ...names.map((name) => env.get(name)),
-    ...entries.flatMap((entry) =>
-      entry.auth_type === "api_key" && entry.source === "manual" ? [entry.access_token] : [],
+  const readKey = (value: unknown) => {
+    const key = resolveKey(value, env);
+    return provider === "anthropic" && key?.startsWith("sk-ant-oat") ? undefined : key;
+  };
+  const explicit = keyEnv ? readKey(env.get(keyEnv)) : undefined;
+  if (explicit) return explicit;
+  const configuredKeys = new Set(
+    matching.flatMap((entry) =>
+      [entry.apiKey, entry.api_key].flatMap((value) => {
+        const key = readKey(value);
+        return key ? [key] : [];
+      }),
     ),
-  ];
-  return keys
-    .map((key) => resolveKey(key, env))
-    .find(
-      (key) => key !== undefined && !(provider === "anthropic" && key.startsWith("sk-ant-oat")),
-    );
+  );
+  const envKey = names.map((name) => readKey(env.get(name))).find((key) => key !== undefined);
+  // A saved pool can be selected independently of the generic provider fallback.
+  for (const entry of entries) {
+    if (entry.auth_type !== "api_key" || entry.source !== "manual") continue;
+    const key = readKey(entry.access_token);
+    if (key) configuredKeys.add(key);
+  }
+  if (envKey) configuredKeys.add(envKey);
+  return configuredKeys.size === 1 ? configuredKeys.values().next().value : undefined;
 }
