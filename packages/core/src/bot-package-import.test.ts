@@ -114,6 +114,18 @@ describe("bot package import review", () => {
     expect(f.deps.preview.mock.calls[1]![0]).toEqual({ source, includeMemory: true });
   });
 
+  it("drops source-specific consent when the source is emptied", async () => {
+    const f = fixture();
+    f.manager.edit({ source: "old source", includeMemory: true });
+    f.manager.edit({ source: " \n" });
+    f.manager.edit({ source: "new source" });
+    await f.manager.preview();
+    expect(f.deps.preview).toHaveBeenCalledWith(
+      { source: "new source", includeMemory: false },
+      expect.any(AbortSignal),
+    );
+  });
+
   it("refuses malformed backup memory before the default preview request", async () => {
     const f = fixture();
     f.manager.edit({

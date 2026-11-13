@@ -153,16 +153,21 @@ export function createBotPackageImport(deps: Deps) {
   return {
     edit(input: Partial<Pick<BotPackageImportState, "source" | "name" | "includeMemory">>) {
       if (!active() || state.clientNonce !== null) return;
+      const includeMemory =
+        input.source !== undefined && !input.source.trim()
+          ? false
+          : (input.includeMemory ?? state.includeMemory);
       if (
         (input.source === undefined || input.source === state.source) &&
         (input.name === undefined || input.name === state.name) &&
-        (input.includeMemory === undefined || input.includeMemory === state.includeMemory)
+        includeMemory === state.includeMemory
       )
         return;
       invalidate();
       publish({
         ...state,
         ...input,
+        includeMemory,
         phase: "editing",
         preview: null,
         error: null,
