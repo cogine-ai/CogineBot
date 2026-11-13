@@ -44,7 +44,7 @@ export function createSlackWorkspaces(options: {
   };
   let disposed = false;
   let generation = 0;
-  let reading = false;
+  let reading: number | null = null;
   let cancelledAttempt: string | null = null;
   const current = () => !disposed && options.current();
   const activeAttempt = () => state.attempt;
@@ -53,8 +53,7 @@ export function createSlackWorkspaces(options: {
     state = { ...state, ...patch };
     options.changed(state);
   };
-  async function read() {
-    const request = ++generation;
+  async function read(request = ++generation) {
     try {
       const attempt = state.attempt;
       const outcome = attempt ? await options.api.attempt({ attemptId: attempt.attemptId }) : null;
@@ -80,12 +79,15 @@ export function createSlackWorkspaces(options: {
     }
   }
   async function refresh() {
-    if (!current() || state.busy || reading) return;
-    reading = true;
+    // A mutation invalidates older reads. Only a refresh in the current generation
+    // owns the lock; an obsolete request must neither block nor release its successor.
+    if (!current() || state.busy || reading === generation) return;
+    const request = ++generation;
+    reading = request;
     try {
-      await read();
+      await read(request);
     } finally {
-      reading = false;
+      if (reading === request) reading = null;
     }
   }
   const locked = () => !current() || state.busy || state.readFailed || !state.list;

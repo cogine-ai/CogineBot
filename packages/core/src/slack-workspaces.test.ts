@@ -50,10 +50,12 @@ function fixture() {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 describe("Slack workspace reconciliation", () => {
@@ -269,6 +271,92 @@ describe("Slack workspace reconciliation", () => {
     await reading;
     expect(f.manager.state().list?.workspaces[0]?.revision).toBe(2);
   });
+  it("recovers a failed mutation readback while the invalidated refresh stays pending", async () => {
+    const f = fixture();
+    await f.manager.refresh();
+    const old = deferred<SlackInstallationOutputs["list"]>();
+    f.api.list.mockReturnValueOnce(old.promise);
+    const oldRead = f.manager.refresh();
+    f.api.list.mockRejectedValueOnce(new Error("readback offline"));
+    await f.manager.pause(row);
+    expect(f.manager.state()).toMatchObject({ readFailed: true, busy: false });
+    const recovered = { ...row, revision: 2, status: "paused" as const };
+    f.api.list.mockResolvedValue({ available: true, workspaces: [recovered] });
+    await f.manager.refresh();
+    expect(f.api.list).toHaveBeenCalledTimes(4);
+    expect(f.manager.state()).toMatchObject({
+      readFailed: false,
+      list: { workspaces: [recovered] },
+    });
+    await f.manager.pause(recovered);
+    expect(f.api.pause).toHaveBeenLastCalledWith({
+      id: row.id,
+      expectedRevision: 2,
+      paused: false,
+    });
+    old.resolve({ available: true, workspaces: [row] });
+    await oldRead;
+    expect(f.manager.state().list?.workspaces[0]?.revision).toBe(2);
+  });
+  it.each(["resolve", "reject"] as const)(
+    "an obsolete read's %s cannot release a newer refresh lock or alter state",
+    async (settle) => {
+      const f = fixture();
+      await f.manager.refresh();
+      const old = deferred<SlackInstallationOutputs["list"]>();
+      f.api.list.mockReturnValueOnce(old.promise);
+      const oldRead = f.manager.refresh();
+      f.api.list.mockRejectedValueOnce(new Error("readback offline"));
+      await f.manager.pause(row);
+      const next = deferred<SlackInstallationOutputs["list"]>();
+      f.api.list.mockReturnValueOnce(next.promise);
+      const retry = f.manager.refresh();
+      expect(f.api.list).toHaveBeenCalledTimes(4);
+      f.changed.mockClear();
+      if (settle === "resolve") old.resolve({ available: false, workspaces: [] });
+      else old.reject(new Error("obsolete failure"));
+      await oldRead;
+      expect(f.changed).not.toHaveBeenCalled();
+      await f.manager.refresh();
+      expect(f.api.list).toHaveBeenCalledTimes(4);
+      expect(f.manager.state().readFailed).toBe(true);
+      next.resolve({ available: true, workspaces: [{ ...row, revision: 2, status: "paused" }] });
+      await retry;
+      expect(f.manager.state()).toMatchObject({
+        readFailed: false,
+        list: { workspaces: [{ revision: 2, status: "paused" }] },
+      });
+      await f.manager.refresh();
+      expect(f.api.list).toHaveBeenCalledTimes(5);
+    },
+  );
+  it.each(["dispose", "scope"] as const)(
+    "invalidates a pending recovery read on %s",
+    async (leave) => {
+      const f = fixture();
+      await f.manager.refresh();
+      const old = deferred<SlackInstallationOutputs["list"]>();
+      f.api.list.mockReturnValueOnce(old.promise);
+      const oldRead = f.manager.refresh();
+      f.api.list.mockRejectedValueOnce(new Error("readback offline"));
+      await f.manager.pause(row);
+      const next = deferred<SlackInstallationOutputs["list"]>();
+      f.api.list.mockReturnValueOnce(next.promise);
+      const retry = f.manager.refresh();
+      expect(f.api.list).toHaveBeenCalledTimes(4);
+      if (leave === "dispose") f.manager.dispose();
+      else f.leave();
+      f.changed.mockClear();
+      old.resolve({ available: true, workspaces: [row] });
+      next.resolve({ available: true, workspaces: [{ ...row, revision: 2 }] });
+      await Promise.all([oldRead, retry]);
+      await f.manager.refresh();
+      await f.manager.remove(row);
+      expect(f.changed).not.toHaveBeenCalled();
+      expect(f.api.list).toHaveBeenCalledTimes(4);
+      expect(f.api.remove).not.toHaveBeenCalled();
+    },
+  );
   it("preserves Web restrictions when Slack or the bot is unavailable, but permits removal", async () => {
     const f = fixture();
     f.api.list.mockResolvedValue({ available: false, workspaces: [row] });

@@ -154,7 +154,11 @@ export default function SlackWorkspaces() {
     );
   }
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="automatic"
+    >
       {state.list && !state.list.available ? (
         <Text style={styles.secondary}>{t("Slack installation is unavailable.")}</Text>
       ) : null}
