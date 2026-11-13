@@ -141,7 +141,11 @@ export function readBackupModelApiKey(
     const value = env.get(name);
     if (value?.trim() && !endpoints.includes(value.trim().replace(/\/+$/, ""))) return undefined;
   }
-  const auth = source === "hermes" && files.auth ? readBackupConfig("openclaw", files.auth) : null;
+  const auth =
+    source === "hermes" && files.auth !== undefined
+      ? readBackupConfig("openclaw", files.auth)
+      : undefined;
+  if (auth === null) return undefined;
   const entries = Object.entries(record(auth?.credential_pool)).flatMap(([id, rows]) =>
     backupProviderId(source, id) === provider && Array.isArray(rows) ? rows.map(record) : [],
   );

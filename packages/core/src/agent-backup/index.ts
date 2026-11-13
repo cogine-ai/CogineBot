@@ -647,10 +647,13 @@ export function readAgentBackupModelKey(
   const envPath = `${home}.env`;
   const env = archive.readOptional(envPath);
   if (env === undefined && archive.has(envPath)) return undefined;
+  const authPath = `${home}auth.json`;
+  const auth = source === "hermes" ? archive.readOptional(authPath) : undefined;
+  if (source === "hermes" && auth === undefined && archive.has(authPath)) return undefined;
   return readBackupModelApiKey(source, model.provider, {
     config,
     env,
-    auth: source === "hermes" ? archive.readOptional(`${home}auth.json`) : undefined,
+    auth,
   });
 }
 

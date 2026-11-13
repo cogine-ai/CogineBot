@@ -32,6 +32,15 @@ describe("readBackupModelApiKey", () => {
     expect(readBackupModelApiKey("hermes", "openai-codex", { auth })).toBeUndefined();
   });
 
+  it.each(["", '{"credential_pool": {'])(
+    "does not fall back to another key with a malformed auth file %j",
+    (auth) => {
+      expect(
+        readBackupModelApiKey("hermes", "openai", { auth, env: `OPENAI_API_KEY=${apiKey}` }),
+      ).toBeUndefined();
+    },
+  );
+
   it("requires distinct provider aliases and manual pool rows to identify one account", () => {
     const config = JSON.stringify({
       providers: { openai: { apiKey }, "openai-api": { apiKey: "different-synthetic-key" } },

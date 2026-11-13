@@ -366,7 +366,7 @@ test("agent backup folder previews only selected content and preserves the draft
     await Promise.all([
       writeFile(join(root, "HERMES.md"), instructions),
       writeFile(join(root, "memories", "MEMORY.md"), note),
-      writeFile(join(root, "auth.json"), secret),
+      writeFile(join(root, "auth.json"), JSON.stringify({ gateway_token: secret })),
       writeFile(
         join(root, "config.yaml"),
         "model: { provider: anthropic, default: claude-sonnet-4-6, api_key: local-config-fixture }\n",
