@@ -419,6 +419,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       modelKeySourceDigest: "b".repeat(64),
     });
     expect(JSON.stringify(failed)).not.toContain(apiKey);
+    expect(failed).not.toHaveProperty("modelKeyBinding");
+    expect(
+      (await request(owner, "resume", { clientNonce, apiKey: "different-synthetic-key" })).status,
+    ).toBe(400);
+    expect(outbound).toHaveBeenCalledTimes(1);
     outbound.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-4.1-mini" }] }));
     expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(400);
     expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);

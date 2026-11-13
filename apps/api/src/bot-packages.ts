@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
@@ -59,13 +59,20 @@ type Context = {
   signal?: AbortSignal;
   stillAuthorized?: () => Promise<boolean>;
 };
-type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets" | "remoteConnectors"> & {
+type Deps = Pick<
+  RouterDeps,
+  "prisma" | "billing" | "secrets" | "remoteConnectors" | "botPackageBindingKey"
+> & {
   codexCatalog: CodexLiveCatalog;
 };
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
   backupModelKey: AgentBackupModelSchema.optional(),
   modelKeySourceDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  modelKeyBinding: z
     .string()
     .regex(/^[a-f0-9]{64}$/)
     .optional(),
@@ -139,6 +146,13 @@ const own = (actor: Actor) => ({ spaceId: actor.spaceId, userId: actor.userId })
 
 /** Ordinary JSON packages remain offline. An opted-in backup model can check its existing connection. */
 export function createBotPackagesService(deps: Deps) {
+  const bindingKey = deps.botPackageBindingKey || randomBytes(32);
+  const bindModelKey = (actor: Actor, nonce: string, apiKey: string) =>
+    createHmac("sha256", bindingKey)
+      .update(
+        JSON.stringify(["bot-package-model-key/v1", actor.userId, actor.spaceId, nonce, apiKey]),
+      )
+      .digest();
   const findNonce = (actor: Actor, clientNonce: string) =>
     deps.prisma.botPackageImport.findUnique({
       where: { spaceId_userId_clientNonce: { ...own(actor), clientNonce } },
@@ -270,18 +284,26 @@ export function createBotPackagesService(deps: Deps) {
     const { clientNonce } = marker;
     const kind = await botCreationComputerKind(deps.prisma);
     try {
-      const modelKey = marker.plan
-        ? packagePlanSchema.parse(marker.plan).backupModelKey
-        : undefined;
+      const plan = marker.plan ? packagePlanSchema.parse(marker.plan) : undefined;
+      const modelKey = plan?.backupModelKey;
       let prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined;
       if (
         modelKey &&
+        (!apiKey ||
+          !plan.modelKeyBinding ||
+          !timingSafeEqual(
+            bindModelKey(context.actor, clientNonce, apiKey),
+            Buffer.from(plan.modelKeyBinding, "hex"),
+          ))
+      )
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Select the original backup to resume this model connection.",
+        });
+      if (
+        modelKey &&
+        apiKey &&
         !(await hasBackupModelAccount(deps.prisma, context.actor, modelKey.provider))
       ) {
-        if (!apiKey)
-          throw new ORPCError("BAD_REQUEST", {
-            message: "Select the backup again to import its model key.",
-          });
         prepared = await prepareBackupModelKey(
           deps.secrets,
           context.actor,
@@ -592,7 +614,18 @@ export function createBotPackagesService(deps: Deps) {
             previewTokenHash: tokenHash,
             digest: preview.digest,
             botName: document.profile.name,
-            plan: preview.document as Prisma.InputJsonValue,
+            plan: {
+              ...(preview.document as Prisma.InputJsonObject),
+              ...(document.backupModelKey && input.apiKey
+                ? {
+                    modelKeyBinding: bindModelKey(
+                      context.actor,
+                      input.clientNonce,
+                      input.apiKey,
+                    ).toString("hex"),
+                  }
+                : {}),
+            },
             leftOut: preview.leftOut as Prisma.InputJsonValue,
             skillCount: document.skills.length,
             connectionCount: document.connections.length,

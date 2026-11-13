@@ -359,7 +359,7 @@ test("agent backup folder previews only selected content and preserves the draft
     const otherBackup = join(fixture, "other-review-agent");
     await mkdir(join(root, "memories"), { recursive: true });
     await mkdir(join(unrelated, "workspace"), { recursive: true });
-    await mkdir(otherBackup);
+    await mkdir(join(otherBackup, "memories"), { recursive: true });
     const instructions = "Summarize the folder's research notes.";
     const note = "Keep this note private unless selected.";
     const secret = "Local fixture credential value.";
@@ -373,7 +373,9 @@ test("agent backup folder previews only selected content and preserves the draft
       ),
       writeFile(join(unrelated, "AGENTS.md"), "Ordinary project instructions."),
       writeFile(join(unrelated, "workspace", "README.md"), "Ordinary project workspace."),
-      writeFile(join(otherBackup, "HERMES.md"), "Use a different account's notes."),
+      writeFile(join(otherBackup, "HERMES.md"), instructions),
+      writeFile(join(otherBackup, "memories", "MEMORY.md"), note),
+      writeFile(join(otherBackup, "auth.json"), JSON.stringify({ gateway_token: secret })),
       writeFile(
         join(otherBackup, "config.yaml"),
         "model: { provider: anthropic, default: claude-sonnet-4-6, api_key: another-config-fixture }\n",
@@ -469,15 +471,10 @@ test("agent backup folder previews only selected content and preserves the draft
     const capture = async (route: Route) => {
       const body = route.request().postData() ?? "";
       writes.push(body);
-      const { previewToken, clientNonce } = JSON.parse(body).json;
+      const { clientNonce } = JSON.parse(body).json;
       pendingNonce = clientNonce;
-      // The local token-kind check fails after accepting the plan without contacting a provider.
-      const response = await route.fetch({
-        postData: JSON.stringify({
-          json: { previewToken, clientNonce, apiKey: "sk-ant-oat01-synthetic-fixture" },
-        }),
-        maxRetries: 0,
-      });
+      // The offline provider emulator rejects this key after the import marker is accepted.
+      const response = await route.fetch({ maxRetries: 0 });
       expect(response.status()).toBe(400);
       await route.abort("failed");
     };
@@ -511,15 +508,27 @@ test("agent backup folder previews only selected content and preserves the draft
     ).toBeVisible();
     const resumes: string[] = [];
     await page.route("**/rpc/botPackages/resume", async (route) => {
-      resumes.push(route.request().postData() ?? "");
+      const body = route.request().postData() ?? "";
+      if (JSON.parse(body).json.apiKey === "another-config-fixture") {
+        const response = await route.fetch({ maxRetries: 0 });
+        expect(response.status()).toBe(400);
+        const error = (await response.json()) as { json?: { message?: string } };
+        expect(error.json?.message).toBe(
+          "Select the original backup to resume this model connection.",
+        );
+        await route.fulfill({ response });
+        return;
+      }
+      resumes.push(body);
       await route.abort("failed");
     });
     await choose(otherBackup);
     await resume.click();
     await expect(
-      panel.getByText("Could not read the API key. Choose the backup again."),
+      panel.getByText("Could not confirm import. Check status before trying again."),
     ).toBeVisible();
     expect(resumes).toHaveLength(0);
+    await panel.getByRole("button", { name: "Check status", exact: true }).click();
     await choose(root);
     await resume.click();
     await expect.poll(() => resumes.length).toBe(1);
