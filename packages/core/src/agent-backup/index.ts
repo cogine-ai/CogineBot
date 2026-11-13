@@ -349,7 +349,7 @@ export function agentBackupFileGroups(raw: string) {
     instructions: [] as string[],
     skills: [] as string[],
     memory: [] as string[],
-    routines: [] as { path: string; name: string }[],
+    routines: [] as { path: string; name: string; schedule: string }[],
     unavailable: (routineOmissions ?? []).filter(({ path }) => isBackupRoutineOmission(path)) as {
       path: string;
       reason?: AgentBackupOmissionReason;
@@ -364,7 +364,12 @@ export function agentBackupFileGroups(raw: string) {
   for (const { path, content } of files) {
     if (isBackupRoutine(path)) {
       const routine = readBackupRoutine(content);
-      if (routine) groups.routines.push({ path, name: routine.name });
+      if (routine)
+        groups.routines.push({
+          path,
+          name: routine.name,
+          schedule: `${routine.crons.join("; ")} · ${routine.timezone}`,
+        });
       else groups.unavailable.push({ path, reason: "routineSchedule" });
       continue;
     }
@@ -404,11 +409,26 @@ export function agentBackupSelectableGroups(
   includedRoutines: ReadonlySet<string>,
 ) {
   const contentItems = (paths: readonly string[]) => paths.map((path) => ({ path, label: path }));
+  const scheduleLabels = files.routines.map(({ path, name, schedule }) => ({
+    path,
+    label: `${name} · ${schedule}`,
+  }));
+  const labelCounts = new Map<string, number>();
+  for (const { label } of scheduleLabels) labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
   const groups = [
     { kind: "instructions", items: contentItems(files.instructions) },
     { kind: "skills", items: contentItems(files.skills) },
     { kind: "memory", items: includeMemory ? contentItems(files.memory) : [] },
-    { kind: "routines", items: files.routines.map(({ path, name }) => ({ path, label: name })) },
+    {
+      kind: "routines",
+      items: scheduleLabels.map(({ path, label }) => ({
+        path,
+        label:
+          (labelCounts.get(label) ?? 0) > 1
+            ? `${label} · #${path.slice("cron/routine-".length, -".json".length)}`
+            : label,
+      })),
+    },
   ] as const;
   const visible = groups
     .filter(({ items }) => items.length)

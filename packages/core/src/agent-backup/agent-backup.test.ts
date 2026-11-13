@@ -5,6 +5,7 @@ import { parseSkillMd } from "../agent-skill.js";
 import {
   agentBackupFileGroups,
   agentBackupPreview,
+  agentBackupSelectableGroups,
   encodeAgentBackup,
   readBotImportBytes,
   renameBackupSkill,
@@ -119,7 +120,7 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
   expect(source).not.toContain("privateHistory");
   expect(source).not.toContain("Private configuration fixture.");
   const groups = agentBackupFileGroups(source);
-  expect(groups?.routines).toEqual([
+  expect(groups?.routines).toMatchObject([
     { path: "cron/routine-1.json", name: "Review reports" },
     { path: "cron/routine-9.json", name: "Review reports" },
   ]);
@@ -201,7 +202,7 @@ it("does not infer a schedule owner from an unrelated workspace's name", () => {
   };
   const source = encodeAgentBackup(tar(files));
   expect(source).not.toContain("Other agent text.");
-  expect(agentBackupFileGroups(source)?.routines).toEqual([
+  expect(agentBackupFileGroups(source)?.routines).toMatchObject([
     { path: "cron/routine-2.json", name: "Correct owner" },
   ]);
 
@@ -312,7 +313,7 @@ it("opens a declared workspace with only a portable routine", () => {
     const inherited = encodeAgentBackup(
       tar({ ...files, "backup/state/openclaw.json": JSON.stringify(config) }),
     );
-    expect(agentBackupFileGroups(inherited)?.routines).toEqual([
+    expect(agentBackupFileGroups(inherited)?.routines).toMatchObject([
       { path: "cron/routine-1.json", name: "Review reports" },
     ]);
   }
@@ -367,10 +368,40 @@ it("projects a Hermes cron with a source timezone and omits finite or restricted
       ),
     }),
   );
-  expect(agentBackupFileGroups(source)?.routines).toEqual([
+  expect(agentBackupFileGroups(source)?.routines).toMatchObject([
     { path: "cron/routine-1.json", name: "Daily review" },
   ]);
   expect(agentBackupFileGroups(source)?.unavailable).toHaveLength(4);
+});
+
+it("distinguishes backup routines with the same name and schedule", () => {
+  const routine = {
+    name: "Review",
+    prompt: "Review the notes.",
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+  };
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "cron/routine-1.json", content: JSON.stringify(routine) },
+      {
+        path: "cron/routine-2.json",
+        content: JSON.stringify({ ...routine, prompt: "Review the reports." }),
+      },
+    ],
+  });
+  const files = agentBackupFileGroups(source)!;
+  const selected = new Set(["cron/routine-2.json"]);
+  const { groups } = agentBackupSelectableGroups(files, false, new Set(), selected);
+  expect(groups[0]?.items).toMatchObject([
+    { label: "Review · 0 9 * * * · UTC · #1", selected: false },
+    { label: "Review · 0 9 * * * · UTC · #2", selected: true },
+  ]);
+  expect(agentBackupPreview(source, false, [], [...selected]).backupRoutines).toEqual([
+    { path: "cron/routine-2.json", routine: { ...routine, prompt: "Review the reports." } },
+  ]);
 });
 
 it("counts every valid locally omitted note without applying the saved-memory limit", () => {

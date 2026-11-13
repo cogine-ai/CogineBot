@@ -222,6 +222,14 @@ test("agent backup import previews supported text and saves only the selected co
           delivery: { mode: "none" },
           sessionTarget: "isolated",
         },
+        {
+          agentId: "main",
+          name: "Morning review",
+          schedule: { kind: "cron", expr: "0 18 * * 1-5", tz: "Asia/Taipei" },
+          payload: { kind: "agentTurn", message: "Review the evening reports." },
+          delivery: { mode: "none" },
+          sessionTarget: "isolated",
+        },
       ],
     }),
     [`${backupRoot}/.env`]: "IGNORE_THIS_FIXTURE_VALUE",
@@ -291,7 +299,18 @@ test("agent backup import previews supported text and saves only the selected co
   expect(uploaded).not.toContain(note);
   await memory.click();
   await panel.getByRole("checkbox", { name: "USER.md", exact: true }).click();
-  await panel.getByRole("checkbox", { name: "Morning review", exact: true }).click();
+  const morning = panel.getByRole("checkbox", {
+    name: "Morning review · 0 9 * * 1-5 · Asia/Taipei",
+    exact: true,
+  });
+  const evening = panel.getByRole("checkbox", {
+    name: "Morning review · 0 18 * * 1-5 · Asia/Taipei",
+    exact: true,
+  });
+  await expect(morning).not.toBeChecked();
+  await expect(evening).not.toBeChecked();
+  await morning.click();
+  await expect(evening).not.toBeChecked();
   await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
     0,
   );
@@ -301,6 +320,7 @@ test("agent backup import previews supported text and saves only the selected co
   await expect(document.getByText(note, { exact: true })).toBeVisible();
   expect(uploaded).toContain(note);
   expect(uploaded).toContain("Review the morning reports.");
+  expect(uploaded).not.toContain("Review the evening reports.");
   await expect(panel.getByText("Imported routines start paused.", { exact: true })).toBeVisible();
   expect(uploaded).not.toContain(otherNote);
   expect(uploaded).not.toContain("Read references/guide.md.");

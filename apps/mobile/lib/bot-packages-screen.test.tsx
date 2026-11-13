@@ -377,10 +377,10 @@ it("previews only explicitly chosen backup schedules", async () => {
   await mountImport();
   await click("Choose package file");
   await click("Choose backup content");
-  expect((field("Morning review") as HTMLInputElement).checked).toBe(false);
+  expect((field("Morning review · 0 9 * * * · UTC") as HTMLInputElement).checked).toBe(false);
   await click("Preview");
   expect(api.request.mock.lastCall?.[1].backupRoutines).toBeUndefined();
-  await act(async () => field("Morning review").click());
+  await act(async () => field("Morning review · 0 9 * * * · UTC").click());
   expect(button("Import as new bot")).toBeUndefined();
   await click("Preview");
   expect(api.request.mock.lastCall?.[1].backupRoutines).toEqual([
