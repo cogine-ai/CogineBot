@@ -10,7 +10,12 @@ import type {
   MemoryDocument,
   Space,
 } from "@rakazo/contracts";
-import { memoryDocumentsMarkdown } from "@rakazo/core";
+import type { KnowledgeState } from "@rakazo/core";
+import {
+  createKnowledgeEditor,
+  initialKnowledgeState,
+  memoryDocumentsMarkdown,
+} from "@rakazo/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.js";
 import { sessionCookieHeader } from "./index.js";
@@ -276,5 +281,122 @@ postgres("memory documents and shared agentSkills via authenticated API", () => 
         (s) => s.id === savedSkill.id,
       ),
     ).toBe(false);
+  });
+  it.each([false, true])(
+    "recovers the same committed Skill after losing create response (rename: %s)",
+    async (rename) => {
+      const name = `lost-response-${randomUUID()}`;
+      const content = `---\nname: ${name}\ndescription: Synthetic recovery\n---\n\nInitial steps.\n`;
+      let state: KnowledgeState = initialKnowledgeState;
+      let committedId = "";
+      let loseResponse = true;
+      const editor = createKnowledgeEditor({
+        botId: botA,
+        section: "skills",
+        changed: (next) => {
+          state = next;
+        },
+        deliver: async () => {},
+        client: {
+          isCurrent: () => true,
+          async request<T>(procedure: string, input: unknown): Promise<T> {
+            const result = await rpc<T>(owner, spaceA, procedure, input);
+            if (procedure === "agentSkills/create" && loseResponse) {
+              loseResponse = false;
+              committedId = (result as AgentSkill).id;
+              throw new Error("Injected response loss after commit");
+            }
+            return result;
+          },
+        },
+      });
+      editor.createSkill(content);
+      await editor.save();
+      expect(committedId).not.toBe("");
+      expect(state.editor).toMatchObject({ skill: null });
+      const edited = rename ? content.replace(name, `${name}-renamed`) : content;
+      editor.edit(edited);
+      await editor.save();
+      expect(state.error).toBeNull();
+      const rows = await handles.prisma.agentSkill.findMany({
+        where: {
+          spaceId: spaceA,
+          userId: (await rpc<Me>(owner, spaceA, "me")).userId,
+          name: { startsWith: name },
+        },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.id).toBe(committedId);
+      expect(rows[0]?.content).toBe(edited);
+      editor.dispose();
+    },
+  );
+  it("deduplicates only the same authenticated user/Space creation nonce, never a matching name", async () => {
+    const nonce = randomUUID();
+    const content = `---\nname: scoped-${randomUUID()}\ndescription: Synthetic\n---\n\nSteps.\n`;
+    const input = { clientNonce: nonce, content };
+    const first = await rpc<AgentSkill>(owner, spaceA, "agentSkills/create", input);
+    const again = await rpc<AgentSkill>(owner, spaceA, "agentSkills/create", input);
+    expect(again.id).toBe(first.id);
+    for (const [session, spaceId] of [
+      [member, spaceA],
+      [owner, spaceB],
+    ]) {
+      const other = await rpc<AgentSkill>(session!, spaceId!, "agentSkills/create", input);
+      expect(other.id).not.toBe(first.id);
+      expect(
+        (await raw(session!, spaceId!, "agentSkills/update", { skillId: first.id, content })).ok,
+      ).toBe(false);
+    }
+    expect((await raw(outsider, spaceA, "agentSkills/create", input)).ok).toBe(false);
+    expect(
+      (await raw(owner, spaceA, "agentSkills/create", { content, clientNonce: randomUUID() })).ok,
+    ).toBe(false);
+    const concurrentInput = {
+      clientNonce: randomUUID(),
+      content: content.replace("scoped-", "race-"),
+    };
+    const concurrent = await Promise.all([
+      rpc<AgentSkill>(owner, spaceA, "agentSkills/create", concurrentInput),
+      rpc<AgentSkill>(owner, spaceA, "agentSkills/create", concurrentInput),
+    ]);
+    expect(concurrent[0]!.id).toBe(concurrent[1]!.id);
+  });
+
+  it("reopens committed memory after the authenticated update response is lost", async () => {
+    let state: KnowledgeState = initialKnowledgeState;
+    let loseResponse = true;
+    const editor = createKnowledgeEditor({
+      botId: botA,
+      section: "bot",
+      changed: (next) => {
+        state = next;
+      },
+      deliver: async () => {},
+      client: {
+        isCurrent: () => true,
+        async request<T>(procedure: string, input: unknown): Promise<T> {
+          const result = await rpc<T>(owner, spaceA, procedure, input);
+          if (procedure === "memory/update" && loseResponse) {
+            loseResponse = false;
+            throw new Error("Injected response loss after memory commit");
+          }
+          return result;
+        },
+      },
+    });
+    await editor.refresh();
+    const old = state.documents.find((d) => d.id === documentA)!;
+    editor.openDocument(old);
+    editor.edit("Actually committed memory");
+    await editor.save();
+    expect(state.error).toBe("save");
+    editor.cancel();
+    await editor.openDocument(old);
+    expect(state.draft).toBe("Actually committed memory");
+    expect(state.documents.find((d) => d.id === documentA)?.content).toBe(
+      "Actually committed memory",
+    );
+    editor.dispose();
   });
 });

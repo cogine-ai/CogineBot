@@ -16,6 +16,8 @@ export type KnowledgeState = {
   draft: string;
   busy: boolean;
   loaded: boolean;
+  /** A different successful operation cannot acknowledge a failed save. */
+  saveError: boolean;
   error: "load" | "save" | "delete" | "export" | null;
 };
 export const initialKnowledgeState: KnowledgeState = {
@@ -25,6 +27,7 @@ export const initialKnowledgeState: KnowledgeState = {
   draft: "",
   busy: false,
   loaded: false,
+  saveError: false,
   error: null,
 };
 
@@ -43,6 +46,8 @@ export function createKnowledgeEditor(options: {
   let state = { ...initialKnowledgeState };
   let generation = 0;
   let disposed = false;
+  let memoryNeedsReadback = false;
+  let creation: { nonce: string; attempted: boolean } | null = null;
   let pending: AbortController | null = null;
   const current = () => !disposed && client.isCurrent();
   const emit = (patch: Partial<KnowledgeState>) => {
@@ -56,6 +61,18 @@ export function createKnowledgeEditor(options: {
     pending = null;
   };
   const memoryInput = section === "bot" ? { botId, scope: "bot" } : { scope: "user" };
+  const receiveDocuments = (documents: MemoryDocument[]) => {
+    memoryNeedsReadback = false;
+    const editor = state.editor;
+    const saved =
+      editor?.kind === "memory" ? documents.find((d) => d.id === editor.document.id) : undefined;
+    // Readback updates the saved baseline, never the user's draft or unresolved save result.
+    emit({
+      documents,
+      loaded: true,
+      ...(saved ? { editor: { kind: "memory" as const, document: saved } } : {}),
+    });
+  };
   async function run(
     error: NonNullable<KnowledgeState["error"]>,
     work: (signal: AbortSignal, valid: () => boolean) => Promise<void>,
@@ -69,8 +86,9 @@ export function createKnowledgeEditor(options: {
     emit({ busy: true, error: null });
     try {
       await work(controller.signal, valid);
+      if (valid() && error === "save") emit({ saveError: false });
     } catch {
-      if (valid()) emit({ error });
+      if (valid()) emit({ error, ...(error === "save" ? { saveError: true } : {}) });
     } finally {
       if (valid()) {
         pending = null;
@@ -94,26 +112,68 @@ export function createKnowledgeEditor(options: {
             memoryInput,
             signal,
           );
-          if (valid()) emit({ documents, loaded: true });
+          if (valid()) receiveDocuments(documents);
         }
       });
     },
     openDocument(document: MemoryDocument) {
+      if (!current() || state.busy) return;
+      const select = (saved: MemoryDocument) => {
+        creation = null;
+        const keepDraft =
+          state.saveError &&
+          state.editor?.kind === "memory" &&
+          state.editor.document.id === saved.id;
+        emit({
+          editor: { kind: "memory", document: saved },
+          ...(keepDraft ? {} : { draft: saved.content, saveError: false }),
+          error: null,
+        });
+      };
+      if (memoryNeedsReadback) {
+        return run("load", async (signal, valid) => {
+          const documents = await client.request<MemoryDocument[]>(
+            "memory/list",
+            memoryInput,
+            signal,
+          );
+          if (!valid()) return;
+          const saved = documents.find((d) => d.id === document.id);
+          if (!saved) throw new Error("Document is no longer available");
+          receiveDocuments(documents);
+          select(saved);
+        });
+      }
       const saved = state.documents.find((d) => d.id === document.id);
-      if (!current() || state.busy || !saved) return;
-      invalidate();
-      emit({ editor: { kind: "memory", document: saved }, draft: saved.content, error: null });
+      if (saved) {
+        invalidate();
+        select(saved);
+      }
     },
     openSkill(skillId: string) {
       return run("load", async (signal, valid) => {
         const skill = await client.request<AgentSkill>("agentSkills/get", { skillId }, signal);
-        if (valid()) emit({ editor: { kind: "skill", skill }, draft: skill.content });
+        if (valid()) {
+          creation = null;
+          emit({ editor: { kind: "skill", skill }, draft: skill.content, saveError: false });
+        }
       });
     },
     createSkill(template: string) {
       if (!current() || state.busy || section !== "skills") return;
       invalidate();
-      emit({ editor: { kind: "skill", skill: null }, draft: template, error: null });
+      creation = {
+        nonce:
+          globalThis.crypto?.randomUUID?.() ??
+          `skill-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`,
+        attempted: false,
+      };
+      emit({
+        editor: { kind: "skill", skill: null },
+        draft: template,
+        error: null,
+        saveError: false,
+      });
     },
     edit(draft: string) {
       if (!state.busy && !(state.editor?.kind === "skill" && state.editor.skill?.readOnly))
@@ -122,7 +182,8 @@ export function createKnowledgeEditor(options: {
     cancel() {
       // Cancellation abandons the selection, never claims to roll back a server mutation.
       invalidate();
-      emit({ editor: null, draft: "", busy: false, error: null });
+      creation = null;
+      emit({ editor: null, draft: "", busy: false, error: null, saveError: false });
     },
     save() {
       const editor = state.editor;
@@ -131,23 +192,54 @@ export function createKnowledgeEditor(options: {
         return Promise.resolve();
       return run("save", async (signal, valid) => {
         if (editor.kind === "memory") {
+          memoryNeedsReadback = true;
           const saved = await client.request<MemoryDocument>(
             "memory/update",
             { documentId: editor.document.id, content },
             signal,
           );
-          if (valid())
+          if (valid()) {
+            memoryNeedsReadback = false;
             emit({
               documents: state.documents.map((d) => (d.id === saved.id ? saved : d)),
               editor: null,
               draft: "",
             });
+          }
         } else {
-          const saved = await client.request<AgentSkill>(
-            editor.skill ? "agentSkills/update" : "agentSkills/create",
-            editor.skill ? { skillId: editor.skill.id, content } : { content },
-            signal,
-          );
+          let saved: AgentSkill;
+          if (editor.skill) {
+            saved = await client.request<AgentSkill>(
+              "agentSkills/update",
+              { skillId: editor.skill.id, content },
+              signal,
+            );
+          } else {
+            const intent = creation;
+            if (!intent) throw new Error("Missing creation intent");
+            const recovering = intent.attempted;
+            intent.attempted = true;
+            saved = await client.request<AgentSkill>(
+              "agentSkills/create",
+              { content, clientNonce: intent.nonce },
+              signal,
+            );
+            if (!valid()) return;
+            // A replay acknowledges identity, not the latest edited draft. Bind first so
+            // any failed follow-up is retried as an update, never another creation.
+            creation = null;
+            emit({
+              editor: { kind: "skill", skill: saved },
+              skills: [...state.skills.filter((s) => s.id !== saved.id), saved],
+            });
+            if (recovering) {
+              saved = await client.request<AgentSkill>(
+                "agentSkills/update",
+                { skillId: saved.id, content },
+                signal,
+              );
+            }
+          }
           if (valid())
             emit({
               skills: [...state.skills.filter((s) => s.id !== saved.id), saved],
@@ -170,7 +262,12 @@ export function createKnowledgeEditor(options: {
       return run("delete", async (signal, valid) => {
         await client.request("agentSkills/remove", { skillId }, signal);
         if (valid())
-          emit({ skills: state.skills.filter((s) => s.id !== skillId), editor: null, draft: "" });
+          emit({
+            skills: state.skills.filter((s) => s.id !== skillId),
+            editor: null,
+            draft: "",
+            saveError: false,
+          });
       });
     },
     exportMarkdown() {
@@ -183,7 +280,7 @@ export function createKnowledgeEditor(options: {
           signal,
         );
         if (!valid()) return;
-        emit({ documents });
+        receiveDocuments(documents);
         await options.deliver(memoryDocumentsMarkdown(documents), valid);
       });
     },

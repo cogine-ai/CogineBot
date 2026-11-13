@@ -70,16 +70,19 @@ export function KnowledgeEditor({
   return (
     <View style={styles.section} testID="knowledge-editor">
       {state.busy ? <Text style={styles.secondary}>{t("Loading…")}</Text> : null}
-      {state.error ? (
+      {state.saveError ? (
+        <Text accessibilityRole="alert" style={styles.secondary}>
+          {t("Could not save")}
+        </Text>
+      ) : null}
+      {state.error && state.error !== "save" ? (
         <View>
           <Text accessibilityRole="alert" style={styles.secondary}>
             {state.error === "load"
               ? t("Could not load")
-              : state.error === "save"
-                ? t("Could not save")
-                : state.error === "delete"
-                  ? t("Could not delete skill")
-                  : t("Could not export memory")}
+              : state.error === "delete"
+                ? t("Could not delete skill")
+                : t("Could not export memory")}
           </Text>
           {state.error === "load" ? (
             <NativeActionButton

@@ -222,6 +222,8 @@ it("retains a failed draft and keeps export separate", async () => {
   expect(node.querySelector("textarea")!.value).toBe("Unsaved");
   await click("Export Markdown");
   expect(api.share.mock.calls[0]?.[0]).toBe("# MEMORY.md\n\nSaved memory");
+  expect(node.textContent).toContain("Could not save");
+  expect(node.querySelector("textarea")!.value).toBe("Unsaved");
 });
 it("lists and edits shared skills, confirms deletion, and keeps builtins read only", async () => {
   await mount();
@@ -234,7 +236,10 @@ it("lists and edits shared skills, confirms deletion, and keeps builtins read on
   await click("New skill");
   await fill("New skill content");
   await click("Save");
-  expect(api.request).toHaveBeenCalledWith("agentSkills/create", { content: "New skill content" });
+  expect(api.request).toHaveBeenCalledWith("agentSkills/create", {
+    content: "New skill content",
+    clientNonce: expect.any(String),
+  });
   await click("recipe");
   await fill("Updated skill content");
   await click("Save");
@@ -324,4 +329,21 @@ it("invalidates a deletion confirmation even when the same skill is reopened", a
   await click("recipe");
   await act(async () => confirm());
   expect(api.request.mock.calls.filter(([p]) => p === "agentSkills/remove")).toHaveLength(0);
+});
+
+it("does not show cached memory when reopening an uncertain save cannot be verified", async () => {
+  await mount();
+  await click("Bot memory");
+  await click("MEMORY.md");
+  await fill("Unknown save result");
+  api.request.mockRejectedValueOnce(new Error("Lost update response"));
+  await click("Save");
+  await click("Cancel");
+  api.request.mockRejectedValueOnce(new Error("Readback unavailable"));
+  await click("MEMORY.md");
+  expect(node.querySelector("textarea")).toBeNull();
+  expect(node.textContent).toContain("Could not load");
+  api.request.mockResolvedValueOnce([{ ...memory, content: "Actually committed" }]);
+  await click("MEMORY.md");
+  expect(node.querySelector("textarea")!.value).toBe("Actually committed");
 });
