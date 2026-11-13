@@ -2122,3 +2122,71 @@ it.each(
     expect(state.replace).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  [false, "credentials first"],
+  [false, "routine first"],
+  [true, "credentials first"],
+  [true, "routine first"],
+] as const)(
+  "refreshes only untouched model revisions before a Thinking-only save (dirty: %s, %s)",
+  async (dirty, order) => {
+    const normal = state.rpc.getMockImplementation()!;
+    let routine = (await normal("routines/list"))[0];
+    let revision = 7;
+    let reloading = false;
+    const credentialsRead = deferred<unknown>();
+    const routineRead = deferred<unknown>();
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "models/credentials")
+        return reloading
+          ? credentialsRead.promise
+          : [{ ...credential, connectionRevision: revision }];
+      if (p === "routines/list") return reloading ? routineRead.promise : [routine];
+      if (p === "routines/update") {
+        if (input.expectedRevision !== revision) throw new Error("Connection changed");
+        routine = { ...routine, ...input };
+        return routine;
+      }
+      return normal(p, input, options);
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    await chooseRoutineModel("model-b");
+    if (!dirty) {
+      await act(async () => button("Save model").click());
+      expect(
+        state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1].expectedRevision,
+      ).toBe(7);
+      expect(button("Save model").disabled).toBe(true);
+    }
+    revision = 9;
+    reloading = true;
+    await refocus();
+    const completeCredentials = () =>
+      credentialsRead.resolve([{ ...credential, connectionRevision: 9 }]);
+    const completeRoutine = () => routineRead.resolve([routine]);
+    await act(async () =>
+      order === "credentials first" ? completeCredentials() : completeRoutine(),
+    );
+    await act(async () =>
+      order === "credentials first" ? completeRoutine() : completeCredentials(),
+    );
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.value).toBe(
+      modelOptionKey("openai-compatible", "model-b", "connection-a"),
+    );
+    const thinking = container.querySelector<HTMLSelectElement>('select[aria-label="Thinking"]')!;
+    await act(async () => {
+      thinking.value = "high";
+      thinking.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => button("Save model").click());
+    const update = state.rpc.mock.calls.filter(([p]) => p === "routines/update").at(-1)?.[1];
+    expect(update).toMatchObject({
+      modelId: "model-b",
+      thinkingLevel: "high",
+      expectedRevision: dirty ? 7 : 9,
+    });
+    if (dirty) expect(container.textContent).toContain("Connection changed");
+    else expect(container.textContent).not.toContain("Connection changed");
+  },
+);

@@ -6,7 +6,7 @@ import {
   parseModelOptionKey,
 } from "@rakazo/core";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
 import { glassHeaderOptions } from "../components/glass-title";
 import { MenuPicker } from "../components/menu-picker";
@@ -101,6 +101,14 @@ export default function RoutineDetail() {
     selectedModel?.modelId,
     selectedModel?.modelCredentialId,
   );
+  // Routine and credential reads can finish in either order. Refresh only the
+  // untouched selection; edited drafts retain the revision they were based on.
+  useEffect(() => {
+    if (!modelDirty.current && selectedCredential?.connectionRevision !== undefined) {
+      setModelRevision(selectedCredential.connectionRevision);
+    }
+  }, [routine, selectedCredential]);
+
   const selectedEntry = catalog.find(
     (entry) => entry.provider === selectedModel?.provider && entry.id === selectedModel?.modelId,
   );
