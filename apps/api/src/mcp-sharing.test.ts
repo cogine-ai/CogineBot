@@ -340,6 +340,24 @@ describe("shared registered MCP settings", () => {
     expect(statuses(messages)).toEqual(["dismissed", "pending", "pending"]);
   });
 
+  it("keeps a dismissed approval closed when a revisioned request omits the thread", async () => {
+    const { client, server, messages } = fixture();
+    await client.mcp.assignments.dismiss({
+      botId: "bot-1",
+      serverId: "server",
+      threadId: "thread-bot-1",
+    });
+    await expect(
+      client.mcp.assignments.approve({
+        botId: "bot-1",
+        serverId: "server",
+        revision: 1,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(server).toMatchObject({ revision: 1, allowAllTools: false });
+    expect(statuses(messages)).toEqual(["dismissed", "pending", "pending"]);
+  });
+
   it("does not widen an existing restricted policy through another Bot's old approval card", async () => {
     const { client, server, messages } = fixture();
     await client.mcp.servers.setTools({

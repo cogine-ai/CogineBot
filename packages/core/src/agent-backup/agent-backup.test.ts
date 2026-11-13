@@ -133,7 +133,7 @@ it("projects only selected remote connections and never carries source credentia
 
 it("omits connections restricted by global and platform toolset settings", () => {
   const raw = [
-    "agent: { disabled_toolsets: [mcp-disabled] }",
+    "agent: { disabled_toolsets: [' disabled '] }",
     "platform_toolsets: { acp: [file, allowed, disabled] }",
     "mcp_servers:",
     "  allowed: { url: 'https://allowed.example.test/mcp' }",
@@ -149,10 +149,9 @@ it("omits connections restricted by global and platform toolset settings", () =>
       { name: "outside", reason: "toolPolicy" },
     ],
   });
-  expect(
-    backup([...raw.slice(0, 1), "platform_toolsets: { acp: [no_mcp] }", ...raw.slice(2)])
-      ?.connections,
-  ).toEqual([]);
+  for (const policy of ["platform_toolsets: { acp: [no_mcp] }", "platform_toolsets: { cli: [] }"]) {
+    expect(backup([...raw.slice(0, 1), policy, ...raw.slice(2)])?.connections).toEqual([]);
+  }
 });
 
 it("reports unreadable connection settings without exposing config or resolving placeholders", async () => {
@@ -196,6 +195,15 @@ it("keeps the source remote transport default and rejects a policy it cannot pre
     connections: [],
     unavailableConnections: [{ name: "Docs", reason: "toolPolicy" }],
   });
+  const groupRestricted = backup(
+    config.replace(
+      "{ mcp:",
+      '{ channels: { chat: { groups: { "*": { tools: { deny: ["docs__*"] } } } } }, mcp:',
+    ),
+  );
+  expect(agentBackupFileGroups(groupRestricted)?.unavailableConnections).toMatchObject([
+    { name: "Docs", reason: "toolPolicy" },
+  ]);
 });
 
 it("projects the Hermes model from a folder or archive and sends only the selected settings", async () => {

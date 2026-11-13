@@ -68,11 +68,23 @@ function openClawHasToolPolicy(config: Record<string, unknown>) {
   const named = Array.isArray(agents?.list)
     ? agents.list
     : Object.values(record(agents?.entries) ?? {});
-  return [config, defaults, ...named.map(record)].some(
-    (owner) =>
-      restricts(owner?.tools) ||
-      record(owner?.sandbox)?.mode === "all" ||
-      record(owner?.sandbox)?.mode === "non-main",
+  function channelRestricts(value: unknown): boolean {
+    const channel = record(value);
+    if (!channel) return false;
+    return (
+      restricts(channel.tools) ||
+      channel.toolsBySender !== undefined ||
+      Object.values(channel).some(channelRestricts)
+    );
+  }
+  return (
+    channelRestricts(config.channels) ||
+    [config, defaults, ...named.map(record)].some(
+      (owner) =>
+        restricts(owner?.tools) ||
+        record(owner?.sandbox)?.mode === "all" ||
+        record(owner?.sandbox)?.mode === "non-main",
+    )
   );
 }
 
@@ -83,12 +95,13 @@ function hermesHasMcpPolicy(
 ): boolean {
   const disabled = record(config.agent)?.disabled_toolsets;
   if (disabled !== undefined) {
-    if (!Array.isArray(disabled) || disabled.some((value) => typeof value !== "string"))
-      return true;
+    if (!Array.isArray(disabled)) return true;
     if (
-      disabled.includes("mcp") ||
-      disabled.includes("no_mcp") ||
-      disabled.includes(`mcp-${serverName}`)
+      disabled.some(
+        (value) =>
+          typeof value !== "string" ||
+          ["mcp", "no_mcp", serverName, `mcp-${serverName}`].includes(value.trim()),
+      )
     )
       return true;
   }
@@ -96,9 +109,11 @@ function hermesHasMcpPolicy(
   const platforms = record(config.platform_toolsets);
   if (!platforms) return true;
   return Object.values(platforms).some((tools) => {
-    if (!Array.isArray(tools) || tools.some((value) => typeof value !== "string")) return true;
-    if (tools.includes("no_mcp")) return true;
-    const explicit = tools.filter((value) => names.has(value) || value.startsWith("mcp-"));
+    if (!Array.isArray(tools) || !tools.length || tools.some((value) => typeof value !== "string"))
+      return true;
+    const toolsets = tools.map((value: string) => value.trim());
+    if (toolsets.includes("no_mcp")) return true;
+    const explicit = toolsets.filter((value) => names.has(value) || value.startsWith("mcp-"));
     return (
       explicit.length > 0 &&
       !explicit.includes(serverName) &&
