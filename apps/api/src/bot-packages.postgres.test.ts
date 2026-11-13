@@ -417,6 +417,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(reviewed.digest).not.toBe(missing.digest);
     expect(JSON.stringify(reviewed)).not.toContain(credential.id);
     expect(JSON.stringify(reviewed)).not.toContain("synthetic-connection");
+    const modelOnly = await preview(owner, { ...value, files: [] });
+    expect(modelOnly.model).toEqual(model);
+    const modelOnlyReceipt = await importPackage(owner, modelOnly);
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: modelOnlyReceipt.botId! } }),
+    ).toMatchObject({ modelCredentialId: credential.id, instructions: "" });
     const sibling = await createSpaceForMember(database.prisma, {
       currentSpaceId: owner.actor.spaceId,
       userId: owner.actor.userId,
@@ -430,8 +436,16 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     ).toBeUndefined();
 
     const nonce = randomUUID();
-    const receipt = await importPackage(owner, reviewed, nonce);
-    expect(await importPackage(owner, reviewed, nonce)).toEqual(receipt);
+    const [receipt, replay] = await Promise.all([
+      importPackage(owner, reviewed, nonce),
+      importPackage(owner, reviewed, nonce),
+    ]);
+    expect(replay).toEqual(receipt);
+    expect(
+      await database.prisma.botPackageImport.count({
+        where: { userId: owner.actor.userId, spaceId: owner.actor.spaceId, clientNonce: nonce },
+      }),
+    ).toBe(1);
     expect(
       await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } }),
     ).toMatchObject({

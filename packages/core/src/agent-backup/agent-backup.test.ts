@@ -89,7 +89,41 @@ it("projects only the Hermes model from a folder or archive and sends it after s
     expect(backup).not.toContain("example.test");
     expect(JSON.parse(agentBackupPreview(backup, false).source)).not.toHaveProperty("model");
     expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source).model).toEqual(model);
+    const modelOnly = agentBackupPreview(backup, false, ["HERMES.md"], [], true);
+    expect(JSON.parse(modelOnly.source)).toMatchObject({ files: [], model });
   }
+});
+
+it("reports an unavailable declared active configuration without using the home fallback", () => {
+  const root = "backup";
+  const value = encodeAgentBackup(
+    tar({
+      [`${root}/manifest.json`]: JSON.stringify({
+        schemaVersion: 1,
+        archiveRoot: root,
+        paths: {
+          stateDir: "/state",
+          configPath: "/external/openclaw.json",
+          workspaceDirs: ["/state/workspace"],
+        },
+        assets: [
+          { kind: "state", archivePath: "state" },
+          {
+            kind: "config",
+            archivePath: "external/openclaw.json",
+            sourcePath: "/external/openclaw.json",
+          },
+        ],
+      }),
+      [`${root}/external/openclaw.json`]: "x".repeat(400_001),
+      [`${root}/state/openclaw.json`]: JSON.stringify({
+        agents: { defaults: { model: "openai/gpt-4.1" } },
+      }),
+      [`${root}/state/workspace/SOUL.md`]: "Review the source.",
+    }),
+  );
+  expect(JSON.parse(value)).toMatchObject({ model: "unavailable", files: [{ path: "SOUL.md" }] });
+  expect(value).not.toContain("gpt-4.1");
 });
 
 it.each([

@@ -631,13 +631,23 @@ function backupPackage(
     if (routine) routines.push(routine);
     else addNote("routine", path, agentBackupOmissionReasons.routineSchedule);
   }
+  const model = backup.model;
+  const backupModel =
+    model &&
+    model !== "unavailable" &&
+    [model.provider, model.modelId].some(
+      (value) => redactSecretText(value) !== value || /:\/\//.test(value),
+    )
+      ? "unavailable"
+      : model;
   if (
     !instructions.length &&
     !skills.length &&
     !routines.length &&
     !(options.includeMemory && memory.length) &&
     !identity?.name &&
-    !identity?.description
+    !identity?.description &&
+    (!backupModel || backupModel === "unavailable")
   )
     throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({
@@ -655,15 +665,6 @@ function backupPackage(
     memory: options.includeMemory ? memory : [],
   });
   leftOut.push(...safe.leftOut);
-  const model = backup.model;
-  const backupModel =
-    model &&
-    model !== "unavailable" &&
-    [model.provider, model.modelId].some(
-      (value) => redactSecretText(value) !== value || /:\/\//.test(value),
-    )
-      ? "unavailable"
-      : model;
   return {
     ...safe,
     sourceFormat: source,

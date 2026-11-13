@@ -50,6 +50,7 @@ export function openAgentImportArchive(data: Uint8Array): {
   paths: string[];
   skippedPaths: string[];
   declaredWorkspace: boolean;
+  declaredConfig: boolean;
   workspaceSourcePath?: string;
   stateSourcePath?: string;
   readOpenClawConfig(): string | undefined;
@@ -112,6 +113,7 @@ export function openAgentImportArchive(data: Uint8Array): {
     paths,
     skippedPaths,
     declaredWorkspace: layout.declaredWorkspace,
+    declaredConfig: layout.declaredConfig ?? false,
     workspaceSourcePath: layout.workspaceSourcePath,
     stateSourcePath: layout.stateSourcePath,
     has: (path) => byVirtual.has(path),
@@ -534,6 +536,7 @@ function archiveLayout(
 ): {
   map: (path: string) => string | null;
   declaredWorkspace: boolean;
+  declaredConfig?: boolean;
   workspaceSourcePath?: string;
   stateSourcePath?: string;
   configArchivePath?: string;
@@ -551,6 +554,7 @@ function archiveLayout(
     if (roots) {
       return {
         declaredWorkspace: Boolean(roots.workspace),
+        declaredConfig: roots.hasConfig,
         workspaceSourcePath: roots.workspaceSourcePath,
         stateSourcePath: roots.stateSourcePath,
         map: (path) => {
@@ -599,6 +603,7 @@ function openClawRoots(
 ): {
   home: string;
   config?: string;
+  hasConfig: boolean;
   workspace?: string;
   workspaceSourcePath?: string;
   stateSourcePath?: string;
@@ -696,6 +701,7 @@ function openClawRoots(
         return {
           home,
           config: configPath,
+          hasConfig: Boolean(activeConfig),
           workspace: internalRoot,
           workspaceSourcePath: declaredPath,
           stateSourcePath,
@@ -710,6 +716,7 @@ function openClawRoots(
         return {
           home,
           config: configPath,
+          hasConfig: Boolean(activeConfig),
           workspace: workspace.root,
           workspaceSourcePath: declaredPath,
           stateSourcePath,
@@ -729,6 +736,7 @@ function openClawRoots(
       ? {
           home,
           config: configPath,
+          hasConfig: Boolean(activeConfig),
           workspace: workspace.root,
           workspaceSourcePath:
             typeof workspace.sourcePath === "string"
@@ -736,7 +744,7 @@ function openClawRoots(
               : undefined,
           stateSourcePath,
         }
-      : { home, config: configPath, stateSourcePath };
+      : { home, config: configPath, stateSourcePath, hasConfig: Boolean(activeConfig) };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;
     throw unreadable();

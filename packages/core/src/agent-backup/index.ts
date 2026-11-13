@@ -341,7 +341,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
   let config: string | undefined;
   try {
     if (source === "openclaw" && jobs === undefined) declaredConfig = archive.readOpenClawConfig();
-    config = declaredConfig ?? archive.readOptional(configPath);
+    config = archive.declaredConfig ? declaredConfig : archive.readOptional(configPath);
   } catch (error) {
     if (!(error instanceof AgentImportArchiveError)) throw error;
   }
@@ -362,7 +362,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     routineOmissions,
     {
       model:
-        (config === undefined && archive.has(configPath)) ||
+        (config === undefined && (archive.declaredConfig || archive.has(configPath))) ||
         (model && agentModelPath && archive.has(agentModelPath))
           ? "unavailable"
           : model,
@@ -547,7 +547,12 @@ export async function encodeAgentBackupFolder(
       reason: source === "openclaw" ? "routineOwner" : "routineSchedule",
     });
   }
-  if (!content.size && !routineFiles.length && !routineOmissions.length)
+  if (
+    !content.size &&
+    !routineFiles.length &&
+    !routineOmissions.length &&
+    (!model || model === "unavailable")
+  )
     throw new AgentImportArchiveError("unreadable");
   return encodeBackupDocument(
     source,
@@ -709,7 +714,9 @@ export function agentBackupSelectableGroups(
   return {
     groups: visible,
     model: files.model ? { label: files.model, selected: includeModel } : null,
-    hasSelection: visible.some(({ items }) => items.some(({ selected }) => selected)),
+    hasSelection:
+      Boolean(files.model && includeModel) ||
+      visible.some(({ items }) => items.some(({ selected }) => selected)),
   };
 }
 
@@ -811,7 +818,12 @@ export function agentBackupPreview(
   );
   if (backupRoutines.length > BOT_PACKAGE_MAX_ROUTINES)
     throw new AgentImportArchiveError("too_large");
-  if (!safeFiles.length && !excludedMemoryCount && !backupRoutines.length)
+  if (
+    !safeFiles.length &&
+    !excludedMemoryCount &&
+    !backupRoutines.length &&
+    !(includeModel && backup.model && backup.model !== "unavailable")
+  )
     throw new AgentImportArchiveError("unreadable");
   const backupOmissions = [...omissions].slice(0, AGENT_BACKUP_MAX_FILES).map(([path, reason]) => ({
     path,
