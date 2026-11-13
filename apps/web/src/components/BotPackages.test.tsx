@@ -30,7 +30,8 @@ vi.mock("../lib/rpc", () => ({
     agentSkills: { list: () => api.request("skills", {}) },
   }),
 }));
-vi.mock("../lib/bot-package-file", () => ({
+vi.mock(import("../lib/bot-package-file"), async (importOriginal) => ({
+  ...(await importOriginal()),
   readBotPackageFile: api.file,
   downloadBotPackage: api.download,
 }));
