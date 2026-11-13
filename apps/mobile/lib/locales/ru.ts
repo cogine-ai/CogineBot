@@ -555,6 +555,7 @@ export const RU_MESSAGES: Record<string, string> = {
   "Computer is asleep": "Компьютер спит",
   "Computer is asleep. Take control to wake it.":
     "Компьютер спит. Возьмите под свой контроль, чтобы разбудить его.",
+  "Computers are disabled on this server.": "Компьютеры отключены на этом сервере.",
   "Computer is stopped": "Компьютер остановлен",
   "Configured by deployment": "Настроено развёртыванием",
   Connect: "Подключить",

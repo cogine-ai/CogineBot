@@ -1000,7 +1000,8 @@ export type WorkspaceSaveFailureReason = z.infer<typeof WorkspaceSaveFailureReas
 export const ComputerStatusSchema = z.object({
   botId: Id,
   mode: ComputerModeSchema,
-  kind: SandboxKind,
+  kind: SandboxKind.or(z.literal("none")),
+  providerDisabled: z.literal(true).optional(),
   state: z.enum([
     "stopped",
     "booting",

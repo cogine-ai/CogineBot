@@ -81,6 +81,7 @@ export default function Computer() {
   const viewVisible = visible && verifiedView === viewEpoch;
   const name = nameParam || t("Bot");
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
+  const computersDisabled = computer?.providerDisabled === true;
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
   const [screenError, setScreenError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -281,8 +282,11 @@ export default function Computer() {
   }) {
     if (
       !botId ||
+      !viewVisible ||
+      !computer ||
       !visibleRef.current ||
       !refreshController.isActive() ||
+      computersDisabled ||
       computerStateRequiresRecovery(computer?.state) ||
       computer?.state === "stopping"
     )
@@ -340,6 +344,7 @@ export default function Computer() {
 
   useEffect(() => {
     if (!viewVisible || !botId || !computer || readyTarget !== targetKey || switching) return;
+    if (computersDisabled) return;
     if (
       computer.state === "booting" ||
       computer.requiresExplicitWake ||
@@ -362,6 +367,7 @@ export default function Computer() {
     botId,
     computer?.state,
     computer?.requiresExplicitWake,
+    computersDisabled,
     savedStoppedComputer,
     switching,
     viewVisible,
@@ -415,7 +421,15 @@ export default function Computer() {
   }
 
   async function setComputerMode(mode: ComputerMode) {
-    if (!botId || !refreshController.isActive() || mode === computer?.mode) return;
+    if (
+      !botId ||
+      !viewVisible ||
+      !computer ||
+      computersDisabled ||
+      !refreshController.isActive() ||
+      mode === computer.mode
+    )
+      return;
     const action = refreshController.beginAction();
     setSwitchingCount((count) => count + 1);
     setError(null);
@@ -467,6 +481,16 @@ export default function Computer() {
       : saveProgress !== undefined
         ? t("Saving workspace…")
         : previewPlaceholder(computer?.state, booting, name, computer?.mode));
+
+  if (computersDisabled) {
+    return (
+      <View style={{ flex: 1, backgroundColor: tokens.background, padding: 24 }}>
+        <Text style={{ color: tokens.mutedForeground }}>
+          {t("Computers are disabled on this server.")}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -530,7 +554,7 @@ export default function Computer() {
             ) : null}
           </View>
         )}
-        {!powerUnavailable && !capPaused ? (
+        {viewVisible && !powerUnavailable && !capPaused ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("Open computer")}
@@ -556,7 +580,7 @@ export default function Computer() {
             takeoverRequested={computer?.takeoverRequested ?? false}
             onRelease={releaseComputer}
           />
-        ) : !powerUnavailable ? (
+        ) : viewVisible && !powerUnavailable ? (
           <NativeActionButton
             label={t("Take control")}
             prominence="secondary"
@@ -606,7 +630,7 @@ export default function Computer() {
       ) : null}
       <ComputerModePicker
         value={computer?.mode}
-        disabled={switching || powerUnavailable}
+        disabled={!viewVisible || switching || powerUnavailable}
         onChange={(mode) => void setComputerMode(mode)}
       />
 

@@ -63,8 +63,9 @@ export async function botCreationComputerKind(prisma: Pick<PrismaClient, "deploy
   const settings = isInteractiveTransaction(prisma)
     ? await runAsSystemInTransaction(prisma, reason, read)
     : await runAsSystem(reason, read);
-  const envKind = process.env.SANDBOX_PROVIDER ?? "docker";
-  return envKind === "docker" && settings?.computerHost === "this-mac" ? "desktop" : envKind;
+  const envKind = process.env.SANDBOX_PROVIDER?.trim() ?? "docker";
+  if (envKind === "docker" && settings?.computerHost === "this-mac") return "desktop";
+  return envKind || "none";
 }
 
 /** Create the ordinary bot records inside the caller's atomic content transaction. */

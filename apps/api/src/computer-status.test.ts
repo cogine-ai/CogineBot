@@ -1,4 +1,5 @@
 import { createRunSandbox } from "@rakazo/adapters";
+import { ComputerStatusSchema } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import { executionBlocksUserTakeover, toComputerStatus } from "./computer-status.js";
 
@@ -18,6 +19,80 @@ describe("toComputerStatus", () => {
     expect(toComputerStatus("bot-1", { ...computer, controlRunId: null }).takeoverRequested).toBe(
       false,
     );
+  });
+
+  it("keeps a computer-free thread stopped even with old control or maintenance state", () => {
+    const status = toComputerStatus(
+      "bot-1",
+      {
+        kind: "none",
+        state: "running",
+        scope: "dedicated",
+        controlHolder: "user",
+        controlBotId: "bot-1",
+        controlRunId: "run-1",
+        maintenanceId: "old-update",
+        stopRequestedAt: new Date(0),
+        homeRevision: "r1",
+      },
+      "Previous bot",
+      createRunSandbox("none", {}),
+    );
+    expect(ComputerStatusSchema.parse(status)).toMatchObject({
+      kind: "none",
+      providerDisabled: true,
+      mode: "dedicated",
+      state: "stopped",
+      screenAvailable: false,
+      terminalAvailable: false,
+      canUpdate: false,
+      controlHolder: "none",
+      controlBotId: null,
+      takeoverRequested: false,
+      busyBotName: null,
+      homeRevision: "r1",
+    });
+    expect(status.powerState).toBeUndefined();
+  });
+
+  it("reports an unavailable provider for an unprovisioned computer without rewriting its kind", () => {
+    const status = toComputerStatus(
+      "bot-1",
+      {
+        kind: "docker",
+        state: "error",
+        scope: "team",
+        controlHolder: "none",
+        homeRevision: "empty",
+      },
+      null,
+      createRunSandbox("none", {}),
+    );
+    expect(ComputerStatusSchema.parse(status)).toMatchObject({
+      kind: "docker",
+      providerDisabled: true,
+      state: "stopped",
+      screenAvailable: false,
+      canUpdate: false,
+      terminalAvailable: false,
+    });
+  });
+
+  it("allows a previously disabled computer to boot after configuring a provider", () => {
+    const status = toComputerStatus(
+      "bot-1",
+      {
+        kind: " ",
+        state: "stopped",
+        scope: "team",
+        controlHolder: "none",
+        homeRevision: "empty",
+      },
+      null,
+      createRunSandbox("fake", {}),
+    );
+    expect(ComputerStatusSchema.parse(status)).toMatchObject({ kind: "none", state: "stopped" });
+    expect(status.providerDisabled).toBeUndefined();
   });
 
   it("passes through the busy bot name when takeover is blocked", () => {
