@@ -227,7 +227,7 @@ export function BotPackageImport({
               value={state?.name ?? ""}
               maxLength={BOT_NAME_MAX_LENGTH}
               placeholder={preview?.document.profile.name ?? ""}
-              disabled={locked}
+              disabled={locked || reading}
               onChange={(event) => edit({ name: event.target.value })}
             />
           </label>
@@ -244,7 +244,7 @@ export function BotPackageImport({
             <Switch
               id={`${ids}-memory`}
               checked={state?.includeMemory ?? false}
-              disabled={locked}
+              disabled={locked || reading}
               onCheckedChange={(includeMemory) => edit({ includeMemory })}
             />
           </label>

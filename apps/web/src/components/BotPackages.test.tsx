@@ -9,7 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   request: vi.fn(),
   file: vi.fn(),
+  folder: vi.fn(),
   download: vi.fn(),
+  folderSupported: false,
   current: true,
 }));
 vi.mock("../lib/rpc", () => ({
@@ -33,6 +35,8 @@ vi.mock("../lib/rpc", () => ({
 vi.mock(import("../lib/bot-package-file"), async (importOriginal) => ({
   ...(await importOriginal()),
   readBotPackageFile: api.file,
+  readBotBackupFolder: api.folder,
+  supportsBotBackupFolder: () => api.folderSupported,
   downloadBotPackage: api.download,
 }));
 vi.mock("@lingui/react/macro", () => ({
@@ -127,6 +131,7 @@ const current = () => api.current;
 beforeEach(() => {
   vi.clearAllMocks();
   api.current = true;
+  api.folderSupported = false;
   receipt = structuredClone(receiptFixture);
   api.request.mockImplementation(async (method, input) => {
     if (method === "preview")
@@ -269,6 +274,25 @@ it("does not overwrite a later pasted source with a slow file read", async () =>
   await act(async () => finish("old source"));
   expect(field("Bot package or Grok JSON").value).toBe("new source");
   expect(field("Choose package file").disabled).toBe(false);
+});
+
+it("keeps a pending folder read active while draft options are disabled", async () => {
+  api.folderSupported = true;
+  let finish!: (source: string) => void;
+  api.folder.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+  await mount();
+  await fill("Imported bot name", "Chosen copy");
+  const folderInput = node.querySelector<HTMLInputElement>("input[webkitdirectory]")!;
+  Object.defineProperty(folderInput, "files", { value: [new File(["instructions"], "SOUL.md")] });
+  await act(async () => folderInput.dispatchEvent(new Event("change", { bubbles: true })));
+  expect(field("Imported bot name").disabled).toBe(true);
+  expect(field("Include memory").disabled).toBe(true);
+  expect(button("Preview").disabled).toBe(true);
+  await act(async () => finish("folder source"));
+  expect(field("Bot package or Grok JSON").value).toBe("folder source");
+  expect(field("Imported bot name").value).toBe("Chosen copy");
+  expect(field("Imported bot name").disabled).toBe(false);
+  expect(field("Include memory").disabled).toBe(false);
 });
 
 it("discards a delayed preview after the editor authority expires", async () => {
