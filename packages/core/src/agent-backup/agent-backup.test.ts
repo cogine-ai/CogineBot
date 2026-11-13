@@ -169,6 +169,36 @@ it("omits a model ID that becomes credential-shaped after normalization", () => 
   expect(backup).not.toContain(candidate.toLowerCase());
 });
 
+it("accepts a declared workspace containing only an attributable model preference", () => {
+  const model = { provider: "openai", modelId: "gpt-4.1" };
+  const files = {
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      paths: { stateDir: "/state", workspaceDirs: ["/state/workspace"] },
+      assets: [{ kind: "state", archivePath: "state" }],
+    }),
+    "backup/state/openclaw.json": JSON.stringify({
+      agents: { entries: { main: { workspace: "/state/workspace", model: "openai/gpt-4.1" } } },
+    }),
+    "backup/state/workspace/notes.txt": "Unsupported file.",
+    "backup/state/skills/reports/SKILL.md": "Managed Skill outside the selected workspace.",
+  };
+  const backup = encodeAgentBackup(tar(files));
+  expect(JSON.parse(backup)).toMatchObject({ files: [], model });
+  expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source)).toMatchObject({
+    files: [],
+    model,
+  });
+  expect(backup).not.toContain("Managed Skill");
+  expect(() => encodeAgentBackup(tar({ ...files, "backup/state/openclaw.json": "{}" }))).toThrow(
+    "The backup could not be read.",
+  );
+  expect(() =>
+    encodeAgentBackup(tar({ ...files, "backup/state/agents/main/agent/models.json": "{}" })),
+  ).toThrow("The backup could not be read.");
+});
+
 it("reports an unavailable declared active configuration without using the home fallback", () => {
   const root = "backup";
   const value = encodeAgentBackup(

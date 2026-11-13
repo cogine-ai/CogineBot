@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
+import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   BotPackageError,
   parseBotPackageSource,
@@ -47,7 +48,7 @@ type Context = {
   signal?: AbortSignal;
   stillAuthorized?: () => Promise<boolean>;
 };
-type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets">;
+type Deps = Pick<RouterDeps, "prisma" | "billing" | "secrets"> & { codexCatalog: CodexLiveCatalog };
 const packagePlanSchema = BotPackageDocumentSchema.extend({
   backupModelBinding: BackupModelBindingSchema.optional(),
   modelOnly: z.literal(true).optional(),
@@ -117,7 +118,7 @@ const note = (
 ): BotPackageLeftOut => ({ kind, name, reason });
 const own = (actor: Actor) => ({ spaceId: actor.spaceId, userId: actor.userId });
 
-/** JSON-only packages never call home, credentials, provisioning, or the job publisher. */
+/** Ordinary JSON packages remain offline. An opted-in backup model can check its existing connection. */
 export function createBotPackagesService(deps: Deps) {
   const findNonce = (actor: Actor, clientNonce: string) =>
     deps.prisma.botPackageImport.findUnique({
@@ -243,7 +244,14 @@ export function createBotPackagesService(deps: Deps) {
         const document = packagePlanSchema.parse(marker.plan);
         const binding = document.backupModelBinding;
         const model = binding
-          ? await validateBackupModelBinding(tx, deps.secrets, context.actor, binding, true)
+          ? await validateBackupModelBinding(
+              tx,
+              deps.secrets,
+              context.actor,
+              binding,
+              deps.codexCatalog,
+              true,
+            )
           : null;
         const modelOmission =
           binding && !model
@@ -372,7 +380,13 @@ export function createBotPackagesService(deps: Deps) {
       const { backupModel } = parsed;
       const binding =
         backupModel && backupModel !== "unavailable"
-          ? await findBackupModelBinding(deps.prisma, deps.secrets, context.actor, backupModel)
+          ? await findBackupModelBinding(
+              deps.prisma,
+              deps.secrets,
+              context.actor,
+              backupModel,
+              deps.codexCatalog,
+            )
           : null;
       const modelOnly = parsed.modelOnly === true;
       const leftOut =

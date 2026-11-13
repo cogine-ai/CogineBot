@@ -1,6 +1,13 @@
 import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import { LOCAL_PROVIDER_ID, listPiCatalog, validateModelAuthAvailability } from "@rakazo/adapters";
+import type { CodexLiveCatalog } from "@rakazo/adapters";
+import {
+  CHATGPT_OAUTH_PROVIDER,
+  codexLiveListsModel,
+  LOCAL_PROVIDER_ID,
+  listPiCatalog,
+  validateModelAuthAvailability,
+} from "@rakazo/adapters";
 import type { Actor, AgentBackupModel } from "@rakazo/contracts";
 import { AgentBackupModelSchema, canonicalPiProviderId } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
@@ -30,6 +37,7 @@ export async function findBackupModelBinding(
   secrets: ModelSecrets,
   actor: Actor,
   model: AgentBackupModel,
+  codexCatalog: CodexLiveCatalog,
 ) {
   const exact = await prisma.spaceModelPreference.findMany({
     where: {
@@ -49,7 +57,9 @@ export async function findBackupModelBinding(
     credentialId: credential.id,
     revision: credential.connectionRevision,
   };
-  return (await validateBackupModelBinding(prisma, secrets, actor, binding)) ? binding : null;
+  return (await validateBackupModelBinding(prisma, secrets, actor, binding, codexCatalog))
+    ? binding
+    : null;
 }
 
 export async function validateBackupModelBinding(
@@ -57,6 +67,7 @@ export async function validateBackupModelBinding(
   secrets: ModelSecrets,
   actor: Actor,
   binding: BackupModelBinding,
+  codexCatalog: CodexLiveCatalog,
   lock = false,
 ) {
   const catalogProvider = canonicalPiProviderId(binding.provider);
@@ -100,10 +111,17 @@ export async function validateBackupModelBinding(
       ...model,
       expectedRevision: binding.revision,
     });
+    if (!checked || checked.secret.kind === "openai_compatible") return null;
     if (
-      !checked ||
-      checked.secret.kind === "openai_compatible" ||
-      validateModelAuthAvailability(catalogProvider, binding.modelId, checked.plaintext)
+      validateModelAuthAvailability(catalogProvider, binding.modelId, checked.plaintext) &&
+      (catalogProvider !== CHATGPT_OAUTH_PROVIDER ||
+        !(await codexLiveListsModel(
+          codexCatalog,
+          actor.userId,
+          checked.secret,
+          binding.modelId,
+          lock ? { cacheOnly: true } : undefined,
+        )))
     )
       return null;
     return model;

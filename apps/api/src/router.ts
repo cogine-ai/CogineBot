@@ -1207,7 +1207,7 @@ export function createRouter(deps: RouterDeps) {
     dataDir: deps.dataDir,
   });
   const agentSkills = createAgentSkillsService(deps.prisma);
-  const botPackages = createBotPackagesService(deps);
+  const botPackages = createBotPackagesService({ ...deps, codexCatalog });
   const transfer =
     deps.deploymentTransfer ??
     createDeploymentTransferService({

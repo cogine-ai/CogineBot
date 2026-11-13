@@ -329,11 +329,10 @@ export function encodeAgentBackup(data: Uint8Array): string {
   } else if (jobs === undefined && archive.has(jobPath)) {
     routineOmissions.push({ path: backupJobsPath, reason: "routineSchedule" });
   }
-  if (source === "openclaw" && archive.declaredWorkspace && !workspace && !routineFiles.length) {
-    if (!hasStateDatabase) throw new AgentImportArchiveError("unreadable");
-    // Show the database omission without opening a new managed-Skill-only import path.
-    files.clear();
-  }
+  const emptyDeclaredWorkspace =
+    source === "openclaw" && archive.declaredWorkspace && !workspace && !routineFiles.length;
+  // Managed Skills alone cannot stand in for the declared workspace.
+  if (emptyDeclaredWorkspace) files.clear();
   // Reserve the selected content budget before looking for optional model settings.
   for (const [name, path] of files) {
     if (!isBackupRuntimeFile(source, name)) archive.read(`${home}${path}`);
@@ -346,11 +345,18 @@ export function encodeAgentBackup(data: Uint8Array): string {
     if (!(error instanceof AgentImportArchiveError)) throw error;
   }
   const modelAgent =
-    jobs !== undefined || declaredConfig === undefined
-      ? agentId
-      : backupWorkspaceAgent(declaredConfig, workspacePath);
-  const model = projectBackupModel(source, config, modelAgent);
+    source === "openclaw" && config !== undefined
+      ? backupWorkspaceAgent(config, workspacePath)
+      : null;
+  const projectedModel = projectBackupModel(source, config, modelAgent);
   const agentModelPath = modelAgent ? `${home}agents/${modelAgent}/agent/models.json` : null;
+  const model =
+    (config === undefined && (archive.declaredConfig || archive.has(configPath))) ||
+    (projectedModel && agentModelPath && archive.has(agentModelPath))
+      ? "unavailable"
+      : projectedModel;
+  if (emptyDeclaredWorkspace && !hasStateDatabase && (!model || model === "unavailable"))
+    throw new AgentImportArchiveError("unreadable");
   return encodeBackupDocument(
     source,
     files,
@@ -360,13 +366,7 @@ export function encodeAgentBackup(data: Uint8Array): string {
     (path) => archive.read(`${home}${path}`),
     routineFiles,
     routineOmissions,
-    {
-      model:
-        (config === undefined && (archive.declaredConfig || archive.has(configPath))) ||
-        (model && agentModelPath && archive.has(agentModelPath))
-          ? "unavailable"
-          : model,
-    },
+    { model },
   );
 }
 
