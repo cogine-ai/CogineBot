@@ -94,6 +94,24 @@ it("projects only the Hermes model from a folder or archive and sends it after s
   }
 });
 
+it.each([
+  ["model: { default: { provider: openai, model: gpt-4.1 } }", "openai"],
+  ["model: { provider: auto, model: { provider: openai, default: gpt-4.1 } }", "openai"],
+  ["model: { provider: azure, default: { provider: openai, model: gpt-4.1 } }", "azure"],
+  ["model: { name: { provider: openai, model: gpt-4.1 } }", "openai"],
+  ["model: gpt-4.1\nprovider: openai", "openai"],
+  ["model: { provider: openai, default: { model: '  ', default: old }, name: gpt-4.1 }", "openai"],
+  ["model: { provider: openai, default: gpt-4.1, model: old, name: older }", "openai"],
+])("normalizes a supported Hermes model preference (%s)", (config, provider) => {
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Review sources."),
+      "config.yaml": strToU8(config),
+    }),
+  );
+  expect(JSON.parse(backup).model).toEqual({ provider, modelId: "gpt-4.1" });
+});
+
 it("reports an unavailable declared active configuration without using the home fallback", () => {
   const root = "backup";
   const value = encodeAgentBackup(
@@ -127,6 +145,14 @@ it("reports an unavailable declared active configuration without using the home 
 });
 
 it.each([
+  "provider: openai\nmodel: { provider: '   ', default: gpt-4.1 }",
+  "provider: openai\nmodel: { provider: 123, default: gpt-4.1 }",
+  "model: { provider: 123, default: { provider: openai, model: gpt-4.1 } }",
+  "model: { provider: openai, default: '   ', model: gpt-4.1 }",
+  "model: { provider: openai, default: 123, model: gpt-4.1 }",
+  "model: { provider: openai, default: { model: 123, default: gpt-4.1 } }",
+  "model: { default: { provider: openai, model: gpt-4.1, api_base: 'https://example.test' } }",
+  "model: { default: { provider: openai, model: gpt-4.1 } }\nproviders: { openai: { api: 'https://example.test' } }",
   "model: { provider: openai, default: gpt-4.1, base_url: 'https://example.test/v1' }",
   "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { base_url: 'https://example.test' } }",
   "model: { provider: openai, default: gpt-4.1 }\nproviders: { openai: { api: 'https://example.test' } }",

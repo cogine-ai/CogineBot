@@ -54,8 +54,28 @@ export function projectBackupModel(
       const model = record(config.model);
       if (!Object.hasOwn(config, "model")) return undefined;
       if (hasEndpoint(model) || hasEndpoint(config)) return "unavailable";
-      provider = text(model.provider);
-      modelId = text(model.default) || text(model.model);
+      let providerValue = own(model, "provider");
+      if (providerValue && typeof providerValue !== "string") return "unavailable";
+      let selected: unknown = typeof config.model === "string" ? config.model : undefined;
+      for (const field of ["default", "model", "name"] as const) {
+        const value = own(model, field);
+        const nested = record(value);
+        if (hasEndpoint(nested)) return "unavailable";
+        const nestedProvider = own(nested, "provider");
+        const currentProvider = text(providerValue);
+        if (!currentProvider || currentProvider === "auto") {
+          if (nestedProvider && typeof nestedProvider !== "string") return "unavailable";
+          providerValue = text(nestedProvider) || providerValue;
+        }
+        if (selected) continue;
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const nestedId = nested.model || nested.default;
+          if (nestedId && typeof nestedId !== "string") return "unavailable";
+          selected = text(nestedId);
+        } else selected = value;
+      }
+      modelId = text(selected);
+      provider = text(providerValue || config.provider);
       const overrides = [
         ...Object.entries(record(config.providers)),
         ...(Array.isArray(config.custom_providers)
