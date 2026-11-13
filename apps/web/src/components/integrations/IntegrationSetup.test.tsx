@@ -107,6 +107,10 @@ it.each(["cancelled", "disconnect_required", "unknown_future_result"])(
       [...node.querySelectorAll("button")].find((b) => b.textContent === "Connect")!.click(),
     );
     expect(api.oauth).toHaveBeenCalledWith("server");
+    if (result === "disconnect_required")
+      expect(node.querySelector('[role="alert"]')?.textContent).toContain(
+        "Disconnect OAuth before authorizing from another app.",
+      );
     expect(api.setTools).not.toHaveBeenCalled();
     expect(connected).not.toHaveBeenCalled();
     expect([...node.querySelectorAll("button")].some((b) => b.textContent === "Connected")).toBe(

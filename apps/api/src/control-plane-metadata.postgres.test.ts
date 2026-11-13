@@ -14,6 +14,7 @@ import {
   currentDbContext,
   describeRowSecurityPolicies,
   provisionRuntimeRole,
+  ROW_SECURITY_POLICIES,
   runAsTenant,
 } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -29,6 +30,12 @@ import {
 } from "../../../packages/adapters/src/integration-provider-settings.js";
 import { SpaceMemoryProviderResolver } from "../../../packages/adapters/src/memory-provider-factory.js";
 import { EncryptedSecretStore } from "../../../packages/adapters/src/secrets.js";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "../../../packages/testkit/src/row-security-expectations.js";
 import { createOpenApiImportService } from "./openapi-import.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 
@@ -176,6 +183,8 @@ postgres("control-plane metadata with complete row policies", () => {
     )
       throw new Error("Metadata tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    await expectPhysicalPolicyTables((sql) => owner.pool.query(sql));
     url.username = role;
     url.password = randomBytes(24).toString("hex");
     url.searchParams.delete("user");
@@ -242,8 +251,16 @@ postgres("control-plane metadata with complete row policies", () => {
       },
     });
     const status = await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
+    expectExactPolicyCatalog(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
+
     expect(status).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
       deploymentEnforced: false,
     });
@@ -286,7 +303,7 @@ postgres("control-plane metadata with complete row policies", () => {
   it("uses a restricted runtime and keeps direct metadata reads hidden", async () => {
     const state = await describeRowSecurityPolicies(runtime.prisma);
     expect(state).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
       deploymentEnforced: false,
     });

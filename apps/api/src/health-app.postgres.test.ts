@@ -26,6 +26,12 @@ import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "../../../packages/testkit/src/row-security-expectations.js";
 import { createApp } from "./app.js";
 
 const describePostgres =
@@ -364,7 +370,8 @@ describePostgres("protected database app composition", () => {
     owner = database.createDb(ownerUrl);
     await legacyCatalog();
     await adapters.migrateJobQueue(ownerUrl);
-    expect(ROW_SECURITY_POLICIES).toHaveLength(89);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    await expectPhysicalPolicyTables((sql) => owner!.pool.query(sql));
     grantRole = (
       await owner.pool.query<{ role: string }>(
         "SELECT 'coginebot_app_' || oid::text AS role FROM pg_database WHERE datname=current_database()",
@@ -396,10 +403,18 @@ describePostgres("protected database app composition", () => {
     }
     policiesOwned = true;
     expect(await database.applyRowSecurityPolicies(ownerUrl, runtimeUrl)).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
     });
     previousSecretStore = process.env.SECRET_STORE;
+    expectExactPolicyCatalog(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
+
     process.env.SECRET_STORE = "encrypted";
     secretStoreChanged = true;
   }, 120_000);
@@ -598,7 +613,7 @@ describePostgres("protected database app composition", () => {
     };
     try {
       expect(await database.verifyRuntimeDatabase(jobsDatabase.prisma)).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
       });
       await owner!.prisma.deploymentSettings.upsert({
@@ -1115,7 +1130,7 @@ describePostgres("protected database app composition", () => {
     let handles: Awaited<ReturnType<typeof createApp>> | undefined;
     try {
       expect(await database.verifyRuntimeDatabase(trusted.prisma)).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
       });
       const settings = await owner!.prisma.deploymentSettings.findMany({ orderBy: { id: "asc" } });

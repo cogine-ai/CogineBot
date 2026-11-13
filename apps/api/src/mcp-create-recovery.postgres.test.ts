@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EncryptedSecretStore } from "@rakazo/adapters";
 import type { Actor, McpServer } from "@rakazo/contracts";
 import { createMcpManagement, emptyMcpServerDraft, initialMcpManagementState } from "@rakazo/core";
 import { createDb } from "@rakazo/db";
@@ -18,6 +19,8 @@ postgres("MCP creation recovery through authenticated API", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
   let db: ReturnType<typeof createDb>;
   let dir: string;
+  const secretStore = new EncryptedSecretStore("synthetic-receipt-secrets");
+  const secretPuts = vi.spyOn(secretStore, "put");
   const users: string[] = [];
   const organizations: string[] = [];
   const outbound = vi.fn(async () => {
@@ -70,6 +73,7 @@ postgres("MCP creation recovery through authenticated API", () => {
     dir = await mkdtemp(join(tmpdir(), "mcp-create-http-"));
     app = await createApp({
       prisma: db.prisma,
+      secretStore,
       databaseUrl: process.env.DATABASE_URL!,
       dataDir: dir,
       encryptionKey: "offline-mcp-create-key",
@@ -390,5 +394,82 @@ postgres("MCP creation recovery through authenticated API", () => {
       ),
     ).not.toContain("synthetic-");
     manager.dispose();
+  });
+  it("maps only duplicate server creation to 409 and fences the draft for correction", async () => {
+    const owner = await account();
+    const config = {
+      slug: "duplicate",
+      name: "Duplicate",
+      transport: "stdio",
+      command: "fixture",
+      secret: "synthetic-duplicate",
+    };
+    await call(owner, "mcp/servers/create", config);
+    const putCount = secretPuts.mock.calls.length;
+    await expect(
+      call(owner, "mcp/servers/createOnce", { requestId: randomUUID(), config }),
+    ).rejects.toMatchObject({ status: 409 });
+    const draft = {
+      ...emptyMcpServerDraft(),
+      name: "Duplicate",
+      transport: "stdio" as const,
+      command: "fixture",
+      secret: "synthetic-duplicate",
+    };
+    let state = initialMcpManagementState();
+    const manager = createMcpManagement({
+      isCurrent: () => true,
+      changed: (next) => {
+        state = next;
+      },
+      request: <T>(procedure: string, input: unknown) => call<T>(owner, procedure, input),
+    });
+    await manager.refresh();
+    await manager.create(draft);
+    expect(state).toMatchObject({ pendingCreate: false, recovered: null, error: "write" });
+    expect(secretPuts).toHaveBeenCalledTimes(putCount);
+    expect(draft.name).toBe("Duplicate");
+    expect(
+      await db.prisma.secret.count({ where: { userId: owner.actor.userId, kind: "mcp" } }),
+    ).toBe(1);
+    expect(
+      await db.prisma.mcpCreateRequest.findMany({
+        where: { userId: owner.actor.userId },
+        select: { serverId: true },
+      }),
+    ).toEqual([{ serverId: null }]);
+    await manager.create({ ...draft, name: "Corrected" });
+    expect(state.recovered?.slug).toBe("corrected");
+    expect(await call<McpServer[]>(owner, "mcp/servers/list")).toHaveLength(2);
+    manager.dispose();
+  });
+  it("does not translate a non-unique database rejection into conflict", async () => {
+    const owner = await account();
+    await db.pool.query(
+      `CREATE FUNCTION public.receipt_reject_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.slug='reject-nonunique-fixture' THEN RAISE EXCEPTION 'Synthetic check failure' USING ERRCODE='23514'; END IF; RETURN NEW; END $$`,
+    );
+    await db.pool.query(
+      "CREATE TRIGGER receipt_reject_fixture BEFORE INSERT ON public.mcp_servers FOR EACH ROW EXECUTE FUNCTION public.receipt_reject_fixture()",
+    );
+    try {
+      await expect(
+        call(owner, "mcp/servers/createOnce", {
+          requestId: randomUUID(),
+          config: {
+            slug: "reject-nonunique-fixture",
+            name: "Rejected",
+            transport: "stdio",
+            command: "fixture",
+          },
+        }),
+      ).rejects.toMatchObject({ status: 500 });
+      expect(
+        await db.prisma.mcpCreateRequest.count({ where: { userId: owner.actor.userId } }),
+      ).toBe(0);
+      expect(await db.prisma.mcpServer.count({ where: { userId: owner.actor.userId } })).toBe(0);
+    } finally {
+      await db.pool.query("DROP TRIGGER receipt_reject_fixture ON public.mcp_servers");
+      await db.pool.query("DROP FUNCTION public.receipt_reject_fixture()");
+    }
   });
 });

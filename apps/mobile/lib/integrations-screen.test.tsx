@@ -1526,10 +1526,14 @@ it.each(["streamable_http", "sse", "stdio"])(
   "creates native %s servers, keeps secrets masked and opens tool access",
   async (transport) => {
     let rows: unknown[] = [];
+    const requestId = "00000000-0000-4000-8000-000000000146";
+    let receipt: { requestId: string; serverId: string } | null = null;
     state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
-      if (procedure === "mcp/servers/create") {
+      if (procedure === "mcp/servers/newCreateRequest") return { requestId };
+      if (procedure === "mcp/servers/creation") return receipt;
+      if (procedure === "mcp/servers/createOnce") {
         const server = {
-          ...input,
+          ...(input.config as Record<string, unknown>),
           id: "created",
           revision: 1,
           allowAllTools: false,
@@ -1537,7 +1541,8 @@ it.each(["streamable_http", "sse", "stdio"])(
           oauthStatus: "none",
         };
         rows = [server];
-        return server;
+        receipt = { requestId, serverId: server.id };
+        return receipt;
       }
       return rows;
     });
@@ -1561,12 +1566,27 @@ it.each(["streamable_http", "sse", "stdio"])(
         ?.type,
     ).toBe("password");
     await press("Add server");
-    const create = state.rpc.mock.calls.find(([procedure]) => procedure === "mcp/servers/create")!;
-    expect(create[1]).toMatchObject({
+    const create = state.rpc.mock.calls.find(
+      ([procedure]) => procedure === "mcp/servers/createOnce",
+    )!;
+    expect(create[1].requestId).toBe(requestId);
+    expect(create[1].config).toMatchObject({
       transport,
       name: "Fixture service",
       secret: "synthetic-secret",
       verbatimResults: false,
+    });
+    expect(create[1].config).toMatchObject(
+      transport === "stdio"
+        ? { command: "fixture-command", args: ["--stdio", "--fixture"] }
+        : { endpoint: "https://tools.example.test/mcp" },
+    );
+    expect(state.rpc.mock.calls.some(([proc]) => proc === "mcp/servers/create")).toBe(false);
+    expect(
+      state.rpc.mock.calls.filter(([proc]) => proc === "mcp/servers/newCreateRequest"),
+    ).toHaveLength(1);
+    expect(state.rpc.mock.calls.find(([proc]) => proc === "mcp/servers/creation")?.[1]).toEqual({
+      requestId,
     });
     expect(create[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-a");
     expect(container.textContent).toContain("Save tool access");
@@ -1584,7 +1604,11 @@ it("keeps failed creation input and requires confirmation before removing a serv
     allowedTools: [],
   };
   state.rpc.mockImplementation(async (procedure: string) => {
-    if (procedure === "mcp/servers/create")
+    if (procedure === "mcp/servers/newCreateRequest")
+      return { requestId: "00000000-0000-4000-8000-000000000146" };
+    if (procedure === "mcp/servers/cancelCreate")
+      return { requestId: "00000000-0000-4000-8000-000000000146", serverId: null };
+    if (procedure === "mcp/servers/createOnce")
       throw Object.assign(new Error("synthetic-secret should not display"), { status: 403 });
     return [server];
   });

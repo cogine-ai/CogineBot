@@ -22,6 +22,12 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "../../../packages/testkit/src/row-security-expectations.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 // DDL below uses only generated fixture identifiers and synthetic SCRAM values.
@@ -109,6 +115,8 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     )
       throw new Error("Row-policy tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    await expectPhysicalPolicyTables((sql) => owner.pool.query(sql));
     url.username = role;
     url.password = password;
     url.searchParams.delete("user");
@@ -566,7 +574,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   it("installs the exact schema-wide policy set for a real restricted connection", async () => {
     expect(beforePolicies.policyInstalled).toBe(false);
     expect(installed).toMatchObject({
-      expectedTables: ROW_SECURITY_POLICIES.length,
+      expectedTables: schemaPolicyTables.length,
       policyInstalled: true,
       policyEnabled: true,
       connectionEnforced: true,
@@ -574,7 +582,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       guardValid: true,
       legacyPolicyCount: 0,
     });
-    expect(installed.tables).toHaveLength(ROW_SECURITY_POLICIES.length);
+    expect(installed.tables).toHaveLength(schemaPolicyTables.length);
     expect(
       installed.tables.every(
         (table) => table.present && table.enabled && table.active && table.policyMatch,
@@ -589,7 +597,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(161);
+    expectExactPolicyCatalog(
+      snapshot.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+    );
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1603,7 +1613,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(161);
+        expectExactPolicyCatalog(
+          (await catalog()).map((row) => ({
+            schema: row.schema,
+            table: row.relname,
+            policy: row.polname,
+          })),
+        );
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -1896,7 +1912,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(161);
+        expectExactPolicyCatalog(
+          committed.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+        );
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -1942,7 +1960,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(161);
+      expectExactPolicyCatalog(
+        committed.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+      );
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

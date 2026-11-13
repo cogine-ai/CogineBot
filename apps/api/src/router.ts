@@ -5819,6 +5819,17 @@ export function createRouter(deps: RouterDeps) {
                 context.actor,
                 deps,
               );
+              // Resolve the unique slug before creating external secret material. A rejected
+              // insert rolls back this transaction without a secret write to compensate.
+              const row = await tx.mcpServer
+                .create({ data: mcpCreationData(context.actor, config) })
+                .catch((error: unknown) => {
+                  if (isUniqueViolation(error))
+                    throw new ORPCError("CONFLICT", {
+                      message: "An MCP server with this name already exists.",
+                    });
+                  throw error;
+                });
               const payload = buildMcpCredentialBlob(config);
               const stored = payload
                 ? await deps.secrets.put(
@@ -5836,9 +5847,8 @@ export function createRouter(deps: RouterDeps) {
                     ciphertext: stored.ciphertext,
                   },
                 });
-              const row = await tx.mcpServer.create({
-                data: mcpCreationData(context.actor, config, stored?.id),
-              });
+              if (stored)
+                await tx.mcpServer.update({ where: { id: row.id }, data: { secretId: stored.id } });
               return tx.mcpCreateRequest.create({
                 data: { ...identity, serverId: row.id },
                 select: { requestId: true, serverId: true },

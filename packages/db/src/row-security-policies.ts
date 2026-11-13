@@ -318,7 +318,7 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         model: "McpCreateRequest",
         table: "mcp_create_requests",
         scope: "tenant",
-        tenantPredicate: local(),
+        tenantPredicate: all(local(), own()),
       },
       { model: "McpServer", table: "mcp_servers", scope: "tenant", tenantPredicate: local() },
       {

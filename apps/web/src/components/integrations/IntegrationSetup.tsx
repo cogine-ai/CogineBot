@@ -120,6 +120,10 @@ export function IntegrationSetup({
         await rpc.mcp.servers.update({ id: existing.id, secret: apiKey.trim() });
       }
       const result = await connectMcpOauth(server.id);
+      if (result === "disconnect_required") {
+        setError(t`Disconnect OAuth before authorizing from another app.`);
+        return;
+      }
       if (
         result !== "connected" &&
         result !== "already_connected" &&
