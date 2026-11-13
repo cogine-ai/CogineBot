@@ -1,6 +1,6 @@
 import type { AgentBackupSource } from "@rakazo/contracts";
 import { assertHeaderSafeApiKey } from "@rakazo/contracts";
-import { readBackupConfig } from "./config.js";
+import { readBackupAuth, readBackupConfig } from "./config.js";
 import { backupProviderId } from "./model.js";
 
 const providers = {
@@ -142,9 +142,7 @@ export function readBackupModelApiKey(
     if (value?.trim() && !endpoints.includes(value.trim().replace(/\/+$/, ""))) return undefined;
   }
   const auth =
-    source === "hermes" && files.auth !== undefined
-      ? readBackupConfig("openclaw", files.auth)
-      : undefined;
+    source === "hermes" && files.auth !== undefined ? readBackupAuth(files.auth) : undefined;
   if (auth === null) return undefined;
   const entries = Object.entries(record(auth?.credential_pool)).flatMap(([id, rows]) =>
     backupProviderId(source, id) === provider && Array.isArray(rows) ? rows.map(record) : [],

@@ -28,11 +28,12 @@ describe("readBackupModelApiKey", () => {
       },
     });
     expect(readBackupModelApiKey("hermes", "openai", { auth })).toBe(apiKey);
+    expect(readBackupModelApiKey("hermes", "openai", { auth: `\uFEFF${auth}` })).toBe(apiKey);
     expect(readBackupModelApiKey("openclaw", "openai", { auth })).toBeUndefined();
     expect(readBackupModelApiKey("hermes", "openai-codex", { auth })).toBeUndefined();
   });
 
-  it.each(["", '{"credential_pool": {'])(
+  it.each(["", '{"credential_pool": {', "{credential_pool: {}}"])(
     "does not fall back to another key with a malformed auth file %j",
     (auth) => {
       expect(
