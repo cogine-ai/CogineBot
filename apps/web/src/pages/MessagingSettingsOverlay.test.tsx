@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   start: vi.fn(),
   channels: vi.fn(),
   connections: vi.fn(),
+  installations: vi.fn(),
   bots: vi.fn(),
   spaces: vi.fn(),
   unlink: vi.fn(),
@@ -29,6 +30,9 @@ vi.mock("../lib/rpc", () => ({
       status: api.status,
       link: { start: api.start },
       identities: { unlink: api.unlink },
+      get installations() {
+        return { list: api.installations };
+      },
       channels: { list: api.channels, respond: api.channelRespond, leave: api.channelLeave },
       connections: {
         list: api.connections,
@@ -54,6 +58,14 @@ vi.mock("@rakazo/ui-web", () => ({
   DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   DialogTitle: ({ children }: { children: ReactNode }) => <h1>{children}</h1>,
   DialogClose: () => null,
+  AlertDialog: () => null,
+  AlertDialogAction: () => null,
+  AlertDialogCancel: () => null,
+  AlertDialogContent: () => null,
+  AlertDialogDescription: () => null,
+  AlertDialogFooter: () => null,
+  AlertDialogHeader: () => null,
+  AlertDialogTitle: () => null,
   NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
   NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
 }));
@@ -97,6 +109,7 @@ beforeEach(() => {
   api.status.mockResolvedValue(empty);
   api.channels.mockResolvedValue([]);
   api.connections.mockResolvedValue([]);
+  api.installations.mockResolvedValue({ available: false, workspaces: [] });
   api.bots.mockResolvedValue([
     { id: "bot-1", name: "Helper" },
     { id: "bot-2", name: "Other" },
@@ -145,6 +158,22 @@ async function issue() {
       .click();
   });
 }
+it("retains the Slack installation request across unrelated messaging renders", async () => {
+  view = await mount();
+  expect(api.installations).toHaveBeenCalledTimes(1);
+  const signal = api.installations.mock.calls[0]?.[1]?.signal;
+  expect(signal?.aborted).toBe(false);
+  await select("bot-1");
+  expect(api.installations).toHaveBeenCalledTimes(1);
+  expect(signal?.aborted).toBe(false);
+  api.selection = "space-2";
+  api.generation++;
+  api.spaces.mockResolvedValue({ current: { id: "space-2", externalConversations: [] } });
+  await view.render();
+  expect(signal?.aborted).toBe(true);
+  expect(api.installations).toHaveBeenCalledTimes(2);
+});
+
 it("polls once at a time and refreshes the linked identity without issuing another code", async () => {
   view = await mount();
   await issue();

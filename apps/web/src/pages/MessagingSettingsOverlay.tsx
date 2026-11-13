@@ -98,6 +98,10 @@ export function MessagingSettingsOverlay({
       ),
     [binding, spaceId],
   );
+  const installationApi = useMemo(() => {
+    const { list, attempt, start, pause, cancel, remove } = rpc.messaging.installations;
+    return { list, attempt, start, pause, cancel, remove };
+  }, [rpc]);
   useLayoutEffect(() => {
     committed.current = binding;
     return () => {
@@ -290,7 +294,7 @@ export function MessagingSettingsOverlay({
         {error ? <p className="mt-4 text-[13px] text-destructive">{error}</p> : null}
         <SlackWorkspaceSettings
           key={`${ownerKey}:${spaceId}:${generation}`}
-          api={rpc.messaging.installations}
+          api={installationApi}
           bots={bots}
           current={isCurrent}
           outcome={slackOutcome}
