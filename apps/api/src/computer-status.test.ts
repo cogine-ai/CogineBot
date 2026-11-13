@@ -107,6 +107,17 @@ describe("toComputerStatus", () => {
     expect(toComputerStatus("bot-1", computer, "Writer").busyBotName).toBe("Writer");
   });
 
+  it("uses the reported provider for the screen dimensions", () => {
+    const status = toComputerStatus("bot-1", {
+      kind: " box ",
+      state: "stopped",
+      scope: "team",
+      controlHolder: "none",
+      homeRevision: "r1",
+    });
+    expect(status).toMatchObject({ kind: "box", screenWidth: 1920, screenHeight: 1080 });
+  });
+
   it.each([
     ["suspending", false, new Date(), "stopping"],
     ["suspending", true, new Date(0), "quarantined"],
@@ -159,6 +170,15 @@ describe("toComputerStatus", () => {
       recoveryBlocked: true,
     });
     expect(toComputerStatus("bot-1", computer, null, original).recoveryBlocked).toBeUndefined();
+    expect(toComputerStatus("bot-1", computer, null, original).screenAvailable).toBe(true);
+    expect(toComputerStatus("bot-1", { ...computer, kind: " e2b " }, null, original)).toMatchObject(
+      {
+        kind: "e2b",
+        powerState: "quarantined",
+        screenAvailable: false,
+        recoveryBlocked: true,
+      },
+    );
     expect(toComputerStatus("bot-1", computer, null, original).requiresExplicitWake).toBe(true);
     expect(toComputerStatus("bot-1", computer, null, changed).requiresExplicitWake).toBeUndefined();
   });
