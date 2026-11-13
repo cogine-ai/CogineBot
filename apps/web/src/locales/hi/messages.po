@@ -6680,6 +6680,26 @@ msgstr "आयातित कौशल जाँचें"
 msgid "Choose package file"
 msgstr "पैकेज फ़ाइल चुनें"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "एजेंट बैकअप चुना गया"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "यह पैकेज नहीं पढ़ा जा सका। 4 MiB तक की JSON फ़ाइल या एजेंट बैकअप का उपयोग करें।"
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "OpenClaw या Hermes बैकअप"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "इस आयात में केवल समर्थित टेक्स्ट शामिल है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "इसके बजाय JSON इस्तेमाल करें"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "चयन हटाएँ"
@@ -6711,10 +6731,6 @@ msgstr "कौशल लोड नहीं हो सके।"
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "इस पैकेज का पूर्वावलोकन नहीं हो सका।"
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "यह पैकेज पढ़ा नहीं जा सका। अधिकतम 4 MiB की UTF-8 JSON फ़ाइल उपयोग करें।"
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

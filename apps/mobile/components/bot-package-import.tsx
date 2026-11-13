@@ -1,6 +1,7 @@
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
+import { isAgentBackupUpload } from "@rakazo/core/agent-backup";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
@@ -81,6 +82,7 @@ export function NativeBotPackageImport({
   const phase = state?.phase ?? "editing";
   const receipt = state?.receipt;
   const preview = state?.preview;
+  const backup = isAgentBackupUpload(state?.source ?? "");
   const busy = phase === "importing" || phase === "checking";
   const locked =
     !client ||
@@ -102,7 +104,12 @@ export function NativeBotPackageImport({
     setFileError(false);
     try {
       const source = await pickBotPackageFile(valid);
-      if (valid() && source !== null) manager.current?.edit({ source });
+      if (valid() && source !== null) {
+        manager.current?.edit({
+          source,
+          includeMemory: false,
+        });
+      }
     } catch {
       if (valid()) setFileError(true);
     } finally {
@@ -126,18 +133,33 @@ export function NativeBotPackageImport({
       ) : null}
       {phase !== "completed" ? (
         <>
-          <Text style={styles.text}>{t("Bot package or Grok JSON")}</Text>
-          <TextInput
-            accessibilityLabel={t("Bot package or Grok JSON")}
-            multiline
-            value={state?.source ?? ""}
-            maxLength={BOT_PACKAGE_MAX_BYTES}
-            editable={!locked}
-            onChangeText={(source) => edit({ source })}
-            autoCorrect={false}
-            autoCapitalize="none"
-            style={[styles.input, styles.source]}
-          />
+          {backup ? (
+            <View style={styles.row}>
+              <Text accessibilityLiveRegion="polite">{t("Agent backup selected")}</Text>
+              <NativeActionButton
+                label={t("Use JSON instead")}
+                disabled={locked}
+                onPress={() => edit({ source: "", includeMemory: false })}
+                prominence="secondary"
+              />
+            </View>
+          ) : (
+            <>
+              <Text style={styles.text}>{t("Bot package or Grok JSON")}</Text>
+              <TextInput
+                accessibilityLabel={t("Bot package or Grok JSON")}
+                multiline
+                value={state?.source ?? ""}
+                maxLength={BOT_PACKAGE_MAX_BYTES}
+                editable={!locked}
+                onChangeText={(source) => edit({ source })}
+                autoCorrect={false}
+                autoCapitalize="none"
+                style={[styles.input, styles.source]}
+              />
+            </>
+          )}
+          <Text>{t("OpenClaw or Hermes backup")}</Text>
           <NativeActionButton
             label={t("Choose package file")}
             disabled={locked || reading}
@@ -178,7 +200,7 @@ export function NativeBotPackageImport({
       ) : null}
       {fileError ? (
         <Text accessibilityRole="alert" style={styles.secondary}>
-          {t("Could not read this package. Use a UTF-8 JSON file up to 4 MiB.")}
+          {t("Could not read this package. Use a JSON file or an agent backup up to 4 MiB.")}
         </Text>
       ) : null}
       {state?.error ? (
@@ -192,12 +214,18 @@ export function NativeBotPackageImport({
         <>
           <BotPackageDocumentView document={preview.document} />
           <BotPackageLeftOutList items={preview.leftOut} />
-          <Text style={styles.secondary}>
-            {t("Skills stay off. Routines stay paused. Connections need setup.")}
-          </Text>
-          <Text style={styles.secondary}>
-            {t("Models, credentials, files, and chat history are not imported.")}
-          </Text>
+          {backup ? (
+            <Text style={styles.secondary}>{t("This import includes supported text only.")}</Text>
+          ) : (
+            <>
+              <Text style={styles.secondary}>
+                {t("Skills stay off. Routines stay paused. Connections need setup.")}
+              </Text>
+              <Text style={styles.secondary}>
+                {t("Models, credentials, files, and chat history are not imported.")}
+              </Text>
+            </>
+          )}
           {phase === "review" ? (
             <NativeActionButton
               label={t("Import as new bot")}

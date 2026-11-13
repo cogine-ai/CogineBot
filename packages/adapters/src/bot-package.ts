@@ -1,9 +1,15 @@
 import type {
+  AgentBackupDocument,
   BotPackageDocument,
   BotPackageLeftOut,
   BotPackagePreviewInput,
 } from "@rakazo/contracts";
 import {
+  AGENT_BACKUP_FORMAT,
+  AgentBackupDocumentSchema,
+  BOT_DESCRIPTION_MAX_LENGTH,
+  BOT_INSTRUCTIONS_MAX_LENGTH,
+  BOT_NAME_MAX_LENGTH,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_CONNECTIONS,
@@ -25,6 +31,18 @@ import {
   nextCronDateAcrossStrict,
   parseSkillMd,
 } from "@rakazo/core";
+import {
+  backupInstructions,
+  botImportJsonObject,
+  isBackupSkill,
+  isBackupTextFile,
+  isHermesDefault,
+  isOpenClawDefault,
+  openClawRuntimeFiles,
+  parseOpenClawIdentity,
+  renameBackupSkill,
+  selectBackupMemory,
+} from "@rakazo/core/agent-backup";
 import { redactSecretText } from "@rakazo/logging/redaction";
 
 export class BotPackageError extends Error {}
@@ -50,7 +68,12 @@ type RecordValue = Record<string, unknown>;
 export type ParsedBotPackage = {
   document: BotPackageDocument;
   json: string;
-  sourceFormat: typeof BOT_PACKAGE_FORMAT | "openmaus.grok/1" | "grokbot-bundle/v1";
+  sourceFormat:
+    | "openclaw"
+    | "hermes"
+    | typeof BOT_PACKAGE_FORMAT
+    | "openmaus.grok/1"
+    | "grokbot-bundle/v1";
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
 };
@@ -91,25 +114,10 @@ function sourceObject(source: string): RecordValue {
     throw new BotPackageError(
       "A public share link does not contain the setup. Paste a JSON export.",
     );
-  const candidates = [raw];
-  for (const match of raw.matchAll(/```(?:json)?([\s\S]*?)```/gi)) {
-    candidates.push((match[1] ?? "").trimStart());
-    if (candidates.length >= 10) break;
-  }
-  const open = raw.indexOf("{");
-  const close = raw.lastIndexOf("}");
-  if (open >= 0 && close > open) candidates.push(raw.slice(open, close + 1));
-  for (const candidate of candidates) {
-    let value: unknown;
-    try {
-      value = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    if (record(value)) {
-      guardStructure(value);
-      return value;
-    }
+  const value = botImportJsonObject(raw);
+  if (value) {
+    guardStructure(value);
+    return value;
   }
   throw new BotPackageError("Paste a supported JSON package or bot export.");
 }
@@ -498,12 +506,145 @@ export function prepareBotPackageDocument(value: unknown): {
   return { document, json, leftOut: leftOut.entries };
 }
 
+function backupPackage(
+  backup: AgentBackupDocument,
+  options: Pick<BotPackagePreviewInput, "name" | "includeMemory">,
+): ParsedBotPackage {
+  const { source, files } = backup;
+  const leftOut = new LeftOutBudget();
+  if (files.some(({ path }) => !isBackupTextFile(source, path)))
+    throw new BotPackageError("The backup contains unsupported files.");
+  const byPath = new Map(files.map(({ path, content }) => [path, content]));
+  const addNote = (kind: BotPackageLeftOut["kind"], name: string, reason: string) => {
+    leftOut.push({ kind, name: redactSecretText(name).slice(0, 200), reason });
+  };
+  const identityText = byPath.get("IDENTITY.md");
+  const identity =
+    source === "openclaw" && identityText && !isOpenClawDefault("IDENTITY.md", identityText)
+      ? parseOpenClawIdentity(identityText)
+      : undefined;
+  for (const label of identity?.unused ?? [])
+    addNote("unsupported", label, "This identity field is not used.");
+  for (const path of openClawRuntimeFiles) {
+    if (byPath.has(path)) addNote("unsupported", path, "This runtime file is not used.");
+  }
+  const instructions: string[] = [];
+  for (const path of backupInstructions[source]) {
+    const content = byPath.get(path);
+    if (!content?.trim()) continue;
+    const stock =
+      source === "openclaw"
+        ? isOpenClawDefault(path, content)
+        : path === "SOUL.md" && isHermesDefault(content);
+    if (stock) {
+      addNote("instructions", path, "The original template was omitted.");
+      continue;
+    }
+    const next = instructions.length ? `\n\n${content}` : content;
+    if (instructions.join("").length + next.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
+      addNote("instructions", path, "This instruction file exceeds the Bot limit.");
+      continue;
+    }
+    instructions.push(next);
+  }
+  const incomplete = new Set(backup.incompleteSkills);
+  const skillNames = new Set<string>();
+  const skills: BotPackageDocument["skills"] = [];
+  for (const [path, content] of [...byPath].sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  )) {
+    if (isBackupSkill(path)) {
+      const parsed = parseSkillMd(content);
+      if ("error" in parsed) {
+        addNote("skill", path, "This Skill is missing valid metadata.");
+      } else if (
+        incomplete.has(path) ||
+        /\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(parsed.body)
+      ) {
+        addNote("skill", path, "This Skill needs additional files.");
+      } else if (backupSkillRequiresReview(parsed.frontmatter)) {
+        addNote("skill", path, "This Skill declares requirements that need review.");
+      } else {
+        let name = parsed.name;
+        for (let number = 2; skillNames.has(name.toLowerCase()); number++) {
+          const suffix = `-${number}`;
+          name = `${parsed.name.slice(0, 80 - suffix.length)}${suffix}`;
+        }
+        const renamed = name === parsed.name ? content : renameBackupSkill(content, name);
+        const validated = name === parsed.name ? parsed : parseSkillMd(renamed);
+        const candidate = BotPackageSkillSchema.safeParse({
+          name,
+          description: parsed.description,
+          content: renamed,
+        });
+        if ("error" in validated || validated.name !== name) {
+          addNote("skill", path, "The Skill name could not be updated.");
+        } else if (!candidate.success || skills.length >= BOT_PACKAGE_MAX_SKILLS) {
+          addNote("skill", path, "This Skill exceeds the Bot limits.");
+        } else {
+          skillNames.add(name.toLowerCase());
+          skills.push(candidate.data);
+        }
+      }
+    }
+  }
+  const memory = selectBackupMemory(source, files, (path, reason) =>
+    addNote("memory", path, reason),
+  );
+  const availableMemoryCount =
+    memory.length + (options.includeMemory ? 0 : backup.excludedMemoryCount);
+  if (!options.includeMemory && availableMemoryCount)
+    addNote("memory", "memory", `Memory notes not selected: ${availableMemoryCount}.`);
+  if (
+    !instructions.length &&
+    !skills.length &&
+    !(options.includeMemory && memory.length) &&
+    !identity?.name &&
+    !identity?.description
+  )
+    throw new BotPackageError("No supported Bot content was found in this backup.");
+  const safe = prepareBotPackageDocument({
+    format: BOT_PACKAGE_FORMAT,
+    profile: {
+      name:
+        options.name ??
+        identity?.name?.slice(0, BOT_NAME_MAX_LENGTH) ??
+        (source === "openclaw" ? "OpenClaw" : "Hermes"),
+      description: identity?.description?.slice(0, BOT_DESCRIPTION_MAX_LENGTH) ?? "",
+      instructions: instructions.join(""),
+    },
+    skills,
+    memory: options.includeMemory ? memory : [],
+  });
+  leftOut.push(...safe.leftOut);
+  return { ...safe, sourceFormat: source, leftOut: leftOut.entries, availableMemoryCount };
+}
+
+function backupSkillRequiresReview(frontmatter: RecordValue): boolean {
+  const metadata = known(frontmatter.metadata);
+  return (
+    Object.keys(frontmatter).some((key) =>
+      /^(?:requires|prerequisites|platforms|os|required_environment_variables|allowed-tools)$/i.test(
+        key,
+      ),
+    ) ||
+    Object.keys(metadata).some((key) => /^(?:openclaw|hermes)$/i.test(key)) ||
+    (typeof frontmatter.metadata === "string" && !!frontmatter.metadata.trim())
+  );
+}
+
 export function parseBotPackageSource(
   source: string,
   options: Pick<BotPackagePreviewInput, "name" | "includeMemory"> & { defaultTimezone?: string },
 ): ParsedBotPackage {
   const root = sourceObject(source);
   const format = root.format;
+  if (format === AGENT_BACKUP_FORMAT) {
+    const backup = AgentBackupDocumentSchema.safeParse(root);
+    if (!backup.success)
+      throw new BotPackageError("The backup has unsupported or oversized files.");
+    return backupPackage(backup.data, options);
+  }
   if (
     format !== BOT_PACKAGE_FORMAT &&
     format !== "openmaus.grok/1" &&

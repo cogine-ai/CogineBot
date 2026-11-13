@@ -413,3 +413,127 @@ describe("bounded portable Bot JSON", () => {
     expect(BotPackageDocumentSchema.safeParse(document()).success).toBe(true);
   });
 });
+
+it("previews supported agent backup text as an ordinary new Bot package", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [
+      { path: "IDENTITY.md", content: "- Name: Field Notes\n- Theme: Research" },
+      { path: "SOUL.md", content: "Write short notes." },
+      { path: "AGENTS.md", content: "Use a checklist." },
+      { path: "MEMORY.md", content: "Keep this note." },
+      { path: "TOOLS.md", content: "Unsupported runtime file." },
+      {
+        path: "skills/review/SKILL.md",
+        content: "---\nname: review\ndescription: Review notes\n---\nReview.",
+      },
+      {
+        path: "skills/attached/SKILL.md",
+        content: "---\nname: attached\ndescription: Attached review\n---\nReview.",
+      },
+    ],
+    incompleteSkills: ["skills/attached/SKILL.md"],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: false });
+  expect(preview).toMatchObject({
+    sourceFormat: "openclaw",
+    availableMemoryCount: 1,
+    document: {
+      profile: {
+        name: "Field Notes",
+        description: "Research",
+        instructions: "Write short notes.\n\nUse a checklist.",
+      },
+      skills: [{ name: "review" }],
+      memory: [],
+      routines: [],
+      connections: [],
+    },
+  });
+  expect(preview.leftOut.map(({ name }) => name)).toEqual([
+    "TOOLS.md",
+    "skills/attached/SKILL.md",
+    "memory",
+  ]);
+  expect(parseBotPackageSource(source, { includeMemory: true }).document.memory).toEqual([
+    { path: "MEMORY.md", content: "Keep this note." },
+  ]);
+});
+
+it("preserves both colliding Skills and leaves oversized multibyte memory out", () => {
+  const unusual = skill.replace("Exact instructions", "'Use \"#tag\" when ready.'");
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [
+      { path: "skills/one/SKILL.md", content: skill },
+      { path: "skills/two/SKILL.md", content: unusual.replace("sample", "Sample") },
+      { path: "MEMORY.md", content: "记".repeat(90_000) },
+    ],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: true });
+  expect(preview.document.skills.map(({ name }) => name)).toEqual(["sample", "Sample-2"]);
+  expect(preview.document.skills[1]?.content).toBe(
+    unusual.replace("name: sample", "name: |2-\r\n  Sample-2"),
+  );
+  expect(preview.document.memory).toEqual([]);
+  expect(preview.leftOut).toContainEqual(
+    expect.objectContaining({ kind: "memory", name: "MEMORY.md" }),
+  );
+});
+
+it("does not approve an empty import from excluded backup notes", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [],
+    excludedMemoryCount: 1,
+  });
+  expect(() => parseBotPackageSource(source, { includeMemory: false })).toThrow(
+    "No supported Bot content",
+  );
+});
+
+it("accepts OpenClaw identity with a custom description and placeholder name", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [{ path: "IDENTITY.md", content: "- Name: not set yet\n- Theme: Quiet research" }],
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: false });
+  expect(preview.document.profile).toMatchObject({
+    name: "OpenClaw",
+    description: "Quiet research",
+  });
+});
+
+it("keeps standalone Hermes Skills pending without classifying edits by bundled names", () => {
+  const edited = `\uFEFF${skill.replace("Original body.", "User edits.")}`;
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "HERMES.md", content: "Synthetic instructions" },
+      { path: "skills/category/sample/SKILL.md", content: edited },
+    ],
+  });
+  const preview = parseBotPackageSource(source, {
+    includeMemory: false,
+  });
+  expect(preview.document.skills[0]).toMatchObject({ name: "sample", content: edited });
+});
+
+it("rejects unsupported paths sent directly to the preview endpoint", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [
+      { path: "HERMES.md", content: "Fixture" },
+      { path: "auth.json", content: "sensitive field" },
+    ],
+  });
+  expect(() => parseBotPackageSource(source, { includeMemory: false })).toThrow(
+    "unsupported files",
+  );
+});

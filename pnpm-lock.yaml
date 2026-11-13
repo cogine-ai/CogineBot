@@ -813,6 +813,9 @@ importers:
       dotenv:
         specifier: 17.4.2
         version: 17.4.2
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       hast-util-to-text:
         specifier: 4.0.2
         version: 4.0.2
@@ -6480,6 +6483,9 @@ packages:
 
   fetch-retry@6.0.0:
     resolution: {integrity: sha512-BUFj1aMubgib37I3v4q78fYo63Po7t4HUPTpQ6/QE6yK6cIQrP+W43FYToeTEyg5m2Y7eFUtijUuAv/PDlWuag==}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   fflate@0.4.9:
     resolution: {integrity: sha512-zdxgIEddhfsyCaWpJ2SdXEP8ZMrKJ6+5jl4OupODcywU0IhRk6gdXuVGcPICyfx2H97hVK7xmJtRLPjkxAX8Vw==}
@@ -16748,6 +16754,8 @@ snapshots:
   fetch-retry@6.0.0: {}
 
   fflate@0.4.9: {}
+
+  fflate@0.8.3: {}
 
   filelist@1.0.6:
     dependencies:

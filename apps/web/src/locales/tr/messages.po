@@ -6680,6 +6680,26 @@ msgstr "İçe aktarılan becerileri kontrol et"
 msgid "Choose package file"
 msgstr "Paket dosyası seç"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "Aracı yedeği seçildi"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "Bu paket okunamadı. En fazla 4 MiB boyutunda bir JSON dosyası veya aracı yedeği kullanın."
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "OpenClaw veya Hermes yedeği"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "Yalnızca desteklenen metinler içe aktarılır."
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "JSON kullan"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "Seçimi temizle"
@@ -6711,10 +6731,6 @@ msgstr "Beceriler yüklenemedi."
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "Bu paket önizlenemedi."
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "Bu paket okunamadı. En fazla 4 MiB boyutunda UTF-8 JSON dosyası kullanın."
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

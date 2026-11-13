@@ -1350,8 +1350,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "Letzte Importe konnten nicht geladen werden.",
   "Could not load skills.": "Skills konnten nicht geladen werden.",
   "Could not preview this package.": "Dieses Paket konnte nicht in der Vorschau angezeigt werden.",
-  "Could not read this package. Use a UTF-8 JSON file up to 4 MiB.":
-    "Paket konnte nicht gelesen werden. Verwende eine UTF-8-JSON-Datei bis 4 MiB.",
+  "Agent backup selected": "Agent-Sicherung ausgewählt",
+  "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
+    "Dieses Paket konnte nicht gelesen werden. Wähle eine JSON-Datei oder eine Agent-Sicherung mit bis zu 4 MiB.",
+  "OpenClaw or Hermes backup": "OpenClaw- oder Hermes-Sicherung",
+  "This import includes supported text only.":
+    "Dieser Import enthält nur unterstützte Textinhalte.",
+  "Use JSON instead": "Stattdessen JSON verwenden",
   "Could not open package editor.": "Paketeditor konnte nicht geöffnet werden.",
   "Enable shared skill": "Geteilten Skill aktivieren",
   "Enabling a skill shares it with your bots in this space.":

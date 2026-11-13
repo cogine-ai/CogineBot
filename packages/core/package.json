@@ -9,6 +9,10 @@
       "development": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./agent-backup": {
+      "types": "./src/agent-backup/index.ts",
+      "default": "./src/agent-backup/index.ts"
+    },
     "./message-quote": {
       "types": "./src/message-quote.ts",
       "development": "./src/message-quote.ts",
@@ -72,6 +76,7 @@
     "croner": "10.0.1",
     "d3-dsv": "3.0.1",
     "dotenv": "17.4.2",
+    "fflate": "0.8.3",
     "hast-util-to-text": "4.0.2",
     "mdast-util-to-hast": "13.2.1",
     "remark-gfm": "4.0.1",

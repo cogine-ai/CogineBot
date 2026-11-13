@@ -6680,6 +6680,26 @@ msgstr "가져온 스킬 확인"
 msgid "Choose package file"
 msgstr "패키지 파일 선택"
 
+#: src/components/BotPackageImport.tsx
+msgid "Agent backup selected"
+msgstr "에이전트 백업을 선택했습니다"
+
+#: src/components/BotPackageImport.tsx
+msgid "Could not read this package. Use a JSON file or an agent backup up to 4 MiB."
+msgstr "이 패키지를 읽을 수 없습니다. 4 MiB 이하의 JSON 파일이나 에이전트 백업을 사용하세요."
+
+#: src/components/BotPackageImport.tsx
+msgid "OpenClaw or Hermes backup"
+msgstr "OpenClaw 또는 Hermes 백업"
+
+#: src/components/BotPackageImport.tsx
+msgid "This import includes supported text only."
+msgstr "지원되는 텍스트만 가져옵니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Use JSON instead"
+msgstr "JSON 사용"
+
 #: src/components/BotPackageTools.tsx
 msgid "Clear selection"
 msgstr "선택 해제"
@@ -6711,10 +6731,6 @@ msgstr "스킬을 불러올 수 없습니다."
 #: src/components/BotPackageImport.tsx
 msgid "Could not preview this package."
 msgstr "이 패키지를 미리 볼 수 없습니다."
-
-#: src/components/BotPackageImport.tsx
-msgid "Could not read this package. Use a UTF-8 JSON file up to 4 MiB."
-msgstr "이 패키지를 읽을 수 없습니다. 4 MiB 이하의 UTF-8 JSON 파일을 사용하세요."
 
 #: src/components/BotPackageTools.tsx
 msgid "Download package"

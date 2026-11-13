@@ -1346,8 +1346,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "Не удалось загрузить последние импорты.",
   "Could not load skills.": "Не удалось загрузить навыки.",
   "Could not preview this package.": "Не удалось открыть предпросмотр пакета.",
-  "Could not read this package. Use a UTF-8 JSON file up to 4 MiB.":
-    "Не удалось прочитать пакет. Используйте JSON-файл в UTF-8 размером до 4 МиБ.",
+  "Agent backup selected": "Выбрана резервная копия агента",
+  "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
+    "Не удалось прочитать пакет. Выберите файл JSON или резервную копию агента размером до 4 МиБ.",
+  "OpenClaw or Hermes backup": "Резервная копия OpenClaw или Hermes",
+  "This import includes supported text only.":
+    "Импортируются только поддерживаемые текстовые данные.",
+  "Use JSON instead": "Использовать JSON",
   "Could not open package editor.": "Не удалось открыть редактор пакета.",
   "Enable shared skill": "Включить общий навык",
   "Enabling a skill shares it with your bots in this space.":

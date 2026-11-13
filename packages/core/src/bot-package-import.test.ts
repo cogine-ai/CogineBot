@@ -89,6 +89,58 @@ describe("bot package import review", () => {
     },
   );
 
+  it.each([false, true])("sends backup memory only after selection, fenced=%s", async (fenced) => {
+    const f = fixture();
+    const document = JSON.stringify(
+      {
+        source: "hermes",
+        format: "agent-backup/v1",
+        excludedMemoryCount: 2,
+        files: [
+          { path: "memories/MEMORY.md", content: "private note" },
+          { path: "memories/USER.md", content: "  \n§\n " },
+        ],
+      },
+      null,
+      2,
+    );
+    const source = fenced ? `\n\x60\x60\x60json\n${document}\n\x60\x60\x60\n` : document;
+    await review(f, source);
+    expect(JSON.parse(f.deps.preview.mock.calls[0]![0].source)).toMatchObject({
+      files: [],
+      excludedMemoryCount: 3,
+    });
+    f.manager.edit({ includeMemory: true });
+    await f.manager.preview();
+    expect(f.deps.preview.mock.calls[1]![0]).toEqual({ source, includeMemory: true });
+  });
+
+  it("drops source-specific consent when the source is emptied", async () => {
+    const f = fixture();
+    f.manager.edit({ source: "old source", includeMemory: true });
+    f.manager.edit({ source: " \n" });
+    f.manager.edit({ source: "new source" });
+    await f.manager.preview();
+    expect(f.deps.preview).toHaveBeenCalledWith(
+      { source: "new source", includeMemory: false },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("refuses malformed backup memory before the default preview request", async () => {
+    const f = fixture();
+    f.manager.edit({
+      source: JSON.stringify({
+        format: "agent-backup/v1",
+        source: "hermes",
+        files: [{ path: "memories/MEMORY.md", content: "invalid\0note" }],
+      }),
+    });
+    await f.manager.preview();
+    expect(f.state.phase).toBe("editing");
+    expect(f.deps.preview).not.toHaveBeenCalled();
+  });
+
   it("measures UTF-8 bytes before RPC rather than string characters", async () => {
     const f = fixture();
     f.manager.edit({ source: "界".repeat(Math.floor(BOT_PACKAGE_MAX_BYTES / 3) + 1) });

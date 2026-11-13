@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
 import type {
   Bot,
@@ -167,6 +168,81 @@ test("package review preserves text, keeps execution off, and explicitly enables
   expect(exported).not.toHaveProperty("files");
   expect(imports).toBe(1);
   expect(downloads).toBe(1);
+});
+
+test("agent backup import previews supported text and saves only the selected content", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await signup(page, `agent-backup-${Date.now()}@example.test`, "password12", "Backup reviewer");
+  await completeOnboarding(page);
+  await openNewBot(page);
+  await page
+    .getByTestId("create-bot-form")
+    .getByRole("button", { name: "Import bot", exact: true })
+    .click();
+  const panel = page.getByTestId("bot-package-import");
+  const instructions = "Summarize the supplied material.";
+  const note = "Keep selected notes in this Bot only.";
+  const files = {
+    ".openclaw/workspace/SOUL.md": instructions,
+    ".openclaw/workspace/MEMORY.md": note,
+    ".openclaw/.env": "IGNORE_THIS_FIXTURE_VALUE",
+  };
+  const blocks = Object.entries(files).flatMap(([name, text]) => {
+    const data = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100);
+    header.write(data.length.toString(8).padStart(11, "0"), 124, 11);
+    header.fill(32, 148, 156);
+    header.write("0", 156, 1);
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8);
+    return [header, data, Buffer.alloc((512 - (data.length % 512)) % 512)];
+  });
+  const archive = {
+    name: "assistant.tar.gz",
+    mimeType: "application/gzip",
+    buffer: gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)])),
+  };
+  const picker = panel.getByLabel("Choose package file", { exact: true });
+  const memory = panel.getByRole("switch", { name: "Include memory", exact: true });
+  await picker.setInputFiles(archive);
+  await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+  await memory.click();
+  await expect(memory).toBeChecked();
+  await panel.getByRole("button", { name: "Use JSON instead", exact: true }).click();
+  await expect(panel.getByLabel("Bot package or Grok JSON", { exact: true })).toBeEmpty();
+  await expect(memory).not.toBeChecked();
+  await picker.setInputFiles(archive);
+  await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+  await expect(memory).not.toBeChecked();
+  let uploaded = "";
+  page.on("request", (request) => {
+    if (request.url().endsWith("/rpc/botPackages/preview")) uploaded = request.postData() ?? "";
+  });
+  const previewButton = panel.getByRole("button", { name: "Preview", exact: true });
+  const document = panel.getByTestId("bot-package-document");
+  await previewButton.click();
+  await expect(document.getByText(instructions, { exact: true })).toBeVisible();
+  await expect(document.getByText(note, { exact: true })).toHaveCount(0);
+  expect(uploaded).not.toContain("IGNORE_THIS_FIXTURE_VALUE");
+  expect(uploaded).not.toContain(note);
+  await memory.click();
+  await previewButton.click();
+  await document.getByText("Memory · 1", { exact: true }).click();
+  await document.getByText("MEMORY.md", { exact: true }).click();
+  await expect(document.getByText(note, { exact: true })).toBeVisible();
+  expect(uploaded).toContain(note);
+  await captureScreenshot(page, testInfo, "agent-backup-import");
+  await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
+  await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
+  const bots = await rpc<Bot[]>(page, "bots/list", {});
+  const bot = bots.find((candidate) => candidate.instructions === instructions);
+  expect(bot?.id).toBeTruthy();
+  expect(
+    await rpc<MemoryDocument[]>(page, "memory/list", { botId: bot!.id, scope: "bot" }),
+  ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: note })]);
 });
 
 test("package import survives a committed reply loss and can be recovered explicitly from recent receipts", async ({

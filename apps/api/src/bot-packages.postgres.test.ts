@@ -10,7 +10,7 @@ import type {
   BotPackageReceipt,
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
-import { BOT_PACKAGE_FORMAT } from "@rakazo/contracts";
+import { AGENT_BACKUP_FORMAT, BOT_PACKAGE_FORMAT } from "@rakazo/contracts";
 import { buildSkillMd, parseSkillMd } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -164,7 +164,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       memory: [{ path: "MEMORY.md", content: "Explicitly selected note.\n" }],
     };
   }
-  const preview = (actor: Account, value = source(), includeMemory = false) =>
+  const preview = (actor: Account, value: unknown = source(), includeMemory = false) =>
     call<BotPackagePreview>(actor, "preview", { source: JSON.stringify(value), includeMemory });
   const importPackage = (actor: Account, value: BotPackagePreview, clientNonce = randomUUID()) =>
     call<BotPackageReceipt>(actor, "import", { previewToken: value.previewToken, clientNonce });
@@ -314,6 +314,54 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       }),
     ).toBe(0);
   });
+  it.each(["openclaw", "hermes"] as const)(
+    "imports supported %s backup content through the existing preview and receipt",
+    async (sourceFormat) => {
+      const owner = await account();
+      const instructions = "Summarize the supplied material.";
+      const skill = buildSkillMd({
+        name: "backup-review",
+        description: "Review a supplied document",
+        body: "Review the supplied material before reporting.",
+      });
+      const value = {
+        format: AGENT_BACKUP_FORMAT,
+        source: sourceFormat,
+        files: [
+          { path: "SOUL.md", content: instructions },
+          {
+            path: sourceFormat === "hermes" ? "memories/MEMORY.md" : "MEMORY.md",
+            content: "Chosen backup note.",
+          },
+          { path: "skills/backup-review/SKILL.md", content: skill },
+          { path: "skills/incomplete/SKILL.md", content: skill },
+        ],
+        incompleteSkills: ["skills/incomplete/SKILL.md"],
+      };
+      const unselected = await preview(owner, value);
+      expect(unselected).toMatchObject({
+        sourceFormat,
+        availableMemoryCount: 1,
+        document: { memory: [] },
+      });
+      const selected = await preview(owner, value, true);
+      expect(selected.leftOut).toContainEqual(
+        expect.objectContaining({ name: "skills/incomplete/SKILL.md" }),
+      );
+      expect(selected.digest).not.toBe(unselected.digest);
+      const nonce = randomUUID();
+      const receipt = await importPackage(owner, selected, nonce);
+      expect(receipt).toMatchObject({ status: "completed", skills: [{ status: "pending" }] });
+      expect(await importPackage(owner, selected, nonce)).toEqual(receipt);
+      const bot = await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } });
+      expect(bot).toMatchObject({ instructions, memoryScope: "isolated", modelCredentialId: null });
+      expect(await database.prisma.run.count({ where: { botId: bot.id } })).toBe(0);
+      expect(await database.prisma.routine.count({ where: { botId: bot.id } })).toBe(0);
+      expect(
+        await database.prisma.memoryDocument.findMany({ where: { botId: bot.id, scope: "bot" } }),
+      ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: "Chosen backup note." })]);
+    },
+  );
   it("rejects an invalid stored preview before creating an import marker or Bot", async () => {
     const owner = await account();
     const p = await preview(owner);

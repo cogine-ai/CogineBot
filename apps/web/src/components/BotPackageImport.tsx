@@ -2,6 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
+import { isAgentBackupUpload } from "@rakazo/core/agent-backup";
 import { Button, Input, Switch, Textarea } from "@rakazo/ui-web";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { readBotPackageFile } from "../lib/bot-package-file";
@@ -79,6 +80,7 @@ export function BotPackageImport({
   const locked =
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
+  const backup = isAgentBackupUpload(state?.source ?? "");
   function edit(input: { source?: string; name?: string; includeMemory?: boolean }) {
     fileGeneration.current++;
     setReading(false);
@@ -95,10 +97,15 @@ export function BotPackageImport({
         () => version === fileGeneration.current && current.current(),
       );
       if (version === fileGeneration.current && current.current())
-        manager.current?.edit({ source });
+        manager.current?.edit({
+          source,
+          includeMemory: false,
+        });
     } catch {
       if (version === fileGeneration.current && current.current())
-        setFileError(t`Could not read this package. Use a UTF-8 JSON file up to 4 MiB.`);
+        setFileError(
+          t`Could not read this package. Use a JSON file or an agent backup up to 4 MiB.`,
+        );
     } finally {
       if (version === fileGeneration.current && current.current()) setReading(false);
     }
@@ -115,23 +122,41 @@ export function BotPackageImport({
       </div>
       {phase !== "completed" ? (
         <>
-          <label htmlFor={`${ids}-source`} className="block text-sm">
-            <Trans>Bot package or Grok JSON</Trans>
-            <Textarea
-              id={`${ids}-source`}
-              aria-label={t`Bot package or Grok JSON`}
-              value={state?.source ?? ""}
-              maxLength={BOT_PACKAGE_MAX_BYTES}
-              rows={7}
-              disabled={locked}
-              onChange={(event) => edit({ source: event.target.value })}
-              className="mt-2 font-mono text-xs"
-            />
-          </label>
+          {backup ? (
+            <div className="flex items-center justify-between gap-3">
+              <p role="status" className="text-sm">
+                <Trans>Agent backup selected</Trans>
+              </p>
+              <Button
+                variant="ghost"
+                disabled={locked}
+                onClick={() => edit({ source: "", includeMemory: false })}
+              >
+                <Trans>Use JSON instead</Trans>
+              </Button>
+            </div>
+          ) : (
+            <label htmlFor={`${ids}-source`} className="block text-sm">
+              <Trans>Bot package or Grok JSON</Trans>
+              <Textarea
+                id={`${ids}-source`}
+                aria-label={t`Bot package or Grok JSON`}
+                value={state?.source ?? ""}
+                maxLength={BOT_PACKAGE_MAX_BYTES}
+                rows={7}
+                disabled={locked}
+                onChange={(event) => edit({ source: event.target.value })}
+                className="mt-2 font-mono text-xs"
+              />
+            </label>
+          )}
+          <p className="text-sm text-muted-foreground">
+            <Trans>OpenClaw or Hermes backup</Trans>
+          </p>
           <Input
             aria-label={t`Choose package file`}
             type="file"
-            accept=".json,.txt,application/json,text/plain"
+            accept=".json,.txt,.zip,.tar.gz,.tgz,application/json,text/plain,application/zip,application/gzip"
             disabled={locked || reading}
             onChange={(event) => {
               const file = event.target.files?.[0];
@@ -157,7 +182,9 @@ export function BotPackageImport({
           >
             <span>
               <Trans>Include memory</Trans>
-              {preview ? ` · ${preview.availableMemoryCount}` : ""}
+              {preview ? (
+                <span aria-hidden="true">{` · ${preview.availableMemoryCount}`}</span>
+              ) : null}
             </span>
             <Switch
               id={`${ids}-memory`}
@@ -191,12 +218,20 @@ export function BotPackageImport({
         <>
           <BotPackageDocumentView document={preview.document} />
           <BotPackageLeftOutList items={preview.leftOut} />
-          <p className="text-sm text-muted-foreground">
-            <Trans>Skills stay off. Routines stay paused. Connections need setup.</Trans>
-          </p>
-          <p className="text-sm text-muted-foreground">
-            <Trans>Models, credentials, files, and chat history are not imported.</Trans>
-          </p>
+          {backup ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>This import includes supported text only.</Trans>
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                <Trans>Skills stay off. Routines stay paused. Connections need setup.</Trans>
+              </p>
+              <p className="text-sm text-muted-foreground">
+                <Trans>Models, credentials, files, and chat history are not imported.</Trans>
+              </p>
+            </>
+          )}
           {phase === "review" ? (
             <Button onClick={() => void manager.current?.confirm()}>
               <Trans>Import as new bot</Trans>

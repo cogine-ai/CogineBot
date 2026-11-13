@@ -1,4 +1,5 @@
 import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
+import { AgentImportArchiveError, readBotImportBytes } from "@rakazo/core/agent-backup";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, FileMode, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
@@ -49,8 +50,11 @@ async function readPackage(file: File): Promise<string> {
       offset += chunk.byteLength;
     }
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
+      return readBotImportBytes(bytes);
+    } catch (error) {
+      if (error instanceof AgentImportArchiveError) {
+        throw new BotPackageFileError(error.reason === "too_large" ? "too_large" : "read_failed");
+      }
       throw new BotPackageFileError("invalid_utf8");
     }
   } finally {
@@ -58,14 +62,21 @@ async function readPackage(file: File): Promise<string> {
   }
 }
 
-/** The picker selects local data only; package parsing and authorization stay on the server. */
+/** The picker reduces a local backup to text; the server validates the import plan. */
 export async function pickBotPackageFile(isCurrent: () => boolean): Promise<string | null> {
   assertCurrent(isCurrent);
   try {
     const result = await DocumentPicker.getDocumentAsync({
       multiple: false,
       copyToCacheDirectory: false,
-      type: ["application/json", "text/plain"],
+      type: [
+        "application/json",
+        "text/plain",
+        "application/zip",
+        "application/gzip",
+        "application/x-gzip",
+        "application/octet-stream",
+      ],
     });
     assertCurrent(isCurrent);
     if (result.canceled) return null;
