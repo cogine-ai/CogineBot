@@ -156,6 +156,19 @@ it("omits a credential-shaped model ID before normalization", () => {
   expect(backup).not.toContain(token.replaceAll(".", "-"));
 });
 
+it("omits a model ID that becomes credential-shaped after normalization", () => {
+  const candidate = "SK-FIXTURENOTACREDENTIAL123";
+  const backup = encodeAgentBackup(
+    zipSync({
+      "HERMES.md": strToU8("Read this."),
+      "config.yaml": strToU8(`model: { provider: deepseek, default: '${candidate}' }`),
+    }),
+  );
+  expect(JSON.parse(backup).model).toBe("unavailable");
+  expect(backup).not.toContain(candidate);
+  expect(backup).not.toContain(candidate.toLowerCase());
+});
+
 it("reports an unavailable declared active configuration without using the home fallback", () => {
   const root = "backup";
   const value = encodeAgentBackup(

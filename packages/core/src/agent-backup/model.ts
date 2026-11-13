@@ -162,7 +162,12 @@ export function projectBackupModel(
     )
       return "unavailable";
     const canonicalProvider = providerId(source, provider);
-    if (source === "hermes") modelId = normalizeHermesModelId(canonicalProvider, modelId);
+    if (source === "hermes") {
+      const normalized = normalizeHermesModelId(canonicalProvider, modelId);
+      if (normalized !== modelId && redactSecretText(normalized) !== normalized)
+        return "unavailable";
+      modelId = normalized;
+    }
     const result = AgentBackupModelSchema.safeParse({ provider: canonicalProvider, modelId });
     return result.success ? result.data : "unavailable";
   } catch {
