@@ -6508,6 +6508,41 @@ describe("connector batch approval", () => {
     return f;
   };
 
+  it.each(["default", "allow", "deny", "require_approval"] as const)(
+    "recomputes the batch gate after revoking an allowance with %s remaining",
+    async (remaining) => {
+      // The provider is an in-memory fixture: no mail or external action is sent.
+      // Auto Review without a checker makes this batch ask by default.
+      const allowance = rule("always_allow", send);
+      const saved: ActionApprovalRule[] = [allowance];
+      const before = batchFixture({ rules: saved, autoReview: true, reviewProvider: null });
+      before.setCalls([{ args: items(send), executionId: "before-revoke" }]);
+      await before.run();
+      expect(before.execute).toHaveBeenCalledOnce();
+      expect(before.pauseRunForInput).not.toHaveBeenCalled();
+      if (remaining !== "default")
+        saved.push({
+          effect: remaining === "allow" ? "always_allow" : remaining,
+          matchKind: "connector",
+          matchValue: "gmail",
+        });
+      const after = batchFixture({
+        rules: saved.filter((entry) => entry !== allowance),
+        autoReview: true,
+        reviewProvider: null,
+      });
+      after.setCalls([{ args: items(send), executionId: "after-revoke" }]);
+      await after.run();
+      expect(after.execute).toHaveBeenCalledTimes(remaining === "allow" ? 1 : 0);
+      expect(after.pauseRunForInput).toHaveBeenCalledTimes(
+        remaining === "default" || remaining === "require_approval" ? 1 : 0,
+      );
+      if (remaining === "deny")
+        expect(after.results).toEqual([expect.objectContaining({ code: "action_rule_blocked" })]);
+      expect(reviewMock).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])(
     "does not let a wrapper or partial action allow cover a batch (catalog %s)",
     async (catalog) => {

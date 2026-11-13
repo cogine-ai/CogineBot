@@ -1,4 +1,18 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Action confirmations": "Подтверждение действий",
+  Allowed: "Разрешено",
+  Blocked: "Заблокировано",
+  "Requires confirmation": "Требуется подтверждение",
+  Action: "Действие",
+  Connector: "Коннектор",
+  Category: "Категория",
+  "Ask before sending external email": "Спрашивать перед отправкой внешних писем",
+  "Ask before purchases": "Спрашивать перед покупками",
+  "Flag unexpected actions": "Отмечать неожиданные действия",
+  "Add a model in Settings to use this.":
+    "Добавьте модель в настройках, чтобы использовать эту функцию.",
+  "No saved rules": "Нет сохранённых правил",
+  "Remove {rule}": "Удалить {rule}",
   "Sending to channel": "Отправляется в канал",
   "Accepted by channel": "Принято каналом",
   "Delivered to channel": "Доставлено в канал",

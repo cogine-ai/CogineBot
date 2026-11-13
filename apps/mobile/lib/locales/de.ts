@@ -1,4 +1,18 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Action confirmations": "Aktionsbestätigungen",
+  Allowed: "Erlaubt",
+  Blocked: "Blockiert",
+  "Requires confirmation": "Bestätigung erforderlich",
+  Action: "Aktion",
+  Connector: "Konnektor",
+  Category: "Kategorie",
+  "Ask before sending external email": "Vor dem Senden externer E-Mails fragen",
+  "Ask before purchases": "Vor Käufen fragen",
+  "Flag unexpected actions": "Unerwartete Aktionen kennzeichnen",
+  "Add a model in Settings to use this.":
+    "Füge in den Einstellungen ein Modell hinzu, um dies zu nutzen.",
+  "No saved rules": "Keine gespeicherten Regeln",
+  "Remove {rule}": "{rule} entfernen",
   "Sending to channel": "Wird an den Kanal gesendet",
   "Accepted by channel": "Vom Kanal angenommen",
   "Delivered to channel": "Im Kanal zugestellt",

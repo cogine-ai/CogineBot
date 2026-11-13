@@ -1,4 +1,17 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Action confirmations": "操作确认",
+  Allowed: "允许",
+  Blocked: "阻止",
+  "Requires confirmation": "需要确认",
+  Action: "操作",
+  Connector: "连接器",
+  Category: "类别",
+  "Ask before sending external email": "发送外部邮件前确认",
+  "Ask before purchases": "购买前确认",
+  "Flag unexpected actions": "标记意外操作",
+  "Add a model in Settings to use this.": "在设置中添加模型以使用此功能。",
+  "No saved rules": "没有已保存的规则",
+  "Remove {rule}": "移除 {rule}",
   "Ask the recipient to send a new WhatsApp message before replying.":
     "请让收件人先发一条新的 WhatsApp 消息，再回复。",
   "An attachment could not be sent.": "有一个附件发送失败。",
