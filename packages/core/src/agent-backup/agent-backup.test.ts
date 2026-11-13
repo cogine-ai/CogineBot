@@ -241,16 +241,19 @@ it.each(["missing", "mismatched", "runtime-only"])(
   },
 );
 
-it("does not infer a stale ZIP workspace after a malformed layout declaration", () => {
-  const backup = zipSync({
-    "backup/manifest.json": strToU8(
-      JSON.stringify({ schemaVersion: 1, archiveRoot: "backup", assets: [null] }),
-    ),
-    "backup/openclaw.json": strToU8("{}"),
-    "backup/workspace-old/SOUL.md": strToU8("Old instructions"),
-  });
-  expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
-});
+it.each([null, [null]])(
+  "does not infer a stale ZIP workspace for malformed assets %j",
+  (assets) => {
+    const backup = zipSync({
+      "backup/manifest.json": strToU8(
+        JSON.stringify({ schemaVersion: 1, archiveRoot: "backup", assets }),
+      ),
+      "backup/openclaw.json": strToU8("{}"),
+      "backup/workspace-old/SOUL.md": strToU8("Old instructions"),
+    });
+    expect(() => encodeAgentBackup(backup)).toThrow("could not be read");
+  },
+);
 
 it.each(["\n", "\r\n"])("renames quoted and multiline Skills with valid YAML (%j)", (newline) => {
   const name = 'Reader\'s "quoted" \\notes-2';

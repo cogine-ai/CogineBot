@@ -565,7 +565,11 @@ function openClawRoots(
   } catch {
     return null;
   }
-  if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.assets)) return null;
+  if (parsed?.schemaVersion !== 1) return null;
+  if (!Array.isArray(parsed.assets)) {
+    if (parsed.archiveRoot !== undefined) throw unreadable();
+    return null;
+  }
   try {
     const folder = manifestPath.slice(0, -"/manifest.json".length);
     // The manifest describes this archive only if it names the folder it sits in.
