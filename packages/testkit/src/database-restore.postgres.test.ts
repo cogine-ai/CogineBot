@@ -16,6 +16,7 @@ import {
   JOB_QUEUE_POLICY,
   prepareDatabaseRestore,
   provisionRuntimeRole,
+  ROW_SECURITY_POLICIES,
   rlsBypassKey,
   runAsSystem,
   runAsTenant,
@@ -31,6 +32,12 @@ import {
   GraphileJobWorkerHost,
   migrateJobQueue,
 } from "../../adapters/src/wakeup.js";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "./row-security-expectations.js";
 
 const sourceUrl = process.env.DATABASE_URL;
 const postgres =
@@ -329,8 +336,21 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(target.url);
     await provisionRuntimeRole(target.url, targetRuntimeUrl);
     const status = await verify();
-    expect(status).toMatchObject({ expectedTables: 89, connectionEnforced: true });
+    expect(status).toMatchObject({
+      expectedTables: schemaPolicyTables.length,
+      connectionEnforced: true,
+    });
     expect(status.problems).toEqual([]);
+    await targetWork(async (client) => {
+      await expectPhysicalPolicyTables((sql) => client.query(sql));
+      expectExactPolicyCatalog(
+        (
+          await client.query(
+            "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+          )
+        ).rows,
+      );
+    });
     restored = true;
   }
 
@@ -375,6 +395,8 @@ postgres("custom archive recovery into a different cluster and database identity
       tocPath = `/tmp/database-restore-${suffix}.list`;
     }
     sourceOwner = createDb(source.url);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    await expectPhysicalPolicyTables((sql) => sourceOwner.pool.query(sql));
     const sourceOid = Number(
       (await sourceOwner.pool.query("SELECT oid FROM pg_database WHERE datname=current_database()"))
         .rows[0].oid,
@@ -534,9 +556,16 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(source.url);
     await provisionRuntimeRole(source.url, sourceRuntimeUrl);
     expect(await applyRowSecurityPolicies(source.url, sourceRuntimeUrl)).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
     });
+    expectExactPolicyCatalog(
+      (
+        await sourceOwner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
     const publisher = new GraphileJobPublisher(sourceRuntime.pool);
     try {
@@ -965,7 +994,10 @@ postgres("custom archive recovery into a different cluster and database identity
       await runtime.prisma.$disconnect();
       await runtime.pool.end();
     }
-    expect(await verify()).toMatchObject({ expectedTables: 89, connectionEnforced: true });
+    expect(await verify()).toMatchObject({
+      expectedTables: schemaPolicyTables.length,
+      connectionEnforced: true,
+    });
   }, 120_000);
 
   it("rejects an extra system key without deleting it or the selected credential", async () => {
@@ -1009,7 +1041,7 @@ postgres("custom archive recovery into a different cluster and database identity
         /outside the selected (owner and runtime roles|credential inventory)/,
       );
       expect(await verify([targetRuntimeUrl, alternateUrl])).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
       });
     } finally {

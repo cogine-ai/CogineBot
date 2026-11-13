@@ -10,9 +10,12 @@ import {
   describeRowSecurityPolicies,
   provisionRuntimeRole,
 } from "@rakazo/db";
-
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
+import {
+  assertPolicyDatabaseIdentity,
+  isolatedPolicyDatabase,
+} from "../../../packages/testkit/src/isolated-policy-database.js";
 import { createApp } from "./app.js";
 
 const escapeIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -36,6 +39,7 @@ postgres("MCP receipt protected migration and restricted-role boundaries", () =>
   let group: string;
   let owner: ReturnType<typeof createDb>;
   let runtimeUrl: string;
+  let ownerUrl: string;
   const userA = `receipt-a-${suffix}`,
     userB = `receipt-b-${suffix}`;
   const spaceA = `receipt-space-a-${suffix}`,
@@ -83,19 +87,25 @@ postgres("MCP receipt protected migration and restricted-role boundaries", () =>
     });
   }
   beforeAll(async () => {
-    const parsed = new URL(url!);
-    if (
-      parsed.hostname !== "127.0.0.1" ||
-      !/^\/integration_\d+$/.test(parsed.pathname) ||
-      process.env.VERIFY_ROW_SECURITY_POLICIES_DATABASE !== parsed.pathname.slice(1)
-    )
-      throw new Error("Requires isolated policy harness database");
-    owner = createDb(url!);
+    const { url: parsed, database } = isolatedPolicyDatabase(url!);
+    ownerUrl = parsed.toString();
+    const candidate = createDb(ownerUrl);
+    try {
+      assertPolicyDatabaseIdentity(
+        database,
+        (await candidate.pool.query("SELECT current_database() AS database")).rows,
+      );
+    } catch (error) {
+      await candidate.prisma.$disconnect();
+      await candidate.pool.end();
+      throw error;
+    }
+    owner = candidate;
     group = `coginebot_app_${(await owner.pool.query("SELECT oid FROM pg_database WHERE datname=current_database()")).rows[0].oid}`;
     parsed.username = role;
     parsed.password = randomBytes(24).toString("hex");
     runtimeUrl = parsed.toString();
-    await provisionRuntimeRole(url!, runtimeUrl);
+    await provisionRuntimeRole(ownerUrl, runtimeUrl);
     await owner.prisma.user.createMany({
       data: [userA, userB].map((id) => ({
         id,
@@ -146,7 +156,7 @@ postgres("MCP receipt protected migration and restricted-role boundaries", () =>
     ).toEqual([]);
   });
   it("F3: protects the incremental table before an activated deployment's migration commits", async () => {
-    await applyRowSecurityPolicies(url!, runtimeUrl);
+    await applyRowSecurityPolicies(ownerUrl, runtimeUrl);
     await recreate();
     await seed();
     const runtime = createDb(runtimeUrl, { rowSecurity: true });
@@ -197,7 +207,7 @@ postgres("MCP receipt protected migration and restricted-role boundaries", () =>
       .toBe(0);
   });
   it("F4: the installed policy denies another user in the same Space", async () => {
-    await applyRowSecurityPolicies(url!, runtimeUrl);
+    await applyRowSecurityPolicies(ownerUrl, runtimeUrl);
     expect
       .soft(
         (
