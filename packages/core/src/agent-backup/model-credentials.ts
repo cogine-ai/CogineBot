@@ -1,7 +1,7 @@
 import type { AgentBackupSource } from "@rakazo/contracts";
 import { assertHeaderSafeApiKey } from "@rakazo/contracts";
 import { readBackupAuth, readBackupConfig } from "./config.js";
-import { backupProviderId } from "./model.js";
+import { backupProviderId, projectBackupModel } from "./model.js";
 
 const providers = {
   anthropic: {
@@ -92,6 +92,11 @@ export function readBackupModelApiKey(
   const config = files.config === undefined ? {} : readBackupConfig(source, files.config);
   if (!config) return undefined;
   const model = record(config.model);
+  const projected = source === "hermes" ? projectBackupModel(source, config, null) : undefined;
+  const hermesProvider =
+    projected && projected !== "unavailable"
+      ? projected.provider
+      : backupProviderId(source, text(model.provider || config.provider));
   const configured =
     source === "openclaw" ? record(record(config.models).providers) : config.providers;
   const matching = [
@@ -99,7 +104,7 @@ export function readBackupModelApiKey(
     ...(source === "hermes" && Array.isArray(config.custom_providers)
       ? config.custom_providers.map((entry) => [text(record(entry).name), entry] as const)
       : []),
-    ...(source === "hermes" ? [[text(model.provider || config.provider), model] as const] : []),
+    ...(source === "hermes" ? [[hermesProvider, model] as const] : []),
   ].flatMap(([id, entry]) => (backupProviderId(source, id) === provider ? [record(entry)] : []));
   if (matching.some((entry) => hasAlternateEndpoint(entry, endpoints))) return undefined;
   if (
@@ -115,8 +120,7 @@ export function readBackupModelApiKey(
     return undefined;
   if (
     source === "hermes" &&
-    (!text(model.provider || config.provider) ||
-      backupProviderId(source, text(model.provider || config.provider)) === provider) &&
+    (!hermesProvider || hermesProvider === provider) &&
     (hasAlternateEndpoint(config, endpoints) || hasAlternateEndpoint(model, endpoints))
   )
     return undefined;
@@ -150,15 +154,14 @@ export function readBackupModelApiKey(
   // The pool can route the same provider id through a different host or auth flow.
   if (entries.some((entry) => hasAlternateEndpoint(entry, endpoints))) return undefined;
   const keyEnv =
-    source === "hermes" && backupProviderId(source, text(model.provider)) === provider
+    source === "hermes" && hermesProvider === provider
       ? text(model.key_env || model.api_key_env)
       : "";
   const readKey = (value: unknown) => {
     const key = resolveKey(value, env);
     return provider === "anthropic" && key?.startsWith("sk-ant-oat") ? undefined : key;
   };
-  const explicit = keyEnv ? readKey(env.get(keyEnv)) : undefined;
-  if (explicit) return explicit;
+  if (keyEnv) return readKey(env.get(keyEnv));
   const configuredKeys = new Set(
     matching.flatMap((entry) =>
       [entry.apiKey, entry.api_key].flatMap((value) => {

@@ -104,9 +104,30 @@ describe("readBackupModelApiKey", () => {
     expect(
       readBackupModelApiKey("hermes", "anthropic", {
         config: "model: {provider: anthropic, key_env: MODEL_KEY}",
-        env: "MODEL_KEY=sk-ant-oat01-synthetic-fixture",
+        env: "MODEL_KEY=sk-ant-oat01-synthetic-fixture\nANTHROPIC_API_KEY=another-synthetic-key",
       }),
     ).toBeUndefined();
+  });
+
+  it("leaves an explicitly named missing or empty key for manual setup", () => {
+    const config = "model: {provider: openai, key_env: MODEL_KEY}";
+    for (const env of [
+      "OPENAI_API_KEY=fallback-synthetic-key",
+      "MODEL_KEY=\nOPENAI_API_KEY=fallback-synthetic-key",
+    ]) {
+      expect(readBackupModelApiKey("hermes", "openai", { config, env })).toBeUndefined();
+    }
+  });
+
+  it.each([
+    "provider: openai-api\nmodel: {default: gpt-4.1, key_env: MODEL_KEY}",
+    "model: {provider: auto, default: {provider: openai-api, model: gpt-4.1}, key_env: MODEL_KEY}",
+  ])("uses the resolved provider for a named key in %j", (config) => {
+    const env = "OPENAI_API_KEY=fallback-synthetic-key";
+    expect(readBackupModelApiKey("hermes", "openai", { config, env })).toBeUndefined();
+    expect(
+      readBackupModelApiKey("hermes", "openai", { config, env: `${env}\nMODEL_KEY=${apiKey}` }),
+    ).toBe(apiKey);
   });
 
   it("rejects an override on the exact reviewed model without affecting sibling models", () => {
