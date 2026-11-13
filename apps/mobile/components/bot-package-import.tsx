@@ -93,8 +93,14 @@ export function NativeBotPackageImport({
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
   const backup = fileGroups !== null;
   const excluded = new Set(state?.excludedBackupPaths);
+  const includedRoutines = new Set(state?.includedBackupRoutines);
   const selection = fileGroups
-    ? agentBackupSelectableGroups(fileGroups, state?.includeMemory ?? false, excluded)
+    ? agentBackupSelectableGroups(
+        fileGroups,
+        state?.includeMemory ?? false,
+        excluded,
+        includedRoutines,
+      )
     : null;
   const busy = phase === "importing" || phase === "checking";
   const locked =
@@ -210,7 +216,7 @@ export function NativeBotPackageImport({
               expanded={backupContentOpen}
               onExpandedChange={setBackupContentOpen}
             >
-              {selection.groups.map(({ kind, paths }) => (
+              {selection.groups.map(({ kind, items }) => (
                 <View key={kind} style={styles.section}>
                   <Text style={styles.heading}>
                     {t(
@@ -218,16 +224,18 @@ export function NativeBotPackageImport({
                         ? "Instructions"
                         : kind === "skills"
                           ? "Skills"
-                          : "Memory",
+                          : kind === "routines"
+                            ? "Routines"
+                            : "Memory",
                     )}
                   </Text>
-                  {paths.map((path) => (
+                  {items.map(({ path, label, selected, atLimit }) => (
                     <View key={path} style={styles.row}>
-                      <Text style={[styles.text, styles.backupPath]}>{path}</Text>
+                      <Text style={[styles.text, styles.backupPath]}>{label}</Text>
                       <NativeSwitch
-                        accessibilityLabel={path}
-                        value={!excluded.has(path)}
-                        disabled={locked || reading}
+                        accessibilityLabel={label}
+                        value={selected}
+                        disabled={locked || reading || atLimit}
                         onValueChange={(included) =>
                           manager.current?.setBackupFileIncluded(path, included)
                         }
@@ -283,7 +291,11 @@ export function NativeBotPackageImport({
           <BotPackageDocumentView document={preview.document} />
           <BotPackageLeftOutList items={preview.leftOut} />
           {backup ? (
-            <Text style={styles.secondary}>{t("This import includes supported text only.")}</Text>
+            <Text style={styles.secondary}>
+              {preview.document.routines.length
+                ? t("Imported routines start paused.")
+                : t("This import includes supported text only.")}
+            </Text>
           ) : (
             <>
               <Text style={styles.secondary}>

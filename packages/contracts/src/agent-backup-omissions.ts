@@ -2,6 +2,8 @@ import * as z from "zod";
 
 export const AGENT_BACKUP_MAX_FILES = 500;
 export const AGENT_BACKUP_MAX_PATH_LENGTH = 300;
+export const isBackupRoutinePath = (path: string) =>
+  /^cron\/routine-[1-9]\d{0,2}\.json$/.test(path);
 
 export const agentBackupOmissionReasons = {
   invalidSkill: "This Skill is missing valid metadata.",
@@ -12,6 +14,8 @@ export const agentBackupOmissionReasons = {
   instructionLimit: "This instruction file exceeds the Bot limit.",
   memoryLimit: "This note exceeds the Bot memory limits.",
   identity: "This identity file has no supported fields.",
+  routineSchedule: "This schedule needs manual setup.",
+  routineOwner: "The schedule owner could not be confirmed.",
 } as const;
 
 const agentBackupOmissionReasonKeys = Object.keys(agentBackupOmissionReasons) as Array<

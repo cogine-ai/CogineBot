@@ -1298,6 +1298,9 @@ export const ZH_MESSAGES: Record<string, string> = {
   "This identity file has no supported fields.": "此身份文件没有受支持的字段。",
   "This Skill needs additional files.": "此 Skill 需要附属文件。",
   "This runtime file is not used.": "此运行时文件不会使用。",
+  "This schedule needs manual setup.": "此安排需要手动设置。",
+  "The schedule owner could not be confirmed.": "无法确认此安排的归属。",
+  "Imported routines start paused.": "导入的例行任务默认暂停。",
   "Unavailable backup files": "无法导入的备份文件",
   "Agent backup selected": "已选择 Agent 备份",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

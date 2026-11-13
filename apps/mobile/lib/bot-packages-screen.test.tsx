@@ -342,6 +342,53 @@ it.each([
   expect(api.request.mock.calls.filter(([name]) => name === "botPackages/preview")).toHaveLength(0);
 });
 
+it("previews only explicitly chosen backup schedules", async () => {
+  const routine = {
+    name: "Morning review",
+    prompt: "Review the morning reports.",
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+  };
+  api.pick.mockResolvedValueOnce(
+    JSON.stringify({
+      format: "agent-backup/v1",
+      source: "hermes",
+      files: [
+        { path: "HERMES.md", content: "Review assistant." },
+        { path: "cron/routine-1.json", content: JSON.stringify(routine) },
+      ],
+    }),
+  );
+  const normal = api.request.getMockImplementation()!;
+  api.request.mockImplementation(async (procedure, input) => {
+    if (procedure !== "botPackages/preview") return normal(procedure, input);
+    return {
+      ...preview,
+      sourceFormat: "hermes",
+      document: {
+        ...doc,
+        routines:
+          input.backupRoutines?.map(
+            ({ routine }: { routine: (typeof doc.routines)[number] }) => routine,
+          ) ?? [],
+      },
+    };
+  });
+  await mountImport();
+  await click("Choose package file");
+  await click("Choose backup content");
+  expect((field("Morning review") as HTMLInputElement).checked).toBe(false);
+  await click("Preview");
+  expect(api.request.mock.lastCall?.[1].backupRoutines).toBeUndefined();
+  await act(async () => field("Morning review").click());
+  expect(button("Import as new bot")).toBeUndefined();
+  await click("Preview");
+  expect(api.request.mock.lastCall?.[1].backupRoutines).toEqual([
+    { path: "cron/routine-1.json", routine },
+  ]);
+  expect(node.textContent).toContain("Imported routines start paused.");
+});
+
 it("keeps a cancelled file picker from clearing typed input", async () => {
   await mountImport();
   await fill("Bot package or Grok JSON", "keep this draft");

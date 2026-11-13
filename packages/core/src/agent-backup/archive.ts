@@ -50,6 +50,11 @@ export function openAgentImportArchive(data: Uint8Array): {
   paths: string[];
   skippedPaths: string[];
   declaredWorkspace: boolean;
+  workspaceSourcePath?: string;
+  stateSourcePath?: string;
+  readOpenClawConfig(): string | undefined;
+  has(path: string): boolean;
+  readOptional(path: string): string | undefined;
   read: (path: string) => string;
 } {
   const limits = AGENT_IMPORT_ARCHIVE_LIMITS;
@@ -61,12 +66,17 @@ export function openAgentImportArchive(data: Uint8Array): {
   const entries = zip ? zip.entries : tarEntries(data, limits);
   let read = 0;
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  function readEntry(entry: Entry): string {
+  function readEntryBytes(entry: Entry): Uint8Array | undefined {
     if (entry.skipped || !mayBeRead(entry.path)) throw unreadable();
     const bytes = entry.data ?? zip?.read(entry.path);
-    if (!bytes) throw tooLarge();
+    if (!bytes) return undefined;
     read += bytes.length;
     if (read > limits.readBytes) throw tooLarge();
+    return bytes;
+  }
+  function readEntry(entry: Entry): string {
+    const bytes = readEntryBytes(entry);
+    if (!bytes) throw tooLarge();
     return decoder.decode(bytes);
   }
   const layout = archiveLayout(entries, readEntry);
@@ -83,10 +93,30 @@ export function openAgentImportArchive(data: Uint8Array): {
   }
   // Counted once per selected file.
   const texts = new Map<string, string>();
+  function readOptionalEntry(entry: Entry | undefined) {
+    if (!entry || entry.skipped || !mayBeRead(entry.path)) return undefined;
+    const bytes = readEntryBytes(entry);
+    if (!bytes) return undefined;
+    try {
+      return decoder.decode(bytes);
+    } catch (error) {
+      if (error instanceof TypeError) return undefined;
+      throw error;
+    }
+  }
   return {
     paths,
     skippedPaths,
     declaredWorkspace: layout.declaredWorkspace,
+    workspaceSourcePath: layout.workspaceSourcePath,
+    stateSourcePath: layout.stateSourcePath,
+    has: (path) => byVirtual.has(path),
+    readOptional: (path) => readOptionalEntry(byVirtual.get(path)),
+    readOpenClawConfig: () => {
+      if (!layout.configArchivePath) return undefined;
+      const matches = entries.filter(({ path }) => path === layout.configArchivePath);
+      return matches.length === 1 ? readOptionalEntry(matches[0]) : undefined;
+    },
     read: (path) => {
       const cached = texts.get(path);
       if (cached !== undefined) return cached;
@@ -141,7 +171,9 @@ function mayBeRead(path: string): boolean {
     name === "SKILL.md" ||
     READ_MARKDOWN.has(name) ||
     ((folder === "memory" || folder === "memories") && name.endsWith(".md")) ||
-    name === "manifest.json"
+    name === "manifest.json" ||
+    (folder === "cron" && name === "jobs.json") ||
+    name === "openclaw.json"
   );
 }
 
@@ -497,6 +529,9 @@ function archiveLayout(
 ): {
   map: (path: string) => string | null;
   declaredWorkspace: boolean;
+  workspaceSourcePath?: string;
+  stateSourcePath?: string;
+  configArchivePath?: string;
 } {
   const fallback = (map: (path: string) => string | null) => ({ map, declaredWorkspace: false });
   const manifests = entries.filter((entry) => /^[^/]+\/manifest\.json$/.test(entry.path));
@@ -511,6 +546,8 @@ function archiveLayout(
     if (roots) {
       return {
         declaredWorkspace: Boolean(roots.workspace),
+        workspaceSourcePath: roots.workspaceSourcePath,
+        stateSourcePath: roots.stateSourcePath,
         map: (path) => {
           if (roots.workspace && path.startsWith(`${roots.workspace}/`)) {
             return `.openclaw/workspace/${path.slice(roots.workspace.length + 1)}`;
@@ -522,6 +559,7 @@ function archiveLayout(
           }
           return null;
         },
+        configArchivePath: roots.config,
       };
     }
   }
@@ -553,11 +591,22 @@ function openClawRoots(
   manifestPath: string,
   manifestText: string,
   paths: readonly string[],
-): { home: string; workspace?: string } | null {
+): {
+  home: string;
+  config?: string;
+  workspace?: string;
+  workspaceSourcePath?: string;
+  stateSourcePath?: string;
+} | null {
   let parsed: {
     schemaVersion?: number;
     archiveRoot?: string;
-    paths?: { workspaceDirs?: unknown; stateDir?: unknown };
+    paths?: {
+      workspaceDirs?: unknown;
+      stateDir?: unknown;
+      configPath?: unknown;
+      configSourcePath?: unknown;
+    };
     assets?: { kind?: string; archivePath?: string; sourcePath?: string }[];
   };
   try {
@@ -583,6 +632,27 @@ function openClawRoots(
     const state = parsed.assets.find((asset) => asset.kind === "state" && asset.archivePath);
     const home = state?.archivePath ? inArchive(state.archivePath) : null;
     if (!home) throw unreadable();
+    const stateSource = state?.sourcePath ?? parsed.paths?.stateDir;
+    const stateSourcePath =
+      typeof stateSource === "string" ? normalizeSourcePath(stateSource) : undefined;
+    const activeConfigSource = parsed.paths?.configSourcePath ?? parsed.paths?.configPath;
+    const activeConfig =
+      typeof activeConfigSource === "string" ? normalizeSourcePath(activeConfigSource) : undefined;
+    // A config asset can be an included fragment. Match only the declared active root.
+    const configs = parsed.assets.filter(
+      (asset) =>
+        activeConfig &&
+        asset.kind === "config" &&
+        asset.archivePath &&
+        typeof asset.sourcePath === "string" &&
+        normalizeSourcePath(asset.sourcePath) === activeConfig,
+    );
+    const configPath =
+      configs.length === 1
+        ? (inArchive(configs[0]!.archivePath!) ?? undefined)
+        : configs.length === 0 && stateSourcePath && activeConfig?.startsWith(`${stateSourcePath}/`)
+          ? `${home}/${activeConfig.slice(stateSourcePath.length + 1)}`
+          : undefined;
     // Every declared asset must exist in the archive, under its root folder.
     for (const asset of parsed.assets) {
       if (!asset.archivePath) continue;
@@ -613,14 +683,18 @@ function openClawRoots(
       const declaredPaths = new Set(declaredWorkspaceDirs.map(normalizeSourcePath));
       if (declaredPaths.size > 1) throw unreadable();
       const [declaredPath] = declaredPaths;
-      const sourcePath = state?.sourcePath ?? parsed.paths?.stateDir;
-      const statePath =
-        typeof sourcePath === "string" ? normalizeSourcePath(sourcePath) : undefined;
+      const statePath = stateSourcePath;
       if (declaredPath && statePath && declaredPath.startsWith(`${statePath}/`)) {
         const internal = safeArchivePath(declaredPath.slice(statePath.length + 1));
         const internalRoot = `${home}/${internal}`;
         if (!internal || (workspace && workspace.root !== internalRoot)) throw unreadable();
-        return { home, workspace: internalRoot };
+        return {
+          home,
+          config: configPath,
+          workspace: internalRoot,
+          workspaceSourcePath: declaredPath,
+          stateSourcePath,
+        };
       }
       if (
         declaredPath &&
@@ -628,7 +702,13 @@ function openClawRoots(
         typeof workspace.sourcePath === "string" &&
         normalizeSourcePath(workspace.sourcePath) === declaredPath
       )
-        return { home, workspace: workspace.root };
+        return {
+          home,
+          config: configPath,
+          workspace: workspace.root,
+          workspaceSourcePath: declaredPath,
+          stateSourcePath,
+        };
       if (declaredPaths.size || workspace) throw unreadable();
     } else if (
       workspace &&
@@ -640,7 +720,18 @@ function openClawRoots(
     ) {
       throw unreadable();
     }
-    return workspace ? { home, workspace: workspace.root } : { home };
+    return workspace
+      ? {
+          home,
+          config: configPath,
+          workspace: workspace.root,
+          workspaceSourcePath:
+            typeof workspace.sourcePath === "string"
+              ? normalizeSourcePath(workspace.sourcePath)
+              : undefined,
+          stateSourcePath,
+        }
+      : { home, config: configPath, stateSourcePath };
   } catch (error) {
     if (error instanceof AgentImportArchiveError) throw error;
     throw unreadable();

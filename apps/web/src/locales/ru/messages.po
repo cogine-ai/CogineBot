@@ -7571,3 +7571,15 @@ msgstr "Этому навыку нужны дополнительные файл
 #: src/components/BotPackageImport.tsx
 msgid "This runtime file is not used."
 msgstr "Этот файл среды выполнения не используется."
+
+#: src/components/BotPackageImport.tsx
+msgid "This schedule needs manual setup."
+msgstr "Это расписание нужно настроить вручную."
+
+#: src/components/BotPackageImport.tsx
+msgid "The schedule owner could not be confirmed."
+msgstr "Не удалось подтвердить владельца расписания."
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported routines start paused."
+msgstr "Импортированные процедуры изначально приостановлены."

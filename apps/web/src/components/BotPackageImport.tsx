@@ -37,6 +37,8 @@ export function BotPackageImport({
     instructionLimit: t`This instruction file exceeds the Bot limit.`,
     memoryLimit: t`This note exceeds the Bot memory limits.`,
     identity: t`This identity file has no supported fields.`,
+    routineSchedule: t`This schedule needs manual setup.`,
+    routineOwner: t`The schedule owner could not be confirmed.`,
   };
   const ids = useId();
   const [state, setState] = useState<BotPackageImportState | null>(null);
@@ -94,8 +96,14 @@ export function BotPackageImport({
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
   const backup = fileGroups !== null;
   const excluded = new Set(state?.excludedBackupPaths);
+  const includedRoutines = new Set(state?.includedBackupRoutines);
   const selection = fileGroups
-    ? agentBackupSelectableGroups(fileGroups, state?.includeMemory ?? false, excluded)
+    ? agentBackupSelectableGroups(
+        fileGroups,
+        state?.includeMemory ?? false,
+        excluded,
+        includedRoutines,
+      )
     : null;
   function edit(input: { source?: string; name?: string; includeMemory?: boolean }) {
     fileGeneration.current++;
@@ -214,16 +222,18 @@ export function BotPackageImport({
               <summary className="cursor-pointer">
                 <Trans>Choose backup content</Trans>
               </summary>
-              {selection.groups.map(({ kind, paths }) => (
+              {selection.groups.map(({ kind, items }) => (
                 <fieldset key={kind} className="mt-3 space-y-2">
                   <legend className="font-medium">
                     {kind === "instructions"
                       ? t`Instructions`
                       : kind === "skills"
                         ? t`Skills`
-                        : t`Memory`}
+                        : kind === "routines"
+                          ? t`Routines`
+                          : t`Memory`}
                   </legend>
-                  {paths.map((path, index) => (
+                  {items.map(({ path, label, selected, atLimit }, index) => (
                     <label
                       key={path}
                       htmlFor={`${ids}-backup-${kind}-${index}`}
@@ -231,14 +241,14 @@ export function BotPackageImport({
                     >
                       <Checkbox
                         id={`${ids}-backup-${kind}-${index}`}
-                        checked={!excluded.has(path)}
-                        disabled={locked || reading}
+                        checked={selected}
+                        disabled={locked || reading || atLimit}
                         onCheckedChange={(checked) =>
                           manager.current?.setBackupFileIncluded(path, checked)
                         }
                       />
                       <span className="min-w-0 break-all" dir="auto">
-                        {path}
+                        {label}
                       </span>
                     </label>
                   ))}
@@ -294,7 +304,9 @@ export function BotPackageImport({
           <BotPackageLeftOutList items={preview.leftOut} />
           {backup ? (
             <p className="text-sm text-muted-foreground">
-              <Trans>This import includes supported text only.</Trans>
+              {preview.document.routines.length
+                ? t`Imported routines start paused.`
+                : t`This import includes supported text only.`}
             </p>
           ) : (
             <>

@@ -6,6 +6,7 @@ import type {
 } from "@rakazo/contracts";
 import {
   AGENT_BACKUP_FORMAT,
+  AGENT_BACKUP_MAX_FILES,
   AgentBackupDocumentSchema,
   agentBackupOmissionReasons,
   agentBackupRuntimeOmission,
@@ -38,6 +39,7 @@ import {
   backupInstructions,
   botImportJsonObject,
   isBackupMemory,
+  isBackupRoutineOmission,
   isBackupSkill,
   isBackupTextFile,
   isOpenClawDefault,
@@ -46,6 +48,7 @@ import {
   parseOpenClawIdentity,
   renameBackupSkill,
   selectBackupMemory,
+  validateBackupRoutine,
 } from "@rakazo/core/agent-backup";
 import { redactSecretText } from "@rakazo/logging/redaction";
 
@@ -512,26 +515,40 @@ export function prepareBotPackageDocument(value: unknown): {
 
 function backupPackage(
   backup: AgentBackupDocument,
-  options: Pick<BotPackagePreviewInput, "name" | "includeMemory" | "backupOmissions">,
+  options: Pick<
+    BotPackagePreviewInput,
+    "name" | "includeMemory" | "backupOmissions" | "backupRoutines"
+  >,
 ): ParsedBotPackage {
   const { source, files } = backup;
   const leftOut = new LeftOutBudget();
   if (files.some(({ path }) => !isBackupTextFile(source, path)))
     throw new BotPackageError("The backup contains unsupported files.");
   const byPath = new Map(files.map(({ path, content }) => [path, content]));
+  const routinePaths = new Set((options.backupRoutines ?? []).map(({ path }) => path));
+  if (routinePaths.size !== (options.backupRoutines?.length ?? 0))
+    throw new BotPackageError("The backup selects a routine more than once.");
   const reportedOmissions = new Set<string>();
   const addNote = (kind: BotPackageLeftOut["kind"], name: string, reason: string) => {
     leftOut.push({ kind, name: redactSecretText(name).slice(0, 200), reason });
   };
   for (const { path, reason } of options.backupOmissions ?? []) {
-    if (!isBackupTextFile(source, path) || byPath.has(path) || reportedOmissions.has(path))
+    const routine = isBackupRoutineOmission(path);
+    if (
+      (!routine && !isBackupTextFile(source, path)) ||
+      byPath.has(path) ||
+      routinePaths.has(path) ||
+      reportedOmissions.has(path)
+    )
       continue;
     reportedOmissions.add(path);
-    const kind = isBackupSkill(path)
-      ? "skill"
-      : isBackupMemory(source, path)
-        ? "memory"
-        : "instructions";
+    const kind = routine
+      ? "routine"
+      : isBackupSkill(path)
+        ? "skill"
+        : isBackupMemory(source, path)
+          ? "memory"
+          : "instructions";
     addNote(kind, path, agentBackupOmissionReasons[reason]);
   }
   const identityText = byPath.get("IDENTITY.md");
@@ -607,9 +624,16 @@ function backupPackage(
     : availableMemoryCount;
   if (excludedMemoryCount)
     addNote("memory", "memory", `Memory notes not selected: ${excludedMemoryCount}.`);
+  const routines: BotPackageDocument["routines"] = [];
+  for (const { path, routine: item } of options.backupRoutines ?? []) {
+    const routine = validateBackupRoutine(item);
+    if (routine) routines.push(routine);
+    else addNote("routine", path, agentBackupOmissionReasons.routineSchedule);
+  }
   if (
     !instructions.length &&
     !skills.length &&
+    !routines.length &&
     !(options.includeMemory && memory.length) &&
     !identity?.name &&
     !identity?.description
@@ -626,6 +650,7 @@ function backupPackage(
       instructions: instructions.join(""),
     },
     skills,
+    routines,
     memory: options.includeMemory ? memory : [],
   });
   leftOut.push(...safe.leftOut);
@@ -634,16 +659,32 @@ function backupPackage(
 
 export function parseBotPackageSource(
   source: string,
-  options: Pick<BotPackagePreviewInput, "name" | "includeMemory" | "backupOmissions"> & {
+  options: Pick<
+    BotPackagePreviewInput,
+    "name" | "includeMemory" | "backupOmissions" | "backupRoutines"
+  > & {
     defaultTimezone?: string;
   },
 ): ParsedBotPackage {
   const root = sourceObject(source);
   const format = root.format;
   if (format === AGENT_BACKUP_FORMAT) {
+    if (
+      options.backupRoutines?.length &&
+      botPackageUtf8Bytes(source) + botPackageUtf8Bytes(JSON.stringify(options.backupRoutines)) >
+        BOT_PACKAGE_MAX_BYTES
+    )
+      throw new BotPackageError("Package is larger than 4 MiB.");
     const backup = AgentBackupDocumentSchema.safeParse(root);
     if (!backup.success)
       throw new BotPackageError("The backup has unsupported or oversized files.");
+    if (
+      backup.data.files.length +
+        backup.data.excludedMemoryCount +
+        (options.backupRoutines?.length ?? 0) >
+      AGENT_BACKUP_MAX_FILES
+    )
+      throw new BotPackageError("The backup has too many files.");
     return backupPackage(backup.data, options);
   }
   if (

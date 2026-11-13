@@ -7515,3 +7515,15 @@ msgstr "इस स्किल को अतिरिक्त फ़ाइल�
 #: src/components/BotPackageImport.tsx
 msgid "This runtime file is not used."
 msgstr "इस रनटाइम फ़ाइल का उपयोग नहीं होता है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This schedule needs manual setup."
+msgstr "इस शेड्यूल को मैन्युअल रूप से सेट करना होगा।"
+
+#: src/components/BotPackageImport.tsx
+msgid "The schedule owner could not be confirmed."
+msgstr "शेड्यूल के स्वामी की पुष्टि नहीं हो सकी।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Imported routines start paused."
+msgstr "आयात की गई रूटीन रुकी हुई स्थिति में शुरू होती हैं।"

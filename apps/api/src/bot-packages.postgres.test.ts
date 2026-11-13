@@ -389,6 +389,45 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(await importPackage(owner, first, nonce)).toEqual(receipt);
     await expect(importPackage(owner, second, nonce)).rejects.toThrow("different content");
   });
+  it.each(["openclaw", "hermes"] as const)(
+    "stores a selected %s schedule as a paused draft only once",
+    async (sourceFormat) => {
+      const owner = await account();
+      const routine = {
+        name: "Morning review",
+        prompt: "Review the reports.",
+        crons: ["0 9 * * 1-5"],
+        timezone: "Asia/Taipei",
+      };
+      const reviewed = await call<BotPackagePreview>(owner, "preview", {
+        source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: sourceFormat, files: [] }),
+        backupRoutines: [{ path: "cron/routine-1.json", routine }],
+      });
+      expect(reviewed.document.routines).toEqual([routine]);
+      const identicalContent = await call<BotPackagePreview>(owner, "preview", {
+        source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: sourceFormat, files: [] }),
+        backupRoutines: [{ path: "cron/routine-2.json", routine }],
+      });
+      expect(identicalContent.document).toEqual(reviewed.document);
+      expect(identicalContent.digest).not.toBe(reviewed.digest);
+      const nonce = randomUUID();
+      const receipt = await importPackage(owner, reviewed, nonce);
+      expect(await importPackage(owner, reviewed, nonce)).toEqual(receipt);
+      const routines = await database.prisma.routine.findMany({ where: { botId: receipt.botId! } });
+      expect(routines).toMatchObject([
+        {
+          ...routine,
+          active: false,
+          nextRunAt: null,
+          notify: false,
+          webhookEnabled: false,
+          messageProvider: null,
+          authorizedInstructions: null,
+        },
+      ]);
+      expect(await database.prisma.run.count({ where: { botId: receipt.botId! } })).toBe(0);
+    },
+  );
   it("rejects an invalid stored preview before creating an import marker or Bot", async () => {
     const owner = await account();
     const p = await preview(owner);

@@ -173,7 +173,7 @@ test("package review preserves text, keeps execution off, and explicitly enables
 test("agent backup import previews supported text and saves only the selected content", async ({
   page,
 }, testInfo) => {
-  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.setViewportSize({ width: 1280, height: 1400 });
   await signup(page, `agent-backup-${Date.now()}@example.test`, "password12", "Backup reviewer");
   await completeOnboarding(page);
   await openNewBot(page);
@@ -186,18 +186,45 @@ test("agent backup import previews supported text and saves only the selected co
   const note = "Keep selected notes in this Bot only.";
   const otherInstructions = "Instructions left on the device.";
   const otherNote = "Private preferences left on the device.";
+  const backupRoot = "backup/state";
   const files = {
-    ".openclaw/workspace/SOUL.md": instructions,
-    ".openclaw/workspace/AGENTS.md": otherInstructions,
-    ".openclaw/workspace/MEMORY.md": note,
-    ".openclaw/workspace/USER.md": otherNote,
-    ".openclaw/workspace/skills/check/SKILL.md":
+    "backup/manifest.json": JSON.stringify({
+      schemaVersion: 1,
+      archiveRoot: "backup",
+      assets: [{ kind: "state", archivePath: "state" }],
+      paths: {
+        stateDir: "/example-state",
+        configPath: "/example-state/openclaw.json",
+        workspaceDirs: ["/example-state/workspace"],
+      },
+    }),
+    [`${backupRoot}/openclaw.json`]: JSON.stringify({
+      agents: { list: [{ id: "main", workspace: "/example-state/workspace" }] },
+      unrelated: "Private config fixture.",
+    }),
+    [`${backupRoot}/workspace/SOUL.md`]: instructions,
+    [`${backupRoot}/workspace/AGENTS.md`]: otherInstructions,
+    [`${backupRoot}/workspace/MEMORY.md`]: note,
+    [`${backupRoot}/workspace/USER.md`]: otherNote,
+    [`${backupRoot}/workspace/skills/check/SKILL.md`]:
       "---\nname: check\ndescription: Check a report.\n---\nInspect each row.\n",
-    ".openclaw/workspace/skills/missing/SKILL.md":
+    [`${backupRoot}/workspace/skills/missing/SKILL.md`]:
       "---\nname: missing\ndescription: Needs a reference.\n---\nRead references/guide.md.\n",
-    ".openclaw/workspace/skills/invalid/SKILL.md": "Private text without metadata.",
-    ".openclaw/workspace/TOOLS.md": "Private runtime fixture.",
-    ".openclaw/.env": "IGNORE_THIS_FIXTURE_VALUE",
+    [`${backupRoot}/workspace/skills/invalid/SKILL.md`]: "Private text without metadata.",
+    [`${backupRoot}/workspace/TOOLS.md`]: "Private runtime fixture.",
+    [`${backupRoot}/cron/jobs.json`]: JSON.stringify({
+      jobs: [
+        {
+          agentId: "main",
+          name: "Morning review",
+          schedule: { kind: "cron", expr: "0 9 * * 1-5", tz: "Asia/Taipei" },
+          payload: { kind: "agentTurn", message: "Review the morning reports." },
+          delivery: { mode: "none" },
+          sessionTarget: "isolated",
+        },
+      ],
+    }),
+    [`${backupRoot}/.env`]: "IGNORE_THIS_FIXTURE_VALUE",
   };
   const blocks = Object.entries(files).flatMap(([name, text]) => {
     const data = Buffer.from(text);
@@ -252,8 +279,10 @@ test("agent backup import previews supported text and saves only the selected co
   const document = panel.getByTestId("bot-package-document");
   await previewButton.click();
   await expect(document.getByText(instructions, { exact: true })).toBeVisible();
+  expect(uploaded).not.toContain("Review the morning reports.");
   await expect(document.getByText(note, { exact: true })).toHaveCount(0);
   expect(uploaded).not.toContain("IGNORE_THIS_FIXTURE_VALUE");
+  expect(uploaded).not.toContain("Private config fixture.");
   expect(uploaded).not.toContain(otherInstructions);
   expect(uploaded).not.toContain("Inspect each row.");
   expect(uploaded).not.toContain("Read references/guide.md.");
@@ -262,6 +291,7 @@ test("agent backup import previews supported text and saves only the selected co
   expect(uploaded).not.toContain(note);
   await memory.click();
   await panel.getByRole("checkbox", { name: "USER.md", exact: true }).click();
+  await panel.getByRole("checkbox", { name: "Morning review", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
     0,
   );
@@ -270,6 +300,8 @@ test("agent backup import previews supported text and saves only the selected co
   await document.getByText("MEMORY.md", { exact: true }).click();
   await expect(document.getByText(note, { exact: true })).toBeVisible();
   expect(uploaded).toContain(note);
+  expect(uploaded).toContain("Review the morning reports.");
+  await expect(panel.getByText("Imported routines start paused.", { exact: true })).toBeVisible();
   expect(uploaded).not.toContain(otherNote);
   expect(uploaded).not.toContain("Read references/guide.md.");
   await expect(document.getByText("Skills · 0", { exact: true })).toBeVisible();

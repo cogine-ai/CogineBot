@@ -339,6 +339,7 @@ export function createBotPackagesService(deps: Deps) {
               JSON.stringify([
                 hash(input.source),
                 input.includeMemory,
+                input.backupRoutines ?? [],
                 parsed.json,
                 parsed.leftOut,
               ]),
