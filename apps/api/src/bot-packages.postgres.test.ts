@@ -526,6 +526,69 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(ordinary.document).not.toHaveProperty("backupModelBinding");
   });
 
+  it("preserves the saved Azure connection identity and counts aliases as ambiguous", async () => {
+    const owner = await account();
+    const model = { provider: "azure", modelId: "gpt-4.1" };
+    const value = {
+      format: AGENT_BACKUP_FORMAT,
+      source: "hermes",
+      files: [{ path: "HERMES.md", content: "Review rows." }],
+      model,
+    };
+    const select = async (provider: string) => {
+      const secret = await new EncryptedSecretStore("offline-package-http-fixture-key").put(
+        "synthetic-azure-connection",
+        {
+          ...owner.actor,
+          operationId: "fixture",
+          traceId: "fixture",
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      await database.prisma.secret.create({
+        data: {
+          id: secret.id,
+          userId: owner.actor.userId,
+          kind: "model",
+          ciphertext: secret.ciphertext,
+        },
+      });
+      const credential = await database.prisma.userModelCredential.create({
+        data: { userId: owner.actor.userId, provider, label: provider, secretId: secret.id },
+      });
+      await database.prisma.spaceModelPreference.create({
+        data: {
+          userId: owner.actor.userId,
+          spaceId: owner.actor.spaceId,
+          credentialId: credential.id,
+          modelId: model.modelId,
+        },
+      });
+      return credential;
+    };
+    const legacy = await select("azure-openai-responses");
+    const reviewed = await preview(owner, value);
+    expect(reviewed.model).toEqual(model);
+    const receipt = await importPackage(owner, reviewed);
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } }),
+    ).toMatchObject({
+      modelProvider: legacy.provider,
+      modelId: model.modelId,
+      modelCredentialId: legacy.id,
+    });
+
+    const beforeSecondAlias = await preview(owner, value);
+    expect(beforeSecondAlias.model).toEqual(model);
+    await select("azure");
+    expect((await preview(owner, value)).model).toBeUndefined();
+    const ambiguous = await importPackage(owner, beforeSecondAlias);
+    expect(ambiguous.leftOut).toContainEqual(expect.objectContaining({ kind: "model" }));
+    expect(
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: ambiguous.botId! } }),
+    ).toMatchObject({ modelProvider: null, modelId: null, modelCredentialId: null });
+  });
+
   it("binds the receipt to the selected backup files even when the Bot documents match", async () => {
     const owner = await account();
     const backup = {

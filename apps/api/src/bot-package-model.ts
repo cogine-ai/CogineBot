@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { LOCAL_PROVIDER_ID, listPiCatalog, validateModelAuthAvailability } from "@rakazo/adapters";
 import type { Actor, AgentBackupModel } from "@rakazo/contracts";
-import { AgentBackupModelSchema } from "@rakazo/contracts";
+import { AgentBackupModelSchema, canonicalPiProviderId } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { lockSpaceModelSelection, Prisma } from "@rakazo/db";
 import * as z from "zod";
@@ -20,6 +20,11 @@ type ModelReader = Pick<
 >;
 type ModelSecrets = Pick<SecretStore, "load">;
 
+function matchingProviderIds(provider: string): string[] {
+  const canonical = canonicalPiProviderId(provider);
+  return canonical === "azure" ? [canonical, "azure-openai-responses"] : [canonical];
+}
+
 export async function findBackupModelBinding(
   prisma: ModelReader,
   secrets: ModelSecrets,
@@ -31,15 +36,16 @@ export async function findBackupModelBinding(
       spaceId: actor.spaceId,
       userId: actor.userId,
       modelId: model.modelId,
-      credential: { provider: model.provider },
+      credential: { provider: { in: matchingProviderIds(model.provider) } },
     },
-    select: { credential: { select: { id: true, connectionRevision: true } } },
+    select: { credential: { select: { id: true, provider: true, connectionRevision: true } } },
     take: 2,
   });
   if (exact.length !== 1) return null;
   const credential = exact[0]!.credential;
   const binding = {
     ...model,
+    provider: credential.provider,
     credentialId: credential.id,
     revision: credential.connectionRevision,
   };
@@ -53,10 +59,11 @@ export async function validateBackupModelBinding(
   binding: BackupModelBinding,
   lock = false,
 ) {
+  const catalogProvider = canonicalPiProviderId(binding.provider);
   if (
     !listPiCatalog().some(
       (entry) =>
-        entry.provider === binding.provider &&
+        entry.provider === catalogProvider &&
         entry.id === binding.modelId &&
         !entry.placeholder &&
         entry.provider !== LOCAL_PROVIDER_ID,
@@ -76,7 +83,8 @@ export async function validateBackupModelBinding(
       SELECT c.id, c."connectionRevision" FROM space_model_preferences p
       JOIN user_model_credentials c ON c.id = p."credentialId" AND c."userId" = p."userId"
       WHERE p."spaceId" = ${actor.spaceId} AND p."userId" = ${actor.userId}
-        AND p."modelId" = ${binding.modelId} AND c.provider = ${binding.provider}
+        AND p."modelId" = ${binding.modelId}
+        AND c.provider IN (${Prisma.join(matchingProviderIds(binding.provider))})
       LIMIT 2
       FOR SHARE OF p, c
     `);
@@ -95,7 +103,7 @@ export async function validateBackupModelBinding(
     if (
       !checked ||
       checked.secret.kind === "openai_compatible" ||
-      validateModelAuthAvailability(binding.provider, binding.modelId, checked.plaintext)
+      validateModelAuthAvailability(catalogProvider, binding.modelId, checked.plaintext)
     )
       return null;
     return model;
