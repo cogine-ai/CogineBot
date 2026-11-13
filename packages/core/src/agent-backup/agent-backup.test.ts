@@ -57,7 +57,7 @@ it("recognizes wrapped backup JSON and lists missing Skill dependencies separate
     instructions: ["SOUL.md"],
     skills: [],
     memory: [],
-    unavailable: ["skills/review/SKILL.md"],
+    unavailable: [{ path: "skills/review/SKILL.md", reason: "missingSkillFiles" }],
   });
 });
 

@@ -7479,3 +7479,31 @@ msgstr "बैकअप सामग्री चुनें"
 #: src/components/BotPackageImport.tsx
 msgid "Unavailable backup files"
 msgstr "अनुपलब्ध बैकअप फ़ाइलें"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "इस स्किल में मान्य मेटाडेटा नहीं है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "इस स्किल की आवश्यकताओं की समीक्षा करनी होगी।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "यह स्किल बॉट की सीमाओं से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "मूल टेम्पलेट छोड़ दिया गया।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "यह निर्देश फ़ाइल बॉट की सीमा से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "यह नोट बॉट की मेमोरी की सीमाओं से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "इस पहचान फ़ाइल में कोई समर्थित फ़ील्ड नहीं है।"

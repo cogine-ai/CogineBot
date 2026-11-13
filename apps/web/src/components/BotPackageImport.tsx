@@ -1,4 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import type { AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
@@ -27,6 +28,18 @@ export function BotPackageImport({
   onCancel(): void;
 }) {
   const { t } = useLingui();
+  const backupOmissionLabels: Record<
+    Exclude<AgentBackupOmissionReason, "missingSkillFiles">,
+    string
+  > = {
+    invalidSkill: t`This Skill is missing valid metadata.`,
+    skillRequirements: t`This Skill declares requirements that need review.`,
+    skillLimit: t`This Skill exceeds the Bot limits.`,
+    stock: t`The original template was omitted.`,
+    instructionLimit: t`This instruction file exceeds the Bot limit.`,
+    memoryLimit: t`This note exceeds the Bot memory limits.`,
+    identity: t`This identity file has no supported fields.`,
+  };
   const ids = useId();
   const [state, setState] = useState<BotPackageImportState | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -239,9 +252,12 @@ export function BotPackageImport({
                     <Trans>Unavailable backup files</Trans>
                   </p>
                   <ul className="space-y-1 text-muted-foreground">
-                    {fileGroups.unavailable.map((path) => (
+                    {fileGroups.unavailable.map(({ path, reason }) => (
                       <li key={path} className="break-all" dir="auto">
-                        {path}
+                        <span>{path}</span>
+                        {reason && reason !== "missingSkillFiles" ? (
+                          <p className="break-words">{backupOmissionLabels[reason]}</p>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

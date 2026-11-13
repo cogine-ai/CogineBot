@@ -1351,6 +1351,17 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not load skills.": "Skills konnten nicht geladen werden.",
   "Could not preview this package.": "Dieses Paket konnte nicht in der Vorschau angezeigt werden.",
   "Choose backup content": "Sicherungsinhalte auswählen",
+  "This Skill is missing valid metadata.": "Diesem Skill fehlen gültige Metadaten.",
+  "This Skill declares requirements that need review.":
+    "Dieser Skill nennt Anforderungen, die geprüft werden müssen.",
+  "This Skill exceeds the Bot limits.": "Dieser Skill überschreitet die Bot-Grenzwerte.",
+  "The original template was omitted.": "Die ursprüngliche Vorlage wurde ausgelassen.",
+  "This instruction file exceeds the Bot limit.":
+    "Diese Anweisungsdatei überschreitet das Bot-Limit.",
+  "This note exceeds the Bot memory limits.":
+    "Diese Notiz überschreitet die Speichergrenzen des Bots.",
+  "This identity file has no supported fields.":
+    "Diese Identitätsdatei enthält keine unterstützten Felder.",
   "Unavailable backup files": "Nicht verfügbare Sicherungsdateien",
   "Agent backup selected": "Agent-Sicherung ausgewählt",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

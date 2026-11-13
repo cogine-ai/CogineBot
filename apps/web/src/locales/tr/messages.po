@@ -7479,3 +7479,31 @@ msgstr "Yedek içeriğini seç"
 #: src/components/BotPackageImport.tsx
 msgid "Unavailable backup files"
 msgstr "Kullanılamayan yedek dosyaları"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "Bu beceride geçerli meta veriler yok."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "Bu becerinin incelenmesi gereken gereksinimleri var."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "Bu beceri bot sınırlarını aşıyor."
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "Orijinal şablon atlandı."
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "Bu talimat dosyası bot sınırını aşıyor."
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "Bu not botun bellek sınırlarını aşıyor."
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "Bu kimlik dosyasında desteklenen alan yok."

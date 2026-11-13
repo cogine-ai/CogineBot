@@ -7479,3 +7479,31 @@ msgstr "Escolher conteúdo do backup"
 #: src/components/BotPackageImport.tsx
 msgid "Unavailable backup files"
 msgstr "Arquivos de backup indisponíveis"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "Este Skill não tem metadados válidos."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "Este Skill declara requisitos que precisam ser revisados."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "Este Skill excede os limites do Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "O modelo original foi omitido."
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "Este arquivo de instruções excede o limite do Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "Esta nota excede os limites de memória do Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "Este arquivo de identidade não contém campos compatíveis."

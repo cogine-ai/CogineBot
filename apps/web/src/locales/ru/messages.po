@@ -7535,3 +7535,31 @@ msgstr "Выбрать содержимое резервной копии"
 #: src/components/BotPackageImport.tsx
 msgid "Unavailable backup files"
 msgstr "Недоступные файлы резервной копии"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "У этого навыка нет корректных метаданных."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "Этот навык объявляет требования, которые нужно проверить."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "Этот навык превышает ограничения бота."
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "Исходный шаблон пропущен."
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "Этот файл инструкций превышает лимит бота."
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "Эта заметка превышает ограничения памяти бота."
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "В этом файле идентификации нет поддерживаемых полей."

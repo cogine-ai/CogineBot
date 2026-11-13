@@ -1289,6 +1289,13 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Could not load skills.": "无法加载技能。",
   "Could not preview this package.": "无法预览此包。",
   "Choose backup content": "选择备份内容",
+  "This Skill is missing valid metadata.": "此 Skill 缺少有效的元数据。",
+  "This Skill declares requirements that need review.": "此 Skill 声明了需要复核的要求。",
+  "This Skill exceeds the Bot limits.": "此 Skill 超过 Bot 的限制。",
+  "The original template was omitted.": "已跳过原始模板。",
+  "This instruction file exceeds the Bot limit.": "此指令文件超过 Bot 的限制。",
+  "This note exceeds the Bot memory limits.": "此笔记超过 Bot 的记忆限制。",
+  "This identity file has no supported fields.": "此身份文件没有受支持的字段。",
   "Unavailable backup files": "无法导入的备份文件",
   "Agent backup selected": "已选择 Agent 备份",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":

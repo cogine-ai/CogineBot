@@ -300,7 +300,7 @@ export function renameBackupSkill(content: string, name: string): string {
   return `${head}${body.slice(0, start)}${replacement}${body.slice(end)}${content.slice(head.length + body.length)}`;
 }
 
-/** Names only. The file bodies stay in the editor until the selected preview is requested. */
+/** Display information only. File bodies stay in the editor until selected for preview. */
 export function agentBackupFileGroups(raw: string) {
   if (!raw.trim() || raw.length > BOT_PACKAGE_MAX_BYTES) return null;
   const parsed = AgentBackupDocumentSchema.safeParse(botImportJsonObject(raw.trim()));
@@ -311,23 +311,41 @@ export function agentBackupFileGroups(raw: string) {
     instructions: [] as string[],
     skills: [] as string[],
     memory: [] as string[],
-    unavailable: [] as string[],
+    unavailable: [] as { path: string; reason?: AgentBackupOmissionReason }[],
   };
-  const memory = new Set(backupMemoryCandidates(source, files).map(({ file }) => file.path));
+  const memoryOmissions = new Map<string, AgentBackupOmissionReason>();
+  const memory = new Set(
+    backupMemoryCandidates(source, files, (path, reason) => {
+      memoryOmissions.set(path, reason);
+    }).map(({ file }) => file.path),
+  );
   for (const { path, content } of files) {
-    if (!content.trim()) continue;
+    if (source === "openclaw" && openClawRuntimeFiles.has(path)) {
+      groups.unavailable.push({ path });
+      continue;
+    }
     if (memory.has(path)) groups.memory.push(path);
-    else if (isBackupSkill(path) && "skill" in assessBackupSkill(content, incomplete.has(path)))
-      groups.skills.push(path);
-    else if (
+    else if (isBackupMemory(source, path)) {
+      const reason = memoryOmissions.get(path);
+      if (reason) groups.unavailable.push({ path, reason });
+    } else if (isBackupSkill(path)) {
+      const assessed = assessBackupSkill(content, incomplete.has(path));
+      if ("skill" in assessed) groups.skills.push(path);
+      else groups.unavailable.push({ path, reason: assessed.reason });
+    } else if (
+      content.trim() &&
       (backupInstructions[source].some((file) => file === path) ||
-        (source === "openclaw" && path === "IDENTITY.md")) &&
-      !backupInstructionOmission(source, path, content)
-    )
-      groups.instructions.push(path);
-    else if (isBackupTextFile(source, path)) groups.unavailable.push(path);
+        (source === "openclaw" && path === "IDENTITY.md"))
+    ) {
+      const reason = backupInstructionOmission(source, path, content);
+      if (reason) groups.unavailable.push({ path, reason });
+      else groups.instructions.push(path);
+    }
   }
-  for (const paths of Object.values(groups)) paths.sort();
+  groups.instructions.sort();
+  groups.skills.sort();
+  groups.memory.sort();
+  groups.unavailable.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return groups;
 }
 

@@ -1,4 +1,8 @@
-import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
+import {
+  agentBackupOmissionReasons,
+  BOT_NAME_MAX_LENGTH,
+  BOT_PACKAGE_MAX_BYTES,
+} from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
 import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
@@ -234,10 +238,17 @@ export function NativeBotPackageImport({
               {fileGroups.unavailable.length ? (
                 <View style={styles.section}>
                   <Text style={styles.heading}>{t("Unavailable backup files")}</Text>
-                  {fileGroups.unavailable.map((path) => (
-                    <Text key={path} selectable style={styles.secondary}>
-                      {path}
-                    </Text>
+                  {fileGroups.unavailable.map(({ path, reason }) => (
+                    <View key={path}>
+                      <Text selectable style={styles.secondary}>
+                        {path}
+                      </Text>
+                      {reason && reason !== "missingSkillFiles" ? (
+                        <Text style={styles.secondary}>
+                          {t(agentBackupOmissionReasons[reason])}
+                        </Text>
+                      ) : null}
+                    </View>
                   ))}
                 </View>
               ) : null}
