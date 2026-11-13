@@ -239,14 +239,16 @@ export function encodeAgentBackup(data: Uint8Array): string {
     files.set(name, path);
     if (files.size > AGENT_BACKUP_MAX_FILES) throw new AgentImportArchiveError("too_large");
   };
-  if (source === "openclaw" && workspace) {
-    for (const [path, name] of relative) {
-      if (name.startsWith(`${workspace}/`)) add(path, name.slice(workspace.length + 1));
+  if (source === "openclaw" && (workspace || archive.declaredWorkspace)) {
+    if (workspace) {
+      for (const [path, name] of relative) {
+        if (name.startsWith(`${workspace}/`)) add(path, name.slice(workspace.length + 1));
+      }
     }
     for (const [path, name] of relative) {
       if (name.startsWith("skills/") && !files.has(name)) add(path, name);
     }
-  } else if (source !== "openclaw" || !archive.declaredWorkspace) {
+  } else {
     for (const [path, name] of relative) add(path, name);
   }
   const jobPath = `${home}${backupJobsPath}`;

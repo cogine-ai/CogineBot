@@ -306,6 +306,19 @@ it("opens a declared workspace with only a portable routine", () => {
   const preview = agentBackupPreview(source, false, [], ["cron/routine-1.json"]);
   expect(JSON.parse(preview.source).files).toEqual([]);
   expect(preview.backupRoutines).toHaveLength(1);
+
+  const withManagedSkill = encodeAgentBackup(
+    tar({
+      ...files,
+      "backup/state/skills/reports/SKILL.md":
+        "---\nname: reports\ndescription: Review reports.\n---\nSummarize the supplied report.",
+    }),
+  );
+  expect(agentBackupFileGroups(withManagedSkill)).toMatchObject({
+    instructions: [],
+    skills: ["skills/reports/SKILL.md"],
+    routines: [{ path: "cron/routine-1.json", name: "Review reports" }],
+  });
   for (const config of [
     { agents: { defaults: { workspace: "/state/workspace" }, entries: { main: {} } } },
     { agents: { defaults: { workspace: "/state/workspace" } } },
