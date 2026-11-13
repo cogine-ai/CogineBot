@@ -95,6 +95,7 @@ describe("bot package import review", () => {
       {
         source: "hermes",
         format: "agent-backup/v1",
+        excludedMemoryCount: 2,
         files: [
           { path: "memories/MEMORY.md", content: "private note" },
           { path: "memories/USER.md", content: "  \n§\n " },
@@ -107,7 +108,7 @@ describe("bot package import review", () => {
     await review(f, source);
     expect(JSON.parse(f.deps.preview.mock.calls[0]![0].source)).toMatchObject({
       files: [],
-      excludedMemoryCount: 1,
+      excludedMemoryCount: 3,
     });
     f.manager.edit({ includeMemory: true });
     await f.manager.preview();

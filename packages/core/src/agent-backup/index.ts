@@ -250,7 +250,8 @@ export function agentBackupPreviewSource(source: string, includeMemory: boolean)
   const backup = parsed.data;
   const files = backup.files.filter(({ path }) => !isBackupMemory(backup.source, path));
   if (files.length === backup.files.length) return source;
-  const excludedMemoryCount = selectBackupMemory(backup.source, backup.files).length;
+  const excludedMemoryCount =
+    backup.excludedMemoryCount + selectBackupMemory(backup.source, backup.files).length;
   if (!files.length && !excludedMemoryCount) throw new AgentImportArchiveError("unreadable");
   return JSON.stringify({
     ...backup,

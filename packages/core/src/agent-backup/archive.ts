@@ -567,7 +567,8 @@ function openClawRoots(
   }
   if (parsed?.schemaVersion !== 1) return null;
   if (!Array.isArray(parsed.assets)) {
-    if (parsed.archiveRoot !== undefined) throw unreadable();
+    if (parsed.archiveRoot !== undefined || parsed.paths?.workspaceDirs !== undefined)
+      throw unreadable();
     return null;
   }
   try {
