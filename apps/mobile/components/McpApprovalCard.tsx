@@ -55,7 +55,7 @@ export function McpApprovalCard({
     try {
       if (action === "approve") {
         if (block.serverRevision === undefined) {
-          router.push("/(settings)/mcp");
+          router.push({ pathname: "/(settings)/mcp", params: { serverId: block.serverId } });
           return;
         }
         await rpc("mcp/assignments/approve", {
@@ -113,11 +113,13 @@ export function McpApprovalCard({
         </Text>
       ) : !readOnly ? (
         <>
-          <Text style={[styles.description, { color: tokens.foreground }]}>
-            {block.needsOAuth
-              ? t("Finish MCP authorization in the web app.")
-              : t("Share this server's tools with all bots in this space.")}
-          </Text>
+          {block.serverRevision !== undefined ? (
+            <Text style={[styles.description, { color: tokens.foreground }]}>
+              {block.needsOAuth
+                ? t("Finish MCP authorization in the web app.")
+                : t("Share this server's tools with all bots in this space.")}
+            </Text>
+          ) : null}
           <View style={styles.actions}>
             {!block.needsOAuth ? (
               <NativeActionButton

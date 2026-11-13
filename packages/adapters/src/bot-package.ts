@@ -1,5 +1,6 @@
 import type {
   AgentBackupDocument,
+  AgentBackupMcp,
   BotPackageDocument,
   BotPackageLeftOut,
   BotPackagePreviewInput,
@@ -8,6 +9,7 @@ import {
   AGENT_BACKUP_FORMAT,
   AGENT_BACKUP_MAX_FILES,
   AgentBackupDocumentSchema,
+  agentBackupMcpOmissionReasons,
   agentBackupOmissionReasons,
   agentBackupRuntimeOmission,
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -43,6 +45,7 @@ import {
   isBackupSkill,
   isBackupTextFile,
   isOpenClawDefault,
+  isPortableBackupMcp,
   isStockBackupInstruction,
   openClawRuntimeFiles,
   parseOpenClawIdentity,
@@ -84,6 +87,7 @@ export type ParsedBotPackage = {
   leftOut: BotPackageLeftOut[];
   availableMemoryCount: number;
   backupModel?: AgentBackupDocument["model"];
+  backupMcp?: AgentBackupMcp[];
   modelOnly?: boolean;
 };
 const record = (value: unknown): value is RecordValue =>
@@ -632,6 +636,16 @@ function backupPackage(
     if (routine) routines.push(routine);
     else addNote("routine", path, agentBackupOmissionReasons.routineSchedule);
   }
+  const backupMcp: AgentBackupMcp[] = [];
+  for (const entry of backup.mcp ?? []) {
+    if ("reason" in entry) {
+      addNote("connection", entry.name, agentBackupMcpOmissionReasons[entry.reason]);
+    } else if (isPortableBackupMcp(entry)) {
+      backupMcp.push(entry);
+    } else {
+      addNote("connection", entry.name, agentBackupMcpOmissionReasons.endpoint);
+    }
+  }
   const model = backup.model;
   const backupModel =
     model &&
@@ -645,6 +659,7 @@ function backupPackage(
     !instructions.length &&
     !skills.length &&
     !routines.length &&
+    !backupMcp.length &&
     !(options.includeMemory && memory.length) &&
     !identity?.name &&
     !identity?.description;
@@ -662,6 +677,7 @@ function backupPackage(
     },
     skills,
     routines,
+    connections: backupMcp.map(({ name, endpoint }) => ({ name, note: endpoint })),
     memory: options.includeMemory ? memory : [],
   });
   leftOut.push(...safe.leftOut);
@@ -671,6 +687,7 @@ function backupPackage(
     leftOut: leftOut.entries,
     availableMemoryCount,
     backupModel,
+    ...(backupMcp.length ? { backupMcp } : {}),
     modelOnly,
   };
 }

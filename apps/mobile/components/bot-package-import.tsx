@@ -1,4 +1,5 @@
 import {
+  agentBackupMcpOmissionReasons,
   agentBackupOmissionReasons,
   agentBackupRuntimeOmission,
   BOT_NAME_MAX_LENGTH,
@@ -92,7 +93,7 @@ export function NativeBotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t("Imported routines start paused.")
-    : preview?.model || preview?.canImport === false
+    : preview?.model || preview?.document.connections.length || preview?.canImport === false
       ? null
       : t("This import includes supported text only.");
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -106,6 +107,7 @@ export function NativeBotPackageImport({
         excluded,
         includedRoutines,
         state?.includeBackupModel,
+        new Set(state?.includedBackupConnections),
       )
     : null;
   const busy = phase === "importing" || phase === "checking";
@@ -250,7 +252,9 @@ export function NativeBotPackageImport({
                           ? "Skills"
                           : kind === "routines"
                             ? "Routines"
-                            : "Memory",
+                            : kind === "connections"
+                              ? "Connections"
+                              : "Memory",
                     )}
                   </Text>
                   {items.map(({ path, label, selected, atLimit }) => (
@@ -267,6 +271,11 @@ export function NativeBotPackageImport({
                     </View>
                   ))}
                 </View>
+              ))}
+              {fileGroups.unavailableConnections.map(({ path, name, reason }) => (
+                <Text key={path} selectable style={styles.secondary}>
+                  {name} · {t(agentBackupMcpOmissionReasons[reason])}
+                </Text>
               ))}
               {fileGroups.unavailable.length ? (
                 <View style={styles.section}>
@@ -319,6 +328,11 @@ export function NativeBotPackageImport({
             </Text>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
+          {backup && preview.document.connections.length ? (
+            <Text style={styles.secondary}>
+              {t("Review tool access in the imported bot before using these connections.")}
+            </Text>
+          ) : null}
           {backup ? (
             backupNotice ? (
               <Text style={styles.secondary}>{backupNotice}</Text>
@@ -390,16 +404,23 @@ export function NativeBotPackageImport({
                 <View style={styles.section}>
                   {receipt.connections.map((connection) => (
                     <Text key={connection.id} selectable style={styles.text}>
-                      {connection.name} · {connection.note}
+                      {connection.name}
+                      {connection.setup === "mcp"
+                        ? t(" · Review tool access in the imported bot")
+                        : connection.note
+                          ? ` · ${connection.note}`
+                          : ""}
                     </Text>
                   ))}
-                  <NativeActionButton
-                    label={t("Set up connections")}
-                    onPress={() => {
-                      if (client.isCurrent()) onConnections();
-                    }}
-                    prominence="secondary"
-                  />
+                  {receipt.connections.some(({ setup }) => setup !== "mcp") ? (
+                    <NativeActionButton
+                      label={t("Set up connections")}
+                      onPress={() => {
+                        if (client.isCurrent()) onConnections();
+                      }}
+                      prominence="secondary"
+                    />
+                  ) : null}
                 </View>
               ) : null}
               <NativeActionButton

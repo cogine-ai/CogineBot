@@ -17,7 +17,12 @@ const state = vi.hoisted(() => ({
   persisted: vi.fn(),
   focused: true,
   alert: vi.fn(),
-  params: {} as { app?: string | string[]; botId?: string | string[]; accountOnly?: string },
+  params: {} as {
+    app?: string | string[];
+    botId?: string | string[];
+    accountOnly?: string;
+    serverId?: string;
+  },
   lastBot: "",
   importEpoch: 0,
   scopeChanged: undefined as (() => void) | undefined,
@@ -829,6 +834,38 @@ it("retries MCP server identity after an initial failure instead of leaving Relo
   expect(container.textContent).toContain("Fixture");
   expect(container.textContent).not.toContain("Unavailable");
 });
+
+it.each([false, true])(
+  "opens the requested MCP server without granting tools after a first-load failure: %s",
+  async (firstLoadFails) => {
+    state.params = { serverId: "server-target" };
+    if (firstLoadFails) state.scope.mockRejectedValueOnce(new Error("Unavailable"));
+    state.rpc.mockResolvedValue([
+      { id: "server-other", name: "Other", revision: 1, allowAllTools: true, allowedTools: [] },
+      {
+        id: "server-target",
+        name: "Imported",
+        revision: 2,
+        allowAllTools: false,
+        allowedTools: [],
+      },
+    ]);
+    await render(<McpSettings />);
+    if (firstLoadFails) {
+      expect(container.textContent).toContain("Unavailable");
+      await press("Reload settings");
+    }
+    expect(
+      container.querySelector<HTMLSelectElement>('select[aria-label="MCP server"]')?.value,
+    ).toBe("server-target");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        'input[aria-label="Share all tools with this space"]',
+      )?.checked,
+    ).toBe(false);
+    expect(state.rpc.mock.calls.map(([procedure]) => procedure)).toEqual(["mcp/servers/list"]);
+  },
+);
 
 it("keeps the selected MCP server visible while saving the exact reviewed revision", async () => {
   const server = {

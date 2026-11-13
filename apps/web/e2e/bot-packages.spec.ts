@@ -519,3 +519,94 @@ test("package import survives a committed reply loss and can be recovered explic
   expect(importCalls).toBe(1);
   await captureScreenshot(page, testInfo, "d021-package-recovered");
 });
+
+test("reviews an imported remote connection before sharing any tools", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 1180 });
+  await signup(page, `package-mcp-${Date.now()}@example.test`, "password12", "Connection reviewer");
+  await completeOnboarding(page);
+  await openNewBot(page);
+  await page
+    .getByTestId("create-bot-form")
+    .getByRole("button", { name: "Import bot", exact: true })
+    .click();
+  const panel = page.getByTestId("bot-package-import");
+  const root = await mkdtemp(join(tmpdir(), "backup-connection-browser-"));
+  try {
+    await mkdir(join(root, ".hermes"));
+    const endpoint = "https://docs.example.test/mcp";
+    await writeFile(
+      join(root, ".hermes", "config.yaml"),
+      [
+        "mcp_servers:",
+        "  Docs:",
+        `    url: ${endpoint}`,
+        "  Restricted:",
+        "    url: https://restricted.example.test/mcp",
+        "    tools: { exclude: [fixture_tool] }",
+        "  Manual:",
+        "    url: https://manual.example.test/mcp",
+        "    headers: { Authorization: fixture-credential }",
+      ].join("\n"),
+    );
+    const previews: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/rpc/botPackages/preview"))
+        previews.push(request.postData() ?? "");
+    });
+    await panel.locator("input[webkitdirectory]").setInputFiles(join(root, ".hermes"));
+    await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+    await panel.getByLabel("Imported bot name").fill("Connection review bot");
+    await panel.getByText("Choose backup content", { exact: true }).click();
+    const choice = panel.getByRole("checkbox", { name: `Docs · ${endpoint}`, exact: true });
+    await expect(choice).not.toBeChecked();
+    await expect(panel.getByRole("button", { name: "Preview", exact: true })).toBeDisabled();
+    await expect(
+      panel.getByText("Restricted · This connection's tool restrictions cannot be carried over."),
+    ).toBeVisible();
+    await choice.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
+    const reviewed = panel.getByTestId("bot-package-document");
+    await reviewed.getByText("Connections · 1", { exact: true }).click();
+    await expect(reviewed.getByText(endpoint, { exact: true })).toBeVisible();
+    await expect(
+      panel.getByText("Review tool access in the imported bot before using these connections."),
+    ).toBeVisible();
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).not.toMatch(
+      /fixture-credential|fixture_tool|restricted\.example|manual\.example/,
+    );
+    await captureScreenshot(page, testInfo, "d021-package-backup-mcp-review");
+    await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
+    await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();
+    await expect(
+      panel.getByRole("button", { name: "Set up connections", exact: true }),
+    ).toHaveCount(0);
+    await panel.getByRole("button", { name: "Open bot", exact: true }).click();
+    const card = page.getByTestId("mcp-approval-card");
+    await expect(card).toContainText(endpoint);
+    await expect(card.getByRole("button", { name: "Review tool access" })).toBeVisible();
+    const dismiss = card.getByRole("button", { name: "Not now" });
+    await expect(dismiss).toBeVisible();
+    const bounds = await card.boundingBox();
+    const dismissBounds = await dismiss.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(dismissBounds).not.toBeNull();
+    expect(dismissBounds!.x + dismissBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+    await captureScreenshot(page, testInfo, "d021-package-backup-mcp-pending");
+    await card.getByRole("button", { name: "Review tool access" }).click();
+    const settings = page.getByRole("dialog", { name: "MCP servers" });
+    await expect(settings.getByText(endpoint, { exact: true })).toBeVisible();
+    await expect(settings.getByText("No tools shared in this space")).toBeVisible();
+    await settings.getByRole("button", { name: "Tool access", exact: true }).click();
+    await expect(
+      settings.getByRole("switch", { name: "Share all tools with this space" }),
+    ).not.toBeChecked();
+    await expect(settings.getByRole("textbox", { name: "Tool names, one per line" })).toHaveValue(
+      "",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

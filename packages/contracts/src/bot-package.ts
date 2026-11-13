@@ -173,7 +173,13 @@ export const BotPackageReceiptSchema = z.object({
   botName: z.string(),
   createdAt: z.string(),
   skills: z.array(BotPackageSkillReceiptSchema),
-  connections: z.array(BotPackageConnectionSchema.extend({ id: Id, key: z.string() })),
+  connections: z.array(
+    BotPackageConnectionSchema.extend({
+      id: Id,
+      key: z.string(),
+      setup: z.literal("mcp").optional(),
+    }),
+  ),
   leftOut: z.array(BotPackageLeftOutSchema),
 });
 export type BotPackageReceipt = z.infer<typeof BotPackageReceiptSchema>;

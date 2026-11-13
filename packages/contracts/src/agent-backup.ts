@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { AgentBackupMcpEntriesSchema } from "./agent-backup-mcp.js";
 import { AgentBackupModelSchema } from "./agent-backup-model.js";
 import {
   AGENT_BACKUP_MAX_FILES,
@@ -6,6 +7,7 @@ import {
   isAgentBackupPath,
 } from "./agent-backup-omissions.js";
 
+export * from "./agent-backup-mcp.js";
 export * from "./agent-backup-model.js";
 export * from "./agent-backup-omissions.js";
 
@@ -39,6 +41,7 @@ export const AgentBackupDocumentSchema = z
       .max(AGENT_BACKUP_MAX_FILES)
       .default([]),
     routineOmissions: AgentBackupOmissionsSchema.optional(),
+    mcp: AgentBackupMcpEntriesSchema.optional(),
     model: z.union([AgentBackupModelSchema, z.literal("unavailable")]).optional(),
   })
   .superRefine(({ files, excludedMemoryCount }, ctx) => {

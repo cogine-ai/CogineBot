@@ -1,8 +1,6 @@
 import type { AgentBackupModel, AgentBackupSource } from "@rakazo/contracts";
 import { AgentBackupModelSchema, canonicalPiProviderId } from "@rakazo/contracts";
 import { redactSecretText } from "@rakazo/logging/redaction";
-import JSON5 from "json5";
-import { parseDocument } from "yaml";
 
 const providerAliases = new Map([
   ["gemini", "google"],
@@ -145,15 +143,12 @@ export function backupModelLabel(model: AgentBackupModel | "unavailable" | undef
 /** Config data stays on the device. A provider endpoint override requires a separate setup. */
 export function projectBackupModel(
   source: AgentBackupSource,
-  content: string | undefined,
+  config: Record<string, unknown> | null | undefined,
   selectedAgent: string | null,
 ): AgentBackupModel | "unavailable" | undefined {
-  if (content === undefined) return undefined;
+  if (config === undefined) return undefined;
+  if (!config) return "unavailable";
   try {
-    const parsed = parseConfig(source, content);
-    if (!validConfig(parsed)) return "unavailable";
-    const config = record(parsed);
-    if (Object.hasOwn(config, "$include")) return "unavailable";
     let provider: string;
     let modelId: string;
     let routedProvider: string | undefined;
@@ -265,30 +260,6 @@ export function projectBackupModel(
   } catch {
     return "unavailable";
   }
-}
-
-function parseConfig(source: AgentBackupSource, content: string): unknown {
-  const input = content.replace(/^\uFEFF/, "");
-  if (source === "openclaw") return JSON5.parse(input);
-  const document = parseDocument(input, { schema: "core", logLevel: "silent" });
-  if (document.errors.length || document.warnings.length)
-    throw new Error("Invalid backup settings");
-  return document.toJS({ maxAliasCount: 20 });
-}
-
-function validConfig(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  let remaining = 20_000;
-  function visit(node: unknown, depth: number): boolean {
-    if (--remaining < 0 || depth > 32) return false;
-    if (!node || typeof node !== "object") return true;
-    return Object.entries(node).every(
-      ([key, child]) =>
-        !["__proto__", "constructor", "prototype", "$include"].includes(key) &&
-        visit(child, depth + 1),
-    );
-  }
-  return visit(value, 0);
 }
 
 function normalizeHermesModelId(provider: string, modelId: string): string {

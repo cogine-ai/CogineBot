@@ -59,7 +59,160 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
   for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
 });
 
-it("projects only the Hermes model from a folder or archive and sends it after selection", async () => {
+it("projects only selected remote connections and never carries source credentials or tool filters", async () => {
+  const config = [
+    "mcp_servers:",
+    "  Docs:",
+    "    url: https://docs.example.test/mcp",
+    "  Monitor:",
+    "    url: https://monitor.example.test/events",
+    "    transport: sse",
+    "  Reports:",
+    "    url: https://reports.example.test/mcp",
+    "    tools: { include: [read_report] }",
+    "  Empty:",
+    "    url: https://empty.example.test/mcp",
+    "    tools: { include: [] }",
+    "  Archive:",
+    "    url: https://archive.example.test/mcp",
+    "    tools: { exclude: ['change_*'] }",
+    "  Private:",
+    "    url: https://private.example.test/mcp",
+    "    headers: { Authorization: fixture-header-value }",
+    "  Login:",
+    "    url: https://login.example.test/mcp",
+    "    auth: oauth",
+    "  Local:",
+    "    command: fixture-program",
+    "    env: { FIXTURE_KEY: fixture-environment-value }",
+    "  Disabled:",
+    "    url: https://disabled.example.test/mcp",
+    "    enabled: false",
+    "  Address:",
+    "    url: https://address.example.test/mcp?param=fixture-url-value",
+  ].join("\n");
+  const archive = zipSync({ ".hermes/config.yaml": strToU8(config) });
+  const raw = encodeAgentBackup(archive);
+  const folder = await encodeAgentBackupFolder(
+    [folderEntry(".hermes/config.yaml", config)],
+    () => true,
+  );
+  expect(JSON.parse(folder)).toEqual(JSON.parse(raw));
+  const groups = agentBackupFileGroups(raw)!;
+  expect(groups.connections).toEqual([
+    {
+      path: "mcp/server-1",
+      name: "Docs",
+      transport: "streamable_http",
+      endpoint: "https://docs.example.test/mcp",
+    },
+    {
+      path: "mcp/server-2",
+      name: "Monitor",
+      transport: "sse",
+      endpoint: "https://monitor.example.test/events",
+    },
+  ]);
+  expect(groups.unavailableConnections.map(({ name, reason }) => [name, reason])).toEqual([
+    ["Reports", "toolPolicy"],
+    ["Empty", "toolPolicy"],
+    ["Archive", "toolPolicy"],
+    ["Private", "setup"],
+    ["Login", "setup"],
+    ["Local", "setup"],
+    ["Disabled", "disabled"],
+    ["Address", "endpoint"],
+  ]);
+  expect(raw).not.toMatch(/fixture-(header|environment|url|program)|read_report|change_\*/);
+  expect(agentBackupSelectableGroups(groups, false, new Set(), new Set()).hasSelection).toBe(false);
+  const chosen = agentBackupPreview(raw, false, [], [], false, ["mcp/server-1"]).source;
+  expect(chosen).toContain("https://docs.example.test/mcp");
+  expect(chosen).not.toContain("monitor.example.test");
+  expect(() => agentBackupPreview(raw, false)).toThrow();
+});
+
+it("omits connections restricted by global and platform toolset settings", () => {
+  const raw = [
+    "agent: { disabled_toolsets: [' disabled '] }",
+    "platform_toolsets: { acp: [file, allowed, disabled] }",
+    "mcp_servers:",
+    "  allowed: { url: 'https://allowed.example.test/mcp' }",
+    "  disabled: { url: 'https://disabled.example.test/mcp' }",
+    "  outside: { url: 'https://outside.example.test/mcp' }",
+  ];
+  const backup = (lines: string[]) =>
+    agentBackupFileGroups(encodeAgentBackup(zipSync({ "config.yaml": strToU8(lines.join("\n")) })));
+  expect(backup(raw)).toMatchObject({
+    connections: [{ name: "allowed" }],
+    unavailableConnections: [
+      { name: "disabled", reason: "toolPolicy" },
+      { name: "outside", reason: "toolPolicy" },
+    ],
+  });
+  for (const policy of ["platform_toolsets: { acp: [no_mcp] }", "platform_toolsets: { cli: [] }"]) {
+    expect(backup([...raw.slice(0, 1), policy, ...raw.slice(2)])?.connections).toEqual([]);
+  }
+});
+
+it("reports unreadable connection settings without exposing config or resolving placeholders", async () => {
+  const invalid = ".openclaw/openclaw.json";
+  const raw = await encodeAgentBackupFolder(
+    [
+      folderEntry(invalid, '{ mcp: { $include: "/fixture/private-config.json" } }'),
+      folderEntry(".openclaw/workspace/SOUL.md", "Review sources."),
+    ],
+    () => true,
+  );
+  expect(raw).not.toContain("private-config");
+  expect(agentBackupFileGroups(raw)?.unavailableConnections).toEqual([
+    { path: "mcp/server-1", name: "MCP", reason: "setup" },
+  ]);
+  const projected = encodeAgentBackup(
+    zipSync({
+      "config.yaml": strToU8(
+        [
+          "mcp_servers:",
+          "  Interpolated: { url: 'https://docs.example.test/" + "$" + "{SECRET_ROUTE}' }",
+          "  CustomRoute: { url: 'https://docs.example.test/custom/opaque/mcp' }",
+          "  Encoded: { url: 'https://docs.example.test/%24%7BSECRET_ROUTE%7D' }",
+        ].join("\n"),
+      ),
+    }),
+  );
+  expect(projected).not.toContain("SECRET_ROUTE");
+  expect(agentBackupFileGroups(projected)?.unavailableConnections).toHaveLength(3);
+});
+
+it("keeps the source remote transport default and rejects a policy it cannot preserve", async () => {
+  const config = '{ mcp: { servers: { Docs: { url: "https://docs.example.test/sse" } } } }';
+  const backup = (content: string) =>
+    encodeAgentBackup(zipSync({ ".openclaw/openclaw.json": strToU8(content) }));
+  expect(agentBackupFileGroups(backup(config))?.connections).toMatchObject([
+    { name: "Docs", transport: "sse" },
+  ]);
+  const fullProfile = backup(config.replace("{ mcp:", '{ tools: { profile: "full" }, mcp:'));
+  expect(agentBackupFileGroups(fullProfile)?.connections).toMatchObject([
+    { name: "Docs", transport: "sse" },
+  ]);
+  const restricted = backup(
+    config.replace("{ mcp:", '{ tools: { profile: "full", deny: ["docs__*"] }, mcp:'),
+  );
+  expect(agentBackupFileGroups(restricted)).toMatchObject({
+    connections: [],
+    unavailableConnections: [{ name: "Docs", reason: "toolPolicy" }],
+  });
+  const groupRestricted = backup(
+    config.replace(
+      "{ mcp:",
+      '{ channels: { chat: { groups: { "*": { tools: { deny: ["docs__*"] } } } } }, mcp:',
+    ),
+  );
+  expect(agentBackupFileGroups(groupRestricted)?.unavailableConnections).toMatchObject([
+    { name: "Docs", reason: "toolPolicy" },
+  ]);
+});
+
+it("projects the Hermes model from a folder or archive and sends only the selected settings", async () => {
   const config = [
     "model:",
     "  provider: gemini",
@@ -67,7 +220,7 @@ it("projects only the Hermes model from a folder or archive and sends it after s
     "  base_url: ''",
     "  api_key: fixture-value",
     "mcp_servers:",
-    "  fixture: { url: 'https://example.test/synthetic' }",
+    "  fixture: { url: 'https://example.test/mcp' }",
   ].join("\n");
   const source = await encodeAgentBackupFolder(
     [
@@ -86,11 +239,13 @@ it("projects only the Hermes model from a folder or archive and sends it after s
   for (const backup of [source, archive]) {
     expect(JSON.parse(backup).model).toEqual(model);
     expect(backup).not.toContain("fixture-value");
-    expect(backup).not.toContain("example.test");
-    expect(JSON.parse(agentBackupPreview(backup, false).source)).not.toHaveProperty("model");
+    const unselected = agentBackupPreview(backup, false).source;
+    expect(unselected).not.toContain("example.test");
+    expect(JSON.parse(unselected)).not.toHaveProperty("model");
     expect(JSON.parse(agentBackupPreview(backup, false, [], [], true).source).model).toEqual(model);
     const modelOnly = agentBackupPreview(backup, false, ["HERMES.md"], [], true);
     expect(JSON.parse(modelOnly.source)).toMatchObject({ files: [], model });
+    expect(JSON.parse(modelOnly.source)).not.toHaveProperty("mcp");
   }
 });
 
@@ -662,6 +817,8 @@ it("recognizes wrapped backup JSON and lists missing Skill dependencies separate
     skills: [],
     memory: [],
     routines: [],
+    connections: [],
+    unavailableConnections: [],
     unavailable: [{ path: "skills/review/SKILL.md", reason: "missingSkillFiles" }],
   });
 });

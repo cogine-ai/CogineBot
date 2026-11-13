@@ -43,9 +43,18 @@ function oauthActionLabel(server: McpServer, pending: boolean): string {
   return server.oauthStatus === "none" ? t`Connect OAuth` : t`Reconnect OAuth`;
 }
 
-export function McpServersOverlay({ onClose }: { onClose: () => void }) {
+export function McpServersOverlay({
+  onClose,
+  reviewServerId,
+}: {
+  onClose: () => void;
+  reviewServerId?: string;
+}) {
   const { t } = useLingui();
   const [servers, setServers] = useState<McpServer[]>([]);
+  const displayedServers = reviewServerId
+    ? servers.filter(({ id }) => id === reviewServerId)
+    : servers;
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [transport, setTransport] = useState<McpTransport>("streamable_http");
   const [name, setName] = useState("");
@@ -223,8 +232,15 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         ) : null}
-        <div className="rk-scroll grid min-h-0 auto-rows-max grid-cols-1 gap-5 overflow-y-auto p-6 lg:grid-cols-2">
-          <Card className="self-start">
+        <div
+          className={[
+            "rk-scroll grid min-h-0 auto-rows-max grid-cols-1 gap-5 overflow-y-auto p-6",
+            !reviewServerId && "lg:grid-cols-2",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          <Card hidden={Boolean(reviewServerId)} className="self-start">
             <CardHeader>
               <CardTitle>
                 <Trans>Add server</Trans>
@@ -361,12 +377,12 @@ export function McpServersOverlay({ onClose }: { onClose: () => void }) {
               <Trans>Configured servers</Trans>
             </h2>
             <div className="mt-3 space-y-2">
-              {servers.length === 0 ? (
+              {displayedServers.length === 0 ? (
                 <p className="rounded-xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                   <Trans>No MCP servers yet.</Trans>
                 </p>
               ) : (
-                servers.map((server) => {
+                displayedServers.map((server) => {
                   const statusText = oauthStatusText(server);
                   return (
                     <Card key={server.id} size="sm">

@@ -387,7 +387,7 @@ jobs:
 
       - name: Require Bot package acceptance views
         run: |
-          for view in d021-package-review d021-package-review-320 d021-package-skill-conflict d021-package-imported d021-package-export d021-package-unknown d021-package-recovered agent-backup-import; do
+          for view in d021-package-review d021-package-review-320 d021-package-skill-conflict d021-package-imported d021-package-export d021-package-unknown d021-package-recovered agent-backup-import d021-package-backup-mcp-review d021-package-backup-mcp-pending; do
             match="$(find apps/web/test-results -type f -path '*/bot-packages-*/*' -name "${view}.png" -print -quit)"
             if [ -z "$match" ]; then
               echo "Missing Bot package screenshot: $view" >&2

@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { AgentBackupOmissionReason } from "@rakazo/contracts";
+import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
@@ -43,6 +43,13 @@ export function BotPackageImport({
     identity: t`This identity file has no supported fields.`,
     routineSchedule: t`This schedule needs manual setup.`,
     routineOwner: t`The schedule owner could not be confirmed.`,
+  };
+  const mcpOmissionLabels: Record<AgentBackupMcpOmission["reason"], string> = {
+    setup: t`This connection needs manual setup.`,
+    toolPolicy: t`This connection's tool restrictions cannot be carried over.`,
+    disabled: t`This connection is disabled in the backup.`,
+    endpoint: t`This connection needs a public HTTPS MCP address with a supported path.`,
+    limit: t`Additional connections exceed the import limit.`,
   };
   const ids = useId();
   const [state, setState] = useState<BotPackageImportState | null>(null);
@@ -101,7 +108,7 @@ export function BotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t`Imported routines start paused.`
-    : preview?.model || preview?.canImport === false
+    : preview?.model || preview?.document.connections.length || preview?.canImport === false
       ? null
       : t`This import includes supported text only.`;
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -115,6 +122,7 @@ export function BotPackageImport({
         excluded,
         includedRoutines,
         state?.includeBackupModel,
+        new Set(state?.includedBackupConnections),
       )
     : null;
   function edit(input: {
@@ -286,7 +294,9 @@ export function BotPackageImport({
                         ? t`Skills`
                         : kind === "routines"
                           ? t`Routines`
-                          : t`Memory`}
+                          : kind === "connections"
+                            ? t`Connections`
+                            : t`Memory`}
                   </legend>
                   {items.map(({ path, label, selected, atLimit }, index) => (
                     <label
@@ -309,6 +319,15 @@ export function BotPackageImport({
                   ))}
                 </fieldset>
               ))}
+              {fileGroups.unavailableConnections.length ? (
+                <ul className="mt-3 space-y-1 text-muted-foreground">
+                  {fileGroups.unavailableConnections.map(({ path, name, reason }) => (
+                    <li key={path} className="break-words" dir="auto">
+                      {name} · {mcpOmissionLabels[reason]}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {fileGroups.unavailable.length ? (
                 <div className="mt-3 space-y-1">
                   <p className="font-medium">
@@ -362,6 +381,11 @@ export function BotPackageImport({
             </p>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
+          {backup && preview.document.connections.length ? (
+            <p className="text-sm text-muted-foreground">
+              <Trans>Review tool access in the imported bot before using these connections.</Trans>
+            </p>
+          ) : null}
           {backup ? (
             backupNotice ? (
               <p className="text-sm text-muted-foreground">{backupNotice}</p>
@@ -426,17 +450,24 @@ export function BotPackageImport({
                 <div className="space-y-2">
                   {receipt.connections.map((connection) => (
                     <p key={connection.id} className="text-sm" dir="auto">
-                      {connection.name} · {connection.note}
+                      {connection.name}
+                      {connection.setup === "mcp"
+                        ? t` · Review tool access in the imported bot`
+                        : connection.note
+                          ? ` · ${connection.note}`
+                          : ""}
                     </p>
                   ))}
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      if (current.current()) onConnections();
-                    }}
-                  >
-                    <Trans>Set up connections</Trans>
-                  </Button>
+                  {receipt.connections.some(({ setup }) => setup !== "mcp") ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (current.current()) onConnections();
+                      }}
+                    >
+                      <Trans>Set up connections</Trans>
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
               <Button

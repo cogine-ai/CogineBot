@@ -1318,6 +1318,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Retry search": "Повторить поиск",
   "Save credentials": "Сохранить учётные данные",
   "Search plugins": "Поиск плагинов",
+  " · Review tool access in the imported bot":
+    " · Проверьте доступ к инструментам в импортированном боте",
   "Set up connections": "Настроить подключения",
   "Sign-in required": "Требуется вход",
   "Some registries are unavailable.": "Некоторые реестры недоступны.",
@@ -1338,6 +1340,16 @@ export const RU_MESSAGES: Record<string, string> = {
   "Cancel import": "Отменить импорт",
   "Check imported skills": "Проверить импортированные навыки",
   "Choose package file": "Выбрать файл пакета",
+  "This connection needs manual setup.": "Это подключение нужно настроить вручную.",
+  "This connection's tool restrictions cannot be carried over.":
+    "Ограничения инструментов этого подключения перенести нельзя.",
+  "This connection is disabled in the backup.": "Это подключение отключено в резервной копии.",
+  "This connection needs a public HTTPS MCP address with a supported path.":
+    "Для этого подключения нужен общедоступный HTTPS-адрес MCP с поддерживаемым путём.",
+  "Additional connections exceed the import limit.":
+    "Остальные подключения превышают лимит импорта.",
+  "Review tool access in the imported bot before using these connections.":
+    "Перед использованием этих подключений проверьте доступ к инструментам в импортированном боте.",
   Connections: "Подключения",
   "Could not confirm import. Check status before trying again.":
     "Не удалось подтвердить импорт. Перед повторной попыткой проверьте статус.",
