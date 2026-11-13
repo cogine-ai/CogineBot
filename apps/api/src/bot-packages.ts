@@ -245,9 +245,28 @@ export function createBotPackagesService(deps: Deps) {
         const model = binding
           ? await validateBackupModelBinding(tx, deps.secrets, context.actor, binding, true)
           : null;
+        const modelOmission =
+          binding && !model
+            ? note(
+                `${binding.provider}/${binding.modelId}`.slice(0, 200),
+                document.modelOnly
+                  ? "The reviewed model connection is no longer available. Select an available model in this Space and preview the backup again."
+                  : "The reviewed model connection is no longer available. Choose a model in Bot settings.",
+                "model",
+              )
+            : null;
         if (document.modelOnly && !model)
-          throw new ORPCError("CONFLICT", {
-            message: "The reviewed model connection is no longer available.",
+          return tx.botPackageImport.update({
+            where: { id: marker.id },
+            data: {
+              status: "cancelled",
+              plan: Sql.DbNull,
+              ...(modelOmission
+                ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] }
+                : {}),
+              revision: { increment: 1 },
+            },
+            include: includeChildren,
           });
         const bot = await createBotRecordsInTransaction(
           tx,
@@ -311,18 +330,7 @@ export function createBotPackagesService(deps: Deps) {
             status: "completed",
             botId: bot.id,
             plan: Sql.DbNull,
-            ...(binding && !model
-              ? {
-                  leftOut: [
-                    ...safeLeftOut(marker.leftOut),
-                    note(
-                      `${binding.provider}/${binding.modelId}`.slice(0, 200),
-                      "The reviewed model connection is no longer available. Choose a model in Bot settings.",
-                      "model",
-                    ),
-                  ],
-                }
-              : {}),
+            ...(modelOmission ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] } : {}),
             revision: { increment: 1 },
           },
           include: includeChildren,

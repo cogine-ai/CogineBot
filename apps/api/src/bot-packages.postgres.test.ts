@@ -482,16 +482,28 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     });
     const changed = await importPackage(owner, stale);
     const staleNonce = randomUUID();
+    const cancelled = await importPackage(owner, staleModelOnly, staleNonce);
+    expect(cancelled).toMatchObject({ status: "cancelled", botId: null });
+    expect(cancelled.leftOut).toContainEqual(
+      expect.objectContaining({
+        kind: "model",
+        reason: expect.stringContaining("preview the backup again"),
+      }),
+    );
+    expect(await call<BotPackageReceipt>(owner, "status", { clientNonce: staleNonce })).toEqual(
+      cancelled,
+    );
+    expect(await call<BotPackageReceipt>(owner, "resume", { clientNonce: staleNonce })).toEqual(
+      cancelled,
+    );
+    expect(await importPackage(owner, staleModelOnly, staleNonce)).toEqual(cancelled);
+    const newPreview = await preview(owner, { ...value, files: [] });
+    expect(newPreview.model).toEqual(model);
+    const recovered = await importPackage(owner, newPreview);
+    expect(recovered.status).toBe("completed");
     expect(
-      (
-        await request(owner, "import", {
-          previewToken: staleModelOnly.previewToken,
-          clientNonce: staleNonce,
-        })
-      ).status,
-    ).toBe(409);
-    const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce: staleNonce });
-    expect(failed).toMatchObject({ status: "failed", botId: null });
+      await database.prisma.bot.findUniqueOrThrow({ where: { id: recovered.botId! } }),
+    ).toMatchObject({ modelCredentialId: credential.id });
     expect(changed.leftOut).toContainEqual(
       expect.objectContaining({
         kind: "model",

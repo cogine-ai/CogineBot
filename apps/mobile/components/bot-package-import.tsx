@@ -92,7 +92,7 @@ export function NativeBotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t("Imported routines start paused.")
-    : preview?.model
+    : preview?.model || preview?.canImport === false
       ? null
       : t("This import includes supported text only.");
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);

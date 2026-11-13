@@ -437,6 +437,7 @@ test("agent backup folder previews only selected content and preserves the draft
     await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
       0,
     );
+    await expect(panel.getByText("This import includes supported text only.")).toHaveCount(0);
     expect(previews).toHaveLength(2);
     expect(previews[1]).toContain("gpt-4.1");
     expect(previews[1]).not.toContain("local-config-fixture");
