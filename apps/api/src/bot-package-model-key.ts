@@ -1,44 +1,9 @@
 import { ORPCError } from "@orpc/server";
 import type { SecretStore } from "@rakazo/adapter-kit";
-import {
-  buildModelConnectPlaintext,
-  catalogProviderProbeBaseUrl,
-  listPiCatalog,
-  probeCatalogProviderModels,
-  validateModelAuthAvailability,
-} from "@rakazo/adapters";
+import { verifyBackupModelKey } from "@rakazo/adapters";
 import type { Actor, AgentBackupModel } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { lockSpaceModelSelection } from "@rakazo/db";
-
-const keyChecks = new Map([
-  ["anthropic", { url: "https://api.anthropic.com/v1/models", header: "x-api-key" }],
-  ["deepseek", { url: "https://api.deepseek.com/models", header: "Authorization" }],
-  [
-    "google",
-    {
-      url: "https://generativelanguage.googleapis.com/v1beta/models",
-      header: "x-goog-api-key",
-    },
-  ],
-  ["openrouter", { url: "https://openrouter.ai/api/v1/key", header: "Authorization" }],
-]);
-const catalogChecks = new Set(["openai", "groq"]);
-
-export function supportsBackupModelKey(model: AgentBackupModel) {
-  return (
-    (keyChecks.has(model.provider) ||
-      (catalogChecks.has(model.provider) &&
-        catalogProviderProbeBaseUrl(model.provider) !== null)) &&
-    listPiCatalog().some(
-      (entry) =>
-        entry.provider === model.provider &&
-        entry.id === model.modelId &&
-        !entry.placeholder &&
-        entry.auth !== "oauth",
-    )
-  );
-}
 
 export async function hasBackupModelAccount(
   prisma: Pick<PrismaClient, "userModelCredential">,
@@ -61,47 +26,9 @@ export async function prepareBackupModelKey(
   signal: AbortSignal | undefined,
   fetcher: typeof fetch = globalThis.fetch,
 ) {
-  if (!supportsBackupModelKey(model)) throw new ORPCError("BAD_REQUEST");
   let plaintext: string;
   try {
-    if (model.provider === "anthropic" && apiKey.startsWith("sk-ant-oat"))
-      throw new Error("The provider requires an API key");
-    plaintext = buildModelConnectPlaintext({ ...model, apiKey });
-    if (validateModelAuthAvailability(model.provider, model.modelId, plaintext))
-      throw new Error("Unavailable model");
-    const check = keyChecks.get(model.provider);
-    if (check) {
-      const modelLookup = model.provider === "anthropic" || model.provider === "google";
-      const response = await fetcher(
-        modelLookup ? `${check.url}/${encodeURIComponent(model.modelId)}` : check.url,
-        {
-          headers: {
-            [check.header]: check.header === "Authorization" ? `Bearer ${apiKey}` : apiKey,
-            ...(model.provider === "anthropic" ? { "anthropic-version": "2023-06-01" } : {}),
-          },
-          redirect: "error",
-          signal: AbortSignal.any([AbortSignal.timeout(5000), ...(signal ? [signal] : [])]),
-        },
-      );
-      if (!response.ok) {
-        void response.body?.cancel().catch(() => undefined);
-        throw new Error("Provider did not accept the key or the reviewed model");
-      }
-      if (model.provider === "deepseek") {
-        const listing = (await response.json()) as { data?: { id?: string }[] };
-        if (!listing.data?.some(({ id }) => id === model.modelId))
-          throw new Error("The key cannot use the reviewed model");
-      } else {
-        void response.body?.cancel().catch(() => undefined);
-      }
-    } else {
-      const models = await probeCatalogProviderModels(
-        { provider: model.provider, apiKey },
-        fetcher,
-        signal,
-      );
-      if (!models.includes(model.modelId)) throw new Error("The key cannot use the reviewed model");
-    }
+    plaintext = await verifyBackupModelKey(model, apiKey, signal, fetcher);
   } catch {
     signal?.throwIfAborted();
     throw new ORPCError("BAD_REQUEST", {

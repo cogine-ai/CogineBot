@@ -6,6 +6,7 @@ import {
   parseBotPackageSource,
   persistPreparedSecret,
   prepareBotPackageDocument,
+  supportsBackupModelKey,
 } from "@rakazo/adapters";
 import type {
   Actor,
@@ -48,7 +49,6 @@ import {
   createBackupModelKey,
   hasBackupModelAccount,
   prepareBackupModelKey,
-  supportsBackupModelKey,
 } from "./bot-package-model-key.js";
 import type { RouterDeps } from "./router.js";
 import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
