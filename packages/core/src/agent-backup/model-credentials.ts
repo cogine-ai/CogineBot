@@ -104,7 +104,13 @@ export function readBackupModelApiKey(
   if (matching.some((entry) => hasAlternateEndpoint(entry, endpoints))) return undefined;
   if (
     source === "openclaw" &&
-    matching.some((entry) => entry.auth !== undefined && entry.auth !== "api-key")
+    matching.some(
+      (entry) =>
+        (entry.auth !== undefined && entry.auth !== "api-key") ||
+        // A configured model can be selected through a provider-specific alias.
+        (Array.isArray(entry.models) &&
+          entry.models.some((row) => hasAlternateEndpoint(record(row), endpoints))),
+    )
   )
     return undefined;
   if (

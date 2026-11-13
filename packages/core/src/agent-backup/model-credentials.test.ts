@@ -125,6 +125,20 @@ describe("readBackupModelApiKey", () => {
     ).toBeUndefined();
   });
 
+  it("leaves a provider with an ambiguous model alias endpoint to manual setup", () => {
+    const config = JSON.stringify({
+      models: {
+        providers: {
+          anthropic: {
+            apiKey,
+            models: [{ id: "sonnet-4.6", baseUrl: "https://proxy.example.test/v1" }],
+          },
+        },
+      },
+    });
+    expect(readBackupModelApiKey("openclaw", "anthropic", { config })).toBeUndefined();
+  });
+
   it("does not execute references or turn unresolved values into a key", () => {
     for (const candidate of [{ source: "exec", id: "fixture-exec" }, `\${process.env.FIXTURE}`]) {
       const config = JSON.stringify({ models: { providers: { openai: { apiKey: candidate } } } });
