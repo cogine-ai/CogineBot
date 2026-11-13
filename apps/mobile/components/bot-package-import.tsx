@@ -7,7 +7,7 @@ import {
   BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { createBotPackageImport } from "@rakazo/core";
+import { BackupModelKeyUnavailable, createBotPackageImport } from "@rakazo/core";
 import {
   agentBackupFileGroups,
   agentBackupSelectableGroups,
@@ -81,7 +81,10 @@ export function NativeBotPackageImport({
               globalThis.crypto?.randomUUID?.() ??
               `package-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
             isCurrent: next.isCurrent,
-            changed: setState,
+            changed(next) {
+              if (next.phase === "completed") localModelKey.current = null;
+              setState(next);
+            },
           });
           manager.current = review;
         })
@@ -131,6 +134,7 @@ export function NativeBotPackageImport({
     phase === "unknown" ||
     receipt?.status === "importing" ||
     receipt?.status === "failed";
+  const reattachingKey = phase === "unknown" && Boolean(receipt?.modelKey ?? preview?.modelKey);
   function edit(input: {
     source?: string;
     name?: string;
@@ -159,10 +163,7 @@ export function NativeBotPackageImport({
       });
       if (valid() && source !== null) {
         setBackupContentOpen(false);
-        manager.current?.edit({
-          source,
-          includeMemory: false,
-        });
+        if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
     } catch {
       if (valid()) setFileError(true);
@@ -213,10 +214,14 @@ export function NativeBotPackageImport({
               />
             </>
           )}
-          <Text>{t("OpenClaw or Hermes backup")}</Text>
+          <Text>
+            {reattachingKey
+              ? t("Choose the backup again to resume importing the API key.")
+              : t("OpenClaw or Hermes backup")}
+          </Text>
           <NativeActionButton
             label={t("Choose package file")}
-            disabled={locked || reading}
+            disabled={reading || (locked && !reattachingKey)}
             busy={reading}
             onPress={() => void pick()}
             prominence="secondary"
@@ -348,9 +353,11 @@ export function NativeBotPackageImport({
       ) : null}
       {state?.error ? (
         <Text accessibilityRole="alert" style={styles.secondary}>
-          {phase === "editing" || phase === "review"
-            ? t("Could not preview this package.")
-            : t("Could not confirm import. Check status before trying again.")}
+          {state.error instanceof BackupModelKeyUnavailable
+            ? t("Could not read the API key. Choose the backup again.")
+            : phase === "editing" || phase === "review"
+              ? t("Could not preview this package.")
+              : t("Could not confirm import. Check status before trying again.")}
         </Text>
       ) : null}
       {preview && phase !== "completed" ? (
@@ -399,14 +406,14 @@ export function NativeBotPackageImport({
         <>
           <NativeActionButton
             label={t("Check status")}
-            disabled={busy}
+            disabled={busy || reading}
             onPress={() => void manager.current?.check()}
             prominence="secondary"
           />
           {state?.canRetry && (receipt || preview) ? (
             <NativeActionButton
               label={t("Resume import")}
-              disabled={busy}
+              disabled={busy || reading || (reattachingKey && localModelKey.current === null)}
               onPress={() =>
                 void (receipt ? manager.current?.resume() : manager.current?.confirm())
               }
@@ -415,7 +422,7 @@ export function NativeBotPackageImport({
           ) : null}
           <NativeActionButton
             label={t("Cancel import")}
-            disabled={busy}
+            disabled={busy || reading}
             onPress={() => void manager.current?.cancel()}
             prominence="secondary"
           />
@@ -504,7 +511,15 @@ export function NativeBotPackageImport({
               <NativeActionButton
                 label={t("Review import")}
                 disabled={locked}
-                onPress={() => void manager.current?.recover(item.clientNonce)}
+                onPress={() => {
+                  if (state?.clientNonce !== item.clientNonce) {
+                    fileGeneration.current++;
+                    localModelKey.current = null;
+                    setReading(false);
+                    setFileError(false);
+                  }
+                  void manager.current?.recover(item.clientNonce);
+                }}
                 prominence="secondary"
               />
             </View>

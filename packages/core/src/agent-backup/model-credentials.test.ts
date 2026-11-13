@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { projectBackupModel } from "./model.js";
 import { readBackupModelApiKey } from "./model-credentials.js";
 
 const apiKey = "synthetic-key-for-fixture";
@@ -29,6 +30,63 @@ describe("readBackupModelApiKey", () => {
     expect(readBackupModelApiKey("hermes", "openai", { auth })).toBe(apiKey);
     expect(readBackupModelApiKey("openclaw", "openai", { auth })).toBeUndefined();
     expect(readBackupModelApiKey("hermes", "openai-codex", { auth })).toBeUndefined();
+  });
+
+  it("follows a desktop model's named key before the standard environment keys", () => {
+    const env = [
+      "DESKTOP_MODEL_KEY=fixture-desktop-key",
+      "GOOGLE_API_KEY=fixture-google-key",
+      "GEMINI_API_KEY=fixture-gemini-key",
+    ].join("\n");
+    for (const field of ["key_env", "api_key_env"]) {
+      expect(
+        readBackupModelApiKey("hermes", "google", {
+          config: `model: {provider: google-gemini, ${field}: DESKTOP_MODEL_KEY}`,
+          env,
+        }),
+      ).toBe("fixture-desktop-key");
+    }
+    expect(readBackupModelApiKey("hermes", "google", { env })).toBe("fixture-google-key");
+  });
+
+  it.each(["token", "oauth", "none", "native-command"])(
+    "does not use the environment key for an explicit %s auth mode",
+    (auth) => {
+      const config = JSON.stringify({
+        models: { providers: { openai: { auth, apiKey } } },
+      });
+      expect(
+        readBackupModelApiKey("openclaw", "openai", { config, env: `OPENAI_API_KEY=${apiKey}` }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not treat an OAuth setup token as an API key", () => {
+    expect(
+      readBackupModelApiKey("hermes", "anthropic", {
+        config: "model: {provider: anthropic, key_env: MODEL_KEY}",
+        env: "MODEL_KEY=sk-ant-oat01-synthetic-fixture",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects an override on the exact reviewed model without affecting sibling models", () => {
+    const config = {
+      agents: { defaults: { model: "openai/gpt-4.1" } },
+      models: {
+        providers: {
+          openai: {
+            models: [{ id: "gpt-4.1", baseUrl: "https://proxy.example.test/v1" }],
+          },
+        },
+      },
+    };
+    expect(projectBackupModel("openclaw", config, "main")).toBe("unavailable");
+    config.agents.defaults.model = "openai/gpt-4.1-mini";
+    expect(projectBackupModel("openclaw", config, "main")).toEqual({
+      provider: "openai",
+      modelId: "gpt-4.1-mini",
+    });
   });
 
   it.each([

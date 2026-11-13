@@ -339,6 +339,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const model = { provider: "openai", modelId: "gpt-4.1" };
     const fixture = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
     const input = { source: JSON.stringify(fixture), importModelKey: true };
+    const unavailable = await call<BotPackagePreview>(owner, "preview", {
+      ...input,
+      importModelKey: false,
+    });
+    expect(unavailable).toMatchObject({ canImport: false, leftOut: [{ kind: "model" }] });
+    expect(unavailable.modelKey).toBeUndefined();
     const plan = await call<BotPackagePreview>(owner, "preview", input);
     expect(plan.modelKey).toEqual(model);
     expect(JSON.stringify(plan)).not.toContain(apiKey);
@@ -401,7 +407,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const accountFilter = { userId: owner.actor.userId, provider: model.provider };
     expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
     const failed = await call<BotPackageReceipt>(owner, "status", { clientNonce });
-    expect(failed).toMatchObject({ status: "failed", botId: null });
+    expect(failed).toMatchObject({ status: "failed", botId: null, modelKey: model });
+    expect(JSON.stringify(failed)).not.toContain(apiKey);
+    outbound.mockResolvedValueOnce(Response.json({ data: [{ id: "gpt-4.1-mini" }] }));
+    expect((await request(owner, "resume", { clientNonce, apiKey })).status).toBe(400);
+    expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(0);
     const succeed = () => Response.json({ data: [{ id: model.modelId }] });
     failComponents = true;
     outbound.mockResolvedValueOnce(succeed());
@@ -413,8 +423,70 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     outbound.mockResolvedValueOnce(succeed());
     const imported = await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey });
     expect(imported).toMatchObject({ status: "completed", importId: failed.importId, clientNonce });
+    expect(imported.modelKey).toBeUndefined();
     expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(1);
-    expect(outbound).toHaveBeenCalledTimes(3);
+    expect(outbound).toHaveBeenCalledTimes(4);
+    outbound.mockClear();
+  });
+
+  it("does not overwrite a model connection added in another Space during verification", async () => {
+    const owner = await account();
+    const sibling = await createSpaceForMember(database.prisma, {
+      currentSpaceId: owner.actor.spaceId,
+      userId: owner.actor.userId,
+      name: "Other model Space",
+    });
+    const target = { ...owner, actor: { ...owner.actor, spaceId: sibling.id } };
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const input = {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+    };
+    const first = await call<BotPackagePreview>(owner, "preview", input);
+    const second = await call<BotPackagePreview>(target, "preview", input);
+    const verified = () => Response.json({ data: [{ id: model.modelId }] });
+    let competing: BotPackageReceipt | undefined;
+    outbound.mockImplementationOnce(async () => {
+      competing = await call<BotPackageReceipt>(target, "import", {
+        previewToken: second.previewToken,
+        clientNonce: randomUUID(),
+        apiKey: "synthetic-concurrent-second-key",
+      });
+      return verified();
+    });
+    outbound.mockImplementationOnce(async () => verified());
+    const result = await call<BotPackageReceipt>(owner, "import", {
+      previewToken: first.previewToken,
+      clientNonce: randomUUID(),
+      apiKey: "synthetic-concurrent-first-key",
+    });
+    expect(competing?.status).toBe("completed");
+    expect(result).toMatchObject({
+      status: "cancelled",
+      botId: null,
+      leftOut: [{ kind: "model" }],
+    });
+    const credentials = await database.prisma.userModelCredential.findMany({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    expect(credentials).toHaveLength(1);
+    expect(
+      await database.prisma.bot.findUnique({ where: { id: competing!.botId! } }),
+    ).toMatchObject({
+      modelCredentialId: credentials[0]!.id,
+    });
+    expect(
+      await database.prisma.spaceModelPreference.findMany({
+        where: { userId: owner.actor.userId, credentialId: credentials[0]!.id },
+        select: { spaceId: true, isDefault: true },
+      }),
+    ).toEqual([{ spaceId: sibling.id, isDefault: false }]);
+    expect(
+      await database.prisma.secret.count({
+        where: { userId: owner.actor.userId, kind: "model" },
+      }),
+    ).toBe(1);
+    expect(outbound).toHaveBeenCalledTimes(2);
     outbound.mockClear();
   });
   afterAll(async () => {

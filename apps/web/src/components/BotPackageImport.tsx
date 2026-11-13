@@ -2,7 +2,7 @@ import { Trans, useLingui } from "@lingui/react/macro";
 import type { AgentBackupMcpOmission, AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { createBotPackageImport } from "@rakazo/core";
+import { BackupModelKeyUnavailable, createBotPackageImport } from "@rakazo/core";
 import {
   agentBackupFileGroups,
   agentBackupSelectableGroups,
@@ -92,7 +92,10 @@ export function BotPackageImport({
       cancel: (input, signal) => client.botPackages.cancel(input, { signal }),
       newNonce: newClientId,
       isCurrent: valid,
-      changed: setState,
+      changed(next) {
+        if (next.phase === "completed") localSource.current = null;
+        setState(next);
+      },
     });
     manager.current = review;
     return () => {
@@ -119,6 +122,8 @@ export function BotPackageImport({
   const locked =
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
+  const reattachingKey = phase === "unknown" && Boolean(receipt?.modelKey ?? preview?.modelKey);
+  const pickDisabled = reading || (locked && !reattachingKey);
   const backupNotice = preview?.document.routines.length
     ? t`Imported routines start paused.`
     : preview?.model ||
@@ -167,7 +172,7 @@ export function BotPackageImport({
       const source = await read(valid);
       if (valid()) {
         localSource.current = selected;
-        manager.current?.edit({ source, includeMemory: false });
+        if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
     } catch {
       if (valid()) setFileError(errorMessage);
@@ -216,13 +221,15 @@ export function BotPackageImport({
             </label>
           )}
           <p className="text-sm text-muted-foreground">
-            <Trans>OpenClaw or Hermes backup</Trans>
+            {reattachingKey
+              ? t`Choose the backup again to resume importing the API key.`
+              : t`OpenClaw or Hermes backup`}
           </p>
           <Input
             aria-label={t`Choose package file`}
             type="file"
             accept=".json,.txt,.zip,.tar.gz,.tgz,application/json,text/plain,application/zip,application/gzip"
-            disabled={locked || reading}
+            disabled={pickDisabled}
             onChange={(event) => {
               const file = event.target.files?.[0];
               event.target.value = "";
@@ -243,7 +250,7 @@ export function BotPackageImport({
                 }}
                 type="file"
                 hidden
-                disabled={locked || reading}
+                disabled={pickDisabled}
                 onChange={(event) => {
                   const files = Array.from(event.currentTarget.files ?? []);
                   event.currentTarget.value = "";
@@ -258,7 +265,7 @@ export function BotPackageImport({
               <Button
                 type="button"
                 variant="outline"
-                disabled={locked || reading}
+                disabled={pickDisabled}
                 onClick={() => folderInput.current?.click()}
               >
                 <Trans>Choose backup folder</Trans>
@@ -408,9 +415,11 @@ export function BotPackageImport({
       ) : null}
       {state?.error ? (
         <p role="alert" className="text-sm text-destructive">
-          {phase === "editing" || phase === "review"
-            ? t`Could not preview this package.`
-            : t`Could not confirm import. Check status before trying again.`}
+          {state.error instanceof BackupModelKeyUnavailable
+            ? t`Could not read the API key. Choose the backup again.`
+            : phase === "editing" || phase === "review"
+              ? t`Could not preview this package.`
+              : t`Could not confirm import. Check status before trying again.`}
         </p>
       ) : null}
       {preview && phase !== "completed" ? (
@@ -455,13 +464,17 @@ export function BotPackageImport({
       ) : null}
       {phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed" ? (
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => void manager.current?.check()}>
+          <Button
+            variant="outline"
+            disabled={busy || reading}
+            onClick={() => void manager.current?.check()}
+          >
             <Trans>Check status</Trans>
           </Button>
           {state?.canRetry && (receipt || preview) ? (
             <Button
               variant="outline"
-              disabled={busy}
+              disabled={busy || reading || (reattachingKey && localSource.current === null)}
               onClick={() =>
                 void (receipt ? manager.current?.resume() : manager.current?.confirm())
               }
@@ -469,7 +482,11 @@ export function BotPackageImport({
               <Trans>Resume import</Trans>
             </Button>
           ) : null}
-          <Button variant="outline" disabled={busy} onClick={() => void manager.current?.cancel()}>
+          <Button
+            variant="outline"
+            disabled={busy || reading}
+            onClick={() => void manager.current?.cancel()}
+          >
             <Trans>Cancel import</Trans>
           </Button>
         </div>
@@ -560,7 +577,15 @@ export function BotPackageImport({
               <Button
                 variant="outline"
                 disabled={locked || reading}
-                onClick={() => void manager.current?.recover(item.clientNonce)}
+                onClick={() => {
+                  if (state?.clientNonce !== item.clientNonce) {
+                    fileGeneration.current++;
+                    localSource.current = null;
+                    setReading(false);
+                    setFileError(null);
+                  }
+                  void manager.current?.recover(item.clientNonce);
+                }}
               >
                 <Trans>Review import</Trans>
               </Button>

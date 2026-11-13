@@ -635,6 +635,7 @@ export function readAgentBackupModelKey(
     source === "openclaw" && config !== undefined
       ? backupWorkspaceAgent(config, workspacePath)
       : null;
+  if (agentId && archive.has(`${home}agents/${agentId}/agent/models.json`)) return undefined;
   const current = projectBackupModel(source, settings, agentId);
   if (
     !current ||

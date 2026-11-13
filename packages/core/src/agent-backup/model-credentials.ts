@@ -1,9 +1,13 @@
 import type { AgentBackupSource } from "@rakazo/contracts";
 import { assertHeaderSafeApiKey } from "@rakazo/contracts";
 import { readBackupConfig } from "./config.js";
+import { backupProviderId } from "./model.js";
 
 const providers = {
-  anthropic: { env: ["ANTHROPIC_API_KEY"], endpoints: ["https://api.anthropic.com"] },
+  anthropic: {
+    env: ["ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"],
+    endpoints: ["https://api.anthropic.com"],
+  },
   deepseek: {
     env: ["DEEPSEEK_API_KEY"],
     endpoints: ["https://api.deepseek.com", "https://api.deepseek.com/v1"],
@@ -24,14 +28,6 @@ type Config = Record<string, unknown>;
 const record = (value: unknown): Config =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Config) : {};
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
-
-function providerId(source: AgentBackupSource, value: unknown) {
-  const id = text(value).toLowerCase();
-  if (id === "gemini" || id === "google-ai-studio") return "google";
-  if (id === "claude") return "anthropic";
-  if (source === "hermes" && id === "openai-api") return "openai";
-  return id;
-}
 
 function hasAlternateEndpoint(entry: Config, endpoints: readonly string[]) {
   return ["baseUrl", "base_url", "runtime_base_url", "endpoint", "api_base", "apiBase", "url"].some(
@@ -85,7 +81,11 @@ export function readBackupModelApiKey(
 ): string | undefined {
   if (!isBackupModelKeyProvider(provider)) return undefined;
   const endpoints: readonly string[] = providers[provider].endpoints;
-  const names = providers[provider].env;
+  const names =
+    source === "hermes" && provider === "google"
+      ? ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+      : providers[provider].env;
+  const endpointNames = names.map((name) => name.replace(/_(API_KEY|TOKEN)$/, "_BASE_URL"));
   const config = files.config === undefined ? {} : readBackupConfig(source, files.config);
   if (!config) return undefined;
   const model = record(config.model);
@@ -97,12 +97,17 @@ export function readBackupModelApiKey(
       ? config.custom_providers.map((entry) => [text(record(entry).name), entry] as const)
       : []),
     ...(source === "hermes" ? [[text(model.provider || config.provider), model] as const] : []),
-  ].flatMap(([id, entry]) => (providerId(source, id) === provider ? [record(entry)] : []));
+  ].flatMap(([id, entry]) => (backupProviderId(source, id) === provider ? [record(entry)] : []));
   if (matching.some((entry) => hasAlternateEndpoint(entry, endpoints))) return undefined;
+  if (
+    source === "openclaw" &&
+    matching.some((entry) => entry.auth !== undefined && entry.auth !== "api-key")
+  )
+    return undefined;
   if (
     source === "hermes" &&
     (!text(model.provider || config.provider) ||
-      providerId(source, model.provider || config.provider) === provider) &&
+      backupProviderId(source, text(model.provider || config.provider)) === provider) &&
     (hasAlternateEndpoint(config, endpoints) || hasAlternateEndpoint(model, endpoints))
   )
     return undefined;
@@ -115,7 +120,7 @@ export function readBackupModelApiKey(
     })) {
       if (typeof value !== "string") continue;
       if (
-        names.some((key) => key.replace(/_API_KEY$/, "_BASE_URL") === name) &&
+        endpointNames.includes(name) &&
         value.trim() &&
         !endpoints.includes(value.trim().replace(/\/+$/, ""))
       )
@@ -123,24 +128,31 @@ export function readBackupModelApiKey(
       if (!env.has(name)) env.set(name, value);
     }
   }
-  for (const name of names) {
-    const value = env.get(name.replace(/_API_KEY$/, "_BASE_URL"));
+  for (const name of endpointNames) {
+    const value = env.get(name);
     if (value?.trim() && !endpoints.includes(value.trim().replace(/\/+$/, ""))) return undefined;
   }
   const auth = source === "hermes" && files.auth ? readBackupConfig("openclaw", files.auth) : null;
   const entries = Object.entries(record(auth?.credential_pool)).flatMap(([id, rows]) =>
-    providerId(source, id) === provider && Array.isArray(rows) ? rows.map(record) : [],
+    backupProviderId(source, id) === provider && Array.isArray(rows) ? rows.map(record) : [],
   );
+  // The pool can route the same provider id through a different host or auth flow.
+  if (entries.some((entry) => hasAlternateEndpoint(entry, endpoints))) return undefined;
+  const keyEnv =
+    source === "hermes" && backupProviderId(source, text(model.provider)) === provider
+      ? text(model.key_env || model.api_key_env)
+      : "";
   const keys = [
+    ...(keyEnv ? [env.get(keyEnv)] : []),
     ...matching.map((entry) => entry.apiKey ?? entry.api_key),
-    ...entries.flatMap((entry) =>
-      entry.auth_type === "api_key" &&
-      entry.source === "manual" &&
-      !hasAlternateEndpoint(entry, endpoints)
-        ? [entry.access_token]
-        : [],
-    ),
     ...names.map((name) => env.get(name)),
+    ...entries.flatMap((entry) =>
+      entry.auth_type === "api_key" && entry.source === "manual" ? [entry.access_token] : [],
+    ),
   ];
-  return keys.map((key) => resolveKey(key, env)).find((key) => key !== undefined);
+  return keys
+    .map((key) => resolveKey(key, env))
+    .find(
+      (key) => key !== undefined && !(provider === "anthropic" && key.startsWith("sk-ant-oat")),
+    );
 }

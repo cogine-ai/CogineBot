@@ -178,6 +178,10 @@ export function createBotPackagesService(deps: Deps) {
         })
       : [];
     const targetById = new Map(targets.map((skill) => [skill.id, skill]));
+    const modelKey =
+      row.status === "importing" || row.status === "failed"
+        ? packagePlanSchema.safeParse(row.plan).data?.backupModelKey
+        : undefined;
     return {
       importId: row.id,
       clientNonce: row.clientNonce,
@@ -187,6 +191,7 @@ export function createBotPackagesService(deps: Deps) {
       botId: removed ? null : row.botId,
       botName: redactSecretText(row.botName),
       createdAt: row.createdAt.toISOString(),
+      ...(modelKey ? { modelKey } : {}),
       skills: removed
         ? []
         : row.components
@@ -471,7 +476,7 @@ export function createBotPackagesService(deps: Deps) {
                   )
                 : note(
                     `${backupModel.provider}/${backupModel.modelId}`.slice(0, 200),
-                    input.importModelKey
+                    input.importModelKey !== undefined
                       ? "This model key needs manual setup in model settings."
                       : "Connect and select this model in this Space before importing it.",
                     "model",

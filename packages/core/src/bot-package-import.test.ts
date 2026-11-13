@@ -63,7 +63,9 @@ describe("bot package import review", () => {
       model,
     });
     const key = deferred<string>();
-    f.deps.readModelKey.mockReturnValueOnce(key.promise);
+    f.deps.readModelKey
+      .mockResolvedValueOnce("synthetic-model-key")
+      .mockReturnValueOnce(key.promise);
     f.deps.preview.mockResolvedValueOnce(packagePreview({ modelKey: model }));
     f.manager.edit({ source });
     f.manager.edit({ includeBackupModel: true, importModelKey: true });
@@ -72,12 +74,51 @@ describe("bot package import review", () => {
       expect.objectContaining({ importModelKey: true }),
       expect.any(AbortSignal),
     );
-    expect(f.deps.readModelKey).not.toHaveBeenCalled();
+    expect(f.deps.readModelKey).toHaveBeenCalledExactlyOnceWith(model, expect.any(AbortSignal));
+    expect(JSON.stringify(f.deps.preview.mock.calls)).not.toContain("synthetic-model-key");
     const confirm = f.manager.confirm();
     f.switchScope();
     key.resolve("synthetic-model-key");
     await confirm;
     expect(f.deps.import).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.changes)).not.toContain("synthetic-model-key");
+  });
+
+  it("previews manual model setup when the selected file has no portable key", async () => {
+    const f = fixture();
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    f.manager.edit({
+      source: JSON.stringify({ format: "agent-backup/v1", source: "hermes", files: [], model }),
+    });
+    f.manager.edit({ includeBackupModel: true, importModelKey: true });
+    await f.manager.preview();
+    expect(f.deps.preview).toHaveBeenCalledWith(
+      expect.objectContaining({ importModelKey: false }),
+      expect.any(AbortSignal),
+    );
+    expect(f.state.preview?.modelKey).toBeUndefined();
+    await f.manager.confirm();
+    expect(f.deps.import.mock.calls[0]?.[0]).not.toHaveProperty("apiKey");
+  });
+
+  it("reattaches a key to the original nonce after reopening a pending receipt", async () => {
+    const f = fixture();
+    const modelKey = { provider: "openai", modelId: "gpt-4.1" };
+    f.deps.status.mockResolvedValueOnce(
+      packageReceipt({ status: "failed", botId: null, modelKey }),
+    );
+    await f.manager.recover("nonce-1");
+    expect(f.state).toMatchObject({ phase: "unknown", preview: null, receipt: { modelKey } });
+    await f.manager.resume();
+    expect(f.deps.resume).not.toHaveBeenCalled();
+    expect(f.state.canRetry).toBe(true);
+    f.deps.readModelKey.mockResolvedValueOnce("synthetic-model-key");
+    await f.manager.resume();
+    expect(f.deps.resume).toHaveBeenCalledExactlyOnceWith(
+      { clientNonce: "nonce-1", apiKey: "synthetic-model-key" },
+      expect.any(AbortSignal),
+    );
+    expect(f.state.phase).toBe("completed");
     expect(JSON.stringify(f.changes)).not.toContain("synthetic-model-key");
   });
 
