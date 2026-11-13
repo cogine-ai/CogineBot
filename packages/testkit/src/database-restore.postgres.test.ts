@@ -22,6 +22,12 @@ import {
   runAsTenant,
   verifyDatabaseRestore,
 } from "@rakazo/db";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -32,12 +38,6 @@ import {
   GraphileJobWorkerHost,
   migrateJobQueue,
 } from "../../adapters/src/wakeup.js";
-import {
-  expectExactPolicyCatalog,
-  expectPhysicalPolicyTables,
-  expectRegisteredPolicyTables,
-  schemaPolicyTables,
-} from "./row-security-expectations.js";
 
 const sourceUrl = process.env.DATABASE_URL;
 const postgres =

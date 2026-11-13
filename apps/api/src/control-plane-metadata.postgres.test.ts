@@ -17,6 +17,12 @@ import {
   ROW_SECURITY_POLICIES,
   runAsTenant,
 } from "@rakazo/db";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "../../../packages/adapters/src/executor.js";
 import {
@@ -30,12 +36,6 @@ import {
 } from "../../../packages/adapters/src/integration-provider-settings.js";
 import { SpaceMemoryProviderResolver } from "../../../packages/adapters/src/memory-provider-factory.js";
 import { EncryptedSecretStore } from "../../../packages/adapters/src/secrets.js";
-import {
-  expectExactPolicyCatalog,
-  expectPhysicalPolicyTables,
-  expectRegisteredPolicyTables,
-  schemaPolicyTables,
-} from "../../../packages/testkit/src/row-security-expectations.js";
 import { createOpenApiImportService } from "./openapi-import.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 

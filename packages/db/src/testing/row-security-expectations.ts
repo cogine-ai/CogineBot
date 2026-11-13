@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect } from "vitest";
 
 // Independent of the runtime registry: missing registrations must fail coverage.
-const schema = readFileSync(new URL("../../db/prisma/schema.prisma", import.meta.url), "utf8");
+const schema = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
 export const schemaPolicyTables = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)].map(
   ([, model, body]) => ({
     model: model!,

@@ -1,10 +1,10 @@
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
-import { expect, it } from "vitest";
 import {
   expectExactPolicyCatalog,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
-} from "./row-security-expectations.js";
+} from "@rakazo/db/testing/row-security-expectations";
+import { expect, it } from "vitest";
 
 it("rejects a missing receipt registration even when the registry's own size agrees", () => {
   const incomplete = ROW_SECURITY_POLICIES.filter(({ model }) => model !== "McpCreateRequest");

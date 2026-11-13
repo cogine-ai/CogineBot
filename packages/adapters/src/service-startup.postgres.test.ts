@@ -15,14 +15,14 @@ import {
   verifyRealtimeDatabase,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
-import { Client, escapeIdentifier } from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   expectExactPolicyCatalog,
   expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
-} from "../../testkit/src/row-security-expectations.js";
+} from "@rakazo/db/testing/row-security-expectations";
+import { Client, escapeIdentifier } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { GraphileJobPublisher, GraphileJobWorkerHost, migrateJobQueue } from "./wakeup.js";
 
 const databaseUrl = process.env.DATABASE_URL;

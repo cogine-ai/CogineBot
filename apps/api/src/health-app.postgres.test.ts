@@ -24,14 +24,14 @@ import type {
 import { PAGE_RUNTIME_PATH } from "@rakazo/core";
 import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import {
   expectExactPolicyCatalog,
   expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
-} from "../../../packages/testkit/src/row-security-expectations.js";
+} from "@rakazo/db/testing/row-security-expectations";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
 
 const describePostgres =

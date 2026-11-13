@@ -8,6 +8,11 @@
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./testing/row-security-expectations": {
+      "types": "./src/testing/row-security-expectations.ts",
+      "development": "./src/testing/row-security-expectations.ts",
+      "default": "./src/testing/row-security-expectations.ts"
     }
   },
   "scripts": {

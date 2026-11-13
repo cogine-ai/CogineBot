@@ -20,14 +20,14 @@ import {
   scramSha256Verifier,
   toTicketCommentDto,
 } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 import {
   expectExactPolicyCatalog,
   expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
-} from "../../../packages/testkit/src/row-security-expectations.js";
+} from "@rakazo/db/testing/row-security-expectations";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 // DDL below uses only generated fixture identifiers and synthetic SCRAM values.
