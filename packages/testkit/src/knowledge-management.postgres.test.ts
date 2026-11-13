@@ -16,7 +16,8 @@ import {
   initialKnowledgeState,
   memoryDocumentsMarkdown,
 } from "@rakazo/core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createDb } from "@rakazo/db";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.js";
 import { sessionCookieHeader } from "./index.js";
 
@@ -387,7 +388,7 @@ postgres("memory documents and shared agentSkills via authenticated API", () => 
     });
     await editor.refresh();
     const old = state.documents.find((d) => d.id === documentA)!;
-    editor.openDocument(old);
+    await editor.openDocument(old);
     editor.edit("Actually committed memory");
     await editor.save();
     expect(state.error).toBe("save");
@@ -399,4 +400,93 @@ postgres("memory documents and shared agentSkills via authenticated API", () => 
     );
     editor.dispose();
   });
+  it.each([false, true])(
+    "does not promote an early snapshot to final after a PG-blocked write times out (read failure: %s)",
+    async (readFailure) => {
+      const db = createDb(process.env.DATABASE_URL!, { poolMax: 2 });
+      const lock = await db.pool.connect();
+      let actualWrite: Promise<MemoryDocument> | undefined;
+      let state: KnowledgeState = initialKnowledgeState;
+      let failRead = false;
+      let locked = false;
+      const content = `Late commit ${randomUUID()}`;
+      const editor = createKnowledgeEditor({
+        botId: botA,
+        section: "bot",
+        changed: (next) => {
+          state = next;
+        },
+        deliver: async () => {},
+        client: {
+          isCurrent: () => true,
+          async request<T>(procedure: string, input: unknown): Promise<T> {
+            if (procedure === "memory/list" && failRead)
+              throw new Error("Injected readback failure");
+            if (procedure !== "memory/update") return rpc<T>(owner, spaceA, procedure, input);
+            actualWrite = rpc<MemoryDocument>(owner, spaceA, procedure, input);
+            void actualWrite.catch(() => undefined);
+            const holder = await lock.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+            // Timeout is injected only after the authenticated update reaches PostgreSQL.
+            await vi.waitFor(
+              async () => {
+                const waiting = await db.pool.query(
+                  `SELECT 1 FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid))
+             AND datname=current_database() AND wait_event_type='Lock'
+             AND query ILIKE '%memory_documents%'`,
+                  [holder.rows[0]!.pid],
+                );
+                expect(waiting.rowCount).toBeGreaterThan(0);
+              },
+              { timeout: 5000, interval: 10 },
+            );
+            throw new Error("Injected transport timeout while server is blocked");
+          },
+        },
+      });
+      try {
+        await editor.refresh();
+        const old = state.documents.find((d) => d.id === documentA)!;
+        await editor.openDocument(old);
+        editor.edit(content);
+        await lock.query("BEGIN");
+        locked = true;
+        await lock.query("SELECT id FROM memory_documents WHERE id=$1 FOR UPDATE", [documentA]);
+        await editor.save();
+        expect(state.saveError).toBe(true);
+        // Successful reads before the blocked write finishes are snapshots, not completion receipts.
+        await editor.exportMarkdown();
+        await editor.refresh();
+        expect(state.saveError).toBe(true);
+        expect(state.draft).toBe(content);
+        editor.cancel();
+        await editor.openDocument(old);
+        expect(state.draft).toBe(old.content);
+        await lock.query("ROLLBACK");
+        locked = false;
+        expect((await actualWrite)!.content).toBe(content);
+        expect(
+          (
+            await rpc<MemoryDocument[]>(owner, spaceA, "memory/list", { botId: botA, scope: "bot" })
+          ).find((d) => d.id === documentA)?.content,
+        ).toBe(content);
+        editor.cancel();
+        if (readFailure) {
+          failRead = true;
+          await editor.openDocument(old);
+          expect(state.editor).toBeNull();
+          expect(state.error).toBe("load");
+          failRead = false;
+        }
+        await editor.openDocument(old);
+        expect(state.draft).toBe(content);
+      } finally {
+        editor.dispose();
+        if (locked) await lock.query("ROLLBACK");
+        lock.release();
+        await actualWrite?.catch(() => undefined);
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
 });

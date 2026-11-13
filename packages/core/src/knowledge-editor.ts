@@ -46,7 +46,6 @@ export function createKnowledgeEditor(options: {
   let state = { ...initialKnowledgeState };
   let generation = 0;
   let disposed = false;
-  let memoryNeedsReadback = false;
   let creation: { nonce: string; attempted: boolean } | null = null;
   let pending: AbortController | null = null;
   const current = () => !disposed && client.isCurrent();
@@ -62,7 +61,6 @@ export function createKnowledgeEditor(options: {
   };
   const memoryInput = section === "bot" ? { botId, scope: "bot" } : { scope: "user" };
   const receiveDocuments = (documents: MemoryDocument[]) => {
-    memoryNeedsReadback = false;
     const editor = state.editor;
     const saved =
       editor?.kind === "memory" ? documents.find((d) => d.id === editor.document.id) : undefined;
@@ -130,25 +128,20 @@ export function createKnowledgeEditor(options: {
           error: null,
         });
       };
-      if (memoryNeedsReadback) {
-        return run("load", async (signal, valid) => {
-          const documents = await client.request<MemoryDocument[]>(
-            "memory/list",
-            memoryInput,
-            signal,
-          );
-          if (!valid()) return;
-          const saved = documents.find((d) => d.id === document.id);
-          if (!saved) throw new Error("Document is no longer available");
-          receiveDocuments(documents);
-          select(saved);
-        });
-      }
-      const saved = state.documents.find((d) => d.id === document.id);
-      if (saved) {
-        invalidate();
+      // Reads are snapshots, never receipts for an earlier uncertain write. Every
+      // explicit open reads again, even after cancellation or a new editor lifetime.
+      return run("load", async (signal, valid) => {
+        const documents = await client.request<MemoryDocument[]>(
+          "memory/list",
+          memoryInput,
+          signal,
+        );
+        if (!valid()) return;
+        const saved = documents.find((d) => d.id === document.id);
+        if (!saved) throw new Error("Document is no longer available");
+        receiveDocuments(documents);
         select(saved);
-      }
+      });
     },
     openSkill(skillId: string) {
       return run("load", async (signal, valid) => {
@@ -192,14 +185,12 @@ export function createKnowledgeEditor(options: {
         return Promise.resolve();
       return run("save", async (signal, valid) => {
         if (editor.kind === "memory") {
-          memoryNeedsReadback = true;
           const saved = await client.request<MemoryDocument>(
             "memory/update",
             { documentId: editor.document.id, content },
             signal,
           );
           if (valid()) {
-            memoryNeedsReadback = false;
             emit({
               documents: state.documents.map((d) => (d.id === saved.id ? saved : d)),
               editor: null,

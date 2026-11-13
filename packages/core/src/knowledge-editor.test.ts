@@ -35,6 +35,10 @@ function setup(section: KnowledgeSection = "bot", botId = "bot-a") {
   let state: KnowledgeState = initialKnowledgeState;
   let current = true;
   const request = vi.fn();
+  request.mockImplementation(async (procedure: string) => {
+    if (procedure === "memory/list") return state.documents;
+    throw new Error(`Unexpected ${procedure}`);
+  });
   const deliver = vi.fn(async (_text: string, valid: () => boolean) => {
     expect(valid()).toBe(true);
   });
@@ -69,7 +73,7 @@ describe("saved memory documents", () => {
         "memory/list",
         section === "bot" ? { scope: "bot", botId: "bot-b" } : { scope: "user" },
       ]);
-      h.editor.openDocument(h.state().documents[0]!);
+      await h.editor.openDocument(h.state().documents[0]!);
       h.editor.edit("Unsaved");
       await h.editor.exportMarkdown();
       expect(h.deliver).toHaveBeenCalledWith("# MEMORY.md\n\nSaved", expect.any(Function));
@@ -80,7 +84,7 @@ describe("saved memory documents", () => {
     const h = setup();
     h.request.mockResolvedValueOnce([document()]);
     await h.editor.refresh();
-    h.editor.openDocument(document());
+    await h.editor.openDocument(document());
     h.editor.edit("Unconfirmed");
     h.request.mockRejectedValueOnce(new Error("Connection lost"));
     await h.editor.save();
@@ -95,15 +99,15 @@ describe("saved memory documents", () => {
     const h = setup();
     h.request.mockResolvedValueOnce([document()]);
     await h.editor.refresh();
-    h.editor.openDocument(document());
+    await h.editor.openDocument(document());
     h.editor.edit("Draft");
     h.request.mockResolvedValueOnce(document("doc-a", "Saved result"));
     await h.editor.save();
     expect(h.state().editor).toBeNull();
-    h.editor.openDocument(h.state().documents[0]!);
+    await h.editor.openDocument(h.state().documents[0]!);
     h.editor.edit("Cancelled");
     h.editor.cancel();
-    h.editor.openDocument(h.state().documents[0]!);
+    await h.editor.openDocument(h.state().documents[0]!);
     expect(h.state().draft).toBe("Saved result");
   });
   it("does not share cached data after a failed export readback", async () => {
@@ -124,7 +128,7 @@ describe("selection and lifetime isolation", () => {
       const h = setup();
       h.request.mockResolvedValueOnce([document(), document("doc-b", "B")]);
       await h.editor.refresh();
-      h.editor.openDocument(document());
+      await h.editor.openDocument(document());
       h.editor.edit("A draft");
       const late = deferred<MemoryDocument>();
       h.request.mockReturnValueOnce(late.promise);
@@ -243,7 +247,7 @@ it("preserves the unresolved save failure across successful and failed exports u
   const h = setup();
   h.request.mockResolvedValueOnce([document()]);
   await h.editor.refresh();
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   h.editor.edit("Unsaved");
   h.request.mockRejectedValueOnce(new Error("Lost save"));
   await h.editor.save();
@@ -257,7 +261,7 @@ it("preserves the unresolved save failure across successful and failed exports u
   h.request.mockResolvedValueOnce(document("doc-a", "Unsaved"));
   await h.editor.save();
   expect(h.state()).toMatchObject({ editor: null, saveError: false });
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   h.request.mockRejectedValueOnce(new Error("Offline"));
   await h.editor.save();
   h.editor.cancel();
@@ -268,7 +272,7 @@ it("does not reopen uncertain memory from cache when verification fails or scope
   const h = setup();
   h.request.mockResolvedValueOnce([document()]);
   await h.editor.refresh();
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   h.editor.edit("Committed but unacknowledged");
   h.request.mockRejectedValueOnce(new Error("Lost response"));
   await h.editor.save();
@@ -344,7 +348,7 @@ it("readback refreshes saved memory without discarding a failed draft or its err
   const h = setup();
   h.request.mockResolvedValueOnce([document()]);
   await h.editor.refresh();
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   h.editor.edit("Unsaved local draft");
   h.request.mockRejectedValueOnce(new Error("Uncertain save"));
   await h.editor.save();
@@ -356,7 +360,7 @@ it("readback refreshes saved memory without discarding a failed draft or its err
     editor: { document: { content: "Server version" } },
   });
   h.editor.cancel();
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   expect(h.state()).toMatchObject({ draft: "Server version", saveError: false });
 });
 
@@ -364,7 +368,7 @@ it("export readback updates the saved baseline without treating the remaining dr
   const h = setup();
   h.request.mockResolvedValueOnce([document()]);
   await h.editor.refresh();
-  h.editor.openDocument(document());
+  await h.editor.openDocument(document());
   h.editor.edit("First submitted draft");
   h.request.mockRejectedValueOnce(new Error("Lost response"));
   await h.editor.save();
@@ -378,3 +382,32 @@ it("export readback updates the saved baseline without treating the remaining dr
   });
   expect(h.deliver.mock.calls[0]?.[0]).toBe("# MEMORY.md\n\nFirst submitted draft");
 });
+
+it.each(["cancel", "scope"] as const)(
+  "ignores a delayed memory open after %s without replacing another draft",
+  async (change) => {
+    const h = setup();
+    const first = document();
+    const second = document("doc-b", "B saved");
+    h.request.mockResolvedValueOnce([first, second]);
+    await h.editor.refresh();
+    const late = deferred<MemoryDocument[]>();
+    h.request.mockReturnValueOnce(late.promise);
+    const opening = h.editor.openDocument(first);
+    h.editor.cancel();
+    if (change === "scope") h.stale();
+    else {
+      h.request.mockResolvedValueOnce([first, second]);
+      await h.editor.openDocument(second);
+      h.editor.edit("B local draft");
+    }
+    late.resolve([document("doc-a", "A late response"), second]);
+    await opening;
+    if (change === "scope") expect(h.state().editor).toBeNull();
+    else
+      expect(h.state()).toMatchObject({
+        draft: "B local draft",
+        editor: { document: { id: "doc-b" } },
+      });
+  },
+);

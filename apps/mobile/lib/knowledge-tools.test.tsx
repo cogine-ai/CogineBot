@@ -135,10 +135,12 @@ const skill: AgentSkill = {
   createdAt: "",
   updatedAt: "",
 };
+let savedMemory = memory;
 let root: Root;
 let node: HTMLDivElement;
 beforeEach(() => {
   vi.clearAllMocks();
+  savedMemory = { ...memory };
   activateUiLocale("en");
   api.current = true;
   api.generation = 1;
@@ -146,8 +148,11 @@ beforeEach(() => {
   api.share.mockResolvedValue(undefined);
   api.request.mockImplementation(async (procedure, input) => {
     if (procedure === "memory/list")
-      return [{ ...memory, scope: input.scope, botId: input.botId ?? null }];
-    if (procedure === "memory/update") return { ...memory, content: input.content, revision: 2 };
+      return [{ ...savedMemory, scope: input.scope, botId: input.botId ?? null }];
+    if (procedure === "memory/update") {
+      savedMemory = { ...savedMemory, content: input.content, revision: savedMemory.revision + 1 };
+      return savedMemory;
+    }
     if (procedure === "agentSkills/list")
       return [
         skill,
@@ -346,4 +351,57 @@ it("does not show cached memory when reopening an uncertain save cannot be verif
   api.request.mockResolvedValueOnce([{ ...memory, content: "Actually committed" }]);
   await click("MEMORY.md");
   expect(node.querySelector("textarea")!.value).toBe("Actually committed");
+});
+
+it("can restore the recovered Skill baseline after its update commits but loses the response", async () => {
+  const original = api.request.getMockImplementation()!;
+  let serverSkill: AgentSkill | null = null;
+  let creates = 0;
+  let updates = 0;
+  let finish!: (value: AgentSkill) => void;
+  api.request.mockImplementation(async (procedure, input) => {
+    if (procedure === "agentSkills/create") {
+      creates += 1;
+      if (!serverSkill) {
+        serverSkill = { ...skill, content: input.content };
+        throw new Error("Create committed; response lost");
+      }
+      return serverSkill;
+    }
+    if (procedure === "agentSkills/update") {
+      updates += 1;
+      expect(input.skillId).toBe(skill.id);
+      serverSkill = { ...serverSkill!, content: input.content };
+      if (updates === 1) throw new Error("Update committed; response lost");
+      return new Promise<AgentSkill>((resolve) => {
+        finish = resolve;
+      });
+    }
+    return original(procedure, input);
+  });
+  await mount();
+  await click("Shared skills");
+  await click("recipe");
+  expect(button("Save")!.disabled).toBe(true);
+  await click("Cancel");
+  await click("New skill");
+  await fill("Recovered baseline");
+  await click("Save");
+  await fill("Server has newer content");
+  await click("Save");
+  expect(serverSkill!.content).toBe("Server has newer content");
+  expect(node.textContent).toContain("Could not save");
+  await fill("Recovered baseline");
+  expect(button("Save")!.disabled).toBe(false);
+  await fill(" ");
+  expect(button("Save")!.disabled).toBe(true);
+  await fill("Recovered baseline");
+  await click("Save");
+  expect(button("Save")!.disabled).toBe(true);
+  await act(async () => finish(serverSkill!));
+  expect(serverSkill!.content).toBe("Recovered baseline");
+  expect(creates).toBe(2);
+  expect(updates).toBe(2);
+  expect(node.textContent).not.toContain("Could not save");
+  expect(node.querySelector("textarea")).toBeNull();
 });

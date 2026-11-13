@@ -162,7 +162,7 @@ export function KnowledgeEditor({
               label={t("Save")}
               disabled={
                 state.busy ||
-                state.draft === savedContent ||
+                (!state.saveError && state.draft === savedContent) ||
                 (section === "skills" && !state.draft.trim())
               }
               onPress={() => void manager.current?.save()}
