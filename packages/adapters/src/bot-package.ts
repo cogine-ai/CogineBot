@@ -7,6 +7,8 @@ import type {
 import {
   AGENT_BACKUP_FORMAT,
   AgentBackupDocumentSchema,
+  agentBackupOmissionReasons,
+  agentBackupRuntimeOmission,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
@@ -32,12 +34,14 @@ import {
   parseSkillMd,
 } from "@rakazo/core";
 import {
+  assessBackupSkill,
   backupInstructions,
   botImportJsonObject,
+  isBackupMemory,
   isBackupSkill,
   isBackupTextFile,
-  isHermesDefault,
   isOpenClawDefault,
+  isStockBackupInstruction,
   openClawRuntimeFiles,
   parseOpenClawIdentity,
   renameBackupSkill,
@@ -508,16 +512,28 @@ export function prepareBotPackageDocument(value: unknown): {
 
 function backupPackage(
   backup: AgentBackupDocument,
-  options: Pick<BotPackagePreviewInput, "name" | "includeMemory">,
+  options: Pick<BotPackagePreviewInput, "name" | "includeMemory" | "backupOmissions">,
 ): ParsedBotPackage {
   const { source, files } = backup;
   const leftOut = new LeftOutBudget();
   if (files.some(({ path }) => !isBackupTextFile(source, path)))
     throw new BotPackageError("The backup contains unsupported files.");
   const byPath = new Map(files.map(({ path, content }) => [path, content]));
+  const reportedOmissions = new Set<string>();
   const addNote = (kind: BotPackageLeftOut["kind"], name: string, reason: string) => {
     leftOut.push({ kind, name: redactSecretText(name).slice(0, 200), reason });
   };
+  for (const { path, reason } of options.backupOmissions ?? []) {
+    if (!isBackupTextFile(source, path) || byPath.has(path) || reportedOmissions.has(path))
+      continue;
+    reportedOmissions.add(path);
+    const kind = isBackupSkill(path)
+      ? "skill"
+      : isBackupMemory(source, path)
+        ? "memory"
+        : "instructions";
+    addNote(kind, path, agentBackupOmissionReasons[reason]);
+  }
   const identityText = byPath.get("IDENTITY.md");
   const identity =
     source === "openclaw" && identityText && !isOpenClawDefault("IDENTITY.md", identityText)
@@ -526,17 +542,13 @@ function backupPackage(
   for (const label of identity?.unused ?? [])
     addNote("unsupported", label, "This identity field is not used.");
   for (const path of openClawRuntimeFiles) {
-    if (byPath.has(path)) addNote("unsupported", path, "This runtime file is not used.");
+    if (byPath.has(path)) addNote("unsupported", path, agentBackupRuntimeOmission);
   }
   const instructions: string[] = [];
   for (const path of backupInstructions[source]) {
     const content = byPath.get(path);
     if (!content?.trim()) continue;
-    const stock =
-      source === "openclaw"
-        ? isOpenClawDefault(path, content)
-        : path === "SOUL.md" && isHermesDefault(content);
-    if (stock) {
+    if (isStockBackupInstruction(source, path, content)) {
       addNote("instructions", path, "The original template was omitted.");
       continue;
     }
@@ -548,23 +560,21 @@ function backupPackage(
     instructions.push(next);
   }
   const incomplete = new Set(backup.incompleteSkills);
+  for (const path of incomplete) {
+    if (!byPath.has(path) && isBackupSkill(path) && !reportedOmissions.has(path))
+      addNote("skill", path, agentBackupOmissionReasons.missingSkillFiles);
+  }
   const skillNames = new Set<string>();
   const skills: BotPackageDocument["skills"] = [];
   for (const [path, content] of [...byPath].sort(([left], [right]) =>
     left < right ? -1 : left > right ? 1 : 0,
   )) {
     if (isBackupSkill(path)) {
-      const parsed = parseSkillMd(content);
-      if ("error" in parsed) {
-        addNote("skill", path, "This Skill is missing valid metadata.");
-      } else if (
-        incomplete.has(path) ||
-        /\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(parsed.body)
-      ) {
-        addNote("skill", path, "This Skill needs additional files.");
-      } else if (backupSkillRequiresReview(parsed.frontmatter)) {
-        addNote("skill", path, "This Skill declares requirements that need review.");
+      const assessed = assessBackupSkill(content, incomplete.has(path));
+      if ("reason" in assessed) {
+        addNote("skill", path, agentBackupOmissionReasons[assessed.reason]);
       } else {
+        const parsed = assessed.skill;
         let name = parsed.name;
         for (let number = 2; skillNames.has(name.toLowerCase()); number++) {
           const suffix = `-${number}`;
@@ -588,13 +598,15 @@ function backupPackage(
       }
     }
   }
-  const memory = selectBackupMemory(source, files, (path, reason) =>
+  const { notes: memory, available } = selectBackupMemory(source, files, (path, reason) =>
     addNote("memory", path, reason),
   );
-  const availableMemoryCount =
-    memory.length + (options.includeMemory ? 0 : backup.excludedMemoryCount);
-  if (!options.includeMemory && availableMemoryCount)
-    addNote("memory", "memory", `Memory notes not selected: ${availableMemoryCount}.`);
+  const availableMemoryCount = available + backup.excludedMemoryCount;
+  const excludedMemoryCount = options.includeMemory
+    ? backup.excludedMemoryCount
+    : availableMemoryCount;
+  if (excludedMemoryCount)
+    addNote("memory", "memory", `Memory notes not selected: ${excludedMemoryCount}.`);
   if (
     !instructions.length &&
     !skills.length &&
@@ -620,22 +632,11 @@ function backupPackage(
   return { ...safe, sourceFormat: source, leftOut: leftOut.entries, availableMemoryCount };
 }
 
-function backupSkillRequiresReview(frontmatter: RecordValue): boolean {
-  const metadata = known(frontmatter.metadata);
-  return (
-    Object.keys(frontmatter).some((key) =>
-      /^(?:requires|prerequisites|platforms|os|required_environment_variables|allowed-tools)$/i.test(
-        key,
-      ),
-    ) ||
-    Object.keys(metadata).some((key) => /^(?:openclaw|hermes)$/i.test(key)) ||
-    (typeof frontmatter.metadata === "string" && !!frontmatter.metadata.trim())
-  );
-}
-
 export function parseBotPackageSource(
   source: string,
-  options: Pick<BotPackagePreviewInput, "name" | "includeMemory"> & { defaultTimezone?: string },
+  options: Pick<BotPackagePreviewInput, "name" | "includeMemory" | "backupOmissions"> & {
+    defaultTimezone?: string;
+  },
 ): ParsedBotPackage {
   const root = sourceObject(source);
   const format = root.format;

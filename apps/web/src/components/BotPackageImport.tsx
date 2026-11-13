@@ -1,10 +1,11 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import type { AgentBackupOmissionReason } from "@rakazo/contracts";
 import { BOT_NAME_MAX_LENGTH, BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
 import { createBotPackageImport } from "@rakazo/core";
-import { isAgentBackupUpload } from "@rakazo/core/agent-backup";
-import { Button, Input, Switch, Textarea } from "@rakazo/ui-web";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
+import { Button, Checkbox, Input, Switch, Textarea } from "@rakazo/ui-web";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { readBotPackageFile } from "../lib/bot-package-file";
 import { newClientId } from "../lib/client-id";
 import { createSpaceRpc } from "../lib/rpc";
@@ -27,6 +28,16 @@ export function BotPackageImport({
   onCancel(): void;
 }) {
   const { t } = useLingui();
+  const backupOmissionLabels: Record<AgentBackupOmissionReason, string> = {
+    invalidSkill: t`This Skill is missing valid metadata.`,
+    missingSkillFiles: t`This Skill needs additional files.`,
+    skillRequirements: t`This Skill declares requirements that need review.`,
+    skillLimit: t`This Skill exceeds the Bot limits.`,
+    stock: t`The original template was omitted.`,
+    instructionLimit: t`This instruction file exceeds the Bot limit.`,
+    memoryLimit: t`This note exceeds the Bot memory limits.`,
+    identity: t`This identity file has no supported fields.`,
+  };
   const ids = useId();
   const [state, setState] = useState<BotPackageImportState | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -80,7 +91,12 @@ export function BotPackageImport({
   const locked =
     busy || phase === "unknown" || receipt?.status === "importing" || receipt?.status === "failed";
   const preview = state?.preview;
-  const backup = isAgentBackupUpload(state?.source ?? "");
+  const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
+  const backup = fileGroups !== null;
+  const excluded = new Set(state?.excludedBackupPaths);
+  const selection = fileGroups
+    ? agentBackupSelectableGroups(fileGroups, state?.includeMemory ?? false, excluded)
+    : null;
   function edit(input: { source?: string; name?: string; includeMemory?: boolean }) {
     fileGeneration.current++;
     setReading(false);
@@ -193,9 +209,67 @@ export function BotPackageImport({
               onCheckedChange={(includeMemory) => edit({ includeMemory })}
             />
           </label>
+          {fileGroups && selection ? (
+            <details className="text-sm">
+              <summary className="cursor-pointer">
+                <Trans>Choose backup content</Trans>
+              </summary>
+              {selection.groups.map(({ kind, paths }) => (
+                <fieldset key={kind} className="mt-3 space-y-2">
+                  <legend className="font-medium">
+                    {kind === "instructions"
+                      ? t`Instructions`
+                      : kind === "skills"
+                        ? t`Skills`
+                        : t`Memory`}
+                  </legend>
+                  {paths.map((path, index) => (
+                    <label
+                      key={path}
+                      htmlFor={`${ids}-backup-${kind}-${index}`}
+                      className="flex items-start gap-2"
+                    >
+                      <Checkbox
+                        id={`${ids}-backup-${kind}-${index}`}
+                        checked={!excluded.has(path)}
+                        disabled={locked || reading}
+                        onCheckedChange={(checked) =>
+                          manager.current?.setBackupFileIncluded(path, checked)
+                        }
+                      />
+                      <span className="min-w-0 break-all" dir="auto">
+                        {path}
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+              ))}
+              {fileGroups.unavailable.length ? (
+                <div className="mt-3 space-y-1">
+                  <p className="font-medium">
+                    <Trans>Unavailable backup files</Trans>
+                  </p>
+                  <ul className="space-y-1 text-muted-foreground">
+                    {fileGroups.unavailable.map(({ path, reason }) => (
+                      <li key={path} className="break-all" dir="auto">
+                        <span>{path}</span>
+                        <p className="break-words">
+                          {reason
+                            ? backupOmissionLabels[reason]
+                            : t`This runtime file is not used.`}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </details>
+          ) : null}
           <Button
             variant="outline"
-            disabled={locked || reading || !state?.source.trim()}
+            disabled={
+              locked || reading || !state?.source.trim() || selection?.hasSelection === false
+            }
             onClick={() => void manager.current?.preview()}
           >
             {phase === "previewing" ? <Trans>Previewing…</Trans> : <Trans>Preview</Trans>}
@@ -233,7 +307,7 @@ export function BotPackageImport({
             </>
           )}
           {phase === "review" ? (
-            <Button onClick={() => void manager.current?.confirm()}>
+            <Button disabled={reading} onClick={() => void manager.current?.confirm()}>
               <Trans>Import as new bot</Trans>
             </Button>
           ) : null}

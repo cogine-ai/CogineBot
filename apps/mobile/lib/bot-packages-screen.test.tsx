@@ -53,6 +53,20 @@ vi.mock("expo-router", () => ({
     }, [callback]),
 }));
 vi.mock("react-native", () => ({
+  Pressable: ({
+    children,
+    accessibilityState,
+    onPress,
+  }: {
+    children?: ReactNode;
+    accessibilityState?: { expanded: boolean };
+    onPress(): void;
+  }) =>
+    createElement(
+      "button",
+      { type: "button", "aria-expanded": accessibilityState?.expanded, onClick: onPress },
+      children,
+    ),
   View: ({ children, testID }: { children?: ReactNode; testID?: string }) =>
     createElement("div", { "data-testid": testID }, children),
   Text: ({ children, accessibilityRole }: { children?: ReactNode; accessibilityRole?: string }) =>
@@ -78,6 +92,7 @@ vi.mock("react-native", () => ({
     }),
   StyleSheet: { create: <T,>(styles: T) => styles },
 }));
+vi.mock("../components/native-symbol", () => ({ NativeSymbol: () => null }));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({
     label,
@@ -292,6 +307,39 @@ it("invalidates a native preview when memory selection changes", async () => {
     api.request.mock.calls.filter(([name]) => name === "botPackages/preview").at(-1)![1]
       .includeMemory,
   ).toBe(true);
+});
+
+it.each([
+  [
+    "skills/invalid/SKILL.md",
+    "Private text without metadata.",
+    "This Skill is missing valid metadata.",
+  ],
+  [
+    "skills/missing/SKILL.md",
+    "---\nname: fixture\ndescription: Read a report.\n---\nRead references/guide.md.",
+    "This Skill needs additional files.",
+  ],
+  ["TOOLS.md", "Private runtime fixture.", "This runtime file is not used."],
+])("explains unavailable %s before any request", async (path, content, reason) => {
+  api.pick.mockResolvedValueOnce(
+    JSON.stringify({
+      format: "agent-backup/v1",
+      source: "openclaw",
+      files: [{ path, content }],
+    }),
+  );
+  await mountImport();
+  await click("Choose package file");
+  expect(button("Preview").disabled).toBe(true);
+  expect(button("Choose backup content").getAttribute("aria-expanded")).toBe("false");
+  await click("Choose backup content");
+  expect(button("Choose backup content").getAttribute("aria-expanded")).toBe("true");
+  expect(node.textContent).toContain(path);
+  expect(node.textContent).toContain(reason);
+  expect(node.textContent).not.toContain(content);
+  await click("Preview");
+  expect(api.request.mock.calls.filter(([name]) => name === "botPackages/preview")).toHaveLength(0);
 });
 
 it("keeps a cancelled file picker from clearing typed input", async () => {

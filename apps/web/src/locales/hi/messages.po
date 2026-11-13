@@ -7471,3 +7471,47 @@ msgstr "इतिहास का यह स्रोत अब उपलब्�
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "चैट इतिहास के स्रोत लोड नहीं हो सके।"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "बैकअप सामग्री चुनें"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "अनुपलब्ध बैकअप फ़ाइलें"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "इस स्किल में मान्य मेटाडेटा नहीं है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "इस स्किल की आवश्यकताओं की समीक्षा करनी होगी।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "यह स्किल बॉट की सीमाओं से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "मूल टेम्पलेट छोड़ दिया गया।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "यह निर्देश फ़ाइल बॉट की सीमा से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "यह नोट बॉट की मेमोरी की सीमाओं से अधिक है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "इस पहचान फ़ाइल में कोई समर्थित फ़ील्ड नहीं है।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "इस स्किल को अतिरिक्त फ़ाइलें चाहिए।"
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "इस रनटाइम फ़ाइल का उपयोग नहीं होता है।"

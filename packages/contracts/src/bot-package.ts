@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { AgentBackupOmissionsSchema } from "./agent-backup-omissions.js";
 import { BotAvatarValueSchema } from "./bot-avatar.js";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -111,6 +112,7 @@ export const BotPackagePreviewInput = z.object({
   source: z.string().min(1).max(BOT_PACKAGE_MAX_BYTES),
   name: z.string().trim().min(1).max(BOT_NAME_MAX_LENGTH).optional(),
   includeMemory: z.boolean().default(false),
+  backupOmissions: AgentBackupOmissionsSchema.optional(),
 });
 export type BotPackagePreviewInput = z.infer<typeof BotPackagePreviewInput>;
 

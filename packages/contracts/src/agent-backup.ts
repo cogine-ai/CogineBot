@@ -1,23 +1,16 @@
 import * as z from "zod";
+import { AGENT_BACKUP_MAX_FILES, isAgentBackupPath } from "./agent-backup-omissions.js";
+
+export * from "./agent-backup-omissions.js";
+
 import { BOT_PACKAGE_MAX_BYTES, botPackageUtf8Bytes } from "./bot-package.js";
 
-export const AGENT_BACKUP_MAX_FILES = 500;
 export const AGENT_BACKUP_MAX_FILE_LENGTH = 100_000;
 export const AGENT_BACKUP_MAX_TOTAL_LENGTH = 4_000_000;
-export const AGENT_BACKUP_MAX_PATH_LENGTH = 300;
 export const AGENT_BACKUP_FORMAT = "agent-backup/v1";
 
 export const AgentBackupSourceSchema = z.enum(["openclaw", "hermes"]);
 export type AgentBackupSource = z.infer<typeof AgentBackupSourceSchema>;
-
-export function isAgentBackupPath(path: string): boolean {
-  return (
-    path.length <= AGENT_BACKUP_MAX_PATH_LENGTH &&
-    !/[\\\p{Cc}]/u.test(path) &&
-    !/^[A-Za-z]:/.test(path) &&
-    path.split("/").every((part) => part !== "" && part !== "." && part !== "..")
-  );
-}
 
 export const AgentBackupDocumentSchema = z
   .strictObject({

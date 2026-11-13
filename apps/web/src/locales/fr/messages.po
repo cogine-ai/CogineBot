@@ -7471,3 +7471,47 @@ msgstr "Cette source de l’historique n’est plus disponible."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "Impossible de charger les sources de l’historique."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "Choisir le contenu de la sauvegarde"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "Fichiers de sauvegarde indisponibles"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "Ce Skill ne contient pas de métadonnées valides."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "Ce Skill déclare des exigences à vérifier."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "Ce Skill dépasse les limites du Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "Le modèle d’origine a été ignoré."
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "Ce fichier d’instructions dépasse la limite du Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "Cette note dépasse les limites de mémoire du Bot."
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "Ce fichier d’identité ne contient aucun champ pris en charge."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "Ce Skill nécessite des fichiers supplémentaires."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "Ce fichier d’exécution n’est pas utilisé."

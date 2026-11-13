@@ -362,6 +362,33 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: "Chosen backup note." })]);
     },
   );
+  it("binds the receipt to the selected backup files even when the Bot documents match", async () => {
+    const owner = await account();
+    const backup = {
+      format: AGENT_BACKUP_FORMAT,
+      source: "openclaw",
+    };
+    const content = "Review the supplied material.";
+    const first = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify({ ...backup, files: [{ path: "SOUL.md", content }] }),
+      backupOmissions: [{ path: "skills/incomplete/SKILL.md", reason: "missingSkillFiles" }],
+    });
+    const second = await preview(owner, { ...backup, files: [{ path: "AGENTS.md", content }] });
+    expect(first.document).toEqual(second.document);
+    expect(first.digest).not.toBe(second.digest);
+    expect(first.leftOut).toContainEqual({
+      kind: "skill",
+      name: "skills/incomplete/SKILL.md",
+      reason: "This Skill needs additional files.",
+    });
+
+    const nonce = randomUUID();
+    const receipt = await importPackage(owner, first, nonce);
+    expect(receipt.digest).toBe(first.digest);
+    expect(receipt.leftOut).toEqual(first.leftOut);
+    expect(await importPackage(owner, first, nonce)).toEqual(receipt);
+    await expect(importPackage(owner, second, nonce)).rejects.toThrow("different content");
+  });
   it("rejects an invalid stored preview before creating an import marker or Bot", async () => {
     const owner = await account();
     const p = await preview(owner);

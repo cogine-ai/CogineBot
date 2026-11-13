@@ -7471,3 +7471,47 @@ msgstr "이 기록의 출처는 더 이상 사용할 수 없습니다."
 #: src/pages/shell/message-cards.tsx
 msgid "Could not load history sources."
 msgstr "채팅 기록의 출처를 불러오지 못했습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "백업 콘텐츠 선택"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "사용할 수 없는 백업 파일"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "이 스킬에 유효한 메타데이터가 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "이 스킬에는 검토가 필요한 요구 사항이 있습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "이 스킬은 봇의 제한을 초과합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "원래 템플릿은 제외되었습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "이 지침 파일은 봇의 제한을 초과합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "이 메모는 봇 메모리의 제한을 초과합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "이 신원 파일에는 지원되는 필드가 없습니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "이 스킬에는 추가 파일이 필요합니다."
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "이 런타임 파일은 사용되지 않습니다."

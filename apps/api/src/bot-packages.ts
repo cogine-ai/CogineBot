@@ -331,7 +331,19 @@ export function createBotPackagesService(deps: Deps) {
         return packageError(error);
       }
       const previewToken = randomBytes(32).toString("base64url");
-      const digest = hash(parsed.json);
+      // The reviewed backup includes the selected source files, even when two selections
+      // produce the same Bot document. Keep the existing digest format for other imports.
+      const digest =
+        parsed.sourceFormat === "openclaw" || parsed.sourceFormat === "hermes"
+          ? hash(
+              JSON.stringify([
+                hash(input.source),
+                input.includeMemory,
+                parsed.json,
+                parsed.leftOut,
+              ]),
+            )
+          : hash(parsed.json);
       const expiresAt = new Date(Date.now() + 10 * 60_000);
       await transact(context, async (tx) => {
         await tx.botPackagePreview.create({

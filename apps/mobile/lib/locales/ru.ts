@@ -1346,6 +1346,19 @@ export const RU_MESSAGES: Record<string, string> = {
   "Could not load recent imports.": "Не удалось загрузить последние импорты.",
   "Could not load skills.": "Не удалось загрузить навыки.",
   "Could not preview this package.": "Не удалось открыть предпросмотр пакета.",
+  "Choose backup content": "Выбрать содержимое резервной копии",
+  "This Skill is missing valid metadata.": "У этого навыка нет корректных метаданных.",
+  "This Skill declares requirements that need review.":
+    "Этот навык объявляет требования, которые нужно проверить.",
+  "This Skill exceeds the Bot limits.": "Этот навык превышает ограничения бота.",
+  "The original template was omitted.": "Исходный шаблон пропущен.",
+  "This instruction file exceeds the Bot limit.": "Этот файл инструкций превышает лимит бота.",
+  "This note exceeds the Bot memory limits.": "Эта заметка превышает ограничения памяти бота.",
+  "This identity file has no supported fields.":
+    "В этом файле идентификации нет поддерживаемых полей.",
+  "This Skill needs additional files.": "Этому навыку нужны дополнительные файлы.",
+  "This runtime file is not used.": "Этот файл среды выполнения не используется.",
+  "Unavailable backup files": "Недоступные файлы резервной копии",
   "Agent backup selected": "Выбрана резервная копия агента",
   "Could not read this package. Use a JSON file or an agent backup up to 4 MiB.":
     "Не удалось прочитать пакет. Выберите файл JSON или резервную копию агента размером до 4 МиБ.",

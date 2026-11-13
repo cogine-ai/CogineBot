@@ -495,6 +495,82 @@ it("does not approve an empty import from excluded backup notes", () => {
   );
 });
 
+it("reports excluded notes alongside explicitly selected backup memory", () => {
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "hermes",
+    files: [{ path: "memories/MEMORY.md", content: "Selected note." }],
+    excludedMemoryCount: 1,
+  });
+  const preview = parseBotPackageSource(source, { includeMemory: true });
+  expect(preview.availableMemoryCount).toBe(2);
+  expect(preview.document.memory).toEqual([{ path: "MEMORY.md", content: "Selected note." }]);
+  expect(preview.leftOut).toContainEqual({
+    kind: "memory",
+    name: "memory",
+    reason: "Memory notes not selected: 1.",
+  });
+});
+
+it("reports body-free backup omissions and ignores metadata about a selected file", () => {
+  const preview = parseBotPackageSource(
+    JSON.stringify({
+      format: "agent-backup/v1",
+      source: "openclaw",
+      files: [{ path: "SOUL.md", content: "Selected instruction." }],
+    }),
+    {
+      includeMemory: false,
+      backupOmissions: [
+        { path: "SOUL.md", reason: "stock" },
+        { path: "skills/invalid/SKILL.md", reason: "invalidSkill" },
+        { path: "skills/attached/SKILL.md", reason: "missingSkillFiles" },
+      ],
+    },
+  );
+  expect(preview.document.profile.instructions).toBe("Selected instruction.");
+  expect(preview.leftOut).toEqual([
+    {
+      kind: "skill",
+      name: "skills/invalid/SKILL.md",
+      reason: "This Skill is missing valid metadata.",
+    },
+    {
+      kind: "skill",
+      name: "skills/attached/SKILL.md",
+      reason: "This Skill needs additional files.",
+    },
+  ]);
+});
+
+it("keeps the same available note count across partial selection and the import limit", () => {
+  const files = Array.from({ length: 101 }, (_, index) => ({
+    path: `memory/note-${index}.md`,
+    content: "Synthetic note.",
+  }));
+  const source = { format: "agent-backup/v1", source: "openclaw" };
+  const instructions = { path: "SOUL.md", content: "Read the report." };
+  const off = parseBotPackageSource(
+    JSON.stringify({ ...source, files: [instructions], excludedMemoryCount: files.length }),
+    { includeMemory: false },
+  );
+  const partial = parseBotPackageSource(
+    JSON.stringify({ ...source, files: files.slice(0, 1), excludedMemoryCount: 100 }),
+    { includeMemory: true },
+  );
+  const all = parseBotPackageSource(JSON.stringify({ ...source, files }), { includeMemory: true });
+  expect([
+    off.availableMemoryCount,
+    partial.availableMemoryCount,
+    all.availableMemoryCount,
+  ]).toEqual([101, 101, 101]);
+  expect([
+    off.document.memory.length,
+    partial.document.memory.length,
+    all.document.memory.length,
+  ]).toEqual([0, 1, 100]);
+});
+
 it("accepts OpenClaw identity with a custom description and placeholder name", () => {
   const source = JSON.stringify({
     format: "agent-backup/v1",

@@ -7626,3 +7626,47 @@ msgstr "要断开 Slack 连接吗？"
 
 msgid "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot."
 msgstr "Bot 将停止收发此工作区的消息。对话历史仍保留在 CogineBot。"
+
+#: src/components/BotPackageImport.tsx
+msgid "Choose backup content"
+msgstr "选择备份内容"
+
+#: src/components/BotPackageImport.tsx
+msgid "Unavailable backup files"
+msgstr "无法导入的备份文件"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill is missing valid metadata."
+msgstr "此 Skill 缺少有效的元数据。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill declares requirements that need review."
+msgstr "此 Skill 声明了需要复核的要求。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill exceeds the Bot limits."
+msgstr "此 Skill 超过 Bot 的限制。"
+
+#: src/components/BotPackageImport.tsx
+msgid "The original template was omitted."
+msgstr "已跳过原始模板。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This instruction file exceeds the Bot limit."
+msgstr "此指令文件超过 Bot 的限制。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This note exceeds the Bot memory limits."
+msgstr "此笔记超过 Bot 的记忆限制。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This identity file has no supported fields."
+msgstr "此身份文件没有受支持的字段。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This Skill needs additional files."
+msgstr "此 Skill 需要附属文件。"
+
+#: src/components/BotPackageImport.tsx
+msgid "This runtime file is not used."
+msgstr "此运行时文件不会使用。"
