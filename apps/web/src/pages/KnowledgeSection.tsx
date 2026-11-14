@@ -1,4 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { ORPCError } from "@orpc/client";
 import type { AgentSkill, AgentSkillCatalogEntry, MemoryDocument } from "@rakazo/contracts";
 import {
   Badge,
@@ -50,6 +51,7 @@ export function KnowledgeSection({
             load={() => rpc.memory.list({ botId, scope: "bot" })}
             exportFilename="memory.md"
             testId="bot-knowledge-memory"
+            checkRevision
           />
         </TabsContent>
         <TabsContent value="skills">
@@ -81,10 +83,12 @@ function MemoryDocumentList({
   load,
   exportFilename,
   testId,
+  checkRevision = false,
 }: {
   load: () => Promise<MemoryDocument[]>;
   exportFilename: string;
   testId: string;
+  checkRevision?: boolean;
 }) {
   const { t } = useLingui();
   const rpc = useSpaceRpc();
@@ -92,6 +96,8 @@ function MemoryDocumentList({
   const [loading, setLoading] = useState(true);
   const [docs, setDocs] = useState<MemoryDocument[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [openedRevision, setOpenedRevision] = useState<number>();
+  const [conflict, setConflict] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,30 +129,49 @@ function MemoryDocumentList({
 
   function openDoc(doc: MemoryDocument) {
     setOpenId(doc.id);
+    setOpenedRevision(doc.revision);
+    setConflict(false);
     setDraft(doc.content);
     setError(null);
   }
 
   async function save(doc: MemoryDocument) {
-    if (busy || !scopeCurrent()) return;
+    if (busy || conflict || !scopeCurrent()) return;
     setBusy(true);
     setError(null);
     try {
       const current = generation.current;
-      const updated = await rpc.memory.update({ documentId: doc.id, content: draft });
+      const updated = await rpc.memory.update({
+        documentId: doc.id,
+        content: draft,
+        ...(checkRevision && { expectedRevision: openedRevision }),
+      });
       if (!scopeCurrent() || current !== generation.current) return;
       setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
       setOpenId(null);
-    } catch {
+    } catch (failure) {
       if (!scopeCurrent()) return;
+      if (checkRevision && failure instanceof ORPCError && failure.code === "CONFLICT") {
+        setConflict(true);
+        return;
+      }
       setError(t`Could not save`);
     } finally {
       if (scopeCurrent()) setBusy(false);
     }
   }
 
+  function closeDoc() {
+    setOpenId(null);
+    if (conflict) {
+      setConflict(false);
+      setLoading(true);
+      setReload((value) => value + 1);
+    }
+  }
+
   async function exportMarkdown() {
-    if (busy || !scopeCurrent()) return;
+    if (busy || loading || !scopeCurrent()) return;
     setBusy(true);
     setError(null);
     try {
@@ -169,7 +194,14 @@ function MemoryDocumentList({
 
   return (
     <div data-testid={testId}>
-      {error ? (
+      {conflict ? (
+        <div role="alert" className="px-2.5 pb-2 text-[13px] text-destructive">
+          <Trans>
+            This memory changed while you were editing. Copy your draft if needed, then close and
+            reopen the document to see the latest version.
+          </Trans>
+        </div>
+      ) : error ? (
         <div className="px-2.5 pb-2 text-[13px] text-destructive">
           {error}
           <Button
@@ -194,8 +226,8 @@ function MemoryDocumentList({
           <Button
             variant="ghost"
             type="button"
-            disabled={busy}
-            onClick={() => (openId === doc.id ? setOpenId(null) : openDoc(doc))}
+            disabled={busy || loading || (conflict && openId !== doc.id)}
+            onClick={() => (openId === doc.id ? closeDoc() : openDoc(doc))}
             className={rowClass(openId === doc.id)}
           >
             <span className="flex w-full items-baseline justify-between gap-3">
@@ -222,7 +254,7 @@ function MemoryDocumentList({
                 <Button
                   variant="ghost"
                   type="button"
-                  disabled={busy || draft === doc.content}
+                  disabled={busy || conflict || draft === doc.content}
                   onClick={() => void save(doc)}
                   className="rounded-lg bg-muted px-3 py-1.5 text-[13px] text-foreground disabled:opacity-50"
                 >
@@ -232,7 +264,7 @@ function MemoryDocumentList({
                   variant="ghost"
                   type="button"
                   disabled={busy}
-                  onClick={() => setOpenId(null)}
+                  onClick={closeDoc}
                   className="rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground"
                 >
                   <Trans>Cancel</Trans>
@@ -246,7 +278,7 @@ function MemoryDocumentList({
         <Button
           variant="ghost"
           type="button"
-          disabled={busy}
+          disabled={busy || loading}
           onClick={() => void exportMarkdown()}
           className="mt-2 px-2.5 text-[13px] text-muted-foreground hover:text-foreground"
         >

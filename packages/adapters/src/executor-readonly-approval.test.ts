@@ -132,6 +132,7 @@ function fixture({
   builtin = false,
   disabledBuiltinTools = [],
   existingSharedMemory,
+  existingBotMemory,
   semanticMemory,
   semanticTarget,
   memoryConnected = () => true,
@@ -159,6 +160,7 @@ function fixture({
   builtin?: boolean;
   disabledBuiltinTools?: string[];
   existingSharedMemory?: string;
+  existingBotMemory?: string;
   semanticMemory?: SemanticMemoryProvider;
   semanticTarget?: { scope: "isolated" | "shared"; connectionId: string };
   memoryConnected?: () => boolean;
@@ -212,9 +214,10 @@ function fixture({
   const effects: Effect[] = [];
   const results: unknown[] = [];
   const resolvedRoutes: ConnectorRoute[] = [];
+  const initialMemory = existingBotMemory ?? existingSharedMemory;
   const sharedMemoryState = {
-    content: existingSharedMemory as string | undefined,
-    revision: existingSharedMemory === undefined ? 0 : 1,
+    content: initialMemory,
+    revision: initialMemory === undefined ? 0 : 1,
   };
   const commit = vi.fn(
     async (request: { path: string; content: string; expectedRevision?: number }) => {
@@ -553,7 +556,7 @@ function fixture({
     memory: {
       read: async (request: { scope: string; path?: string }) => {
         const documents =
-          request.scope === "user" &&
+          request.scope === (existingBotMemory === undefined ? "user" : "bot") &&
           request.path === "MEMORY.md" &&
           sharedMemoryState.content !== undefined
             ? [
@@ -5717,9 +5720,14 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it.each(["remember", "save_shared_memory", "save_memory"] as const)(
-    "reviews a tainted %s using only authenticated owner words",
-    async (name) => {
+  it.each([
+    ["remember", false],
+    ["remember", true],
+    ["save_shared_memory", false],
+    ["save_memory", false],
+  ] as const)(
+    "reviews a tainted %s using only authenticated owner words (correction: %s)",
+    async (name, correction) => {
       reviewMock.mockResolvedValue({
         decision: "ask",
         reason: "Owner did not request this",
@@ -5749,8 +5757,9 @@ describe("connector read-only metadata and approval enforcement", () => {
         }),
       });
       const args = {
-        ...(name === "save_shared_memory" && { path: "MEMORY.md" }),
+        ...((name === "save_shared_memory" || correction) && { path: "MEMORY.md" }),
         content: "Synthetic preference",
+        ...(correction && { correction: { original: "Old text", expectedRevision: 1 } }),
       };
       Object.assign(f.runRecord, { sourceMessageId: "memory-owner-source" });
       f.prisma.message.findUnique.mockResolvedValue({
@@ -5787,6 +5796,69 @@ describe("connector read-only metadata and approval enforcement", () => {
       ]);
       expect(f.commit).not.toHaveBeenCalled();
       expect(save).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "approved",
+    "changed model args",
+    "missing correction",
+    "edited after approval",
+    "denied",
+  ] as const)(
+    "checks the bound correction against the latest revision when %s",
+    async (outcome) => {
+      const f = fixture({
+        name: "remember",
+        builtin: true,
+        existingBotMemory: "Old rule\nPreserve this line",
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "remember" }],
+      });
+      const args = {
+        path: "MEMORY.md",
+        content: "New rule",
+        correction: { original: "Old rule", expectedRevision: 1 },
+      };
+      f.setCalls([{ args, executionId: "initial" }]);
+      await f.run();
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(JSON.stringify(f.pauseRunForInput.mock.calls)).toContain("Old rule");
+      expect(JSON.stringify(f.pauseRunForInput.mock.calls)).toContain("New rule");
+      expect(f.effects[0]).toMatchObject({ status: "intended", request: args });
+      expect(f.commit).not.toHaveBeenCalled();
+
+      f.effects[0]!.status = outcome === "denied" ? "denied" : "approved";
+      if (outcome === "edited after approval") {
+        f.sharedMemoryState.content = "Old rule\nConcurrent detail";
+        f.sharedMemoryState.revision = 2;
+      }
+      const resumedArgs =
+        outcome === "changed model args"
+          ? {
+              ...args,
+              content: "Unapproved replacement",
+              correction: { ...args.correction, original: "Preserve this line" },
+            }
+          : outcome === "missing correction"
+            ? { path: args.path, content: args.content }
+            : args;
+      f.setCalls([{ args: resumedArgs, executionId: "resumed" }]);
+      await f.run();
+      if (
+        outcome === "approved" ||
+        outcome === "changed model args" ||
+        outcome === "missing correction"
+      ) {
+        expect(f.commit).toHaveBeenCalledOnce();
+        expect(f.sharedMemoryState.content).toBe("New rule\nPreserve this line");
+        expect(f.results.at(-1)).toEqual({ ok: true, path: "MEMORY.md", revision: 2 });
+      } else {
+        expect(f.commit).not.toHaveBeenCalled();
+        expect(f.results.at(-1)).toHaveProperty("error");
+        expect(f.sharedMemoryState.content).toBe(
+          outcome === "denied" ? "Old rule\nPreserve this line" : "Old rule\nConcurrent detail",
+        );
+      }
     },
   );
 

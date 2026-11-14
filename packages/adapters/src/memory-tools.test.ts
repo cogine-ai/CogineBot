@@ -1,12 +1,12 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
-import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
+import { appendMemoryFact, correctMemoryFact, selectMemoryTools } from "./memory-tools.js";
 
 function tool(name: string): ConnectorTool {
   return { name, description: name, inputSchema: { type: "object", properties: {} } };
 }
 
-const allThree = [
+const tools = [
   tool("remember"),
   tool("recall_memory"),
   tool("save_memory"),
@@ -43,15 +43,31 @@ describe("appendMemoryFact", () => {
   });
 });
 
+describe("correctMemoryFact", () => {
+  it("preserves surrounding whitespace and CRLF and treats replacement syntax literally", () => {
+    expect(
+      correctMemoryFact("  header\r\nold\r\ntext\r\n footer  ", "old\r\ntext", " new $&\r\nline "),
+    ).toBe("  header\r\n new $&\r\nline \r\n footer  ");
+  });
+
+  it.each([
+    ["header\r\nold", "header\nold"],
+    ["alpha\nalpha", "alpha"],
+    ["banana", "ana"],
+  ])("refuses missing or ambiguous original text in %j", (content, original) => {
+    expect(correctMemoryFact(content!, original!, "new")).toBeUndefined();
+  });
+});
+
 describe("selectMemoryTools", () => {
   it("keeps native remember and drops semantic memory tools when unconfigured", () => {
-    const names = selectMemoryTools(allThree, false).map((t) => t.name);
+    const names = selectMemoryTools(tools, false).map((t) => t.name);
     expect(names).toEqual(["remember", "shell"]);
   });
 
-  it("keeps semantic memory tools and drops native remember when configured", () => {
-    const names = selectMemoryTools(allThree, true).map((t) => t.name);
-    expect(names).toEqual(["recall_memory", "save_memory", "forget_memory", "shell"]);
+  it("offers explicit Markdown memory alongside semantic memory when configured", () => {
+    const names = selectMemoryTools(tools, true).map((t) => t.name);
+    expect(names).toEqual(["remember", "recall_memory", "save_memory", "forget_memory", "shell"]);
   });
 
   it("is a no-op for tool lists with no memory tools at all", () => {

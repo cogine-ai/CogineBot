@@ -7690,3 +7690,7 @@ msgstr "无法确认此安排的归属。"
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "导入的例行任务默认暂停。"
+
+#: src/pages/KnowledgeSection.tsx
+msgid "This memory changed while you were editing. Copy your draft if needed, then close and reopen the document to see the latest version."
+msgstr "你编辑期间，这份记忆已更新。如需保留草稿，请先复制，然后关闭并重新打开文档查看最新版本。"

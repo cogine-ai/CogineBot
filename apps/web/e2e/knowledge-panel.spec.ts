@@ -109,6 +109,26 @@ test("memory and skills are readable and editable in the app", async ({ page }, 
   ).toContainEqual(expect.objectContaining({ content: `# Chief\n\n${botMarker}\n`, revision: 2 }));
   await botMemoryRow.click();
   await expect(botDocEditor).toHaveValue(new RegExp(botMarker));
+  const botDocument = (
+    await rpc<MemoryDocument[]>(page, "memory/list", { botId: activeBotId(page), scope: "bot" })
+  ).find(({ path }) => path === "MEMORY.md")!;
+  const newerBotMemory = `Newer preference ${stamp}`;
+  await rpc(page, "memory/update", {
+    documentId: botDocument.id,
+    content: newerBotMemory,
+    expectedRevision: botDocument.revision,
+  });
+  await botDocEditor.fill("Unsaved text from the older editor");
+  const botSave = botMemory.getByRole("button", { name: "Save", exact: true });
+  await botSave.click();
+  await expect(botMemory.getByRole("alert")).toContainText("This memory changed");
+  await expect(botDocEditor).toHaveValue("Unsaved text from the older editor");
+  await expect(botSave).toBeDisabled();
+  await captureScreenshot(page, testInfo, "85-knowledge-memory-conflict");
+  await botMemory.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(botMemory.getByText("rev 3")).toBeVisible();
+  await botMemoryRow.click();
+  await expect(botDocEditor).toHaveValue(newerBotMemory);
   await botMemory.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await knowledge.getByRole("tab", { name: "Shared skills", exact: true }).click();
