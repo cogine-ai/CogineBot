@@ -187,6 +187,7 @@ beforeEach(() => {
             ]
           : [],
       };
+    if (proc === "bots/listArchived") return [];
     if (proc === "bots/list")
       return [
         {
@@ -376,3 +377,95 @@ it.each(["permission", "network"])(
     expect(host.textContent).toContain("No chat apps linked yet.");
   },
 );
+
+it("filters only the identity view by Space, including archived bots, while preserving owned cross-Space channel and opaque connection metadata", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  const identities = [
+    {
+      id: "identity-a",
+      botId: "bot-a",
+      botName: "Bot A",
+      provider: "synthetic",
+      address: "address-in-a",
+    },
+    {
+      id: "identity-archived",
+      botId: "bot-archived",
+      botName: "Archived A",
+      provider: "synthetic",
+      address: "address-archived-a",
+    },
+    {
+      id: "identity-c",
+      botId: "bot-c",
+      botName: "Owned other Space",
+      provider: "synthetic",
+      address: "address-in-c",
+    },
+  ];
+  state.rpc.mockImplementation(
+    async (proc: string, body: Record<string, unknown>, options: unknown) => {
+      if (proc === "messaging/status")
+        return { enabled: true, providers: ["synthetic"], identities };
+      if (proc === "bots/list")
+        return state.spaceId === "space-a"
+          ? [{ id: "bot-a", name: "Bot A", archivedAt: null }]
+          : [{ id: "bot-c", name: "Owned other Space", archivedAt: null }];
+      if (proc === "bots/listArchived")
+        return state.spaceId === "space-a"
+          ? [{ id: "bot-archived", name: "Archived A", archivedAt: "2026-01-01T00:00:00Z" }]
+          : [];
+      if (proc === "messaging/channels/list")
+        return [
+          {
+            id: "membership-c",
+            identityId: "identity-c",
+            provider: "synthetic",
+            name: "Owned cross-Space channel",
+            status: "invited",
+          },
+        ];
+      if (proc === "messaging/connections/list")
+        return [
+          {
+            id: "connection-c",
+            peerBotName: "agent",
+            peerOwnerLabel: "owner",
+            incoming: false,
+            status: "pending",
+            requestVersion: 3,
+          },
+        ];
+      return original(proc, body, options);
+    },
+  );
+  await render();
+  expect(host.textContent).toContain("address-in-a");
+  expect(host.textContent).toContain("address-archived-a");
+  expect(host.textContent).not.toContain("address-in-c");
+  expect(host.textContent).toContain("Owned cross-Space channel");
+  const choices = [...host.querySelectorAll('select[aria-label="Bot to link"] option')].map(
+    (option) => option.textContent,
+  );
+  expect(choices).toEqual(["Choose a bot…", "Bot A"]);
+  await click("Approve");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "messaging/channels/respond",
+    { membershipId: "membership-c", accept: true },
+    expect.anything(),
+  );
+  await click("Revoke");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "messaging/connections/revoke",
+    { connectionId: "connection-c", requestVersion: 3 },
+    expect.anything(),
+  );
+  await act(async () => {
+    state.epoch++;
+    state.spaceId = "space-c";
+    for (const listener of state.listeners) listener();
+  });
+  expect(host.textContent).toContain("address-in-c");
+  expect(host.textContent).not.toContain("address-in-a");
+  expect(host.textContent).not.toContain("address-archived-a");
+});

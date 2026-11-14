@@ -6,7 +6,7 @@ import type {
 } from "@rakazo/contracts";
 import { ExternalConversationPolicySchema } from "@rakazo/contracts";
 import type { createMessagingSettings } from "@rakazo/core";
-import { validConnectionVersion } from "@rakazo/core";
+import { currentSpaceMessagingIdentities, validConnectionVersion } from "@rakazo/core";
 import { useState, useSyncExternalStore } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -30,6 +30,7 @@ function MessagingContent({ session }: { session: Session }) {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const [selected, setSelected] = useState<string | null>(null);
   const data = state.data;
+  const identities = data ? currentSpaceMessagingIdentities(data.status, data.bots) : [];
   const conversation = data?.conversations.find((row) => row.id === selected);
   const bot = data?.bots.find((row) => row.id === conversation?.botId);
   const button = (label: string, action: () => void, disabled = false) => (
@@ -84,10 +85,10 @@ function MessagingContent({ session }: { session: Session }) {
           <>
             <View style={styles.card}>
               <Text style={styles.title}>{t("Chat apps")}</Text>
-              {!data.status.identities.length ? (
+              {!identities.length ? (
                 <Text style={styles.secondary}>{t("No chat apps linked yet.")}</Text>
               ) : null}
-              {data.status.identities.map((identity) => (
+              {identities.map((identity) => (
                 <View key={identity.id} style={styles.row}>
                   <Text style={styles.text}>
                     {identity.provider} · {identity.address} → {identity.botName}
@@ -106,7 +107,9 @@ function MessagingContent({ session }: { session: Session }) {
                 value={state.botId}
                 choices={[
                   { key: "", label: t("Choose a bot…") },
-                  ...data.bots.map((row) => ({ key: row.id, label: row.name })),
+                  ...data.bots
+                    .filter((row) => !row.archivedAt)
+                    .map((row) => ({ key: row.id, label: row.name })),
                 ]}
                 onChange={session.selectBot}
               />

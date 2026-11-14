@@ -406,7 +406,7 @@ describe("messaging.identities", () => {
     });
     expect(response.status).toBe(200);
     expect(prisma.messagingIdentity.deleteMany).toHaveBeenCalledWith({
-      where: { id: "mi-1", userId: "user-1", spaceId: "ws-1" },
+      where: { id: "mi-1", userId: "user-1" },
     });
     const missing = await call(handler, actor, "messaging/identities/unlink", {
       identityId: "mi-other",
@@ -1074,15 +1074,15 @@ describe("messaging.connections.respond confirmation atomicity", () => {
   });
 });
 
-describe("messaging Space boundary", () => {
+describe("messaging ownership boundary", () => {
   it.each(["messaging/status", "messaging/channels/list", "messaging/connections/list"])(
-    "scopes %s by both owner and Space",
+    "keeps %s scoped to the owner across Spaces",
     async (procedure) => {
       const { handler, actor, prisma } = messagingDeps();
       const response = await call(handler, actor, procedure);
       expect(response.status).toBe(200);
       expect(prisma.messagingIdentity.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { userId: actor.userId, spaceId: actor.spaceId } }),
+        expect.objectContaining({ where: { userId: actor.userId } }),
       );
     },
   );
@@ -1091,12 +1091,12 @@ describe("messaging Space boundary", () => {
     ["messaging/channels/leave", { membershipId: "cm-1" }],
     ["messaging/connections/respond", { connectionId: "ac-1", requestVersion: 1, accept: true }],
     ["messaging/connections/revoke", { connectionId: "ac-1", requestVersion: 1 }],
-  ])("refuses %s when no owned identity is in the selected Space", async (procedure, input) => {
+  ])("refuses %s when the caller has no owned identity", async (procedure, input) => {
     const { handler, actor, prisma } = messagingDeps({ identities: [] });
     const response = await call(handler, actor, procedure as string, input);
     expect(response.status).toBe(404);
     expect(prisma.messagingIdentity.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { userId: actor.userId, spaceId: actor.spaceId } }),
+      expect.objectContaining({ where: { userId: actor.userId } }),
     );
   });
 });

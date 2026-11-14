@@ -43,7 +43,13 @@ export function useMessagingSession() {
           status: () => call<MessagingStatus>("messaging/status"),
           channels: () => call<MessagingChannelMembership[]>("messaging/channels/list"),
           connections: () => call<MessagingAgentConnection[]>("messaging/connections/list"),
-          bots: () => call<Bot[]>("bots/list"),
+          bots: async () => {
+            const [active, archived] = await Promise.all([
+              call<Bot[]>("bots/list"),
+              call<Bot[]>("bots/listArchived"),
+            ]);
+            return [...active, ...archived];
+          },
           conversations: async () => {
             const navigation = await call<{
               current: { id: string; externalConversations: ExternalConversation[] };

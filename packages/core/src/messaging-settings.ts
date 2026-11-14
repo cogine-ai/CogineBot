@@ -198,3 +198,14 @@ export function validConnectionVersion(connection: MessagingAgentConnection): bo
     connection.requestVersion <= 2_147_483_647
   );
 }
+
+/** C1 is a view of current-Space identities. The underlying messaging API is
+ * owner-scoped across Spaces; channel metadata and opaque connections retain
+ * that existing contract. Include archived bots in the supplied Space roster. */
+export function currentSpaceMessagingIdentities(
+  status: MessagingStatus,
+  bots: readonly Pick<Bot, "id">[],
+) {
+  const botIds = new Set(bots.map((bot) => bot.id));
+  return status.identities.filter((identity) => botIds.has(identity.botId));
+}
