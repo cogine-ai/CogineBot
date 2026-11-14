@@ -62,6 +62,14 @@
       "types": "./src/egress.ts",
       "development": "./src/egress.ts",
       "default": "./src/egress.ts"
+    },
+    "./routine-native-events": {
+      "types": "./src/routine-native-events.ts",
+      "default": "./src/routine-native-events.ts"
+    },
+    "./routine-trigger-patch": {
+      "types": "./src/routine-trigger-patch.ts",
+      "default": "./src/routine-trigger-patch.ts"
     }
   },
   "scripts": {

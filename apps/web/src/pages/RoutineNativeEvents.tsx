@@ -17,35 +17,12 @@ import { rpc, selectedSpaceId } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 import type { NativeRoutineTriggerDraft } from "./routine-native-events";
 import {
+  NATIVE_ROUTINE_EVENT_KINDS,
   nativeEventAccounts,
   nativeEventAppForKind,
   resetNativeRoutineTriggerDraft,
 } from "./routine-native-events";
 
-const EVENT_KINDS: NativeRoutineEventKind[] = [
-  "calendar.event_changed",
-  "calendar.event_starting",
-  "notion.page_content_changed",
-  "notion.page_properties_or_data_source_changed",
-  "notion.comment_changed",
-  "gmail.message_received",
-  "gmail.thread_or_label_changed",
-  "drive.file_changed",
-  "drive.file_trashed",
-  "slack.app_mention",
-  "slack.app_dm",
-  "slack.channel_message",
-  "sharepoint.list_item.changed",
-  "excel.range.changed",
-  "planner.task.changed",
-  "teams.channel_message.created",
-  "feishu.calendar_event.changed",
-  "dingtalk.calendar_event.changed",
-  "wecom.schedule.changed",
-  "telegram.pinned_message.changed",
-  "discord.channel_message.created",
-  "discord.command.invoked",
-];
 const EVENT_APP_NAMES: Record<string, string> = {
   "google-calendar": "Google Calendar",
   notion: "Notion",
@@ -196,7 +173,7 @@ function NativeEventFields({
   const selected = accounts.find((row) => row.id === draft.connectionId);
   const previous = rows.find((row) => row.id === draft.connectionId);
   const app = selected?.provider ?? nativeEventAppForKind(draft.kind);
-  const kinds = EVENT_KINDS.filter((kind) => nativeEventAppForKind(kind) === app);
+  const kinds = NATIVE_ROUTINE_EVENT_KINDS.filter((kind) => nativeEventAppForKind(kind) === app);
   const kindLabel = (kind: NativeRoutineEventKind): string => {
     switch (kind) {
       case "sharepoint.list_item.changed":
