@@ -1454,6 +1454,28 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     await owner.prisma.bot.create({
       data: { id: sharedForeignBot, spaceId: spaceA, userId: userB, name: "Foreign", color: "ink" },
     });
+    // Sharing the selected Space is not ownership. These rows must stay hidden
+    // even though the caller can manage their own identities in another Space.
+    const sharedForeignIdentity = id("rpc-shared-foreign-identity");
+    const sharedForeignConnection = id("rpc-shared-foreign-connection");
+    await owner.prisma.messagingIdentity.create({
+      data: {
+        id: sharedForeignIdentity,
+        provider: "fixture",
+        address: id("rpc-shared-foreign-address"),
+        userId: userB,
+        spaceId: spaceA,
+        botId: sharedForeignBot,
+      },
+    });
+    await owner.prisma.agentConnection.create({
+      data: {
+        id: sharedForeignConnection,
+        requesterBotId: peerBot,
+        targetBotId: sharedForeignBot,
+        status: "pending",
+      },
+    });
     const issued = await call("messaging/link/start", { botId: linkBots.a });
     expect(issued.status).toBe(200);
     const issuedBody = (await issued.json()).json as { code: string };
@@ -1485,6 +1507,27 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         select: { code: true },
       }),
     ).toEqual([{ code: issuedBody.code.replaceAll("-", "") }]);
+    const status = await call("messaging/status");
+    expect(status.status).toBe(200);
+    const identities = (await status.json()).json.identities as Array<{
+      id: string;
+      botId: string;
+    }>;
+    expect(identities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: myIdentity, botId: myBot }),
+        expect.objectContaining({ botId: linkBots.a }),
+      ]),
+    );
+    expect(identities.some(({ id }) => id === peerIdentity || id === sharedForeignIdentity)).toBe(
+      false,
+    );
+    for (const identityId of [peerIdentity, sharedForeignIdentity]) {
+      expect((await call("messaging/identities/unlink", { identityId })).status).toBe(404);
+      expect(
+        await owner.prisma.messagingIdentity.findUnique({ where: { id: identityId } }),
+      ).not.toBeNull();
+    }
     const channels = await call("messaging/channels/list");
     expect(channels.status).toBe(200);
     expect(await channels.json()).toMatchObject({
@@ -1531,12 +1574,21 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       requestVersion: 1,
     });
     expect(connections.some(({ id }) => id === unrelated)).toBe(false);
+    expect(connections.some(({ id }) => id === sharedForeignConnection)).toBe(false);
+    // Peer labels are the only permitted metadata, never underlying tenant IDs.
+    for (const connection of connections) {
+      for (const key of ["requesterBotId", "targetBotId", "userId", "spaceId", "identityId"]) {
+        expect(connection).not.toHaveProperty(key);
+      }
+    }
     const respond = (connectionId: string, requestVersion: number) =>
       call("messaging/connections/respond", { connectionId, requestVersion, accept: true });
     const revoke = (connectionId: string, requestVersion: number) =>
       call("messaging/connections/revoke", { connectionId, requestVersion });
     expect((await respond(unrelated, 1)).status).toBe(404);
     expect((await respond(outgoing, 1)).status).toBe(404);
+    expect((await respond(sharedForeignConnection, 1)).status).toBe(404);
+    expect((await revoke(sharedForeignConnection, 1)).status).toBe(404);
 
     // Reopen the same row after rendering v1 and before either RPC starts.
     await owner.prisma.agentConnection.update({
@@ -1600,6 +1652,12 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         })
       ).status,
     ).toBe(404);
+    expect((await call("messaging/identities/unlink", { identityId: myIdentity })).status).toBe(
+      200,
+    );
+    expect(
+      await owner.prisma.messagingIdentity.findUnique({ where: { id: myIdentity } }),
+    ).toBeNull();
     expect(await inA(() => runtime!.prisma.user.findMany({ select: { id: true } }))).toEqual([
       { id: userA },
     ]);

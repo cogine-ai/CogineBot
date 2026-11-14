@@ -1354,6 +1354,15 @@ export default function Integrations() {
           />
         ) : null}
 
+        {!detailItem ? (
+          <NativeActionButton
+            label={t("Messaging")}
+            fill={false}
+            prominence="secondary"
+            onPress={() => router.push("/(settings)/messaging")}
+          />
+        ) : null}
+
         {!detailItem && messagingLink && isMobileScopeCurrent(messagingLink.scope) ? (
           <NativeActionButton
             label={t("Manage Slack messaging in browser")}

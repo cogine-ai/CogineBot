@@ -1073,3 +1073,30 @@ describe("messaging.connections.respond confirmation atomicity", () => {
     );
   });
 });
+
+describe("messaging ownership boundary", () => {
+  it.each(["messaging/status", "messaging/channels/list", "messaging/connections/list"])(
+    "keeps %s scoped to the owner across Spaces",
+    async (procedure) => {
+      const { handler, actor, prisma } = messagingDeps();
+      const response = await call(handler, actor, procedure);
+      expect(response.status).toBe(200);
+      expect(prisma.messagingIdentity.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { userId: actor.userId } }),
+      );
+    },
+  );
+  it.each([
+    ["messaging/channels/respond", { membershipId: "cm-1", accept: true }],
+    ["messaging/channels/leave", { membershipId: "cm-1" }],
+    ["messaging/connections/respond", { connectionId: "ac-1", requestVersion: 1, accept: true }],
+    ["messaging/connections/revoke", { connectionId: "ac-1", requestVersion: 1 }],
+  ])("refuses %s when the caller has no owned identity", async (procedure, input) => {
+    const { handler, actor, prisma } = messagingDeps({ identities: [] });
+    const response = await call(handler, actor, procedure as string, input);
+    expect(response.status).toBe(404);
+    expect(prisma.messagingIdentity.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: actor.userId } }),
+    );
+  });
+});
