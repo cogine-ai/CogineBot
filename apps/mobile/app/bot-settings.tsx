@@ -49,6 +49,12 @@ import { native, useMobileTokens } from "../lib/native";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
 
+const NativeKnowledgeTools = lazy(() =>
+  import("../components/knowledge-tools").then((module) => ({
+    default: module.NativeKnowledgeTools,
+  })),
+);
+
 const NativeBotPackageTools = lazy(() =>
   import("../components/bot-package-tools").then((module) => ({
     default: module.NativeBotPackageTools,
@@ -80,6 +86,7 @@ export default function BotSettingsScreen() {
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [packageOpen, setPackageOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [modelKey, setModelKey] = useState("");
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
@@ -110,6 +117,7 @@ export default function BotSettingsScreen() {
     if (!botId) return;
     let cancelled = false;
     setBot(null);
+    setKnowledgeOpen(false);
     setPending(false);
     setError(null);
     setInstructionsConflict(false);
@@ -691,6 +699,20 @@ export default function BotSettingsScreen() {
           onPress={() => void save()}
           style={{ marginTop: 24 }}
         />
+        {bot?.id === botId ? (
+          <NativeActionButton
+            label={t("Knowledge")}
+            prominence="secondary"
+            selected={knowledgeOpen}
+            onPress={() => setKnowledgeOpen(!knowledgeOpen)}
+            style={{ marginTop: 16 }}
+          />
+        ) : null}
+        {knowledgeOpen && bot?.id === botId ? (
+          <Suspense fallback={<Text>{t("Loading…")}</Text>}>
+            <NativeKnowledgeTools botId={bot.id} />
+          </Suspense>
+        ) : null}
         {bot ? (
           <Suspense fallback={null}>
             <NativeDeploymentTransferTools botId={bot.id} />

@@ -1065,11 +1065,13 @@ model AgentSkill {
   content     String
   /// user | builtin | plugin — only user skills are writable via API/tools.
   source      String   @default("user")
+  clientNonce String?
   installId   String?
   install     CapabilityInstall? @relation(fields: [installId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId])
   @@index([installId])
   // Case-insensitive unique index agent_skills_spaceId_userId_name_lower_key is created in SQL.

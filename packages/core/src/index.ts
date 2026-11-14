@@ -38,6 +38,7 @@ export * from "./gaze-avatar.js";
 export * from "./group-mentions.js";
 export * from "./group-settings-save.js";
 export * from "./http-response.js";
+export * from "./knowledge-editor.js";
 export * from "./load-failure.js";
 export * from "./markdown-plain.js";
 export * from "./mcp.js";

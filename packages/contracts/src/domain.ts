@@ -680,6 +680,8 @@ export type AgentSkillCatalogEntry = z.infer<typeof AgentSkillCatalogEntrySchema
 
 export const CreateAgentSkillInput = z
   .object({
+    /** Replays recover one creation within the authenticated user and Space. */
+    clientNonce: z.string().min(1).max(200).optional(),
     content: z.string().min(1).max(100_000).optional(),
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
