@@ -1,9 +1,9 @@
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import type { AdapterContext, ConnectorEvent } from "@rakazo/adapter-kit";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
-import { callRemoteMcpTool, type RemoteMcpOptions } from "./remote-mcp.js";
+import { callRemoteMcpTool, MCP_TIMEOUT_MS, type RemoteMcpOptions } from "./remote-mcp.js";
 import {
   type RemoteMcpRunScope,
   RemoteMcpSessionPool,
@@ -38,6 +38,7 @@ function context(
 function server(
   hooks: {
     initialize?: (session: string, signal: AbortSignal | null | undefined) => Promise<void>;
+    stream?: (signal: AbortSignal | null | undefined) => Response;
     tool?: (name: string, session: string | null, id: number) => Response | Promise<Response>;
     close?: (signal: AbortSignal | null | undefined) => Promise<Response>;
     stateless?: boolean;
@@ -49,7 +50,8 @@ function server(
   const notifications: string[] = [];
   const fetch: typeof globalThis.fetch = async (_input, init) => {
     const session = new Headers(init?.headers).get("mcp-session-id");
-    if (init?.method === "GET") return new Response(null, { status: 405 });
+    if (init?.method === "GET")
+      return hooks.stream?.(init.signal) ?? new Response(null, { status: 405 });
     if (init?.method === "DELETE") {
       closed.push(session);
       return hooks.close ? hooks.close(init.signal) : new Response(null, { status: 204 });
@@ -115,6 +117,60 @@ describe("remote MCP tool sessions", () => {
   const current = async () => {};
   afterEach(async () => {
     await pool?.close();
+  });
+
+  it("keeps the Streamable HTTP event stream through setup expiry and releases it when the Run ends", async () => {
+    pool = new RemoteMcpSessionPool();
+    const setupDeadlines: AbortController[] = [];
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      if (ms !== MCP_TIMEOUT_MS) return realTimeout(ms);
+      const deadline = new AbortController();
+      setupDeadlines.push(deadline);
+      return AbortSignal.any([deadline.signal, realTimeout(2_500)]);
+    });
+    const streamSignals: AbortSignal[] = [];
+    const fake = server({
+      stream(signal) {
+        if (signal) streamSignals.push(signal);
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              signal?.addEventListener("abort", () => controller.close(), { once: true });
+            },
+          }),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      },
+    });
+    try {
+      const bound = pool.bind(context(), current);
+      await expect(invoke(bound.context, fake.fetch)).resolves.toMatchObject({
+        ...result,
+        isError: false,
+      });
+      await vi.waitFor(() => expect(streamSignals).toHaveLength(1));
+      const [streamSignal] = streamSignals;
+      expect(streamSignal?.aborted).toBe(false);
+      expect(setupDeadlines.length).toBeGreaterThanOrEqual(2);
+      for (const deadline of setupDeadlines) deadline.abort(new Error("Initial deadline passed"));
+      expect(streamSignal?.aborted).toBe(false);
+      await expect(invoke(bound.context, fake.fetch, {}, { name: "read" })).resolves.toMatchObject({
+        ...result,
+        isError: false,
+      });
+      expect(streamSignals).toHaveLength(1);
+      expect(streamSignal?.aborted).toBe(false);
+      expect(fake.initialized).toEqual(["1"]);
+      expect(fake.tools.map(({ session }) => session)).toEqual(["1", "1"]);
+      pool.endRun(scope);
+      await vi.waitFor(() => {
+        expect(streamSignal?.aborted).toBe(true);
+        expect(fake.closed).toEqual(["1"]);
+      });
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it("rechecks the current approval after DNS on a reused MCP session", async () => {
@@ -656,10 +712,10 @@ describe("remote MCP tool sessions", () => {
 
   it("cancels pending initialization when the Run ends", async () => {
     pool = new RemoteMcpSessionPool();
-    const initializing = deferred();
+    let initializing: AbortSignal | undefined;
     const fake = server({
       initialize: (_session, signal) => {
-        initializing.resolve();
+        initializing = signal ?? undefined;
         return new Promise((_resolve, reject) => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
@@ -667,9 +723,10 @@ describe("remote MCP tool sessions", () => {
     });
     const { context: bound } = pool.bind(context(), current);
     const rejected = expect(invoke(bound, fake.fetch)).rejects.toThrow();
-    await initializing.promise;
+    await vi.waitFor(() => expect(initializing?.aborted).toBe(false));
     pool.endRun(scope);
     await rejected;
+    await vi.waitFor(() => expect(initializing?.aborted).toBe(true));
     expect(fake.tools).toEqual([]);
   });
 
