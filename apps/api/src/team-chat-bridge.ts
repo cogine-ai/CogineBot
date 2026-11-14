@@ -28,6 +28,20 @@ import {
 import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webhook-inbound.js";
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 1_000;
+const CONVERSATION_UNIQUE_KEY = "external_conversations_provider_workspaceId_externalKey_key";
+
+function isConversationCreateConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+    return false;
+  }
+  const cause = error.meta?.driverAdapterError as
+    | { cause?: { originalCode?: string; constraint?: { index?: string } } }
+    | undefined;
+  return (
+    cause?.cause?.originalCode === "23505" &&
+    cause.cause.constraint?.index === CONVERSATION_UNIQUE_KEY
+  );
+}
 const DEFAULT_AMBIENT_DEBOUNCE_MS = 15_000;
 const BATCH_SIZE = 20;
 const AMBIENT_BATCH_SIZE = 100;
@@ -254,32 +268,41 @@ export class TeamChatBridge {
   ): Promise<TeamChatInboundTarget | DeferredTeamChatInboundTarget> {
     const target = this.target;
     if (!target) throw new Error("Team chat bridge is not started");
-    const conversation = await this.deps.prisma.externalConversation.upsert({
-      where: {
-        provider_workspaceId_externalKey: {
+    const upsert = () =>
+      this.deps.prisma.externalConversation.upsert({
+        where: {
+          provider_workspaceId_externalKey: {
+            provider: this.deps.providerId,
+            workspaceId: message.workspaceId,
+            externalKey: message.conversationKey,
+          },
+        },
+        create: {
           provider: this.deps.providerId,
           workspaceId: message.workspaceId,
           externalKey: message.conversationKey,
+          conversationId: message.conversationId,
+          displayName: message.conversationName,
+          participantNames: message.participantNames ?? [],
+          spaceId: target.spaceId,
+          botId: target.id,
+          userId: target.userId,
+          thread: { create: { spaceId: target.spaceId, userId: target.userId } },
         },
-      },
-      create: {
-        provider: this.deps.providerId,
-        workspaceId: message.workspaceId,
-        externalKey: message.conversationKey,
-        conversationId: message.conversationId,
-        displayName: message.conversationName,
-        participantNames: message.participantNames ?? [],
-        spaceId: target.spaceId,
-        botId: target.id,
-        userId: target.userId,
-        thread: { create: { spaceId: target.spaceId, userId: target.userId } },
-      },
-      update: {
-        conversationId: message.conversationId,
-        ...(message.conversationName ? { displayName: message.conversationName } : {}),
-        ...(message.participantNames?.length ? { participantNames: message.participantNames } : {}),
-      },
-      include: { thread: { select: { id: true } } },
+        update: {
+          conversationId: message.conversationId,
+          ...(message.conversationName ? { displayName: message.conversationName } : {}),
+          ...(message.participantNames?.length
+            ? { participantNames: message.participantNames }
+            : {}),
+        },
+        include: { thread: { select: { id: true } } },
+      });
+    const conversation = await upsert().catch((error: unknown) => {
+      // Creating the related thread makes this an emulated upsert. Retry the
+      // exact key once after the winner has committed its conversation.
+      if (!isConversationCreateConflict(error)) throw error;
+      return upsert();
     });
     if (
       conversation.botId !== target.id ||

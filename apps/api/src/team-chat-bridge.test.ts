@@ -1,7 +1,7 @@
 import type { TeamChatInboundMessage, TeamChatSendRequest } from "@rakazo/adapter-kit";
 import { MessagingSendError } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
-import type { PrismaClient } from "@rakazo/db";
+import { Prisma, type PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   isDeferredReservationLost,
@@ -1859,8 +1859,8 @@ describe("team chat bridge", () => {
     expect(sendUserMessage).not.toHaveBeenCalled();
   });
 
-  it.each(["text", "file", "retry", "race"])("queues one %s delivery", async (mode) => {
-    const withFile = mode !== "text";
+  it.each(["text", "file", "retry", "race", "conflict"])("queues one %s delivery", async (mode) => {
+    const withFile = mode !== "text" && mode !== "conflict";
     const caption =
       mode === "retry" ? "Saved file caption" : mode === "race" ? "First delivery's caption" : "";
     const records: Array<Record<string, unknown>> = [];
@@ -2119,6 +2119,24 @@ describe("team chat bridge", () => {
     }));
     const options = withFile ? { prepareTranscript } : undefined;
     await bridge.start();
+    if (mode === "conflict") {
+      const duplicate = (index: string) =>
+        new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+          code: "P2002",
+          clientVersion: "fixture",
+          meta: {
+            driverAdapterError: { cause: { originalCode: "23505", constraint: { index } } },
+          },
+        });
+      const unrelated = duplicate("threads_externalConversationId_key");
+      vi.mocked(prisma.externalConversation.upsert).mockRejectedValueOnce(unrelated);
+      await expect(bridge.receive(inbound, options)).rejects.toBe(unrelated);
+      expect(prisma.externalConversation.upsert).toHaveBeenCalledTimes(1);
+      expect(prisma.externalMessage.upsert).not.toHaveBeenCalled();
+      vi.mocked(prisma.externalConversation.upsert).mockRejectedValueOnce(
+        duplicate("external_conversations_provider_workspaceId_externalKey_key"),
+      );
+    }
     if (mode === "retry") {
       vi.mocked(prisma.externalMessage.upsert).mockRejectedValueOnce(
         new Error("external message write interrupted"),
@@ -2136,6 +2154,7 @@ describe("team chat bridge", () => {
     await bridge.receive(inbound, options);
     await bridge.stop();
 
+    if (mode === "conflict") expect(prisma.externalConversation.upsert).toHaveBeenCalledTimes(4);
     expect(prisma.externalConversation.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
