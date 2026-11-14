@@ -10,8 +10,17 @@ import type {
   BotPackageReceipt,
   MemoryDocument,
   Routine,
+  RunsListOutput,
+  ThreadSnapshot,
 } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, openNewBot, rpc, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openNewBot,
+  rpc,
+  signup,
+} from "./helpers";
 
 const skillName = "package-review-recipe";
 const source = JSON.stringify({
@@ -266,6 +275,8 @@ test("agent backup import previews supported text and saves only the selected co
   await picker.setInputFiles(archive);
   await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
   await expect(memory).not.toBeChecked();
+  const importedName = "Imported report assistant";
+  await panel.getByLabel("Imported bot name").fill(importedName);
   await panel.getByText("Choose backup content", { exact: true }).click();
   await panel.getByRole("checkbox", { name: "AGENTS.md", exact: true }).click();
   await panel.getByRole("checkbox", { name: "skills/check/SKILL.md", exact: true }).click();
@@ -347,6 +358,52 @@ test("agent backup import previews supported text and saves only the selected co
   expect(
     await rpc<MemoryDocument[]>(page, "memory/list", { botId: bot!.id, scope: "bot" }),
   ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: note })]);
+  const receipt = await rpc<BotPackageReceipt>(page, "botPackages/forBot", { botId: bot!.id });
+  expect(receipt).toMatchObject({ status: "completed", botId: bot!.id, botName: importedName });
+  expect(receipt.leftOut.length).toBeGreaterThan(0);
+  const paused = await rpc<Routine[]>(page, "routines/list", { botId: bot!.id });
+  expect(paused).toMatchObject([{ name: "Morning review", active: false, nextRunAt: null }]);
+  await panel.getByRole("button", { name: "Open bot", exact: true }).click();
+  await expect.poll(() => activeBotId(page)).toBe(bot!.id);
+  const prompt = "Summarize these synthetic notes: three invoices arrived, all paid.";
+  const transcript = page.getByTestId("transcript");
+  const composer = page.getByRole("combobox", { name: /^Message/ });
+  await expect(composer).toBeEnabled();
+  await composer.fill(prompt);
+  const sent = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/rpc/threads/send",
+  );
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const response = await sent;
+  expect(response.ok()).toBe(true);
+  const { json: started } = (await response.json()) as { json: { runId: string } };
+  expect(started.runId).toBeTruthy();
+  await expect(transcript.getByTestId("message-bot-bubble").last()).toContainText(prompt, {
+    timeout: 30_000,
+  });
+  await expect
+    .poll(
+      async () => {
+        const recent = await rpc<RunsListOutput>(page, "runs/list", { filter: "recent" });
+        return recent.runs.find(({ runId }) => runId === started.runId);
+      },
+      { timeout: 15_000 },
+    )
+    .toMatchObject({ status: "completed", botId: bot!.id });
+  const snapshot = await rpc<ThreadSnapshot>(page, "threads/get", { botId: bot!.id });
+  expect(snapshot.messages).toContainEqual(
+    expect.objectContaining({
+      role: "bot",
+      runId: started.runId,
+      blocks: expect.arrayContaining([
+        expect.objectContaining({ kind: "text", text: expect.stringContaining(prompt) }),
+      ]),
+    }),
+  );
+  expect(await rpc<Routine[]>(page, "routines/list", { botId: bot!.id })).toMatchObject([
+    { id: paused[0]!.id, active: false, lastRunAt: null, nextRunAt: null },
+  ]);
+  await captureScreenshot(page, testInfo, "agent-backup-first-completed-run");
 });
 
 test("agent backup folder previews only selected content and preserves the draft after a bad pick", async ({
