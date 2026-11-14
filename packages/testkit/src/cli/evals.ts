@@ -457,7 +457,7 @@ async function main() {
             return {
               ...handles,
               harnessIssues: sandbox.harnessIssues,
-              filesRead: sandbox.filesRead,
+              fileReads: sandbox.fileReads,
               cacheDecisions,
               historyDiagnostics,
               toolLoopDiagnostics,

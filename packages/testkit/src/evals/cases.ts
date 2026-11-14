@@ -27,7 +27,7 @@ export type Evidence = {
   priorMemory: string;
   destinationWrites: number;
   toolNames: string[];
-  filesRead?: readonly string[];
+  fileReads?: ReadonlyArray<{ path: string; succeeded: boolean }>;
   messaging: {
     originThreadId: string | null;
     outbound: Array<{ threadId: string; body: string; handle: string }>;
@@ -556,9 +556,10 @@ export const HISTORY_FRESH_CHECK: EvalCase = {
     check("history-read", e.toolNames.includes("read_history")),
     check(
       "fresh-read",
-      e.toolNames.includes("read_file") &&
-        e.filesRead?.length === 1 &&
-        e.filesRead[0] === reportPath,
+      e.toolNames.filter((name) => name === "read_file").length === 1 &&
+        e.fileReads?.length === 1 &&
+        e.fileReads[0]?.path === reportPath &&
+        e.fileReads[0].succeeded,
     ),
     check(
       "read-only-check",

@@ -126,7 +126,7 @@ describe.skipIf(!enabled)("a fresh check after history retrieval", () => {
             composio,
             encryptionKey: "offline-fresh-check-fixture-encryption-key",
           })),
-          filesRead: sandbox.filesRead,
+          fileReads: sandbox.fileReads,
         }),
       });
       model.assertComplete();

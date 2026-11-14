@@ -26,7 +26,7 @@ export type EvalApp = {
   jobs: JobPublisher;
   runtime: AgentRuntime;
   harnessIssues?: readonly string[];
-  filesRead?: readonly string[];
+  fileReads?: Evidence["fileReads"];
   connector?: { records: readonly unknown[] };
   awaitIdle?: () => Promise<void>;
   finalizeBackground?: () => Promise<void>;
@@ -555,7 +555,7 @@ export async function runTrial(
         throw new EvalFailure("provider", lastText);
     }
     // Grading readback uses the same sandbox, but must not count as an agent read.
-    const filesRead = handles.filesRead?.slice();
+    const fileReads = handles.fileReads?.map((read) => ({ ...read }));
     const files: Evidence["files"] = {};
     for (const path of scenario.files ?? []) {
       try {
@@ -589,7 +589,7 @@ export async function runTrial(
       priorMemory,
       destinationWrites: handles.connector?.records.length ?? 0,
       toolNames: [...seenTools.values()].map((event) => event.name),
-      filesRead,
+      fileReads,
       messaging: {
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),

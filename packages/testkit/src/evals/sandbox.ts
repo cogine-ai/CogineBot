@@ -9,7 +9,7 @@ import { FakeSandboxProvider } from "@rakazo/adapters";
 /** A model must not receive successful shell results for commands the fixture never ran. */
 export class EvalSandboxProvider extends FakeSandboxProvider {
   readonly harnessIssues: string[] = [];
-  readonly filesRead: string[] = [];
+  readonly fileReads: Array<{ path: string; succeeded: boolean }> = [];
 
   constructor(private readonly seedFiles: Readonly<Record<string, string>> = {}) {
     super();
@@ -33,8 +33,10 @@ export class EvalSandboxProvider extends FakeSandboxProvider {
   }
 
   override async readFile(...args: Parameters<FakeSandboxProvider["readFile"]>) {
+    const read = { path: args[1], succeeded: false };
+    if (Object.keys(this.seedFiles).length) this.fileReads.push(read);
     const content = await super.readFile(...args);
-    if (Object.keys(this.seedFiles).length) this.filesRead.push(args[1]);
+    read.succeeded = true;
     return content;
   }
 
