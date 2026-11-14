@@ -3512,6 +3512,52 @@ describeIntegration("run executor lifecycle", () => {
   );
 
   it.each([false, true])(
+    "does not persist deferred memory after remote Stop (steering: %s)",
+    async (steering) => {
+      const prompt = "remember the synthetic deferred memory preference";
+      const fixture = steering
+        ? await seedSteeringContinuation("deferred-stop-steering", prompt)
+        : null;
+      const seeded = fixture?.seeded ?? (await seedRun("deferred-stop-direct", prompt));
+      const runId = fixture?.continuationRunId ?? seeded.run.id;
+      const held = holdContinuationJobs(seeded.bot.id);
+      const commit = MarkdownMemoryStore.prototype.commit;
+      let locallyAbortedAtWrite: boolean | undefined;
+      const memory = vi
+        .spyOn(MarkdownMemoryStore.prototype, "commit")
+        .mockImplementation(async function (this: MarkdownMemoryStore, request, context) {
+          if (request.sourceRunId === runId) {
+            // Stop wins in the database after the worker has entered the commit call.
+            await handles.prisma.run.update({
+              where: { id: runId },
+              data: { status: "cancelled", leaseOwner: null, leaseExpiresAt: null },
+            });
+            locallyAbortedAtWrite = context.signal.aborted;
+          }
+          return commit.call(this, request, context);
+        });
+      try {
+        await handles.executor.continueRun(runId, "deferred-memory-stop-worker");
+        expect(locallyAbortedAtWrite).toBe(false);
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: runId } }),
+        ).resolves.toMatchObject({ status: "cancelled" });
+        expect(await handles.prisma.memoryRevision.count({ where: { sourceRunId: runId } })).toBe(
+          0,
+        );
+        expect(await handles.prisma.event.count({ where: { runId, type: "memory.revised" } })).toBe(
+          0,
+        );
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          memory.mockRestore();
+          held.restore();
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
     "persists every independent batch effect (reversed: %s)",
     async (reverse) => {
       const prompts = [

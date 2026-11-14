@@ -11536,6 +11536,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   content: mem.content,
                   sourceRunId: runId,
                   sourceThreadId: thread.id,
+                  runLease: { owner: workerId, fence },
                   ...(isSteeringContinuation
                     ? { idempotencyKey: `scripted-memory:${runId}:${turnIndex}:${memoryIndex}` }
                     : {}),
