@@ -267,3 +267,95 @@ it.each(["metadata", "rejected", "concurrent"])(
     ]);
   },
 );
+
+it("Web Close/reopen starts a fresh edit and rejected metadata does not resubmit triggers", async () => {
+  const h = fixture("update");
+  const trigger = {
+    id: "a",
+    version: 1,
+    routineId: "routine-a",
+    connectionId: "connection",
+    armedAt: "2020-01-01T00:00:00Z",
+    spec: {
+      kind: "calendar.event_changed" as const,
+      calendarId: "a1",
+      target: { kind: "calendar" as const },
+    },
+  };
+  h.scope.editingRoutine = {
+    ...h.scope.editingRoutine,
+    name: "Initial",
+    prompt: "Synthetic",
+    crons: [],
+    nativeTriggers: [trigger],
+  };
+  h.scope.routineDraft.nativeTriggers = [
+    { ...draftFromNativeRoutineTrigger(trigger), calendarId: "a2" },
+  ];
+  h.scope.routineDraft.nativeTriggersDirty = true;
+  let saved: any = structuredClone(h.scope.editingRoutine),
+    refused = false;
+  const writes: any[] = [];
+  h.scope.rpc.routines.update = async (input: any) => {
+    if (writes.length === 1 && !refused) {
+      refused = true;
+      throw Object.assign(new Error("Metadata refused"), { code: "BAD_REQUEST" });
+    }
+    writes.push(structuredClone(input));
+    saved = {
+      ...saved,
+      ...input,
+      nativeTriggers:
+        input.nativeTriggers?.map((t: any) => ({ ...t, version: t.expectedVersion + 1 })) ??
+        saved.nativeTriggers,
+    };
+    if (writes.length === 1) throw Error("Lost committed response");
+    return saved;
+  };
+  await h.run();
+  saved.nativeTriggers[0] = {
+    ...saved.nativeTriggers[0],
+    state: { cursor: "keep" },
+    leaseId: "keep-lease",
+  };
+  const committed = structuredClone(saved.nativeTriggers);
+  // Web has Close rather than mobile's discarded-state Cancel. Exercise its
+  // actual close callback and draft factory; do not inject a nonexistent flag.
+  const close = source
+    .slice(source.indexOf("<RoutineEditor"))
+    .match(/onClose=\{(\(\) => setPanel\(null\))\}/)![1];
+  const setPanel = vi.fn();
+  new Function("setPanel", `return (${close})`)(setPanel)();
+  expect(setPanel).toHaveBeenCalledWith(null);
+  const editor = readFileSync(new URL("./RoutineEditor.tsx", import.meta.url), "utf8");
+  const start = editor.indexOf("export function draftFromRoutine");
+  const factory = stripTypeScriptTypes(
+    editor
+      .slice(start, editor.indexOf("export function nativeRoutineTriggerSummary", start))
+      .replace("export ", ""),
+  );
+  const reopen = new Function(
+    "draftFromNativeRoutineTrigger",
+    "newRoutineMutationId",
+    "presetFromCron",
+    "routineNeedsOneShotArm",
+    `return (${factory})`,
+  )(
+    draftFromNativeRoutineTrigger,
+    () => "reopened-intent",
+    (x: any) => x,
+    () => false,
+  );
+  // Even if the list still holds the pre-submit routine, untouched triggers stay omitted.
+  h.scope.routineDraft = reopen(h.scope.editingRoutine);
+  expect(h.scope.routineDraft.mutationId).not.toBe("intent-a");
+  expect(h.scope.routineSaveState.current.state.discarded).toBeUndefined();
+  h.scope.routineDraft.name = "Rejected";
+  await h.run();
+  expect(h.scope.setRoutineError).toHaveBeenLastCalledWith("Metadata refused");
+  h.scope.routineDraft.name = "Corrected";
+  await h.run();
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).not.toHaveProperty("nativeTriggers");
+  expect(saved.nativeTriggers).toEqual(committed);
+});

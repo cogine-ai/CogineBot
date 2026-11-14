@@ -748,6 +748,127 @@ describePostgres("routine save transaction regressions", () => {
     },
   );
 
+  it.each(["metadata", "lost then forbidden", "scope cancellation", "edit trigger"])(
+    "retains cancellation after a rejected metadata follow-up: %s",
+    async (mode) => {
+      const o = await fixture(),
+        make = await connected(o),
+        state: RoutineSaveState = {};
+      const initial = await update(o, { nativeTriggers: [make("a1"), make("b")] });
+      const [a, b] = initial.nativeTriggers!;
+      const calls: Array<Parameters<typeof saveRoutineDraft>[1]> = [];
+      const receipts = new Set<string>();
+      const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+        calls.push(structuredClone(request));
+        const response = await raw(o.cookie, `routines/${request.operation}`, request.input);
+        const body = await response.json();
+        if (!response.ok) throw { code: body.json?.code ?? body.code, status: response.status };
+        if (!receipts.has(String(request.input.mutationId))) {
+          receipts.add(String(request.input.mutationId));
+          if (receipts.size === 1 || mode === "lost then forbidden")
+            throw new Error("Lost committed response");
+        }
+        return body.json as Routine;
+      };
+      const triggers = (calendarId: string) => ({
+        nativeTriggers: [{ ...inputOf(a!), spec: make(calendarId).spec }, inputOf(b!)],
+        nativeTriggerBaseline: initial.nativeTriggers!.map(({ id, version }) => ({ id, version })),
+      });
+      const request = (input: Record<string, unknown>) => ({
+        operation: "update" as const,
+        triggerKeys: ["a", "b"],
+        input: { routineId: initial.id, ...input },
+      });
+      await expect(
+        saveRoutineDraft(state, request(triggers("a2")), initial, send, () => true),
+      ).rejects.toThrow("Lost committed response");
+      state.discarded = true; // Actual mobile Cancel retains the unresolved request.
+      for (const row of [a!, b!])
+        await database.prisma.nativeRoutineTrigger.update({
+          where: { id: row.id },
+          data: {
+            state: { cursor: row.id },
+            leaseId: `lease-${row.id}`,
+            leaseUntil: new Date("2030-01-01"),
+          },
+        });
+      const rows = () =>
+        database.prisma.nativeRoutineTrigger.findMany({
+          where: { routineId: initial.id },
+          orderBy: { id: "asc" },
+        });
+      const committed = await rows();
+      await expect(
+        saveRoutineDraft(
+          state,
+          request({ name: "Rejected", crons: [""] }),
+          initial,
+          send,
+          () => true,
+        ),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+      expect(calls[2]!.input).not.toHaveProperty("nativeTriggers");
+      if (mode === "scope cancellation") {
+        const before = structuredClone(state),
+          count = calls.length;
+        expect(
+          await saveRoutineDraft(state, request({ name: "Corrected" }), initial, send, () => false),
+        ).toBeUndefined();
+        expect(state).toEqual(before);
+        expect(calls).toHaveLength(count + 1);
+      }
+      const corrected = request({
+        name: "Corrected",
+        ...(mode === "edit trigger" ? triggers("a3") : {}),
+      });
+      if (mode === "lost then forbidden") {
+        await expect(saveRoutineDraft(state, corrected, initial, send, () => true)).rejects.toThrow(
+          "Lost committed response",
+        );
+        const before = structuredClone(state);
+        const membership = await database.prisma.spaceMember.findUniqueOrThrow({
+          where: { spaceId_userId: { spaceId: o.actor.spaceId, userId: o.actor.userId } },
+        });
+        await database.prisma.spaceMember.delete({ where: { id: membership.id } });
+        try {
+          await expect(
+            saveRoutineDraft(state, corrected, initial, send, () => true),
+          ).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
+        } finally {
+          await database.prisma.spaceMember.create({ data: membership });
+        }
+        expect(state).toEqual(before);
+      }
+      const saved = await saveRoutineDraft(state, corrected, initial, send, () => true);
+      expect(saved!.id).toBe(initial.id);
+      expect(saved!.name).toBe("Corrected");
+      if (mode === "edit trigger") {
+        expect((await rows()).find((row) => row.id === a!.id)).toMatchObject({
+          version: 3,
+          spec: make("a3").spec,
+        });
+        expect((await rows()).find((row) => row.id === b!.id)).toEqual(
+          committed.find((row) => row.id === b!.id),
+        );
+      } else {
+        expect
+          .soft(
+            calls
+              .slice(3)
+              .filter((call) => call.input.name === "Corrected")
+              .every((call) => !("nativeTriggers" in call.input)),
+          )
+          .toBe(true);
+        expect.soft(await rows()).toEqual(committed);
+      }
+      expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(1);
+      expect(
+        await database.prisma.nativeRoutineTrigger.count({ where: { routineId: initial.id } }),
+      ).toBe(2);
+      expect(state.pending).toBeUndefined();
+    },
+  );
+
   it("receipt-only update replay returns current activation after pause and resume", async () => {
     const o = await fixture();
     await update(o, { active: true });

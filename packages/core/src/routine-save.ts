@@ -11,11 +11,12 @@ type Submission = {
   draft?: Request;
   draftBaseline?: Routine | null;
   triggerIds?: Record<string, string>;
+  // Cancellation belongs to the submission/draft pair, including rollback after rejection.
+  discarded?: boolean;
 };
 export type RoutineSaveState = Submission & {
   // Latest confirmed submission, retained only while a follow-up can fail.
   recovered?: Submission;
-  discarded?: boolean;
 };
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -155,6 +156,7 @@ export async function saveRoutineDraft(
       draft: state.draft,
       draftBaseline: state.draftBaseline,
       triggerIds: state.triggerIds,
+      discarded: state.discarded,
     });
     if (!Object.keys(patch).length) {
       delete state.pending;
@@ -198,6 +200,7 @@ export async function saveRoutineDraft(
         state.draft = confirmed.draft;
         state.draftBaseline = confirmed.draftBaseline;
         state.triggerIds = confirmed.triggerIds;
+        state.discarded = confirmed.discarded;
       } else delete state.pending;
     }
     throw error;

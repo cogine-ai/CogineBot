@@ -554,3 +554,69 @@ it.each(["none", "change", "add", "remove"])(
     }
   },
 );
+
+it.each(["BAD_REQUEST", "FORBIDDEN", "CONFLICT", "NOT_FOUND"])(
+  "retains the discarded draft when the new metadata intent is rejected with %s",
+  async (code) => {
+    const spec = { kind: "calendar.event_changed", calendarId: "a1", target: { kind: "calendar" } };
+    const initial = {
+      ...baseline,
+      nativeTriggers: [{ id: "a", version: 1, connectionId: "connection", spec }],
+    } as Routine;
+    const committed = {
+      ...initial,
+      nativeTriggers: [
+        { ...initial.nativeTriggers![0], version: 2, spec: { ...spec, calendarId: "a2" } },
+      ],
+    } as Routine;
+    const pending = {
+      operation: "update" as const,
+      input: {
+        mutationId: "trigger-intent",
+        nativeTriggers: [
+          {
+            id: "a",
+            expectedVersion: 1,
+            connectionId: "connection",
+            spec: { ...spec, calendarId: "a2" },
+          },
+        ],
+      },
+    };
+    const state: RoutineSaveState = {
+      pending,
+      baseline: initial,
+      draft: pending,
+      draftBaseline: initial,
+      discarded: true,
+    };
+    let refused = false;
+    const send = vi.fn(async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+      if (request.input.mutationId === "trigger-intent") return committed;
+      if (!refused) {
+        refused = true;
+        throw { code };
+      }
+      return { ...committed, name: "Corrected" };
+    });
+    await expect(
+      saveRoutineDraft(
+        state,
+        { operation: "update", input: { name: "Rejected" } },
+        initial,
+        send,
+        () => true,
+      ),
+    ).rejects.toEqual({ code });
+    await saveRoutineDraft(
+      state,
+      { operation: "update", input: { name: "Corrected" } },
+      initial,
+      send,
+      () => true,
+    );
+    expect(send.mock.calls[1]![0].input).not.toHaveProperty("nativeTriggers");
+    expect(send.mock.calls[3]![0].input).not.toHaveProperty("nativeTriggers");
+    expect(send.mock.calls[2]![0]).toEqual(pending);
+  },
+);

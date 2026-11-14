@@ -3050,3 +3050,101 @@ it.each([
     ]);
   },
 );
+
+it.each(["metadata", "lost then forbidden", "edit trigger"])(
+  "Cancel then rejected name-only edit preserves the committed trigger: %s",
+  async (mode) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const original = {
+      ...(await normal("routines/list"))[0],
+      nativeTriggers: [
+        routineTriggerFixture({
+          kind: "calendar.event_changed",
+          calendarId: "a1",
+          target: { kind: "calendar" },
+        }),
+      ],
+    };
+    let saved = structuredClone(original),
+      denied = false,
+      rejected = false;
+    const receipts = new Set<string>();
+    const writes: any[] = [];
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: "google-calendar",
+          status: "connected",
+          displayName: "Synthetic",
+        },
+      ],
+    });
+    const connected = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path === "routines/list") return [original]; // The cancelled editor still has its old baseline.
+      if (path !== "routines/update") return connected(path, input, options);
+      if (denied) throw Object.assign(new Error("Permission revoked"), { code: "FORBIDDEN" });
+      if (receipts.has(input.mutationId)) return structuredClone(saved);
+      if (writes.length === 1 && !rejected) {
+        rejected = true;
+        throw Object.assign(new Error("Metadata refused"), { code: "BAD_REQUEST" });
+      }
+      writes.push(structuredClone(input));
+      receipts.add(input.mutationId);
+      saved = {
+        ...saved,
+        ...input,
+        nativeTriggers:
+          input.nativeTriggers?.map((t: any) => ({
+            ...t,
+            version: t.expectedVersion + 1,
+            state: {},
+            leaseId: null,
+          })) ?? saved.nativeTriggers,
+      };
+      if (writes.length === 1 || mode === "lost then forbidden")
+        throw new Error("Lost committed response");
+      return saved;
+    });
+    await openTriggers();
+    await edit(routineInput("Calendar ID"), "a2");
+    await act(async () => button("Save").click());
+    saved.nativeTriggers[0] = {
+      ...saved.nativeTriggers[0],
+      state: { cursor: "keep" },
+      leaseId: "keep-lease",
+    } as any;
+    const committed = structuredClone(saved.nativeTriggers);
+    await act(async () => button("Cancel").click());
+    await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "Rejected");
+    await act(async () => button("Save").click());
+    expect(container.textContent).toContain("Metadata refused");
+    await edit(routineInput("Name"), "Corrected");
+    if (mode === "edit trigger") {
+      await act(async () => button("External triggers").click());
+      await edit(routineInput("Calendar ID"), "a3");
+    }
+    await act(async () => button("Save").click());
+    if (mode === "lost then forbidden") {
+      denied = true;
+      await act(async () => button("Save").click());
+      expect(routineInput("Name").value).toBe("Corrected");
+      denied = false;
+      await act(async () => button("Save").click());
+    }
+    expect(writes).toHaveLength(2);
+    if (mode === "edit trigger") {
+      expect(saved.nativeTriggers[0]).toMatchObject({
+        id: committed[0].id,
+        version: committed[0].version + 1,
+        spec: { calendarId: "a3" },
+      });
+    } else {
+      expect.soft(writes[1]).not.toHaveProperty("nativeTriggers");
+      expect.soft(saved.nativeTriggers).toEqual(committed);
+    }
+  },
+);
