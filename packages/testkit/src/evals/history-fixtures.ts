@@ -1,3 +1,4 @@
+import type { MessageBlock } from "@rakazo/contracts";
 import type { Criterion } from "./cases.js";
 
 export const HISTORY_FIXTURE_VERSION = "history-v1-seed-73";
@@ -5,6 +6,7 @@ export type HistoryMessage = {
   seq: number;
   role: "user" | "bot";
   text: string;
+  steps?: Extract<MessageBlock, { kind: "steps" }>["steps"];
   subagentResult?: string;
   createdAt: Date;
 };

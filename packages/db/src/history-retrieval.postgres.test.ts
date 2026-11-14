@@ -524,6 +524,49 @@ postgres("history retrieval (PostgreSQL)", () => {
       [],
     );
   });
+  it("keeps completed, failed and cancelled work distinct at the original reference", async () => {
+    await pool.query(`INSERT INTO messages ${messageColumns} VALUES
+      ('verification-source','synthetic-thread',16100,'user',NULL,NULL,now(),
+        '[{"kind":"text","text":"Run the export verification triad"}]'),
+      ('verification-outcome','synthetic-thread',16101,'bot',NULL,NULL,now(),
+        '[{"kind":"text","text":"Verified two sample records."}]');
+      INSERT INTO runs ${runColumns} VALUES
+        ('verification-complete','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
+         'verification-source','completed',now(),now(),'synthetic-task','manual',now()),
+        ('verification-failed','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
+         'verification-source','failed',now(),now(),'synthetic-task','manual',now()),
+        ('verification-stopped','synthetic-space','synthetic-user','synthetic-thread','synthetic-bot',
+         'verification-source','cancelled',now(),now(),'synthetic-task','manual',now());
+      UPDATE messages SET "runId" = 'verification-complete' WHERE id = 'verification-outcome';`);
+    const matches = await searchHistory(prisma, scope, { query: "verification triad", limit: 1 });
+    expect(matches.messages[0]!.messageId).toBe("verification-source");
+    const evidence = await readHistory(prisma, scope, {
+      messageId: matches.messages[0]!.messageId,
+      limit: 1,
+    });
+    expect(evidence.runs).toMatchObject([
+      {
+        id: "verification-complete",
+        status: "completed",
+        outcomes: [{ messageId: "verification-outcome", text: "Verified two sample records." }],
+      },
+      { id: "verification-failed", status: "failed", outcomes: [] },
+      { id: "verification-stopped", status: "cancelled", outcomes: [] },
+    ]);
+    expect(evidence.snapshots[0]).toMatchObject({
+      anchorMessageId: "verification-source",
+      openRunIds: [],
+    });
+    const failed = await readHistory(prisma, scope, {
+      messageId: matches.messages[0]!.messageId,
+      linkedRunId: "verification-failed",
+      limit: 1,
+    });
+    expect(failed.runs).toMatchObject([
+      { id: "verification-failed", status: "failed", outcomes: [] },
+    ]);
+  });
+
   it("checks ownership and excludes private history from channel retrieval", async () => {
     await pool.query(`
       INSERT INTO messages ${messageColumns} VALUES

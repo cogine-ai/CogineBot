@@ -27,6 +27,7 @@ export type Evidence = {
   priorMemory: string;
   destinationWrites: number;
   toolNames: string[];
+  filesRead?: readonly string[];
   messaging: {
     originThreadId: string | null;
     outbound: Array<{ threadId: string; body: string; handle: string }>;
@@ -38,6 +39,7 @@ export type EvalCase = {
   purpose: string;
   steps: Step[];
   files?: string[];
+  seedFiles?: Readonly<Record<string, string>>;
   approvalTool?: string;
   expectedClarification?: true;
   connections?: string[];
@@ -528,6 +530,50 @@ export const HISTORY_EVAL_CASES: EvalCase[] = ([100, 1000, 10000] as const).flat
     };
   }),
 );
+
+const reportPath = "shared/reports/aurora.txt";
+const latestReport = "41 pending";
+const previousReport = "23 pending";
+const freshCheckHistory = historyFixture(1000, "exact");
+freshCheckHistory.version = "history-fresh-check-v1-seed-73";
+freshCheckHistory.ask =
+  "Use the previous Aurora constraints and check the current pending count again.";
+freshCheckHistory.messages[30]!.text =
+  `For the Aurora recheck, read only ${reportPath}. Do not edit it.`;
+freshCheckHistory.messages[31]!.text = `Previous Aurora verification: ${previousReport}.`;
+for (const message of freshCheckHistory.messages.slice(-48)) {
+  if (message.role === "bot") message.steps = [{ label: "Read file", count: 1 }];
+}
+export const HISTORY_FRESH_CHECK: EvalCase = {
+  id: "history-1000-fresh-check",
+  purpose: "Use an original constraint to make a new, read-only file check.",
+  history: freshCheckHistory,
+  connections: [],
+  seedFiles: { [reportPath]: latestReport },
+  files: [reportPath],
+  steps: [{ ask: freshCheckHistory.ask }],
+  grade: (e) => [
+    check("history-read", e.toolNames.includes("read_history")),
+    check(
+      "fresh-read",
+      e.toolNames.includes("read_file") &&
+        e.filesRead?.length === 1 &&
+        e.filesRead[0] === reportPath,
+    ),
+    check(
+      "read-only-check",
+      e.toolNames.every((name) => ["search_history", "read_history", "read_file"].includes(name)),
+    ),
+    check(
+      "current-result",
+      /\b41\s+(?:\w+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+41\b/i.test(e.text) &&
+        !/\b23\s+pending\b/i.test(e.text),
+    ),
+    check("file-unchanged", file(e, reportPath) === latestReport),
+    noWrites(e),
+  ],
+};
+HISTORY_EVAL_CASES.push(HISTORY_FRESH_CHECK);
 
 // Reuse cases measure initial recovery plus repeated follow-ups in one workflow.
 for (const size of [1000, 10000] as const) {

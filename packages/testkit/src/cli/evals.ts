@@ -367,7 +367,7 @@ async function main() {
           connection,
           pricing,
           createApp: async (composio, messaging) => {
-            const sandbox = new EvalSandboxProvider();
+            const sandbox = new EvalSandboxProvider(scenario.seedFiles);
             let acceptingCalls = true;
             const cacheDecisions: CacheDecisionMeasurement[] = [];
             const runtime = new PiAgentRuntime({
@@ -457,6 +457,7 @@ async function main() {
             return {
               ...handles,
               harnessIssues: sandbox.harnessIssues,
+              filesRead: sandbox.filesRead,
               cacheDecisions,
               historyDiagnostics,
               toolLoopDiagnostics,

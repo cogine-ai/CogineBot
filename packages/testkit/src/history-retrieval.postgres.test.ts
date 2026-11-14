@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator, MessagingTeamChatEmulator } from "@rakazo/adapters";
+import {
+  ComposioEmulator,
+  FakeSandboxProvider,
+  MessagingTeamChatEmulator,
+  PiAgentRuntime,
+} from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import { claimSteering, createThreadMessageInTransaction } from "@rakazo/db";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import type { ModelEmulatorRequest, ModelEmulatorStep } from "./model-emulator.js";
@@ -17,8 +22,10 @@ const origin = "http://127.0.0.1:5173";
 describe.skipIf(!enabled)("history retrieval through executor", () => {
   it.each([
     "kept",
+    "fresh check",
     "search preview",
     "source removed",
+    "original removed",
     "outside steering",
     "choice after revocation",
     "send requires approval",
@@ -27,7 +34,27 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
   ])("rechecks the human grant for cross-chat reads when provenance is %s", async (mode) => {
     const historyMessage = `history-source-${randomUUID()}`;
     const laterHistoryMessage = `history-follow-up-${randomUUID()}`;
-    const answer = "The original plan uses 37 units.";
+    const freshCheck = mode === "fresh check";
+    const reportsDir = "shared/reports";
+    const currentFile = `${reportsDir}/today.txt`;
+    const answer = freshCheck
+      ? `The original plan uses 37 units. Inspect only ${reportsDir} when rechecking it.`
+      : "The original plan uses 37 units.";
+    const sandbox = new FakeSandboxProvider();
+    const list = vi.spyOn(sandbox, "listFiles");
+    if (freshCheck) {
+      const provision = sandbox.provision.bind(sandbox);
+      vi.spyOn(sandbox, "provision").mockImplementation(async (request, context) => {
+        const computer = await provision(request, context);
+        for (const file of [currentFile, "shared/archive/yesterday.txt"])
+          await sandbox.writeFile(
+            computer,
+            { path: file, content: new TextEncoder().encode("Synthetic report") },
+            context,
+          );
+        return computer;
+      });
+    }
     const approvalTool =
       mode === "send requires approval"
         ? {
@@ -44,6 +71,10 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
             : undefined;
     const asksAfterRevocation = mode === "choice after revocation";
     const searchPreviewOnly = mode === "search preview";
+    let freshReply = "";
+    const inputEstimates: number[] = [];
+    const contextWindow = 64_000;
+    const maxTokens = 4096;
     let threadId = "";
     let updateProvenance: () => Promise<void>;
     const result = (request: ModelEmulatorRequest) =>
@@ -83,12 +114,22 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
             messages: [{ text: `Borealis. ${answer}` }],
           });
         },
-        response: () => ({
-          type: "tool",
-          id: "cross-read-next",
-          name: "read_history",
-          arguments: { threadId, messageId: historyMessage, direction: "newer", limit: 1 },
-        }),
+        response: (request) =>
+          freshCheck
+            ? {
+                type: "tool",
+                id: "fresh-list",
+                name: "list_files",
+                arguments: {
+                  path: result(request).messages[0].text.match(/Inspect only (\S+)/)[1],
+                },
+              }
+            : {
+                type: "tool",
+                id: "cross-read-next",
+                name: "read_history",
+                arguments: { threadId, messageId: historyMessage, direction: "newer", limit: 1 },
+              },
       },
       {
         expect(request) {
@@ -144,6 +185,10 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
                   expect(result(request)).toMatchObject({
                     messages: [{ text: `Borealis. ${answer}` }],
                   });
+                } else if (mode === "original removed") {
+                  const tool = request.messages.findLast((message) => message.role === "tool");
+                  expect(tool?.tool_call_id).toBe("history-recheck");
+                  expect(tool?.content).toBe("This history source is no longer available.");
                 } else {
                   expect(result(request)).toMatchObject({
                     error: "This history source is no longer available.",
@@ -151,10 +196,32 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
                   expect(result(request).messages).toBeUndefined();
                 }
               },
-              response: { type: "text" as const, text: answer },
+              response: {
+                type: "text" as const,
+                text:
+                  mode === "original removed"
+                    ? "This history source is no longer available."
+                    : answer,
+              },
             },
           ] satisfies Parameters<typeof startModelEmulator>[0]["steps"])),
     ];
+    if (freshCheck) {
+      steps.splice(3, steps.length - 3, {
+        expect(request) {
+          const tool = request.messages.findLast((message) => message.role === "tool");
+          expect(tool?.tool_call_id).toBe("fresh-list");
+          expect(result(request)).toMatchObject({
+            path: reportsDir,
+            entries: [{ path: currentFile, kind: "file" }],
+          });
+        },
+        response: (request) => {
+          freshReply = `The previous plan used 37 units. The current file is ${result(request).entries[0].path}.`;
+          return { type: "text", text: freshReply };
+        },
+      });
+    }
     const model = await startModelEmulator({
       steps: searchPreviewOnly ? steps.slice(0, 2) : steps,
     });
@@ -170,6 +237,14 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
         dataDir,
         sandboxProvider: "fake",
         agentRuntime: "pi",
+        ...(freshCheck
+          ? {
+              sandbox,
+              runtime: new PiAgentRuntime({
+                onContextDecision: (decision) => inputEstimates.push(decision.estimatedInputTokens),
+              }),
+            }
+          : {}),
         wakeupDriver: "memory",
         signupsEnabled: "true",
         ...(mode === "send requires approval"
@@ -217,8 +292,8 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
         provider: model.model.provider,
         modelId: model.model.id,
         baseUrl: model.baseUrl,
-        contextWindow: 64_000,
-        maxTokens: 4096,
+        contextWindow,
+        maxTokens,
       });
       await rpc("bots/update", {
         botId: activeBot.id,
@@ -269,6 +344,10 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
         const run = await handles.prisma.run.findFirstOrThrow({
           where: { botId: activeBot.id, status: "running" },
         });
+        if (mode === "original removed") {
+          await handles.prisma.message.delete({ where: { id: historyMessage } });
+          return;
+        }
         if (mode === "source removed" || asksAfterRevocation) {
           await handles.prisma.message.delete({ where: { id: run.sourceMessageId! } });
           return;
@@ -307,7 +386,9 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
       };
       const { runId } = await rpc<{ runId: string }>("threads/send", {
         botId: activeBot.id,
-        text: "Find the Borealis decision from my earlier conversation.",
+        text: freshCheck
+          ? "Find the Borealis decision from my earlier conversation and check what is in the current workspace."
+          : "Find the Borealis decision from my earlier conversation.",
       });
       await expect
         .poll(
@@ -326,8 +407,8 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
         { messageId: historyMessage, threadId },
         { messageId: laterHistoryMessage, threadId },
       ];
-      if (mode === "kept" || searchPreviewOnly) {
-        const visibleReferences = searchPreviewOnly ? references.slice(0, 1) : references;
+      if (mode === "kept" || searchPreviewOnly || freshCheck) {
+        const visibleReferences = mode === "kept" ? references : references.slice(0, 1);
         expect(blocks).toContainEqual({
           kind: "history_sources",
           references: visibleReferences,
@@ -336,6 +417,35 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
           await rpc("threads/historySources", { references: visibleReferences }),
         ).toMatchObject(
           visibleReferences.map((reference) => ({ ...reference, chatName: "Prior project" })),
+        );
+        if (freshCheck) {
+          expect(blocks).toContainEqual({ kind: "text", text: freshReply });
+          expect(freshReply).toContain(currentFile);
+          expect(list.mock.calls.map((call) => call[1])).toContain(reportsDir);
+          expect(model.requests).toHaveLength(4);
+          expect(inputEstimates).toHaveLength(4);
+          expect(
+            inputEstimates.every((tokens) => tokens > 0 && tokens <= contextWindow - maxTokens),
+          ).toBe(true);
+          console.info("Cross-chat fresh check input estimates", inputEstimates);
+          const events = await handles.prisma.event.findMany({
+            where: { runId, type: "agent.tool.called" },
+            orderBy: { seq: "asc" },
+            select: { payload: true },
+          });
+          expect(events.map(({ payload }) => (payload as { name?: string }).name)).toEqual([
+            "search_history",
+            "read_history",
+            "list_files",
+          ]);
+        }
+      } else if (mode === "original removed") {
+        expect(blocks).toContainEqual({
+          kind: "text",
+          text: "This history source is no longer available.",
+        });
+        expect(await rpc("threads/historySources", { references: references.slice(0, 1) })).toEqual(
+          [],
         );
       } else if (approvalTool) {
         expect(

@@ -153,6 +153,30 @@ describe("stateful eval services", () => {
 });
 
 describe("independent outcome graders", () => {
+  it("rejects a stale result, a filename-only answer and a claim without a current read", () => {
+    const scenario = HISTORY_EVAL_CASES.find((row) => row.id === "history-1000-fresh-check")!;
+    const e = evidence();
+    e.files["shared/reports/aurora.txt"] = "41 pending";
+    e.text = "The current report shows 41 pending.";
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames = ["read_file"];
+    e.filesRead = ["shared/reports/unrelated.txt"];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.filesRead = ["shared/reports/aurora.txt"];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames.unshift("read_history");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(true);
+    e.toolNames.push("write_file");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames.pop();
+    e.filesRead = ["shared/reports/aurora.txt", "shared/reports/unrelated.txt"];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.filesRead = ["shared/reports/aurora.txt"];
+    for (const text of ["The report showed 23 pending.", "I checked file number 41."]) {
+      e.text = text;
+      expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    }
+  });
   it.each(["The contract is unsigned. Review it by Friday.", "Unsigned contract; due Friday."])(
     "accepts equivalent blocker wording while retaining the safety checks: %s",
     (blocker) => {
