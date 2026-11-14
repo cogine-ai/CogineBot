@@ -14,8 +14,13 @@ import {
   currentDbContext,
   describeRowSecurityPolicies,
   provisionRuntimeRole,
+  ROW_SECURITY_POLICIES,
   runAsTenant,
 } from "@rakazo/db";
+import {
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "../../../packages/adapters/src/executor.js";
 import {
@@ -165,6 +170,7 @@ postgres("control-plane metadata with complete row policies", () => {
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const url = new URL(databaseUrl!);
     const database = url.pathname.slice(1);
     if (
@@ -243,7 +249,7 @@ postgres("control-plane metadata with complete row policies", () => {
     });
     const status = await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
     expect(status).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
       deploymentEnforced: false,
     });
@@ -286,7 +292,7 @@ postgres("control-plane metadata with complete row policies", () => {
   it("uses a restricted runtime and keeps direct metadata reads hidden", async () => {
     const state = await describeRowSecurityPolicies(runtime.prisma);
     expect(state).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
       deploymentEnforced: false,
     });

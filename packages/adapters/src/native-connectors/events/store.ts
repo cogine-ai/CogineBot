@@ -407,6 +407,7 @@ export async function replaceNativeRoutineTriggersTx(
   routineId: string,
   prepared: PreparedNativeRoutineTrigger[],
   now = new Date(),
+  baseline?: readonly { id: string; version: number }[],
 ): Promise<NativeRoutineTrigger[]> {
   const inputs = NativeRoutineTriggersInputSchema.parse(prepared.map((item) => item.input));
   if (prepared.some((item, i) => !proofMatches(scope, inputs[i]!, item.proof))) throw unavailable();
@@ -415,6 +416,19 @@ export async function replaceNativeRoutineTriggersTx(
   const previous = await tx.$queryRaw<NativeRoutineTriggerRow[]>(
     Prisma.sql`/*native-event:list-for-replace*/ SELECT * FROM native_routine_triggers WHERE "routineId"=${routineId} ORDER BY id FOR UPDATE`,
   );
+  // The complete client snapshot protects omitted/deleted rows and unseen additions.
+  // Legacy callers can retain/edit their submitted rows, but cannot blindly delete.
+  const expected =
+    baseline ??
+    inputs.flatMap((item) => (item.id ? [{ id: item.id, version: item.expectedVersion }] : []));
+  if (
+    expected.length !== previous.length ||
+    new Set(expected.map((item) => item.id)).size !== expected.length ||
+    previous.some(
+      (row) => !expected.some((item) => item.id === row.id && item.version === row.version),
+    )
+  )
+    throw conflict();
   // Sort config and connection locks: two batch saves must not take them in opposite order.
   const snapshots: NativeEventConnectionSnapshot[] = [];
   for (const input of inputs)

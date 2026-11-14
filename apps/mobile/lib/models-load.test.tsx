@@ -1,18 +1,32 @@
+import type { NativeRoutineEventSpec } from "@rakazo/contracts";
 // @vitest-environment jsdom
 
+import { nativeEventApp } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
+import { draftFromNativeRoutineTrigger } from "@rakazo/core/routine-native-events";
 import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { Alert } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import triggerEdits from "../../../packages/testkit/src/routine-trigger-edits.json" with {
+  type: "json",
+};
+import triggerFixtures from "../../../packages/testkit/src/routine-trigger-fixtures.json" with {
+  type: "json",
+};
 import Models from "../app/(settings)/models";
 import SpaceSettings from "../app/(settings)/space-settings";
 import RoutineDetail from "../app/routine";
+import { RoutineNativeEventFields } from "../components/routine-native-events";
 import { resetI18nForTests } from "./i18n";
 import { presentMessageActionSheet } from "./message-action-sheet";
 import { useSpaceSettings } from "./space-settings";
+
+function routineTriggerFixture(spec: NativeRoutineEventSpec) {
+  return { ...triggerFixtures.trigger, spec };
+}
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -210,21 +224,31 @@ vi.mock("react-native", () => {
       onChangeText,
       editable,
       secureTextEntry,
+      multiline,
     }: {
       accessibilityLabel?: string;
       value: string;
       onChangeText: (value: string) => void;
       editable?: boolean;
       secureTextEntry?: boolean;
-    }) => (
-      <input
-        type={secureTextEntry ? "password" : "text"}
-        aria-label={accessibilityLabel}
-        value={value}
-        disabled={editable === false}
-        onChange={(event) => onChangeText(event.target.value)}
-      />
-    ),
+      multiline?: boolean;
+    }) =>
+      multiline && !["Prompt"].includes(accessibilityLabel ?? "") ? (
+        <textarea
+          aria-label={accessibilityLabel}
+          value={value}
+          disabled={editable === false}
+          onChange={(event) => onChangeText(event.target.value)}
+        />
+      ) : (
+        <input
+          type={secureTextEntry ? "password" : "text"}
+          aria-label={accessibilityLabel}
+          value={value}
+          disabled={editable === false}
+          onChange={(event) => onChangeText(event.target.value)}
+        />
+      ),
   };
 });
 
@@ -278,7 +302,12 @@ function baseUrl() {
 }
 async function edit(input: HTMLInputElement, value: string) {
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+    Object.getOwnPropertyDescriptor(
+      input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype,
+      "value",
+    )?.set?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
@@ -1555,7 +1584,9 @@ it("shows and selects a legacy Azure connection through the catalog alias while 
 });
 
 function routineInput(label: string) {
-  const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  const input = container.querySelector<HTMLInputElement>(
+    `input[aria-label="${label}"], textarea[aria-label="${label}"]`,
+  );
   if (!input) throw new Error(`Missing input: ${label}`);
   return input;
 }
@@ -1574,6 +1605,7 @@ it("creates a routine with the account timezone and navigates to its saved ident
   await edit(routineInput("Prompt"), "Review synthetic tasks");
   await act(async () => button("Create").click());
   expect(state.rpc.mock.calls.find(([p]) => p === "routines/create")?.[1]).toEqual({
+    mutationId: expect.any(String),
     botId: "bot-1",
     name: "Daily review",
     prompt: "Review synthetic tasks",
@@ -1581,6 +1613,10 @@ it("creates a routine with the account timezone and navigates to its saved ident
     timezone: "Asia/Shanghai",
     active: true,
     notify: true,
+    webhookEnabled: false,
+    githubEnabled: false,
+    messageProvider: null,
+    nativeTriggers: [],
   });
   expect(state.replace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1602,10 +1638,9 @@ it("keeps ordinary edits and exact schedules on failure without sending model or
   await edit(routineInput("Name"), "Changed");
   await act(async () => button("Save").click());
   expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+    mutationId: expect.any(String),
     routineId: "routine-1",
     name: "Changed",
-    prompt: "Review",
-    crons: ["0 0 9 * * MON-FRI"],
   });
   expect(routineInput("Name").value).toBe("Changed");
   expect(container.textContent).toContain("Save unavailable");
@@ -1738,10 +1773,9 @@ it.each([
   });
   await act(async () => button("Save").click());
   expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+    mutationId: expect.any(String),
     routineId: "routine-1",
-    name: "Daily",
-    prompt: "Review",
-    crons: [cron],
+    ...(cron !== "0 9 * * *" ? { crons: [cron] } : {}),
   });
 });
 
@@ -2188,5 +2222,929 @@ it.each([
     });
     if (dirty) expect(container.textContent).toContain("Connection changed");
     else expect(container.textContent).not.toContain("Connection changed");
+  },
+);
+
+function triggerSettings(
+  options: { slack?: boolean; configured?: boolean; accounts?: unknown[] } = {},
+) {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, context) => {
+    if (p === "connections/list") return options.accounts ?? [];
+    if (p === "messaging/status") return { providers: [] };
+    if (p === "messaging/installations/list")
+      return {
+        available: true,
+        workspaces: options.slack ? [{ botId: "bot-1", status: "active" }] : [],
+      };
+    if (p === "bots/get") return { id: "bot-1", webhookConfigured: options.configured ?? true };
+    return normal(p, input, context);
+  });
+}
+async function openTriggers() {
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await act(async () => button("External triggers").click());
+}
+
+it.each(["Webhook", "Git event", "Slack message"])(
+  "saves only the edited %s trigger and preserves other settings",
+  async (label) => {
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list")
+        return [
+          {
+            ...(await normal(p))[0],
+            active: false,
+            crons: ["0 9 * * *"],
+            webhookEnabled: false,
+            githubEnabled: false,
+            messageProvider: null,
+          },
+        ];
+      if (p === "routines/update") return { ...(await state.rpc("routines/list"))[0], ...input };
+      return normal(p, input, options);
+    });
+    triggerSettings({ slack: true });
+    await openTriggers();
+    await act(async () =>
+      label === "Slack message" ? button(label).click() : routineInput(label).click(),
+    );
+    await act(async () => button("Save").click());
+    const field =
+      label === "Webhook"
+        ? { webhookEnabled: true }
+        : label === "Git event"
+          ? { githubEnabled: true }
+          : { messageProvider: "slack" };
+    expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+      mutationId: expect.any(String),
+      routineId: "routine-1",
+      ...field,
+    });
+    expect(container.textContent).toContain("Paused");
+    await act(async () => button("Edit").click());
+    await act(async () => button("External triggers").click());
+    if (label !== "Slack message") expect(routineInput(label).checked).toBe(true);
+    else expect(button("Remove message trigger")).toBeTruthy();
+  },
+);
+
+it("creates a webhook-only routine after removing the default schedule", async () => {
+  state.params = { botId: "bot-1" };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, options) =>
+    p === "routines/create" ? { ...input, id: "created-external" } : normal(p, input, options),
+  );
+  triggerSettings();
+  await act(async () => root.render(<RoutineDetail />));
+  await edit(routineInput("Name"), "External");
+  await edit(routineInput("Prompt"), "Synthetic event");
+  await act(async () => button("Remove schedule").click());
+  await act(async () => button("External triggers").click());
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Create").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/create")?.[1]).toMatchObject({
+    crons: [],
+    webhookEnabled: true,
+    githubEnabled: false,
+    messageProvider: null,
+    nativeTriggers: [],
+  });
+});
+
+it("keeps a failed trigger draft and cancel restores the saved configuration", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/update") throw new Error("Synthetic permission denial");
+    if (p === "routines/list") return [{ ...(await normal(p))[0], webhookEnabled: false }];
+    return normal(p, input, options);
+  });
+  triggerSettings();
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Save").click());
+  expect(routineInput("Webhook").checked).toBe(true);
+  expect(container.textContent).toContain("Synthetic permission denial");
+  await act(async () => button("Cancel").click());
+  await act(async () => button("Edit").click());
+  await act(async () => button("External triggers").click());
+  expect(routineInput("Webhook").checked).toBe(false);
+  expect(state.rpc.mock.calls.filter(([p]) => p === "routines/update")).toHaveLength(1);
+});
+
+it("does not advertise unavailable message providers or disconnected accounts", async () => {
+  triggerSettings({
+    accounts: [{ id: "old", connectorId: "native", provider: "gmail", status: "disconnected" }],
+  });
+  await openTriggers();
+  expect(button("Slack message").disabled).toBe(true);
+  expect(button("Add application event").disabled).toBe(true);
+  expect(
+    [...container.querySelectorAll("button")].some((node) => node.textContent === "Teams message"),
+  ).toBe(false);
+});
+
+it.each(["space", "session", "endpoint", "route"])(
+  "ignores trigger capability responses after a %s change",
+  async (change) => {
+    const delayed = deferred<unknown>();
+    triggerSettings();
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation((p, input, options) =>
+      p === "messaging/installations/list" ? delayed.promise : normal(p, input, options),
+    );
+    await openTriggers();
+    if (change === "space") state.spaceId = "space-2";
+    if (change === "session") state.sessionGeneration++;
+    if (change === "endpoint") state.apiBase = "https://other.example.test";
+    if (change === "route") state.params = { botId: "bot-2", routineId: "routine-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () =>
+      delayed.resolve({ available: true, workspaces: [{ botId: "bot-1", status: "active" }] }),
+    );
+    expect(container.querySelector('input[aria-label="Webhook"]')).toBeNull();
+    expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+  },
+);
+
+for (const c of triggerEdits) {
+  const spec = c.spec as NativeRoutineEventSpec;
+  it(`edits and reads back application fields ${JSON.stringify(spec)}`, async () => {
+    const normal = state.rpc.getMockImplementation()!;
+    let saved = {
+      ...(await normal("routines/list"))[0],
+      nativeTriggers: [routineTriggerFixture(spec)],
+    };
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list") return [saved];
+      if (p === "routines/update") {
+        saved = {
+          ...saved,
+          nativeTriggers: input.nativeTriggers.map((entry: Record<string, unknown>) => ({
+            ...entry,
+            version: 5,
+          })),
+        };
+        return saved;
+      }
+      return normal(p, input, options);
+    });
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: nativeEventApp(spec),
+          status: "connected",
+          displayName: "Synthetic account",
+        },
+      ],
+    });
+    await openTriggers();
+    const fields = [
+      ...container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        'input[type="text"], textarea',
+      ),
+    ].filter((node) => !["Name", "Prompt"].includes(node.getAttribute("aria-label") ?? ""));
+    expect(fields.map((node) => node.getAttribute("aria-label")).sort()).toEqual(
+      Object.keys(c.fields).sort(),
+    );
+    for (const [label, value] of Object.entries(c.fields)) {
+      const field = fields.find((node) => node.getAttribute("aria-label") === label)!;
+      await edit(field as HTMLInputElement, value!);
+    }
+    await act(async () => button("Save").click());
+    const update = state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1];
+    expect(update).toEqual({
+      routineId: "routine-1",
+      mutationId: expect.any(String),
+      nativeTriggerBaseline: [{ id: "fixture-trigger", version: 4 }],
+      nativeTriggers: [
+        {
+          id: "fixture-trigger",
+          expectedVersion: 4,
+          connectionId: "fixture-connection",
+          spec: c.expected,
+        },
+      ],
+    });
+    await act(async () => button("Edit").click());
+    await act(async () => button("External triggers").click());
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Event"]')?.value).toBe(
+      spec.kind,
+    );
+    expect(saved.nativeTriggers[0].spec).toEqual(c.expected);
+    for (const [label, value] of Object.entries(c.fields))
+      expect(
+        container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)?.value,
+        label,
+      ).toBe(value);
+  });
+}
+
+it("opens the existing application settings route and preserves the draft on return", async () => {
+  triggerSettings();
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Connect an account").click());
+  expect(state.push).toHaveBeenCalledWith("/plugins");
+  await refocus();
+  expect(routineInput("Webhook").checked).toBe(true);
+});
+
+it("keeps disconnected events byte-for-byte while editing a different event", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const untouched = routineTriggerFixture({ kind: "gmail.message_received", labelIds: ["Z", "A"] });
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/list") return [{ ...(await normal(p))[0], nativeTriggers: [untouched] }];
+    if (p === "routines/update") throw new Error("Synthetic permission denial");
+    return normal(p, input, options);
+  });
+  triggerSettings({
+    accounts: [
+      {
+        id: "planner-account",
+        provider: "planner",
+        connectorId: "native",
+        status: "connected",
+        displayName: "Synthetic planner",
+      },
+    ],
+  });
+  await openTriggers();
+  expect(routineInput("Label IDs (any match, one per line)").disabled).toBe(true);
+  await act(async () => button("Add application event").click());
+  const selects = (label: string) => [
+    ...container.querySelectorAll<HTMLSelectElement>(`select[aria-label="${label}"]`),
+  ];
+  await act(async () => {
+    const account = selects("Account")[1]!;
+    account.value = "planner-account";
+    account.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => {
+    const event = selects("Event")[1]!;
+    event.value = "planner.task.changed";
+    event.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await edit(routineInput("Plan ID"), "synthetic-plan");
+  await act(async () => button("Save").click());
+  const update = state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1];
+  expect(update.nativeTriggers).toEqual([
+    {
+      id: untouched.id,
+      expectedVersion: 4,
+      connectionId: untouched.connectionId,
+      spec: untouched.spec,
+    },
+    {
+      connectionId: "planner-account",
+      spec: { kind: "planner.task.changed", planId: "synthetic-plan" },
+    },
+  ]);
+  expect(routineInput("Plan ID").value).toBe("synthetic-plan");
+  expect(selects("Event")).toHaveLength(2);
+});
+
+it("does not provision or save an invalid application draft", async () => {
+  triggerSettings({
+    configured: false,
+    accounts: [
+      {
+        id: "planner",
+        provider: "planner",
+        connectorId: "native",
+        status: "connected",
+        displayName: "Planner",
+      },
+    ],
+  });
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Add application event").click());
+  await act(async () => button("Save").click());
+  expect(container.textContent).toContain("Check application event fields");
+  expect(
+    state.rpc.mock.calls.some(([p]) => p === "bots/rotateWebhookSecret" || p === "routines/update"),
+  ).toBe(false);
+});
+
+it("does not save after a webhook provisioning response arrives in a different scope", async () => {
+  triggerSettings({ configured: false });
+  const delayed = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p, input, options) =>
+    p === "bots/rotateWebhookSecret" ? delayed.promise : normal(p, input, options),
+  );
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Save").click());
+  state.spaceId = "space-2";
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => delayed.resolve({ secret: "synthetic-secret" }));
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+  expect(container.textContent).not.toContain("synthetic-secret");
+});
+
+it.each(["Webhook", "Git event", "Remove message trigger", "Remove application event"])(
+  "removes only %s from a scheduled routine",
+  async (label) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const native = routineTriggerFixture({ kind: "planner.task.changed", planId: "fixture-plan" });
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list")
+        return [
+          {
+            ...(await normal(p))[0],
+            crons: ["0 9 * * *"],
+            webhookEnabled: true,
+            githubEnabled: true,
+            messageProvider: "slack",
+            nativeTriggers: [native],
+          },
+        ];
+      if (p === "routines/update") return { ...(await state.rpc("routines/list"))[0], ...input };
+      return normal(p, input, options);
+    });
+    triggerSettings();
+    await openTriggers();
+    await act(async () =>
+      label.startsWith("Remove") ? button(label).click() : routineInput(label).click(),
+    );
+    await act(async () => button("Save").click());
+    const patch =
+      label === "Webhook"
+        ? { webhookEnabled: false }
+        : label === "Git event"
+          ? { githubEnabled: false }
+          : label === "Remove message trigger"
+            ? { messageProvider: null }
+            : {
+                nativeTriggers: [],
+                nativeTriggerBaseline: [{ id: "fixture-trigger", version: 4 }],
+              };
+    expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+      mutationId: expect.any(String),
+      routineId: "routine-1",
+      ...patch,
+    });
+  },
+);
+
+it.each(["Account", "Event", "Calendar target", "Notion target"])(
+  "same %s selection preserves every draft field and identity",
+  async (label) => {
+    const spec: NativeRoutineEventSpec =
+      label === "Notion target"
+        ? {
+            kind: "notion.comment_changed",
+            target: {
+              type: "discussion",
+              pageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              discussionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              anchorBlockId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            },
+          }
+        : {
+            kind: "calendar.event_starting",
+            calendarId: "calendar",
+            target: { kind: "single", eventId: "event" },
+            leadMinutes: 23,
+          };
+    const draft = draftFromNativeRoutineTrigger(routineTriggerFixture(spec));
+    const change = vi.fn();
+    await act(async () =>
+      root.render(
+        <RoutineNativeEventFields
+          draft={draft}
+          rows={[
+            {
+              id: "fixture-connection",
+              connectorId: "native",
+              provider: nativeEventApp(spec),
+              status: "connected",
+              displayName: "Synthetic",
+            } as never,
+            {
+              id: "fixture-second",
+              connectorId: "native",
+              provider: nativeEventApp(spec),
+              status: "connected",
+              displayName: "Second synthetic",
+            } as never,
+          ]}
+          disabled={false}
+          onChange={change}
+          onRemove={() => {}}
+        />,
+      ),
+    );
+    const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+    await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(change).not.toHaveBeenCalled();
+    // A genuine selection still resets dependent fields and retains saved identity.
+    const next = [...select.options].find((o) => o.value && o.value !== select.value);
+    if (next) {
+      await act(async () => {
+        select.value = next.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(change).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: draft.id,
+          expectedVersion: draft.expectedVersion,
+          key: draft.key,
+          ...(label === "Notion target"
+            ? { pageId: "", discussionId: "", anchorBlockId: "" }
+            : { eventId: "" }),
+        }),
+      );
+    }
+  },
+);
+it("retries an ambiguous create with the same stable intent", async () => {
+  state.params = { botId: "bot-1" };
+  const normal = state.rpc.getMockImplementation()!;
+  const identities = new Map<string, string>();
+  let dropped = false;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p !== "routines/create") return normal(p, input, options);
+    expect(input.mutationId).toEqual(expect.any(String));
+    if (!identities.has(input.mutationId))
+      identities.set(input.mutationId, `created-${identities.size}`);
+    if (!dropped) {
+      dropped = true;
+      throw new Error("Response lost after commit");
+    }
+    return { ...input, id: identities.get(input.mutationId) };
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await edit(routineInput("Name"), "Retry");
+  await edit(routineInput("Prompt"), "Synthetic");
+  await act(async () => button("Create").click());
+  expect(container.textContent).toContain("Response lost after commit");
+  await act(async () => button("Create").click());
+  expect(identities.size).toBe(1);
+});
+
+it("retries a lost native-add update with one intent across refocus", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let first: Record<string, unknown> | undefined;
+  let dropped = false;
+  triggerSettings({
+    accounts: [
+      {
+        id: "fixture-connection",
+        connectorId: "native",
+        provider: "google-calendar",
+        status: "connected",
+        displayName: "Synthetic",
+      },
+    ],
+  });
+  const connected = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p !== "routines/update") return connected(p, input, options);
+    if (!first) first = input;
+    else expect(input).toEqual(first);
+    if (!dropped) {
+      dropped = true;
+      throw new Error("Response lost after commit");
+    }
+    return { ...(await normal("routines/list"))[0], nativeTriggers: [] };
+  });
+  await openTriggers();
+  await act(async () => button("Add application event").click());
+  const account = container.querySelector<HTMLSelectElement>('select[aria-label="Account"]')!;
+  await act(async () => {
+    account.value = "fixture-connection";
+    account.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const event = container.querySelector<HTMLSelectElement>('select[aria-label="Event"]')!;
+  await act(async () => {
+    event.value = "calendar.event_changed";
+    event.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await edit(routineInput("Calendar ID"), "synthetic-calendar");
+  await act(async () => button("Save").click());
+  expect(container.textContent).toContain("Response lost after commit");
+  await refocus();
+  expect(routineInput("Calendar ID").value).toBe("synthetic-calendar");
+  await act(async () => button("Save").click());
+  expect(first?.mutationId).toEqual(expect.any(String));
+  expect(first?.nativeTriggerBaseline).toEqual([]);
+});
+
+it.each(["account", "space", "server"])(
+  "does not reuse an uncertain create intent across %s scope",
+  async (target) => {
+    state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    const attempts: string[] = [];
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p !== "routines/create") return normal(p, input, options);
+      attempts.push(input.mutationId);
+      throw new Error("Response lost after commit");
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    await edit(routineInput("Name"), "First");
+    await edit(routineInput("Prompt"), "Synthetic");
+    await act(async () => button("Create").click());
+    await act(async () => {
+      if (target === "account") state.sessionGeneration++;
+      else if (target === "space") {
+        state.spaceId = "space-2";
+        state.spaceGeneration++;
+      } else state.apiBase = "https://other.example.test";
+      root.render(<RoutineDetail />);
+    });
+    await edit(routineInput("Name"), "Second");
+    await edit(routineInput("Prompt"), "Synthetic");
+    await act(async () => button("Create").click());
+    expect(attempts).toHaveLength(2);
+    expect(new Set(attempts).size).toBe(2);
+  },
+);
+
+it.each(["create", "update", "cancel"])(
+  "recovers submitted %s before saving a later draft",
+  async (mode) => {
+    if (mode === "create") state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    const receipts = new Map<string, { input: string; result: Record<string, unknown> }>();
+    const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
+    let lost = false;
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path !== "routines/create" && path !== "routines/update")
+        return normal(path, input, options);
+      calls.push({ path, input: JSON.parse(JSON.stringify(input)) });
+      const prior = receipts.get(input.mutationId);
+      if (prior) {
+        if (prior.input !== JSON.stringify(input)) throw new Error("CONFLICT");
+        return prior.result;
+      }
+      const result = { ...(await normal("routines/list"))[0], ...input, id: "routine-1" };
+      receipts.set(input.mutationId, { input: JSON.stringify(input), result });
+      if (!lost) {
+        lost = true;
+        throw new Error("Response lost after commit");
+      }
+      return result;
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    if (mode !== "create") await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "First save");
+    await edit(routineInput("Prompt"), "First prompt");
+    await act(async () => button(mode === "create" ? "Create" : "Save").click());
+    if (mode === "cancel") {
+      await act(async () => button("Cancel").click());
+      await act(async () => button("Edit").click());
+    }
+    await edit(routineInput("Name"), "Later draft");
+    await edit(routineInput("Prompt"), "Later prompt");
+    await act(async () => button(mode === "create" ? "Create" : "Save").click());
+    expect(calls).toHaveLength(3);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[2]!.path).toBe("routines/update");
+    expect(calls[2]!.input).toMatchObject({
+      routineId: "routine-1",
+      name: "Later draft",
+      prompt: "Later prompt",
+    });
+    expect(calls[2]!.input.mutationId).not.toBe(calls[0]!.input.mutationId);
+    expect(receipts.size).toBe(2);
+    expect(container.textContent).not.toContain("CONFLICT");
+  },
+);
+
+it("keeps an uncertain create through authorization refusal and restored access", async () => {
+  state.params = { botId: "bot-1" };
+  const normal = state.rpc.getMockImplementation()!;
+  let denied = false;
+  const receipts = new Map<string, Record<string, unknown>>();
+  const creates: Record<string, unknown>[] = [];
+  const updates: Record<string, unknown>[] = [];
+  state.rpc.mockImplementation(async (path, input, options) => {
+    if (path === "routines/create") {
+      if (denied) throw { code: "FORBIDDEN", message: "Permission revoked" };
+      const previous = receipts.get(input.mutationId);
+      if (previous) return previous;
+      const saved = { ...input, id: `created-${creates.length}` };
+      creates.push(saved);
+      receipts.set(input.mutationId, saved);
+      if (creates.length === 1) throw new Error("Lost response");
+      return saved;
+    }
+    if (path === "routines/update") {
+      updates.push(input);
+      return { ...creates[0], ...input };
+    }
+    return normal(path, input, options);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await edit(routineInput("Name"), "First");
+  await edit(routineInput("Prompt"), "First prompt");
+  await act(async () => button("Create").click());
+  denied = true;
+  await act(async () => button("Create").click());
+  expect(routineInput("Name").value).toBe("First");
+  denied = false;
+  await edit(routineInput("Name"), "Later");
+  await edit(routineInput("Prompt"), "Later prompt");
+  await act(async () => button("Create").click());
+  expect(creates).toHaveLength(1);
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toMatchObject({
+    routineId: creates[0]!.id,
+    name: "Later",
+    prompt: "Later prompt",
+  });
+});
+
+it("receipt-only recovery keeps activation current and failed reads keep the draft", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let saved = { ...(await normal("routines/list"))[0] };
+  let lost = true,
+    failRecovery = false;
+  const receipts = new Set<string>();
+  state.rpc.mockImplementation(async (path, input, options) => {
+    if (path === "routines/list") return [saved];
+    if (path !== "routines/update") return normal(path, input, options);
+    if (input.mutationId && receipts.has(input.mutationId)) {
+      if (failRecovery) throw new Error("Recovery read failed");
+      return saved; // The real API reads the current owned row for a receipt.
+    }
+    saved = { ...saved, ...input };
+    if (input.mutationId) {
+      receipts.add(input.mutationId);
+      if (lost) {
+        lost = false;
+        throw new Error("Lost committed response");
+      }
+    }
+    return saved;
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Keep draft");
+  await act(async () => button("Save").click());
+  await act(async () => button("Pause").click());
+  expect(saved.active).toBe(false);
+  failRecovery = true;
+  await act(async () => button("Save").click());
+  expect(routineInput("Name").value).toBe("Keep draft");
+  expect(button("Resume")).toBeDefined();
+  expect(container.textContent).toContain("Recovery read failed");
+  failRecovery = false;
+  await act(async () => button("Save").click());
+  expect(button("Resume")).toBeDefined();
+  await act(async () => button("Resume").click());
+  expect(saved.active).toBe(true);
+  lost = true;
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Cancelled draft");
+  await act(async () => button("Save").click());
+  await act(async () => button("Cancel").click());
+  await act(async () => button("Pause").click());
+  expect(saved.active).toBe(false);
+});
+
+it.each([
+  ["create", "metadata"],
+  ["update", "metadata"],
+  ["create", "rejected"],
+  ["update", "rejected"],
+  ["create", "concurrent"],
+  ["update", "concurrent"],
+] as const)(
+  "%s retains added trigger identities through lost writes (transition=%s)",
+  async (operation, transition) => {
+    const rejectFollowUp = transition === "rejected";
+    const concurrent = transition === "concurrent";
+    if (operation === "create") state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: "google-calendar",
+          status: "connected",
+          displayName: "Synthetic",
+        },
+      ],
+    });
+    const connected = state.rpc.getMockImplementation()!;
+    let saved = { ...(await normal("routines/list"))[0], nativeTriggers: [] as any[] };
+    const receipts = new Set<string>();
+    const writes: any[] = [];
+    let refused = false;
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path !== "routines/create" && path !== "routines/update")
+        return connected(path, input, options);
+      if (receipts.has(input.mutationId))
+        return {
+          ...saved,
+          nativeTriggers: [...saved.nativeTriggers].sort((a, b) => b.id.localeCompare(a.id)),
+        };
+      if (rejectFollowUp && writes.length === 2 && !refused) {
+        refused = true;
+        throw Object.assign(new Error("Synthetic first-dispatch refusal"), { code: "BAD_REQUEST" });
+      }
+      writes.push(structuredClone(input));
+      receipts.add(input.mutationId);
+      saved = {
+        ...saved,
+        ...input,
+        nativeTriggers:
+          input.nativeTriggers?.map((t: any, i: number) => ({
+            ...t,
+            id: t.id ?? `saved-${i}`,
+            version: t.expectedVersion
+              ? t.expectedVersion +
+                (t.spec.calendarId !==
+                saved.nativeTriggers.find((old: any) => old.id === t.id)?.spec.calendarId
+                  ? 1
+                  : 0)
+              : 1,
+          })) ?? saved.nativeTriggers,
+      };
+      if (writes.length <= (concurrent ? 3 : 2)) throw new Error("Lost committed response");
+      return saved;
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    if (operation === "update") await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "First");
+    await edit(routineInput("Prompt"), "Synthetic");
+    await act(async () => button("External triggers").click());
+    for (const [index, value] of ["a", "b", "c"].entries()) {
+      await act(async () => button("Add application event").click());
+      for (const [label, selection] of [
+        ["Account", "fixture-connection"],
+        ["Event", "calendar.event_changed"],
+      ]) {
+        const select = container.querySelectorAll<HTMLSelectElement>(
+          `select[aria-label="${label}"]`,
+        )[index]!;
+        await act(async () => {
+          select.value = selection!;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      }
+      await edit(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[index]!,
+        value,
+      );
+    }
+    const save = () => act(async () => button(operation === "create" ? "Create" : "Save").click());
+    await save();
+    await edit(routineInput("Name"), "Second");
+    if (rejectFollowUp)
+      await edit(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
+        "a2",
+      );
+    await save();
+    if (!rejectFollowUp) expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    if (concurrent) {
+      saved.nativeTriggers[1] = {
+        ...saved.nativeTriggers[1],
+        version: 2,
+        spec: { ...saved.nativeTriggers[1].spec, calendarId: "b-concurrent" },
+        state: { cursor: "keep" },
+        leaseId: "keep-lease",
+      };
+      await edit(routineInput("Name"), "Third metadata");
+      await save();
+      expect(writes[2]).not.toHaveProperty("nativeTriggers");
+    }
+    const beforeEdit = structuredClone(saved.nativeTriggers);
+    await edit(
+      container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
+      "a-edited",
+    );
+    await save();
+    if (concurrent) {
+      expect(container.textContent).toContain("This native trigger changed");
+      expect(writes).toHaveLength(3);
+      expect(saved.nativeTriggers).toEqual(beforeEdit);
+      expect(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!.value,
+      ).toBe("a-edited");
+      return;
+    }
+    if (rejectFollowUp) {
+      expect(container.textContent).toContain("Synthetic first-dispatch refusal");
+      expect(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!.value,
+      ).toBe("a-edited");
+      await save();
+    }
+    expect(writes).toHaveLength(3);
+    expect(writes[2].nativeTriggers).toMatchObject([
+      { id: "saved-0", spec: { calendarId: "a-edited" } },
+      { id: "saved-1", spec: { calendarId: "b" } },
+      { id: "saved-2", spec: { calendarId: "c" } },
+    ]);
+  },
+);
+
+it.each(["metadata", "lost then forbidden", "edit trigger"])(
+  "Cancel then rejected name-only edit preserves the committed trigger: %s",
+  async (mode) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const original = {
+      ...(await normal("routines/list"))[0],
+      nativeTriggers: [
+        routineTriggerFixture({
+          kind: "calendar.event_changed",
+          calendarId: "a1",
+          target: { kind: "calendar" },
+        }),
+      ],
+    };
+    let saved = structuredClone(original),
+      denied = false,
+      rejected = false;
+    const receipts = new Set<string>();
+    const writes: any[] = [];
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: "google-calendar",
+          status: "connected",
+          displayName: "Synthetic",
+        },
+      ],
+    });
+    const connected = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path === "routines/list") return [original]; // The cancelled editor still has its old baseline.
+      if (path !== "routines/update") return connected(path, input, options);
+      if (denied) throw Object.assign(new Error("Permission revoked"), { code: "FORBIDDEN" });
+      if (receipts.has(input.mutationId)) return structuredClone(saved);
+      if (writes.length === 1 && !rejected) {
+        rejected = true;
+        throw Object.assign(new Error("Metadata refused"), { code: "BAD_REQUEST" });
+      }
+      writes.push(structuredClone(input));
+      receipts.add(input.mutationId);
+      saved = {
+        ...saved,
+        ...input,
+        nativeTriggers:
+          input.nativeTriggers?.map((t: any) => ({
+            ...t,
+            version: t.expectedVersion + 1,
+            state: {},
+            leaseId: null,
+          })) ?? saved.nativeTriggers,
+      };
+      if (writes.length === 1 || mode === "lost then forbidden")
+        throw new Error("Lost committed response");
+      return saved;
+    });
+    await openTriggers();
+    await edit(routineInput("Calendar ID"), "a2");
+    await act(async () => button("Save").click());
+    saved.nativeTriggers[0] = {
+      ...saved.nativeTriggers[0],
+      state: { cursor: "keep" },
+      leaseId: "keep-lease",
+    } as any;
+    const committed = structuredClone(saved.nativeTriggers);
+    await act(async () => button("Cancel").click());
+    await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "Rejected");
+    await act(async () => button("Save").click());
+    expect(container.textContent).toContain("Metadata refused");
+    await edit(routineInput("Name"), "Corrected");
+    if (mode === "edit trigger") {
+      await act(async () => button("External triggers").click());
+      await edit(routineInput("Calendar ID"), "a3");
+    }
+    await act(async () => button("Save").click());
+    if (mode === "lost then forbidden") {
+      denied = true;
+      await act(async () => button("Save").click());
+      expect(routineInput("Name").value).toBe("Corrected");
+      denied = false;
+      await act(async () => button("Save").click());
+    }
+    expect(writes).toHaveLength(2);
+    if (mode === "edit trigger") {
+      expect(saved.nativeTriggers[0]).toMatchObject({
+        id: committed[0].id,
+        version: committed[0].version + 1,
+        spec: { calendarId: "a3" },
+      });
+    } else {
+      expect.soft(writes[1]).not.toHaveProperty("nativeTriggers");
+      expect.soft(saved.nativeTriggers).toEqual(committed);
+    }
   },
 );

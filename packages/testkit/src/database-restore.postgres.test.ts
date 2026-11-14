@@ -16,11 +16,16 @@ import {
   JOB_QUEUE_POLICY,
   prepareDatabaseRestore,
   provisionRuntimeRole,
+  ROW_SECURITY_POLICIES,
   rlsBypassKey,
   runAsSystem,
   runAsTenant,
   verifyDatabaseRestore,
 } from "@rakazo/db";
+import {
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -329,12 +334,16 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(target.url);
     await provisionRuntimeRole(target.url, targetRuntimeUrl);
     const status = await verify();
-    expect(status).toMatchObject({ expectedTables: 89, connectionEnforced: true });
+    expect(status).toMatchObject({
+      expectedTables: schemaPolicyTables.length,
+      connectionEnforced: true,
+    });
     expect(status.problems).toEqual([]);
     restored = true;
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const sourceIdentity = isolatedTarget(sourceUrl!);
     if (
       process.env.VERIFY_ROW_SECURITY_POLICIES !== "harness_isolated" ||
@@ -534,7 +543,7 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(source.url);
     await provisionRuntimeRole(source.url, sourceRuntimeUrl);
     expect(await applyRowSecurityPolicies(source.url, sourceRuntimeUrl)).toMatchObject({
-      expectedTables: 89,
+      expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
     });
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
@@ -965,7 +974,10 @@ postgres("custom archive recovery into a different cluster and database identity
       await runtime.prisma.$disconnect();
       await runtime.pool.end();
     }
-    expect(await verify()).toMatchObject({ expectedTables: 89, connectionEnforced: true });
+    expect(await verify()).toMatchObject({
+      expectedTables: schemaPolicyTables.length,
+      connectionEnforced: true,
+    });
   }, 120_000);
 
   it("rejects an extra system key without deleting it or the selected credential", async () => {
@@ -1009,7 +1021,7 @@ postgres("custom archive recovery into a different cluster and database identity
         /outside the selected (owner and runtime roles|credential inventory)/,
       );
       expect(await verify([targetRuntimeUrl, alternateUrl])).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
       });
     } finally {

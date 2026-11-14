@@ -20,6 +20,12 @@ import {
   scramSha256Verifier,
   toTicketCommentDto,
 } from "@rakazo/db";
+import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 
@@ -97,6 +103,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     ).rows;
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const url = new URL(databaseUrl!);
     const expectedDatabase = process.env.VERIFY_ROW_SECURITY_POLICIES_DATABASE;
     const databaseName = url.pathname.slice(1);
@@ -563,10 +570,42 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     }
   }, 20_000);
 
+  it("isolates save receipts by both authenticated user and Space", async () => {
+    const rows = [
+      { id: id("receipt-own"), userId: userA, spaceId: spaceA },
+      { id: id("receipt-user"), userId: userB, spaceId: spaceA },
+      { id: id("receipt-space"), userId: userA, spaceId: spaceB },
+    ];
+    await owner.prisma.routineMutation.createMany({
+      data: rows.map((row) => ({ ...row, requestHash: "synthetic" })),
+    });
+    try {
+      expect(await runtime!.prisma.routineMutation.findMany()).toEqual([]);
+      const visible = await inA(() => runtime!.prisma.routineMutation.findMany());
+      expect(visible.map((row) => row.id)).toEqual([id("receipt-own")]);
+      await inA(() =>
+        rejectedByPolicy(
+          runtime!.prisma.routineMutation.create({
+            data: {
+              id: id("receipt-forged"),
+              userId: userB,
+              spaceId: spaceA,
+              requestHash: "synthetic",
+            },
+          }),
+        ),
+      );
+    } finally {
+      await owner.prisma.routineMutation.deleteMany({
+        where: { id: { in: rows.map((row) => row.id) } },
+      });
+    }
+  });
+
   it("installs the exact schema-wide policy set for a real restricted connection", async () => {
     expect(beforePolicies.policyInstalled).toBe(false);
     expect(installed).toMatchObject({
-      expectedTables: ROW_SECURITY_POLICIES.length,
+      expectedTables: schemaPolicyTables.length,
       policyInstalled: true,
       policyEnabled: true,
       connectionEnforced: true,
@@ -574,7 +613,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       guardValid: true,
       legacyPolicyCount: 0,
     });
-    expect(installed.tables).toHaveLength(ROW_SECURITY_POLICIES.length);
+    expect(installed.tables).toHaveLength(schemaPolicyTables.length);
+    expectPhysicalPolicyTables(
+      (
+        await owner.pool.query(
+          "SELECT n.nspname AS schema, c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public', 'cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     expect(
       installed.tables.every(
         (table) => table.present && table.enabled && table.active && table.policyMatch,
@@ -589,7 +635,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(161);
+    expectExactPolicyCatalog(snapshot);
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1603,7 +1649,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(161);
+        expectExactPolicyCatalog(await catalog());
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -1896,7 +1942,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(161);
+        expectExactPolicyCatalog(committed);
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -1942,7 +1988,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(161);
+      expectExactPolicyCatalog(committed);
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

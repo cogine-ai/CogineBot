@@ -7,11 +7,21 @@ export function needsOneShotTime(routine: Routine): boolean {
 }
 
 /** Ordinary edits deliberately omit model pins, timezone and external triggers. */
-export function routineFields(name: string, prompt: string, crons: string[]) {
+export function routineFields(
+  name: string,
+  prompt: string,
+  crons: string[],
+  original?: Routine | null,
+) {
   if (!name.trim() || name.trim().length > 80 || !prompt.trim()) {
     throw new Error(t("Add a name and prompt."));
   }
-  return { name: name.trim(), prompt: prompt.trim(), crons };
+  if (!original) return { name: name.trim(), prompt: prompt.trim(), crons };
+  return {
+    ...(name.trim() !== original.name ? { name: name.trim() } : {}),
+    ...(prompt.trim() !== original.prompt ? { prompt: prompt.trim() } : {}),
+    ...(JSON.stringify(crons) !== JSON.stringify(original.crons) ? { crons } : {}),
+  };
 }
 
 export function routineActivation(routine: Routine, runAt: string, now = Date.now()) {

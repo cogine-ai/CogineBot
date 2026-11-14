@@ -2234,3 +2234,16 @@ model PageVersion {
   @@map("page_versions")
   @@schema("cogine_pages")
 }
+
+/// Committed save intents survive Routine deletion, preventing replay resurrection.
+model RoutineMutation {
+  id String @id
+  userId String
+  spaceId String
+  requestHash String
+  routineId String?
+  createdAt DateTime @default(now())
+  @@index([spaceId, userId])
+  @@map("routine_mutations")
+  @@schema("public")
+}

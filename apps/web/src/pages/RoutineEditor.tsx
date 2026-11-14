@@ -14,6 +14,7 @@ import {
   parseModelOptionKey,
   presetFromCron,
 } from "@rakazo/core";
+import { newRoutineMutationId } from "@rakazo/core/routine-trigger-patch";
 import {
   Button,
   DropdownMenu,
@@ -87,6 +88,7 @@ const COMING_SOON = [
 export type RoutineDraftState = {
   nativeTriggers: NativeRoutineTriggerDraft[];
   nativeTriggersDirty: boolean;
+  mutationId: string;
   name: string;
   prompt: string;
   schedules: CronPreset[];
@@ -105,6 +107,7 @@ export function emptyRoutineDraft(): RoutineDraftState {
   return {
     nativeTriggers: [],
     nativeTriggersDirty: false,
+    mutationId: newRoutineMutationId(),
     name: "",
     prompt: "",
     schedules: [],
@@ -123,6 +126,7 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
   return {
     nativeTriggers: (routine.nativeTriggers ?? []).map(draftFromNativeRoutineTrigger),
     nativeTriggersDirty: false,
+    mutationId: newRoutineMutationId(),
     name: routine.name,
     prompt: routine.prompt,
     schedules: routine.crons.map(presetFromCron),

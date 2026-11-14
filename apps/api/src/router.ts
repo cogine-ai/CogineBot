@@ -381,6 +381,12 @@ import {
 } from "./pages.js";
 import { createPluginInstallsService } from "./plugin-installs.js";
 import { createPluginUninstaller } from "./plugin-uninstall.js";
+import {
+  claimRoutineMutation,
+  finishRoutineMutation,
+  readRoutineMutation,
+  routineMutation,
+} from "./routine-mutation.js";
 import { listRoutineRuns } from "./routine-runs.js";
 import { listSpaceRuns } from "./runs.js";
 import { addScreenProxyCapability } from "./screen-proxy.js";
@@ -4672,6 +4678,26 @@ export function createRouter(deps: RouterDeps) {
         return listRoutinesDto(deps, context.actor, input.botId, { includeArchived: true });
       }),
       create: authed.routines.create.handler(async ({ context, input }) => {
+        const intent = routineMutation(context.actor, "create", input);
+        const recover = async (routineId: string) => {
+          const row = await deps.prisma.routine.findFirst({
+            where: {
+              id: routineId,
+              userId: context.actor.userId,
+              spaceId: context.actor.spaceId,
+              botId: input.botId,
+              bot: { archivedAt: null },
+            },
+          });
+          if (!row) throw new ORPCError("NOT_FOUND");
+          await repos.getBot(context.actor, row.botId);
+          return mapRoutine(
+            row,
+            await listNativeRoutineTriggers(deps.prisma, context.actor, row.id),
+          );
+        };
+        const recovered = await readRoutineMutation(deps.prisma, intent);
+        if (recovered) return recover(recovered);
         if (input.active) await deps.billing?.assertAccess(context.actor);
         if (hasMixedOneShotSchedule(input.crons)) {
           throw new ORPCError("BAD_REQUEST", {
@@ -4683,7 +4709,10 @@ export function createRouter(deps: RouterDeps) {
             message: "One-shot schedules must be created from chat.",
           });
         }
-        const bot = await repos.getBot(context.actor, input.botId);
+        const bot = await repos.getBot(context.actor, input.botId).catch((error: unknown) => {
+          if (error instanceof IsolationError) throw new ORPCError("NOT_FOUND");
+          throw error;
+        });
         // Validate every recurring cron even when inactive; @once and webhook-only have no next date.
         let nextRunAt: Date | null = null;
         if (input.crons.length > 0 && !isOneShotRoutineCrons(input.crons)) {
@@ -4703,9 +4732,23 @@ export function createRouter(deps: RouterDeps) {
           codexCatalog,
           (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
         );
-        const { row, nativeTriggers } = await withSerializableRetry(() =>
+        const { row, nativeTriggers, replayed } = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
+              const prior = await claimRoutineMutation(tx, intent);
+              if (prior) {
+                const row = await tx.routine.findFirst({
+                  where: {
+                    id: prior,
+                    userId: context.actor.userId,
+                    spaceId: context.actor.spaceId,
+                    botId: input.botId,
+                    bot: { archivedAt: null },
+                  },
+                });
+                if (!row) throw new ORPCError("NOT_FOUND");
+                return { row, nativeTriggers: [], replayed: true };
+              }
               const checked = await validateModelBinding(
                 tx,
                 deps.secrets,
@@ -4743,11 +4786,13 @@ export function createRouter(deps: RouterDeps) {
                 row.id,
                 preparedNative ?? [],
               );
-              return { row, nativeTriggers };
+              await finishRoutineMutation(tx, intent, row.id);
+              return { row, nativeTriggers, replayed: false };
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
         ).catch(rethrowNativeRoutineError);
+        if (replayed) return recover(row.id);
         if (bot.thread) {
           await deps.events.append({
             spaceId: context.actor.spaceId,
@@ -4778,6 +4823,13 @@ export function createRouter(deps: RouterDeps) {
           },
         });
         if (!existing) throw new ORPCError("NOT_FOUND");
+        const intent = routineMutation(context.actor, "update", input);
+        const recovered = await readRoutineMutation(deps.prisma, intent);
+        if (recovered)
+          return mapRoutine(
+            existing,
+            await listNativeRoutineTriggers(deps.prisma, context.actor, existing.id),
+          );
         const needsBillingAdmission = input.active ?? existing.active;
         if (needsBillingAdmission) await deps.billing?.assertAccess(context.actor);
         const bot = await repos.getBot(context.actor, existing.botId);
@@ -4831,9 +4883,10 @@ export function createRouter(deps: RouterDeps) {
             ? await prepareExistingModelAuth(deps, context.actor, existing, codexCatalog)
             : undefined;
         // Re-check the parent in the write itself so an archive that lands after the read wins.
-        const { row, previous, scheduleChanged } = await withSerializableRetry(() =>
+        const { row, previous, scheduleChanged, replayed } = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
+              const prior = await claimRoutineMutation(tx, intent);
               const checkModel = settingModel || Boolean(input.thinkingLevel);
               const current = await tx.routine.findFirst({
                 where: {
@@ -4843,6 +4896,8 @@ export function createRouter(deps: RouterDeps) {
                 },
               });
               if (!current) throw new ORPCError("NOT_FOUND");
+              if (prior)
+                return { row: current, previous: current, scheduleChanged: false, replayed: true };
               const active = input.active ?? current.active;
               if (deps.billing && active && !needsBillingAdmission) {
                 throw new ORPCError("CONFLICT", {
@@ -4972,9 +5027,17 @@ export function createRouter(deps: RouterDeps) {
                   throw error;
                 });
               if (preparedNative !== undefined)
-                await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
+                await replaceNativeRoutineTriggersTx(
+                  tx,
+                  context.actor,
+                  row.id,
+                  preparedNative,
+                  new Date(),
+                  input.nativeTriggerBaseline,
+                );
               else await requireRoutineTrigger(tx, context.actor, row.id);
-              return { row, previous: current, scheduleChanged };
+              await finishRoutineMutation(tx, intent, row.id);
+              return { row, previous: current, scheduleChanged, replayed: false };
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
@@ -4984,6 +5047,7 @@ export function createRouter(deps: RouterDeps) {
           context.actor,
           row.id,
         ).catch(rethrowNativeRoutineError);
+        if (replayed) return mapRoutine(row, savedNative);
         if (bot.thread) {
           await deps.events.append({
             spaceId: context.actor.spaceId,

@@ -5,28 +5,49 @@ import {
   isOneShotRoutineCrons,
   presetFromCron,
 } from "@rakazo/core";
+import type { RoutineTriggerDraft } from "@rakazo/core/routine-trigger-patch";
+import { routineTriggerDraft } from "@rakazo/core/routine-trigger-patch";
 import { useRef, useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import { useI18n } from "../lib/i18n";
 import { native, useMobileTokens } from "../lib/native";
 import { NativeActionButton } from "./native-action-button";
 import { RoutineSchedule } from "./routine-schedule";
+import type { RoutineTriggerAccess } from "./routine-triggers";
+import { RoutineTriggers } from "./routine-triggers";
 
 export function RoutineFields({
   routine,
   timezone,
-  disabled,
+  disabled: saving,
+  access,
   onSave,
   onCancel,
 }: {
   routine: Routine | null;
   timezone: string;
   disabled: boolean;
-  onSave: (name: string, prompt: string, crons: string[]) => void;
+  access: RoutineTriggerAccess | null;
+  onSave: (
+    name: string,
+    prompt: string,
+    crons: string[],
+    triggers: RoutineTriggerDraft,
+    original: Routine | null,
+  ) => void;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
   const tokens = useMobileTokens();
+  const [original] = useState(routine);
+  const [triggers, setTriggers] = useState<RoutineTriggerDraft>(() =>
+    routine
+      ? routineTriggerDraft(routine)
+      : { webhookEnabled: false, githubEnabled: false, messageProvider: null, nativeTriggers: [] },
+  );
+  const [triggersOpen, setTriggersOpen] = useState(false);
+  const [triggerBusy, setTriggerBusy] = useState(false);
+  const disabled = saving || triggerBusy;
   const [name, setName] = useState(routine?.name ?? "");
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
   const [schedules, setSchedules] = useState(() =>
@@ -100,11 +121,33 @@ export function RoutineFields({
           />
         </>
       ) : null}
+      {triggersOpen && access ? (
+        <RoutineTriggers
+          value={triggers}
+          onChange={setTriggers}
+          disabled={disabled}
+          access={access}
+          onBusy={setTriggerBusy}
+        />
+      ) : (
+        <NativeActionButton
+          label={t("External triggers")}
+          disabled={disabled || !access}
+          prominence="secondary"
+          onPress={() => setTriggersOpen(true)}
+        />
+      )}
       <NativeActionButton
         label={routine ? t("Save") : t("Create")}
         disabled={disabled || !name.trim() || !prompt.trim()}
         onPress={() =>
-          onSave(name, prompt, once ? routine.crons : schedules.map((schedule) => schedule.cron))
+          onSave(
+            name,
+            prompt,
+            once ? routine.crons : schedules.map((schedule) => schedule.cron),
+            triggers,
+            original,
+          )
         }
       />
       <NativeActionButton
