@@ -1,6 +1,6 @@
 import type { ComputerMode, ComputerReleaseReason } from "@rakazo/contracts";
 import { computerStateRequiresRecovery, currentComputerStatus } from "@rakazo/contracts";
-import { createComputerHeartbeat, formatFileSize } from "@rakazo/core";
+import { createComputerHeartbeat, DEFAULT_COMPUTER_SCREEN, formatFileSize } from "@rakazo/core";
 import { useIsFocused, useLocalSearchParams, useNavigation } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import type { RefObject } from "react";
@@ -25,8 +25,10 @@ import { ComputerKeyboardBar } from "../components/computer-keyboard-bar";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
 import { ComputerSavedFiles } from "../components/computer-saved-files";
+import { ComputerTeaching } from "../components/computer-teaching";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
+import { TeachingTouchSurface } from "../components/teaching-touch-surface";
 import { currentApiBase, rpc } from "../lib/api";
 import { useAppActive } from "../lib/app-active";
 import type { ComputerStatus } from "../lib/computer";
@@ -60,6 +62,9 @@ import {
 } from "../lib/mobile-scope";
 import { useMobileTokens } from "../lib/native";
 import { iosAtLeast } from "../lib/native-controls";
+import { spaceRequestContext } from "../lib/space-request-context";
+import type { TeachingInput } from "../lib/teaching-input";
+import { createTeachingInputQueue, teachingKeyboardInputs } from "../lib/teaching-input";
 import { errorText } from "../lib/user-error";
 
 export default function Computer() {
@@ -106,6 +111,49 @@ export default function Computer() {
   const embeddedScreenUrl = embeddableScreenUrl(screenUrl, currentApiBase());
   useEffect(() => setScreenError(null), [embeddedScreenUrl]);
 
+  const [teaching, setTeaching] = useState<{
+    verified: boolean;
+    recordingId: string | null;
+    busy: boolean;
+  }>({ verified: false, recordingId: null, busy: false });
+  const teachingRef = useRef(teaching);
+  teachingRef.current = teaching;
+  const inputQueue = useMemo(() => {
+    const scope = captureMobileScope();
+    const epoch = viewEpoch;
+    const recordingId = teaching.recordingId;
+    const screenGeneration = screenRecovery.generation;
+    const current = () =>
+      visibleRef.current &&
+      viewEpochRef.current === epoch &&
+      screenRecoveryRef.current.generation === screenGeneration &&
+      isMobileScopeCurrent(scope) &&
+      teachingRef.current.recordingId === recordingId;
+    return createTeachingInputQueue(
+      async (input) => {
+        const context = await spaceRequestContext(scope, current);
+        return rpc(
+          "computer/input",
+          { botId, ...input },
+          { requestContext: { ...context, isCurrent: current } },
+        );
+      },
+      current,
+      (cause) => setScreenError(errorText(cause)),
+    );
+  }, [viewEpoch, teaching.recordingId, screenRecovery.generation]);
+  const inputQueueRef = useRef(inputQueue);
+  inputQueueRef.current = inputQueue;
+  const flushTeachingInput = useCallback(() => inputQueueRef.current.flush(), []);
+  function teachingInput(input: TeachingInput) {
+    if (
+      teachingRef.current.verified &&
+      !teachingRef.current.busy &&
+      teachingRef.current.recordingId
+    )
+      inputQueue.push(input);
+  }
+
   const hasControl =
     !screenRecovery.watchOnly &&
     computer?.controlHolder === "user" &&
@@ -146,6 +194,12 @@ export default function Computer() {
   function injectKeyboardCommands(commands: ComputerKeyboardCommand[]) {
     const webView = screenWebViewRef.current;
     if (!webView) return;
+    if (
+      !teachingRef.current.verified ||
+      teachingRef.current.busy ||
+      teachingRef.current.recordingId
+    )
+      return;
     for (const command of commands) webView.injectJavaScript(computerKeyboardScript(command));
   }
 
@@ -398,6 +452,8 @@ export default function Computer() {
         force: computer?.state !== "running",
       });
       if (!opened || !refreshController.isActive()) return;
+      await inputQueueRef.current.recover();
+      if (!refreshController.isActive()) return;
       setComputerOpen(true);
       setScreenError(null);
     } catch {
@@ -628,9 +684,22 @@ export default function Computer() {
           live={Boolean(saveFailure)}
         />
       ) : null}
+      {botId ? (
+        <ComputerTeaching
+          key={targetKey}
+          botId={botId}
+          active={viewVisible}
+          supported={Boolean(
+            computer && computer.kind !== "desktop" && !powerUnavailable && !capPaused,
+          )}
+          onChanged={refreshAfterMaintenance}
+          onState={setTeaching}
+          beforeStop={flushTeachingInput}
+        />
+      ) : null}
       <ComputerModePicker
         value={computer?.mode}
-        disabled={!viewVisible || switching || powerUnavailable}
+        disabled={!viewVisible || switching || powerUnavailable || Boolean(teaching.recordingId)}
         onChange={(mode) => void setComputerMode(mode)}
       />
 
@@ -773,7 +842,9 @@ export default function Computer() {
                   <ScreenWebView
                     key={screenRecovery.generation}
                     url={loadedScreenUrl}
-                    interactive={hasControl}
+                    interactive={
+                      hasControl && teaching.verified && !teaching.busy && !teaching.recordingId
+                    }
                     nativeKeyboard={hasControl}
                     keyboardSession={keyboardSession}
                     webViewRef={screenWebViewRef}
@@ -806,7 +877,35 @@ export default function Computer() {
                     </Text>
                   </View>
                 )}
+                {viewVisible &&
+                hasControl &&
+                teaching.verified &&
+                !teaching.busy &&
+                teaching.recordingId &&
+                !screenError ? (
+                  <TeachingTouchSurface
+                    width={computer?.screenWidth ?? DEFAULT_COMPUTER_SCREEN.width}
+                    height={computer?.screenHeight ?? DEFAULT_COMPUTER_SCREEN.height}
+                    onInput={teachingInput}
+                  />
+                ) : null}
               </View>
+              {teaching.recordingId ? (
+                <View style={{ flexDirection: "row", gap: 12 }}>
+                  <Text style={{ color: tokens.foreground }}>{t("Recording")}</Text>
+                  {(["up", "down"] as const).map((direction) => (
+                    <NativeActionButton
+                      key={direction}
+                      label={direction === "up" ? t("Scroll up") : t("Scroll down")}
+                      disabled={!teaching.verified || teaching.busy}
+                      prominence="quiet"
+                      onPress={() =>
+                        teachingInput({ kind: "scroll", payload: { direction, amount: 3 } })
+                      }
+                    />
+                  ))}
+                </View>
+              ) : null}
               {hasControl ? (
                 <ComputerKeyboardBar
                   onCommand={(command) => {
@@ -817,7 +916,14 @@ export default function Computer() {
                       screenRecoveryRef.current.generation !== screenRecovery.generation
                     )
                       return;
-                    injectKeyboardCommands(keyboardGate.current.bridge.push(command));
+                    // Recording input belongs to the teaching session, not the WebView.
+                    // Queue it immediately so closing an unready renderer cannot discard it
+                    // and Stop teaching drains every accepted native keyboard command.
+                    if (teachingRef.current.recordingId) {
+                      for (const input of teachingKeyboardInputs(command)) teachingInput(input);
+                    } else {
+                      injectKeyboardCommands(keyboardGate.current.bridge.push(command));
+                    }
                   }}
                 />
               ) : null}
