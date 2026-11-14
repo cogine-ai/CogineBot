@@ -108,6 +108,88 @@ describe("MCP transport seam", () => {
     }
   });
 
+  it.each(["caller cancellation", "setup deadline"] as const)(
+    "keeps the established legacy SSE stream after %s and closes it on teardown",
+    async (edge) => {
+      const session = new McpSession();
+      const opening = new AbortController();
+      const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+      const budget = 12_345;
+      const deadline = vi
+        .spyOn(AbortSignal, "timeout")
+        .mockImplementation((ms) =>
+          edge === "setup deadline" && ms === budget
+            ? AbortSignal.any([opening.signal, realTimeout(2_500)])
+            : realTimeout(ms),
+        );
+      const stream = new TransformStream<Uint8Array, Uint8Array>();
+      const writer = stream.writable.getWriter();
+      const encode = (frame: string) => new TextEncoder().encode(frame);
+      let streamSignal: AbortSignal | undefined;
+      let opens = 0;
+      const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "GET") {
+          opens++;
+          streamSignal = request.signal;
+          streamSignal.addEventListener(
+            "abort",
+            () =>
+              void writer
+                .abort(new DOMException("Fixture stream closed", "AbortError"))
+                .catch(() => undefined),
+          );
+          void writer.write(encode("event: endpoint\ndata: /messages\n\n")).catch(() => undefined);
+          return new Response(stream.readable, {
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        expect(new URL(request.url).pathname).toBe("/messages");
+        const { id, method } = await request.json();
+        if (id !== undefined) {
+          const result =
+            method === "initialize"
+              ? {
+                  protocolVersion: "2024-11-05",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "legacy-test", version: "1" },
+                }
+              : { tools: [{ name: "current", inputSchema: { type: "object" } }] };
+          await writer.write(
+            encode(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id, result })}\n\n`),
+          );
+        }
+        return new Response(null, { status: 202 });
+      });
+      try {
+        await session.connectRemote({
+          url: "https://mcp.example.test/sse",
+          transport: "sse",
+          timeoutMs: budget,
+          signal:
+            edge === "caller cancellation"
+              ? AbortSignal.any([opening.signal, realTimeout(2_500)])
+              : undefined,
+          network: { ...TEST_NETWORK, fetch },
+        });
+        opening.abort(new Error("Original setup has expired"));
+        expect(streamSignal?.aborted).toBe(false);
+        await expect(session.listTools({ signal: realTimeout(2_500) })).resolves.toMatchObject({
+          tools: [{ name: "current" }],
+        });
+        expect(opens).toBe(1);
+        await session.close();
+        expect(streamSignal?.aborted).toBe(true);
+      } finally {
+        deadline.mockRestore();
+        await session.close();
+        await writer
+          .abort(new DOMException("Fixture stream closed", "AbortError"))
+          .catch(() => undefined);
+      }
+    },
+  );
+
   it("preserves SDK session and protocol headers after stateful initialization", async () => {
     const requests: Request[] = [];
     const session = new McpSession();
