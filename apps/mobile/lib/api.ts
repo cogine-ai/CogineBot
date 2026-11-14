@@ -1592,10 +1592,12 @@ export async function subscribeThread(
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
   onHeartbeat?: () => void,
+  requestContext?: ApiRequestContext,
 ) {
   const selectionGeneration = currentSpaceSelectionGeneration();
-  const context = await captureApiRequestContext();
+  const context = requestContext ?? (await captureApiRequestContext());
   const current = () =>
+    context.isCurrent?.() !== false &&
     context.apiBase === currentApiBase() &&
     context.sessionGeneration === currentSessionGeneration() &&
     selectionGeneration === currentSpaceSelectionGeneration();
@@ -1643,20 +1645,44 @@ export async function subscribeThread(
     buffer = chunks.pop() ?? "";
     for (const chunk of chunks) {
       if (signal.aborted || !current()) return;
-      const data = chunk
-        .split("\n")
+      const lines = chunk.split("\n");
+      const eventType = lines
+        .findLast((line) => line.startsWith("event:"))
+        ?.slice(6)
+        .trim();
+      const data = lines
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("");
-      if (!data || data === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(data) as { json?: ThreadEvent; error?: { message?: string } };
-        // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
-        if (parsed.json?.type === "heartbeat") onHeartbeat?.();
-        else if (parsed.json?.type) onEvent(parsed.json);
-      } catch {
-        // ignore keepalives and partial frames
+      if (eventType === "error") {
+        // RPCHandler encodes ORPCError as event:error with the details in data.json.
+        // A malformed error frame still terminates this subscription fail-closed.
+        void reader.cancel().catch(() => undefined);
+        let detail: { code?: unknown; status?: unknown } | undefined;
+        try {
+          detail = JSON.parse(data)?.json;
+        } catch {}
+        throw Object.assign(new Error("rpc threads/subscribe failed"), {
+          code: typeof detail?.code === "string" ? detail.code : undefined,
+          status: typeof detail?.status === "number" ? detail.status : undefined,
+        });
       }
+      if (!data || data === "[DONE]") continue;
+      let parsed: { json?: ThreadEvent; error?: { message?: string } };
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        // Ignore keepalives and partial frames, but never swallow an RPC error.
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object") continue;
+      if (parsed.error) {
+        void reader.cancel().catch(() => undefined);
+        throw new Error("rpc threads/subscribe failed");
+      }
+      // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
+      if (parsed.json?.type === "heartbeat") onHeartbeat?.();
+      else if (parsed.json?.type) onEvent(parsed.json);
     }
   }
 }

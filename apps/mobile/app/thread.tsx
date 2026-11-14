@@ -138,6 +138,7 @@ import {
   PagePreviewViewport,
   usePagePreviewViewport,
 } from "../components/pages/page-card";
+import { PeerConversationSheet } from "../components/peer-conversation-sheet";
 import { ReplyDismissButton } from "../components/reply-dismiss-button";
 import { ReplyLine } from "../components/reply-line";
 import { ThreadErrorNotices } from "../components/run-error-notice";
@@ -227,6 +228,7 @@ import {
 } from "../lib/notification-open";
 import { useChatOnScreen } from "../lib/page-card-detail";
 import { pageScopeKey, subscribePageScope, takePageReply } from "../lib/pages";
+import type { PeerConversationTarget } from "../lib/peer-conversation";
 import type { PickedAttachment } from "../lib/pick-attachments";
 import { pickDocuments, pickFromLibrary, takePhoto } from "../lib/pick-attachments";
 import { threadRefreshDelayMs } from "../lib/refresh";
@@ -881,6 +883,23 @@ function Thread({
     jumpScrollTarget.current ?? pinnedAroundRef.current?.messageId ?? threadKey;
   const previewViewport = usePagePreviewViewport(previewScope, previewWindowKey);
   const joinPinnedAfterLayout = useRef<number | null>(null);
+  const [peerConversation, setPeerConversation] = useState<{
+    target: PeerConversationTarget;
+    scope: MobileScope;
+    route: string;
+  } | null>(null);
+  const peerRoute = JSON.stringify([previewScope, snap?.threadId, requestedThreadId, readOnly]);
+  const peerVisible = Boolean(
+    peerConversation &&
+      peerConversation.route === peerRoute &&
+      profileScope &&
+      isMobileScopeCurrent(peerConversation.scope) &&
+      focused &&
+      !showingSaved,
+  );
+  useEffect(() => {
+    if (!peerVisible) setPeerConversation(null);
+  }, [peerVisible]);
   const [markdownPreview, setMarkdownPreview] = useState<MarkdownArtifactPreviewTarget | null>(
     null,
   );
@@ -2774,6 +2793,45 @@ function Thread({
 
   // Event actions read the latest committed screen state without invalidating settled rows.
   const currentRowActions: MessageRowActions = {
+    openPeer: (message, peerBotId, peerBotName, peerBotColor) => {
+      const origin = snapshotOrigin.current;
+      const snapshot = snapRef.current;
+      const originBotId = groupId ? message.botId : botId;
+      if (
+        !originBotId ||
+        !profileScope ||
+        !isMobileScopeCurrent(profileScope) ||
+        !navigation.isFocused() ||
+        showingSaved ||
+        restoring ||
+        !origin ||
+        !snapshot ||
+        origin.apiBase !== profileScope.apiBase ||
+        origin.userId !== ownerUserId ||
+        origin.sessionGeneration !== profileScope.sessionGeneration ||
+        origin.selectionId !== profileScope.spaceId ||
+        !isIntegrationsScopeCurrent(origin) ||
+        (groupId ? snapshot.groupId !== groupId : snapshot.groupId || snapshot.botId !== botId) ||
+        !snapshot.messages.some((row) => row.id === message.id)
+      )
+        return;
+      const originBot = mentionBots.find((bot) => bot.id === originBotId);
+      const member = snapshot.members?.find((bot) => bot.botId === originBotId);
+      setPeerConversation({
+        route: peerRoute,
+        scope: profileScope,
+        target: {
+          botId: originBotId,
+          botName: member?.name ?? originBot?.name ?? displayName ?? t("Bot"),
+          botColor: member?.color ?? originBot?.color ?? tokens.mutedForeground,
+          peerBotId,
+          peerBotName,
+          peerBotColor,
+          groupId,
+          readOnly,
+        },
+      });
+    },
     reply: (message) => {
       setReplyTarget(message);
       setReplyQuote(null);
@@ -2824,6 +2882,8 @@ function Thread({
   });
   const rowActions = useMemo<MessageRowActions>(
     () => ({
+      openPeer: (message, id, name, color) =>
+        rowActionsRef.current.openPeer(message, id, name, color),
       reply: (message) => rowActionsRef.current.reply(message),
       quote: (message) => rowActionsRef.current.quote(message),
       select: (text) => rowActionsRef.current.select(text),
@@ -3455,6 +3515,13 @@ function Thread({
           onSlashAction={runSlashAction}
         />
       </View>
+      {peerVisible && peerConversation ? (
+        <PeerConversationSheet
+          target={peerConversation.target}
+          scope={peerConversation.scope}
+          onClose={() => setPeerConversation(null)}
+        />
+      ) : null}
       <Modal
         visible={botActionsOpen}
         transparent
@@ -3675,6 +3742,7 @@ function threadItemKey(item: ThreadItem<MobileMessage>) {
 }
 
 type MessageRowActions = {
+  openPeer: (message: MobileMessage, id: string, name: string, color: string) => void;
   reply: (message: MobileMessage) => void;
   quote: (message: MobileMessage) => void;
   select: (text: string) => void;
@@ -4079,6 +4147,7 @@ const MessageRow = memo(function MessageRow({
                     onAnswer={actions.answer}
                     onOpenBot={actions.openBot}
                     onOpenComputer={actions.openComputer}
+                    onOpenPeer={actions.openPeer}
                     onChoiceDismissed={onChoiceDismissed}
                     onPreviewMarkdown={actions.previewMarkdown}
                     onPreviewImage={actions.previewImage}
@@ -4196,6 +4265,7 @@ const MessageBubble = memo(function MessageBubble({
   onAnswer,
   onOpenBot,
   onOpenComputer,
+  onOpenPeer,
   onChoiceDismissed,
   onPreviewMarkdown,
   onPreviewImage,
@@ -4217,6 +4287,7 @@ const MessageBubble = memo(function MessageBubble({
   ) => Promise<void>;
   onOpenBot: (botId: string, name: string) => void;
   onOpenComputer: (botId: string, name: string) => void;
+  onOpenPeer: MessageRowActions["openPeer"];
   onChoiceDismissed?: (question: string) => void;
   onPreviewMarkdown: (target: MarkdownArtifactPreviewTarget) => void;
   onPreviewImage: (target: ImageArtifactPreviewTarget) => void;
@@ -4320,13 +4391,14 @@ const MessageBubble = memo(function MessageBubble({
       bots.find((bot) => bot.id === peerBotId)?.color ??
       members?.find((member) => member.botId === peerBotId)?.color ??
       tokens.mutedForeground;
-    // Compact receipt only: peer bodies stay out of the human thread.
-    // Full view-only peer chat is web-first; mobile keeps the chip without expand.
+    // Open a separate read-only sheet; the composer and list stay mounted.
     return (
       <Pressable
         {...actionProps}
         accessible
         accessibilityLabel={label}
+        accessibilityRole="button"
+        onPress={() => onOpenPeer(message, peerBotId, peer, peerColor)}
         style={{
           width: "100%",
           paddingVertical: 4,

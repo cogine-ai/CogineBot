@@ -5562,3 +5562,51 @@ it("announces the committed final message after the actual mobile reducer clears
   expect(announcements.update("scope", true, current)).toEqual(["Committed native reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
 });
+
+it("pins a viewer subscription to its captured context and rejects an obsolete context before fetch", async () => {
+  const context = {
+    apiBase: currentApiBase(),
+    sessionGeneration: SessionModule.currentSessionGeneration(),
+    headers: { "x-rakazo-space-id": "verified-space", authorization: "Bearer synthetic-token" },
+    isCurrent: () => true,
+  };
+  const fetcher = vi.fn(
+    async () => new Response(new ReadableStream({ start: (controller) => controller.close() })),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  await subscribeThread(
+    { botId: "origin" },
+    3,
+    vi.fn(),
+    new AbortController().signal,
+    undefined,
+    context,
+  );
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher.mock.calls[0]).toEqual([
+    expect.any(String),
+    expect.objectContaining({ headers: expect.objectContaining(context.headers) }),
+  ]);
+  fetcher.mockClear();
+  await subscribeThread({ botId: "origin" }, 3, vi.fn(), new AbortController().signal, undefined, {
+    ...context,
+    isCurrent: () => false,
+  });
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("surfaces SSE RPC errors so a peer viewer can discard previously authorized bodies", async () => {
+  const stream = new ReadableStream({
+    start: (controller) => {
+      controller.enqueue(new TextEncoder().encode('data: {"error":{"message":"FORBIDDEN"}}\n\n'));
+      controller.close();
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(stream)),
+  );
+  await expect(
+    subscribeThread({ botId: "origin" }, 3, vi.fn(), new AbortController().signal),
+  ).rejects.toThrow("rpc threads/subscribe failed");
+});
