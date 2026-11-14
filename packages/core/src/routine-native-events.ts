@@ -41,9 +41,11 @@ export type NativeRoutineTriggerDraft = {
   timeMax: string;
 };
 
+let nextDraftKey = 0;
+
 export function emptyNativeRoutineTriggerDraft(): NativeRoutineTriggerDraft {
   return {
-    key: crypto.randomUUID(),
+    key: `draft-${++nextDraftKey}`,
     connectionId: "",
     kind: "",
     calendarId: "",

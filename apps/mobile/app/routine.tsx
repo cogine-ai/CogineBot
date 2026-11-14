@@ -5,6 +5,9 @@ import {
   modelOptionKey,
   parseModelOptionKey,
 } from "@rakazo/core";
+import { nativeRoutineTriggerInputs } from "@rakazo/core/routine-native-events";
+import type { RoutineTriggerDraft } from "@rakazo/core/routine-trigger-patch";
+import { routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
@@ -331,15 +334,47 @@ export default function RoutineDetail() {
     }
   }
 
-  function saveFields(name: string, prompt: string, crons: string[]) {
+  function saveFields(
+    name: string,
+    prompt: string,
+    crons: string[],
+    triggers: RoutineTriggerDraft,
+    original: Routine | null,
+  ) {
     const scope = shownScope;
     void mutate(async (requestContext) => {
-      const fields = routineFields(name, prompt, crons);
+      const fields = routineFields(name, prompt, crons, original);
+      let triggerFields: ReturnType<typeof routineTriggerPatch>;
+      try {
+        if (original) triggerFields = routineTriggerPatch(original, triggers);
+        else {
+          const parsed = nativeRoutineTriggerInputs(triggers.nativeTriggers);
+          if (!parsed.success) throw new Error();
+          triggerFields = { ...triggers, nativeTriggers: parsed.data };
+        }
+      } catch {
+        throw new Error(t("Check application event fields"));
+      }
+      if (
+        (triggerFields.webhookEnabled || triggerFields.githubEnabled) &&
+        scope &&
+        current(scope)
+      ) {
+        const bot = await rpc<{ webhookConfigured: boolean }>(
+          "bots/get",
+          { botId },
+          { requestContext },
+        );
+        if (!current(scope)) return;
+        if (!bot.webhookConfigured)
+          await rpc("bots/rotateWebhookSecret", { botId }, { requestContext });
+        if (!current(scope)) return;
+      }
       const saved = await rpc<Routine>(
         routine ? "routines/update" : "routines/create",
         routine
-          ? { routineId: routine.id, ...fields }
-          : { botId, ...fields, timezone, active: true, notify: true },
+          ? { routineId: routine.id, ...fields, ...triggerFields }
+          : { botId, ...fields, ...triggerFields, timezone, active: true, notify: true },
         { requestContext },
       );
       if (!scope || scope.owner !== routeOwner.current || !isMobileScopeCurrent(scope)) return;
@@ -410,6 +445,16 @@ export default function RoutineDetail() {
         <RoutineFields
           key={routeKey}
           routine={null}
+          access={
+            shownScope?.verifiedSpaceId && botId
+              ? {
+                  botId,
+                  scope: shownScope,
+                  spaceId: shownScope.verifiedSpaceId,
+                  isCurrent: () => current(shownScope),
+                }
+              : null
+          }
           timezone={timezone}
           disabled={saving}
           onSave={saveFields}
@@ -457,6 +502,16 @@ export default function RoutineDetail() {
                 <RoutineFields
                   key={routeKey}
                   routine={routine}
+                  access={
+                    shownScope?.verifiedSpaceId && botId
+                      ? {
+                          botId,
+                          scope: shownScope,
+                          spaceId: shownScope.verifiedSpaceId,
+                          isCurrent: () => current(shownScope),
+                        }
+                      : null
+                  }
                   timezone={routine.timezone}
                   disabled={saving}
                   onSave={saveFields}

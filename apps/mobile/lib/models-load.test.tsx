@@ -1,5 +1,7 @@
+import type { NativeRoutineEventSpec } from "@rakazo/contracts";
 // @vitest-environment jsdom
 
+import { nativeEventApp } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
@@ -7,12 +9,20 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { Alert } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import triggerFixtures from "../../../packages/testkit/src/routine-trigger-fixtures.json" with {
+  type: "json",
+};
 import Models from "../app/(settings)/models";
 import SpaceSettings from "../app/(settings)/space-settings";
 import RoutineDetail from "../app/routine";
 import { resetI18nForTests } from "./i18n";
 import { presentMessageActionSheet } from "./message-action-sheet";
 import { useSpaceSettings } from "./space-settings";
+
+const routineTriggerSpecs = triggerFixtures.specs as NativeRoutineEventSpec[];
+function routineTriggerFixture(spec: NativeRoutineEventSpec) {
+  return { ...triggerFixtures.trigger, spec };
+}
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -1581,6 +1591,10 @@ it("creates a routine with the account timezone and navigates to its saved ident
     timezone: "Asia/Shanghai",
     active: true,
     notify: true,
+    webhookEnabled: false,
+    githubEnabled: false,
+    messageProvider: null,
+    nativeTriggers: [],
   });
   expect(state.replace).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -1604,8 +1618,6 @@ it("keeps ordinary edits and exact schedules on failure without sending model or
   expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
     routineId: "routine-1",
     name: "Changed",
-    prompt: "Review",
-    crons: ["0 0 9 * * MON-FRI"],
   });
   expect(routineInput("Name").value).toBe("Changed");
   expect(container.textContent).toContain("Save unavailable");
@@ -1739,9 +1751,7 @@ it.each([
   await act(async () => button("Save").click());
   expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
     routineId: "routine-1",
-    name: "Daily",
-    prompt: "Review",
-    crons: [cron],
+    ...(cron !== "0 9 * * *" ? { crons: [cron] } : {}),
   });
 });
 
@@ -2188,5 +2198,348 @@ it.each([
     });
     if (dirty) expect(container.textContent).toContain("Connection changed");
     else expect(container.textContent).not.toContain("Connection changed");
+  },
+);
+
+function triggerSettings(
+  options: { slack?: boolean; configured?: boolean; accounts?: unknown[] } = {},
+) {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, context) => {
+    if (p === "connections/list") return options.accounts ?? [];
+    if (p === "messaging/status") return { providers: [] };
+    if (p === "messaging/installations/list")
+      return {
+        available: true,
+        workspaces: options.slack ? [{ botId: "bot-1", status: "active" }] : [],
+      };
+    if (p === "bots/get") return { id: "bot-1", webhookConfigured: options.configured ?? true };
+    return normal(p, input, context);
+  });
+}
+async function openTriggers() {
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await act(async () => button("External triggers").click());
+}
+
+it.each(["Webhook", "Git event", "Slack message"])(
+  "saves only the edited %s trigger and preserves other settings",
+  async (label) => {
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list")
+        return [
+          {
+            ...(await normal(p))[0],
+            active: false,
+            crons: ["0 9 * * *"],
+            webhookEnabled: false,
+            githubEnabled: false,
+            messageProvider: null,
+          },
+        ];
+      if (p === "routines/update") return { ...(await state.rpc("routines/list"))[0], ...input };
+      return normal(p, input, options);
+    });
+    triggerSettings({ slack: true });
+    await openTriggers();
+    await act(async () =>
+      label === "Slack message" ? button(label).click() : routineInput(label).click(),
+    );
+    await act(async () => button("Save").click());
+    const field =
+      label === "Webhook"
+        ? { webhookEnabled: true }
+        : label === "Git event"
+          ? { githubEnabled: true }
+          : { messageProvider: "slack" };
+    expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+      routineId: "routine-1",
+      ...field,
+    });
+    expect(container.textContent).toContain("Paused");
+    await act(async () => button("Edit").click());
+    await act(async () => button("External triggers").click());
+    if (label !== "Slack message") expect(routineInput(label).checked).toBe(true);
+    else expect(button("Remove message trigger")).toBeTruthy();
+  },
+);
+
+it("creates a webhook-only routine after removing the default schedule", async () => {
+  state.params = { botId: "bot-1" };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, options) =>
+    p === "routines/create" ? { ...input, id: "created-external" } : normal(p, input, options),
+  );
+  triggerSettings();
+  await act(async () => root.render(<RoutineDetail />));
+  await edit(routineInput("Name"), "External");
+  await edit(routineInput("Prompt"), "Synthetic event");
+  await act(async () => button("Remove schedule").click());
+  await act(async () => button("External triggers").click());
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Create").click());
+  expect(state.rpc.mock.calls.find(([p]) => p === "routines/create")?.[1]).toMatchObject({
+    crons: [],
+    webhookEnabled: true,
+    githubEnabled: false,
+    messageProvider: null,
+    nativeTriggers: [],
+  });
+});
+
+it("keeps a failed trigger draft and cancel restores the saved configuration", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/update") throw new Error("Synthetic permission denial");
+    if (p === "routines/list") return [{ ...(await normal(p))[0], webhookEnabled: false }];
+    return normal(p, input, options);
+  });
+  triggerSettings();
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Save").click());
+  expect(routineInput("Webhook").checked).toBe(true);
+  expect(container.textContent).toContain("Synthetic permission denial");
+  await act(async () => button("Cancel").click());
+  await act(async () => button("Edit").click());
+  await act(async () => button("External triggers").click());
+  expect(routineInput("Webhook").checked).toBe(false);
+  expect(state.rpc.mock.calls.filter(([p]) => p === "routines/update")).toHaveLength(1);
+});
+
+it("does not advertise unavailable message providers or disconnected accounts", async () => {
+  triggerSettings({
+    accounts: [{ id: "old", connectorId: "native", provider: "gmail", status: "disconnected" }],
+  });
+  await openTriggers();
+  expect(button("Slack message").disabled).toBe(true);
+  expect(button("Add application event").disabled).toBe(true);
+  expect(
+    [...container.querySelectorAll("button")].some((node) => node.textContent === "Teams message"),
+  ).toBe(false);
+});
+
+it.each(["space", "session", "endpoint", "route"])(
+  "ignores trigger capability responses after a %s change",
+  async (change) => {
+    const delayed = deferred<unknown>();
+    triggerSettings();
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation((p, input, options) =>
+      p === "messaging/installations/list" ? delayed.promise : normal(p, input, options),
+    );
+    await openTriggers();
+    if (change === "space") state.spaceId = "space-2";
+    if (change === "session") state.sessionGeneration++;
+    if (change === "endpoint") state.apiBase = "https://other.example.test";
+    if (change === "route") state.params = { botId: "bot-2", routineId: "routine-2" };
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () =>
+      delayed.resolve({ available: true, workspaces: [{ botId: "bot-1", status: "active" }] }),
+    );
+    expect(container.querySelector('input[aria-label="Webhook"]')).toBeNull();
+    expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+  },
+);
+
+for (const spec of routineTriggerSpecs) {
+  it(`edits and reads back application fields ${JSON.stringify(spec)}`, async () => {
+    const normal = state.rpc.getMockImplementation()!;
+    let saved = {
+      ...(await normal("routines/list"))[0],
+      nativeTriggers: [routineTriggerFixture(spec)],
+    };
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list") return [saved];
+      if (p === "routines/update") {
+        saved = {
+          ...saved,
+          nativeTriggers: input.nativeTriggers.map((entry: Record<string, unknown>) => ({
+            ...entry,
+            version: 5,
+          })),
+        };
+        return saved;
+      }
+      return normal(p, input, options);
+    });
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: nativeEventApp(spec),
+          status: "connected",
+          displayName: "Synthetic account",
+        },
+      ],
+    });
+    await openTriggers();
+    const fields = [...container.querySelectorAll<HTMLInputElement>('input[type="text"]')].filter(
+      (node) => !["Name", "Prompt"].includes(node.getAttribute("aria-label") ?? ""),
+    );
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) if (field.value) await edit(field, `${field.value} `);
+    await act(async () => button("Save").click());
+    const update = state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1];
+    expect(update).toEqual({
+      routineId: "routine-1",
+      nativeTriggers: [
+        { id: "fixture-trigger", expectedVersion: 4, connectionId: "fixture-connection", spec },
+      ],
+    });
+    await act(async () => button("Edit").click());
+    await act(async () => button("External triggers").click());
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Event"]')?.value).toBe(
+      spec.kind,
+    );
+    expect(saved.nativeTriggers[0].spec).toEqual(spec);
+  });
+}
+
+it("opens the existing application settings route and preserves the draft on return", async () => {
+  triggerSettings();
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Connect an account").click());
+  expect(state.push).toHaveBeenCalledWith("/plugins");
+  await refocus();
+  expect(routineInput("Webhook").checked).toBe(true);
+});
+
+it("keeps disconnected events byte-for-byte while editing a different event", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const untouched = routineTriggerFixture({ kind: "gmail.message_received", labelIds: ["Z", "A"] });
+  state.rpc.mockImplementation(async (p, input, options) => {
+    if (p === "routines/list") return [{ ...(await normal(p))[0], nativeTriggers: [untouched] }];
+    if (p === "routines/update") throw new Error("Synthetic permission denial");
+    return normal(p, input, options);
+  });
+  triggerSettings({
+    accounts: [
+      {
+        id: "planner-account",
+        provider: "planner",
+        connectorId: "native",
+        status: "connected",
+        displayName: "Synthetic planner",
+      },
+    ],
+  });
+  await openTriggers();
+  expect(routineInput("Label IDs (any match, one per line)").disabled).toBe(true);
+  await act(async () => button("Add application event").click());
+  const selects = (label: string) => [
+    ...container.querySelectorAll<HTMLSelectElement>(`select[aria-label="${label}"]`),
+  ];
+  await act(async () => {
+    const account = selects("Account")[1]!;
+    account.value = "planner-account";
+    account.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => {
+    const event = selects("Event")[1]!;
+    event.value = "planner.task.changed";
+    event.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await edit(routineInput("Plan ID"), "synthetic-plan");
+  await act(async () => button("Save").click());
+  const update = state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1];
+  expect(update.nativeTriggers).toEqual([
+    {
+      id: untouched.id,
+      expectedVersion: 4,
+      connectionId: untouched.connectionId,
+      spec: untouched.spec,
+    },
+    {
+      connectionId: "planner-account",
+      spec: { kind: "planner.task.changed", planId: "synthetic-plan" },
+    },
+  ]);
+  expect(routineInput("Plan ID").value).toBe("synthetic-plan");
+  expect(selects("Event")).toHaveLength(2);
+});
+
+it("does not provision or save an invalid application draft", async () => {
+  triggerSettings({
+    configured: false,
+    accounts: [
+      {
+        id: "planner",
+        provider: "planner",
+        connectorId: "native",
+        status: "connected",
+        displayName: "Planner",
+      },
+    ],
+  });
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Add application event").click());
+  await act(async () => button("Save").click());
+  expect(container.textContent).toContain("Check application event fields");
+  expect(
+    state.rpc.mock.calls.some(([p]) => p === "bots/rotateWebhookSecret" || p === "routines/update"),
+  ).toBe(false);
+});
+
+it("does not save after a webhook provisioning response arrives in a different scope", async () => {
+  triggerSettings({ configured: false });
+  const delayed = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p, input, options) =>
+    p === "bots/rotateWebhookSecret" ? delayed.promise : normal(p, input, options),
+  );
+  await openTriggers();
+  await act(async () => routineInput("Webhook").click());
+  await act(async () => button("Save").click());
+  state.spaceId = "space-2";
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => delayed.resolve({ secret: "synthetic-secret" }));
+  expect(state.rpc.mock.calls.some(([p]) => p === "routines/update")).toBe(false);
+  expect(container.textContent).not.toContain("synthetic-secret");
+});
+
+it.each(["Webhook", "Git event", "Remove message trigger", "Remove application event"])(
+  "removes only %s from a scheduled routine",
+  async (label) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const native = routineTriggerFixture({ kind: "planner.task.changed", planId: "fixture-plan" });
+    state.rpc.mockImplementation(async (p, input, options) => {
+      if (p === "routines/list")
+        return [
+          {
+            ...(await normal(p))[0],
+            crons: ["0 9 * * *"],
+            webhookEnabled: true,
+            githubEnabled: true,
+            messageProvider: "slack",
+            nativeTriggers: [native],
+          },
+        ];
+      if (p === "routines/update") return { ...(await state.rpc("routines/list"))[0], ...input };
+      return normal(p, input, options);
+    });
+    triggerSettings();
+    await openTriggers();
+    await act(async () =>
+      label.startsWith("Remove") ? button(label).click() : routineInput(label).click(),
+    );
+    await act(async () => button("Save").click());
+    const patch =
+      label === "Webhook"
+        ? { webhookEnabled: false }
+        : label === "Git event"
+          ? { githubEnabled: false }
+          : label === "Remove message trigger"
+            ? { messageProvider: null }
+            : { nativeTriggers: [] };
+    expect(state.rpc.mock.calls.find(([p]) => p === "routines/update")?.[1]).toEqual({
+      routineId: "routine-1",
+      ...patch,
+    });
   },
 );
