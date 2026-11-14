@@ -1895,6 +1895,7 @@ model ExternalMessage {
   providerReplyHandle    String?
   deliveredAt            DateTime?
   receiveSeq             BigInt?               @default(dbgenerated("nextval('external_message_receive_seq'::regclass)"))
+  slackGrantRevision     Int?
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
 
