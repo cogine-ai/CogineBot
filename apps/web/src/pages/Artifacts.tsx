@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
-import type { Artifact, ArtifactVersion, Bot } from "@rakazo/contracts";
-import { isAttachmentImageMimeType } from "@rakazo/contracts";
+import type { Artifact, ArtifactVersion, Bot, DateFilter } from "@rakazo/contracts";
+import { isAttachmentImageMimeType, matchesCalendarDateFilter } from "@rakazo/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,7 +43,6 @@ import { errorText } from "../lib/user-error";
 import { WindowChrome } from "./WindowChrome";
 
 type ViewMode = "grid" | "list";
-type DateFilter = "all" | "today" | "week" | "month";
 const VIEW_MODE_STORAGE_KEY = "rakazo:artifacts-view-mode";
 const LIST_PAGE_SIZE = 60;
 
@@ -170,19 +169,6 @@ function writeViewMode(mode: ViewMode): void {
   } catch {
     // Preference only; ignore storage failures.
   }
-}
-
-function matchesCalendarDateFilter(iso: string, filter: DateFilter, now: Date): boolean {
-  if (filter === "all") return true;
-  const date = new Date(iso);
-  if (filter === "today") return date.toDateString() === now.toDateString();
-  if (filter === "week") {
-    const startOfWeek = new Date(now);
-    startOfWeek.setHours(0, 0, 0, 0);
-    startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
-    return date >= startOfWeek;
-  }
-  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 
 export function ArtifactsPage() {
