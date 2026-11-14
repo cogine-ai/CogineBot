@@ -72,11 +72,31 @@ const cleared = {
 export class ModelOAuthSessions {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /** Bound the maintenance work a shutdown drains, including time spent waiting
+   * for a table or row lock. The settings do not affect credential saves. */
+  private maintenance<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = '2000ms'`;
+        return operation(tx);
+      },
+      { maxWait: 1_000, timeout: 3_000 },
+    );
+  }
+
+  private async lockLeaseRow(tx: Prisma.TransactionClient, ref: ModelOAuthLease) {
+    const rows = await tx.$queryRaw<{ id: string }[]>`
+      SELECT id FROM cogine_model_auth.model_oauth_sessions
+      WHERE id = ${ref.id} AND "userId" = ${ref.userId} AND "spaceId" = ${ref.spaceId}
+        AND "leaseOwner" = ${ref.leaseOwner} FOR UPDATE
+    `;
+    return rows.length === 1;
+  }
+
   async clearExpired(): Promise<void> {
-    await runAsSystem(
-      "expire model sign-in state and encrypted handoffs",
-      () =>
-        this.prisma.$executeRaw`
+    await runAsSystem("expire model sign-in state and encrypted handoffs", () =>
+      this.maintenance(
+        (tx) => tx.$executeRaw`
         WITH expired AS (
           SELECT id FROM cogine_model_auth.model_oauth_sessions
           WHERE "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC')
@@ -84,6 +104,7 @@ export class ModelOAuthSessions {
         )
         DELETE FROM cogine_model_auth.model_oauth_sessions s USING expired WHERE s.id = expired.id
       `,
+      ),
     );
   }
 
@@ -181,13 +202,18 @@ export class ModelOAuthSessions {
 
   async renew(ref: ModelOAuthLease): Promise<boolean> {
     return runAsTenant(ref, async () => {
-      const result = await this.prisma.modelOAuthSession.updateMany({
-        where: {
-          ...ownedLease(ref),
-          status: { in: ["pending", "saving"] },
-          expiresAt: { gt: new Date() },
-        },
-        data: { leaseExpiresAt: leaseEnd() },
+      const result = await this.maintenance(async (tx) => {
+        // Acquire the row before checking the deadline. A heartbeat queued
+        // before expiry must not revive the lease after the lock is released.
+        if (!(await this.lockLeaseRow(tx, ref))) return { count: 0 };
+        return tx.modelOAuthSession.updateMany({
+          where: {
+            ...ownedLease(ref),
+            status: { in: ["pending", "saving"] },
+            expiresAt: { gt: new Date() },
+          },
+          data: { leaseExpiresAt: leaseEnd() },
+        });
       });
       return result.count === 1;
     });
@@ -198,6 +224,7 @@ export class ModelOAuthSessions {
       this.prisma.$transaction(
         async (tx) => {
           await lockModelOAuthProvider(tx, ref);
+          if (!(await this.lockLeaseRow(tx, ref))) return false;
           const result = await tx.modelOAuthSession.updateMany({
             where: {
               ...ownedLease(ref),
@@ -216,16 +243,18 @@ export class ModelOAuthSessions {
 
   async fail(ref: ModelOAuthLease, error = FAILED) {
     await runAsTenant(ref, () =>
-      this.prisma.modelOAuthSession.updateMany({
-        where: {
-          id: ref.id,
-          userId: ref.userId,
-          spaceId: ref.spaceId,
-          leaseOwner: ref.leaseOwner,
-          status: { in: ["pending", "saving"] },
-        },
-        data: { ...cleared, status: "failed", error, expiresAt: resultExpiry() },
-      }),
+      this.maintenance((tx) =>
+        tx.modelOAuthSession.updateMany({
+          where: {
+            id: ref.id,
+            userId: ref.userId,
+            spaceId: ref.spaceId,
+            leaseOwner: ref.leaseOwner,
+            status: { in: ["pending", "saving"] },
+          },
+          data: { ...cleared, status: "failed", error, expiresAt: resultExpiry() },
+        }),
+      ),
     );
   }
 

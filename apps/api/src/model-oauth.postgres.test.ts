@@ -114,6 +114,160 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     return { oauth, client, providerResult, providerStarted, exchange };
   }
 
+  async function expectLateProviderSave(first: ReturnType<typeof process>) {
+    const witness = vi.spyOn(first.oauth.sessions, "markSaving");
+    try {
+      first.providerResult.resolve(token);
+      await vi.waitFor(() => expect(witness).toHaveBeenCalledOnce());
+      await expect(witness.mock.results[0]!.value).resolves.toBe(false);
+    } finally {
+      witness.mockRestore();
+    }
+  }
+
+  it("bounds shutdown when the session table blocks cleanup and pending login retirement", async () => {
+    const actor = await member();
+    const first = process(a, actor);
+    const { loginId } = await first.client.models.beginOAuth({ provider: "github-copilot" });
+    const blocker = await b.pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "LOCK TABLE cogine_model_auth.model_oauth_sessions IN ACCESS EXCLUSIVE MODE",
+      );
+      const sweep = vi.spyOn(first.oauth.sessions, "clearExpired");
+      const retire = vi.spyOn(first.oauth.sessions, "fail");
+      first.oauth.startCleanup();
+      const shutdown = first.oauth.stop();
+      try {
+        let stopped = false;
+        void shutdown.then(() => {
+          stopped = true;
+        });
+        await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 5_000 });
+        expect(sweep).toHaveBeenCalledOnce();
+        expect(retire).toHaveBeenCalledOnce();
+        await expect(sweep.mock.results[0]!.value).rejects.toThrow(/statement timeout/);
+        await expect(retire.mock.results[0]!.value).rejects.toThrow(/statement timeout/);
+      } finally {
+        await blocker.query("ROLLBACK");
+        await shutdown;
+      }
+    } finally {
+      blocker.release(true);
+    }
+    expect(await first.oauth.sessions.read({ ...actor, id: loginId })).toMatchObject({
+      status: "pending",
+    });
+    await a.prisma.modelOAuthSession.update({
+      where: { id: loginId },
+      data: { leaseExpiresAt: new Date(Date.now() - 1_000) },
+    });
+    await expect(first.oauth.complete(loginId, actor)).resolves.toMatchObject({
+      status: "error",
+      error: expect.stringMatching(/interrupted/i),
+    });
+  }, 10_000);
+
+  it("times out a lease renewal blocked by a concurrent session write", async () => {
+    const actor = await member();
+    const first = process(a, actor);
+    const { loginId } = await first.client.models.beginOAuth({ provider: "github-copilot" });
+    const original = await first.oauth.sessions.read({ ...actor, id: loginId });
+    const blocker = await b.pool.connect();
+    let renewal: Promise<boolean> | undefined;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT id FROM cogine_model_auth.model_oauth_sessions WHERE id = $1 FOR UPDATE",
+        [loginId],
+      );
+      renewal = first.oauth.sessions.renew({
+        ...actor,
+        id: loginId,
+        leaseOwner: original!.leaseOwner!,
+      });
+      let settled = false;
+      void renewal.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 5_000 });
+      await expect(renewal).rejects.toThrow(/statement timeout/);
+    } finally {
+      blocker.release(true);
+      await renewal?.catch(() => undefined);
+    }
+    expect(await first.oauth.sessions.read({ ...actor, id: loginId })).toMatchObject({
+      leaseExpiresAt: original!.leaseExpiresAt,
+    });
+  }, 10_000);
+
+  it.each(["renew", "markSaving"] as const)(
+    "does not %s a lease that expires while waiting for its row",
+    async (operation) => {
+      const actor = await member();
+      const first = process(a, actor);
+      const second = process(b, actor);
+      const { loginId } = await first.client.models.beginOAuth({ provider: "github-copilot" });
+      const original = await first.oauth.sessions.read({ ...actor, id: loginId });
+      const expiresAt = new Date(Date.now() + 900);
+      await a.prisma.modelOAuthSession.update({
+        where: { id: loginId },
+        data: { leaseExpiresAt: expiresAt },
+      });
+      const blocker = await b.pool.connect();
+      let renewal: Promise<boolean> | undefined;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT id FROM cogine_model_auth.model_oauth_sessions WHERE id = $1 FOR UPDATE",
+          [loginId],
+        );
+        renewal = first.oauth.sessions[operation]({
+          ...actor,
+          id: loginId,
+          leaseOwner: original!.leaseOwner!,
+          provider: "github-copilot",
+        });
+        void renewal.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const waiting = await b.pool.query<{ blocked: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE application_name = 'model-sign-in-a' AND wait_event_type = 'Lock'
+              AND cardinality(pg_blocking_pids(pid)) > 0
+          ) AS blocked
+        `);
+            expect(waiting.rows[0]?.blocked).toBe(true);
+            expect(Date.now()).toBeLessThan(expiresAt.getTime());
+          },
+          { timeout: 650 },
+        );
+        await vi.waitFor(
+          async () =>
+            expect(await second.client.models.completeOAuth({ loginId })).toMatchObject({
+              status: "error",
+              error: expect.stringMatching(/interrupted/i),
+            }),
+          { timeout: 1_200 },
+        );
+      } finally {
+        blocker.release(true);
+        await renewal?.catch(() => undefined);
+      }
+      await expect(renewal).resolves.toBe(false);
+      expect(await first.oauth.sessions.read({ ...actor, id: loginId })).toMatchObject({
+        leaseExpiresAt: expiresAt,
+      });
+    },
+  );
+
   it("redeems a handed-off code once and persists without a finish request", async () => {
     const actor = await member();
     const first = process(a, actor);
@@ -279,8 +433,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     await expect(second.client.models.disconnect({ provider: "github-copilot" })).resolves.toEqual({
       ok: true,
     });
-    first.providerResult.resolve(token);
-    await first.oauth.stop();
+    await expectLateProviderSave(first);
     await expect(
       second.client.models.completeOAuth({ loginId: started.loginId }),
     ).resolves.toMatchObject({ status: "error", error: expect.stringMatching(/interrupted/i) });
@@ -476,8 +629,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
         where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
       }),
     );
-    first.providerResult.resolve(token);
-    await first.oauth.stop();
+    await expectLateProviderSave(first);
     await expect(second.oauth.sessions.read({ ...actor, id: started.loginId })).resolves.toBeNull();
     expect(await a.prisma.userModelCredential.count({ where: { userId: actor.userId } })).toBe(0);
   });
@@ -593,9 +745,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       status: "error",
       error: expect.stringMatching(/interrupted/i),
     });
-    first.providerResult.resolve(token);
-    await vi.waitFor(() => expect(first.providerStarted).toHaveBeenCalledOnce());
-    await first.oauth.stop();
+    await expectLateProviderSave(first);
     expect(await a.prisma.userModelCredential.count({ where: { userId: actor.userId } })).toBe(0);
   });
 
