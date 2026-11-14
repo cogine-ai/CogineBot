@@ -399,6 +399,7 @@ describe("destroyBot", () => {
         callback({
           $queryRaw: vi
             .fn()
+            .mockResolvedValueOnce([{ lock: "" }])
             .mockResolvedValueOnce([{ id: "bot-1", webhookSecretId: null }])
             .mockResolvedValue([]),
           chatGroup: {

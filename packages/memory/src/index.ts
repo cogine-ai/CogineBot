@@ -17,9 +17,13 @@ import { MEMORY_REVISION_CONFLICT_ERROR, MemoryCommitIdentityError } from "@raka
 import type { PrismaClient } from "@rakazo/db";
 import {
   assertRunCanWriteHistory,
+  checkMemoryWritePolicy,
   isRetryableTransactionConflict,
+  lockMemoryWritePolicyRows,
+  MemoryWriteAuthorizationError,
   Prisma,
   RunHistoryWriteError,
+  recheckDelegatedApprovalDispatchInTransaction,
   withTransactionRetry,
 } from "@rakazo/db";
 
@@ -102,6 +106,19 @@ export class MarkdownMemoryStore implements MemoryStore {
             }
             if (request.runLease) {
               context.signal.throwIfAborted();
+              const delegatedEffectId = request.runApproval?.delegatedEffectId;
+              if (
+                delegatedEffectId &&
+                (!request.sourceRunId ||
+                  !(await recheckDelegatedApprovalDispatchInTransaction(tx, {
+                    spaceId: context.spaceId,
+                    runId: request.sourceRunId,
+                    effectId: delegatedEffectId,
+                    leaseOwner: request.runLease.owner,
+                    leaseFence: request.runLease.fence,
+                  })))
+              )
+                throw new MemoryWriteAuthorizationError("delegated");
               const run = await assertRunCanWriteHistory(tx, request.sourceRunId, {
                 lease: request.runLease,
               });
@@ -111,6 +128,17 @@ export class MarkdownMemoryStore implements MemoryStore {
                 run.userId !== context.userId
               )
                 throw new RunHistoryWriteError();
+              if (request.runApproval) {
+                const policy = {
+                  ...request.runApproval,
+                  spaceId: context.spaceId,
+                  userId: context.userId,
+                  botId: context.botId ?? request.botId ?? "",
+                };
+                await lockMemoryWritePolicyRows(tx, policy);
+                const reason = await checkMemoryWritePolicy(tx, policy);
+                if (reason) throw new MemoryWriteAuthorizationError(reason);
+              }
               context.signal.throwIfAborted();
             }
             const existing = await tx.memoryDocument.findFirst({

@@ -37,6 +37,8 @@ export interface PreparedMemoryProviderConnection {
 export interface ConfiguredMemoryProvider {
   provider: SemanticMemoryProvider;
   defaultScope: DurableMemoryScope;
+  /** Opaque identity of the resolved connection; never display it to the model or user. */
+  connectionId?: string;
 }
 
 export interface MemoryProviderResolver {
@@ -189,6 +191,7 @@ export class SpaceMemoryProviderResolver implements MemoryProviderResolver {
     return {
       provider: createMemoryProvider(config.provider, settings, credentials),
       defaultScope: config.defaultMemoryScope === "shared" ? "shared" : "isolated",
+      connectionId: config.secretId,
     };
   }
 }

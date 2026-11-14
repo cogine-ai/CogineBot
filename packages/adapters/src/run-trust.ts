@@ -310,6 +310,18 @@ export function createRunTrust(
     ]
       .filter(Boolean)
       .join("\n");
+  const loadMemoryOwnerWords = async () =>
+    [
+      run.trigger === "messaging" &&
+      !input.messagingChannelRun &&
+      input.sourceMessage?.role === "user" &&
+      input.sourceMessage.authorUserId === run.userId
+        ? textBlocks(input.sourceMessage.blocks)
+        : "",
+      await loadOwnerWords(),
+    ]
+      .filter(Boolean)
+      .join("\n");
   let trustedSites: Promise<Set<string>> | undefined;
   const loadTrustedSites = async () => {
     trustedSites ??= prisma.externalEffect
@@ -401,6 +413,7 @@ export function createRunTrust(
     recordPageInput,
     recordSteering,
     loadOwnerWords,
+    loadMemoryOwnerWords,
     loadTrustedSites,
     loadTrustedConnectors,
     invalidateDestinationTrust() {
