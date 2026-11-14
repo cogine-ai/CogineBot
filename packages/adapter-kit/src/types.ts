@@ -578,6 +578,8 @@ export interface AgentRunRequest {
   verbatimMcpServers?: { ids: string[]; slugs: string[] };
   /** Server-owned Pi transcript loaded for this Run and Space, never client history. */
   turnCheckpoint?: string;
+  /** Server-verified receipts for checkpoint calls that must not execute again. */
+  recoveredMemoryToolResults?: Readonly<Record<string, { value: unknown; isError: boolean }>>;
   /** Captures are persisted only when the matching execution actually pauses. */
   onCheckpoint?: (capture: () => string, executionId: string) => void | Promise<void>;
   /** Live known secrets for sanitizing runtime output and private Page transcripts. */

@@ -1011,6 +1011,33 @@ export class PiAgentRuntime implements AgentRuntime {
               if (message.role !== "assistant") continue;
               for (const call of message.content) {
                 if (call.type !== "toolCall" || !unresolved.has(call)) continue;
+                const recovered =
+                  request.recoveredMemoryToolResults?.[
+                    JSON.stringify(["pi-tool", "main", call.id])
+                  ];
+                if (recovered) {
+                  agent.state.messages.push({
+                    role: "toolResult",
+                    toolCallId: call.id,
+                    toolName: call.name,
+                    content: [
+                      {
+                        type: "text",
+                        text: serializeToolResult(
+                          recovered.value,
+                          request.contextStrategy,
+                          "save_memory",
+                          {},
+                        ),
+                      },
+                    ],
+                    isError: recovered.isError,
+                    timestamp: Date.now(),
+                  });
+                  unresolved.delete(call);
+                  await piSession?.appendMessage(sanitizeRecorded(agent.state.messages.at(-1)!));
+                  continue;
+                }
                 const tool = tools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error("Pending checkpoint tool is no longer available");
                 const interactionTool =

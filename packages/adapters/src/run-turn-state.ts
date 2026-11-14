@@ -80,6 +80,7 @@ export interface RunTurnCheckpointState {
   restoredPending?: TurnEffectOccurrence;
   pendingExecutionId?: string;
   pendingToolName?: string;
+  recoveredMemoryToolResults?: Record<string, { value: unknown; isError: boolean }>;
   pendingCaptures: Map<string, () => string>;
   bridgeToolNames?: ReadonlySet<string>;
 }
@@ -92,6 +93,8 @@ export function createRunTurnCheckpointState(input: {
   tools: readonly ConnectorTool[];
   instructionsBaseline: string;
   counts?: Map<string, number>;
+  recoveredMemoryApprovals?: ReadonlyMap<string, { value: unknown; isError: boolean }>;
+  memorySaveUnavailable?: boolean;
 }): RunTurnCheckpointState {
   const connectionApproval =
     input.blob === undefined ? undefined : readConnectionApprovalCheckpoint(input.blob);
@@ -136,6 +139,28 @@ export function createRunTurnCheckpointState(input: {
     if (saved.executionMode !== "sequential" && call.id !== saved.pendingToolCallId) continue;
     const tool = available.get(call.name);
     if (tool && call.argumentsError && call.id !== saved.pendingToolCallId) continue;
+    if (
+      !call.argumentsError &&
+      (call.name === "save_memory" ||
+        (call.name === USE_TOOL && call.arguments.name === "save_memory"))
+    ) {
+      const executionId = JSON.stringify(["pi-tool", "main", call.id]);
+      const occurrence =
+        call.id === saved.pendingToolCallId
+          ? saved.effectOccurrences?.findLast((entry) => entry.executionId === executionId)
+          : undefined;
+      const receipt =
+        occurrence && input.recoveredMemoryApprovals?.get(assignedEffectKey(occurrence));
+      if (receipt || (input.memorySaveUnavailable && call.id !== saved.pendingToolCallId)) {
+        state.recoveredMemoryToolResults ??= {};
+        state.recoveredMemoryToolResults[executionId] = receipt ?? {
+          value: { error: "This tool is no longer available.", unchanged: true },
+          isError: true,
+        };
+        if (call.id === saved.pendingToolCallId) state.pendingToolName = "save_memory";
+        continue;
+      }
+    }
     if (!tool || !realTool(tool, call.arguments))
       throw new Error("Pending checkpoint tool is no longer available");
     if (call.id !== saved.pendingToolCallId) continue;
@@ -159,9 +184,10 @@ export function createRunTurnCheckpointState(input: {
   if (saved.effectOccurrences) {
     state.occurrences.push(...saved.effectOccurrences);
     const pendingExecutionId = JSON.stringify(["pi-tool", "main", saved.pendingToolCallId]);
-    state.restoredPending = saved.effectOccurrences.findLast(
-      (entry) => entry.executionId === pendingExecutionId,
-    );
+    if (!state.recoveredMemoryToolResults?.[pendingExecutionId])
+      state.restoredPending = saved.effectOccurrences.findLast(
+        (entry) => entry.executionId === pendingExecutionId,
+      );
     for (const { fingerprint, occurrence } of saved.effectOccurrences) {
       state.counts.set(fingerprint, Math.max(state.counts.get(fingerprint) ?? 0, occurrence + 1));
     }

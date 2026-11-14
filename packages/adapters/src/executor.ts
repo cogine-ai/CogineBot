@@ -198,6 +198,7 @@ import {
   loadRunHistoryMessages,
   loadRunProgressReset,
   loadRunTurnCheckpoint,
+  lockMemoryWritePolicyRows,
   MemoryWriteAuthorizationError,
   mergeHistorySourceReferences,
   Prisma,
@@ -5249,20 +5250,69 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
-        const approvedEffects = await deps.prisma.externalEffect.findMany({
+        const loadedApprovedEffects = await deps.prisma.externalEffect.findMany({
           where: { runId, status: "approved" },
           orderBy: APPROVED_EFFECT_REPLAY_ORDER,
           select: { id: true, idempotencyKey: true, kind: true, request: true },
         });
         if (
           isSteeringContinuation &&
-          approvedEffects.some(
+          loadedApprovedEffects.some(
             (effect) =>
               effect.id !== scriptedResume.stored?.pendingEffect?.id ||
               effect.idempotencyKey !== scriptedResume.stored.pendingEffect.idempotencyKey,
           )
         )
           throw new ScriptedStateInvalidError();
+        const memorySaveUnavailable = !tools.some((tool) => tool.name === "save_memory");
+        const memoryUnavailableResult = semanticMemoryTarget
+          ? MEMORY_WRITE_REVOKED
+          : SEMANTIC_MEMORY_DESTINATION_CHANGED;
+        const disconnectedApprovals = memorySaveUnavailable
+          ? loadedApprovedEffects.filter((effect) => effect.kind === "save_memory")
+          : [];
+        const approvedEffects = memorySaveUnavailable
+          ? loadedApprovedEffects.filter((effect) => effect.kind !== "save_memory")
+          : loadedApprovedEffects;
+        const completedMemoryApprovals =
+          !scripted || isSteeringContinuation
+            ? await deps.prisma.externalEffect.findMany({
+                where: {
+                  runId,
+                  spaceId: run.spaceId,
+                  kind: "save_memory",
+                  status: { in: ["completed", "executing", "uncertain"] },
+                },
+                select: { idempotencyKey: true, status: true, result: true },
+              })
+            : [];
+        const unavailableResult = (value: unknown) =>
+          stableJsonValue(value) === stableJsonValue(SEMANTIC_MEMORY_DESTINATION_CHANGED) ||
+          stableJsonValue(value) === stableJsonValue(MEMORY_WRITE_REVOKED);
+        const recoveredMemoryApprovals = new Map<string, { value: unknown; isError: boolean }>();
+        for (const effect of completedMemoryApprovals) {
+          if (!memorySaveUnavailable && effect.status !== "completed") continue;
+          const value =
+            effect.status === "completed"
+              ? effect.result
+              : (effect.result ?? uncertainEffectResult("save_memory"));
+          if (value === null || value === undefined) continue;
+          const failed =
+            isFailedToolResult(value) ||
+            (typeof value === "object" && "ok" in value && value.ok === false);
+          recoveredMemoryApprovals.set(effect.idempotencyKey, {
+            value,
+            isError: failed,
+          });
+        }
+        for (const effect of disconnectedApprovals)
+          recoveredMemoryApprovals.set(effect.idempotencyKey, {
+            value: memoryUnavailableResult,
+            isError: true,
+          });
+        const memoryRecoveryNote = [...recoveredMemoryApprovals.values()].findLast(({ value }) =>
+          unavailableResult(value),
+        )?.value as { error: string } | undefined;
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
         // Answering an approval ends the paused attempt. A resumed worker reloads its refusals.
         let deniedActionTargets: ReturnType<typeof loadDeniedActionTargets> | undefined;
@@ -5576,6 +5626,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const mutatingEffectOccurrences = new Map<string, number>(
           scriptedResume.stored?.effectOccurrences,
         );
+        if (disconnectedApprovals.length) {
+          context.signal.throwIfAborted();
+          const settled = await deps.prisma.$transaction(async (tx) => {
+            if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+            context.signal.throwIfAborted();
+            for (const effect of disconnectedApprovals) {
+              if (
+                !(await completeExternalEffect(
+                  tx,
+                  effect.id,
+                  "approved",
+                  memoryUnavailableResult,
+                  run.origin === "bot_peer"
+                    ? approvedActionReceipt(memoryUnavailableResult, "error")
+                    : undefined,
+                ))
+              )
+                throw uncertainEffectError("save_memory");
+            }
+            return true;
+          });
+          if (!settled) return;
+        }
         let turnState: RunTurnCheckpointState;
         let markerOnlyPageEffect: Awaited<ReturnType<typeof loadRestoredSharedPageEffect>>;
         try {
@@ -5589,6 +5662,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             tools,
             instructionsBaseline: settingsBaseline?.instructions ?? bot.instructions,
             counts: mutatingEffectOccurrences,
+            recoveredMemoryApprovals,
+            memorySaveUnavailable,
           });
           if (!turnState.blob && turnState.sharedPageApproval) {
             markerOnlyPageEffect = await loadRestoredSharedPageEffect(
@@ -8050,13 +8125,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 return "unowned";
               if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return "unowned";
               context.signal.throwIfAborted();
-              const reason = await checkMemoryWritePolicy(tx, {
+              const policy = {
                 ...currentMemoryPermission(),
                 spaceId: run.spaceId,
                 userId: run.userId,
                 botId: bot.id,
                 tool: name,
-              });
+              };
+              if (!markdownMemoryWrite) await lockMemoryWritePolicyRows(tx, policy);
+              const reason = await checkMemoryWritePolicy(tx, policy);
               if (reason) return reason;
               if (name === "save_memory" && semanticMemoryTarget?.connectionId) {
                 const [target] = await tx.$queryRaw<
@@ -10728,6 +10805,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           scripted ? basePrompt : `${basePrompt}${modelPageContext}`,
           takeoverResume?.promptNote,
           pageRecoveryContinuation,
+          !turnState.blob ? memoryRecoveryNote?.error : undefined,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
@@ -11112,6 +11190,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     },
                     pageToolSecrets: () => runSecrets,
                     turnCheckpoint: turnState.blob,
+                    ...(turnState.recoveredMemoryToolResults
+                      ? { recoveredMemoryToolResults: turnState.recoveredMemoryToolResults }
+                      : {}),
                     ...(!heldForTakeover &&
                     !takeoverResume &&
                     turnState.pendingToolName === "request_takeover"
