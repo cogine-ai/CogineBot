@@ -1,5 +1,9 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const HI_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "बैकअप फ़ोल्डर चुनें",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "पूरा फ़ोल्डर पढ़ा नहीं जा सका। इसके बजाय बैकअप आर्काइव चुनें।",
+
   "Left channel": "चैनल छोड़ दिया",
   "Agent connections": "एजेंट कनेक्शन",
   "Always act": "हमेशा कार्रवाई करें",

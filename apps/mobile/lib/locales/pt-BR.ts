@@ -1,5 +1,9 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const PT_BR_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Escolher pasta de backup",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "Não foi possível ler a pasta inteira. Escolha um arquivo de backup compactado.",
+
   "Left channel": "Saiu do canal",
   "Agent connections": "Conexões de agentes",
   "Always act": "Sempre agir",

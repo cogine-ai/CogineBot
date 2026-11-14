@@ -1,4 +1,8 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "选择备份文件夹",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "无法完整读取文件夹。请改为选择备份归档。",
+
   "Left channel": "已退出频道",
   "Always act": "总是行动",
   "Automated senders": "自动发送者",

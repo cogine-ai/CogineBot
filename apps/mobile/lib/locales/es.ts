@@ -1,5 +1,9 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const ES_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Elegir carpeta de copia de seguridad",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "No se pudo leer la carpeta completa. Elige un archivo de copia de seguridad.",
+
   "Left channel": "Canal abandonado",
   "Always act": "Actuar siempre",
   "Automated senders": "Remitentes automáticos",

@@ -21,6 +21,7 @@ import {
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
+import { pickBotBackupFolder } from "../lib/bot-backup-folder";
 import type { MobileBotPackageClient } from "../lib/bot-package-client";
 import { mobileBotPackageClient } from "../lib/bot-package-client";
 import { pickBotPackageFile } from "../lib/bot-package-file";
@@ -48,6 +49,7 @@ export function NativeBotPackageImport({
   const [state, setState] = useState<BotPackageImportState | null>(null);
   const [client, setClient] = useState<MobileBotPackageClient | null>(null);
   const [fileError, setFileError] = useState(false);
+  const [folderError, setFolderError] = useState(false);
   const [initializationError, setInitializationError] = useState(false);
   const [reload, setReload] = useState(0);
   const [reading, setReading] = useState(false);
@@ -56,7 +58,8 @@ export function NativeBotPackageImport({
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const fileGeneration = useRef(0);
   const localModelKey = useRef<{
-    read(model: AgentBackupModel): string | undefined;
+    read(model: AgentBackupModel): string | undefined | Promise<string | undefined>;
+    dispose?(): void;
     projection: string;
   } | null>(null);
   useFocusEffect(
@@ -67,6 +70,7 @@ export function NativeBotPackageImport({
       setClient(null);
       setReading(false);
       setFileError(false);
+      setFolderError(false);
       setInitializationError(false);
       setRecentOpen(false);
       setBackupContentOpen(false);
@@ -93,7 +97,10 @@ export function NativeBotPackageImport({
               `package-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
             isCurrent: next.isCurrent,
             changed(next) {
-              if (next.phase === "completed") localModelKey.current = null;
+              if (next.phase === "completed") {
+                localModelKey.current?.dispose?.();
+                localModelKey.current = null;
+              }
               setState(next);
             },
           });
@@ -104,6 +111,7 @@ export function NativeBotPackageImport({
         });
       return () => {
         active = false;
+        localModelKey.current?.dispose?.();
         localModelKey.current = null;
         fileGeneration.current++;
         review?.dispose();
@@ -156,30 +164,55 @@ export function NativeBotPackageImport({
     fileGeneration.current++;
     setReading(false);
     setFileError(false);
+    setFolderError(false);
     if (input.source !== undefined) {
       setBackupContentOpen(false);
+      localModelKey.current?.dispose?.();
       localModelKey.current = null;
     }
     manager.current?.edit(input);
   }
-  async function pick() {
+  async function pick(folder = false) {
     if (!client?.isCurrent()) return;
     const version = ++fileGeneration.current;
     const valid = () => client.isCurrent() && version === fileGeneration.current;
     setReading(true);
     setFileError(false);
+    setFolderError(false);
     try {
+      if (folder) {
+        const selected = await pickBotBackupFolder(client.isCurrent);
+        if (!selected) return;
+        if (!valid()) {
+          selected.dispose();
+          return;
+        }
+        localModelKey.current?.dispose?.();
+        localModelKey.current = {
+          read: selected.readKey,
+          projection: selected.source,
+          dispose: selected.dispose,
+        };
+        setBackupContentOpen(false);
+        if (!reattachingKey)
+          manager.current?.edit({ source: selected.source, includeMemory: false });
+        return;
+      }
       let readKey: ((model: AgentBackupModel) => string | undefined) | undefined;
       const source = await pickBotPackageFile(valid, (read) => {
         readKey = read;
       });
       if (valid() && source !== null) {
+        localModelKey.current?.dispose?.();
         localModelKey.current = readKey ? { read: readKey, projection: source } : null;
         setBackupContentOpen(false);
         if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
     } catch {
-      if (valid()) setFileError(true);
+      if (valid()) {
+        if (folder) setFolderError(true);
+        else setFileError(true);
+      }
     } finally {
       if (valid()) setReading(false);
     }
@@ -237,6 +270,12 @@ export function NativeBotPackageImport({
             disabled={reading || phase === "previewing" || (locked && !reattachingKey)}
             busy={reading}
             onPress={() => void pick()}
+            prominence="secondary"
+          />
+          <NativeActionButton
+            label={t("Choose backup folder")}
+            disabled={reading || phase === "previewing" || (locked && !reattachingKey)}
+            onPress={() => void pick(true)}
             prominence="secondary"
           />
           <Text style={styles.text}>{t("Name")}</Text>
@@ -358,6 +397,11 @@ export function NativeBotPackageImport({
             prominence="secondary"
           />
         </>
+      ) : null}
+      {folderError ? (
+        <Text accessibilityRole="alert" style={styles.secondary}>
+          {t("Could not read the complete folder. Choose a backup archive instead.")}
+        </Text>
       ) : null}
       {fileError ? (
         <Text accessibilityRole="alert" style={styles.secondary}>
@@ -529,9 +573,11 @@ export function NativeBotPackageImport({
                 onPress={() => {
                   if (state?.clientNonce !== item.clientNonce) {
                     fileGeneration.current++;
+                    localModelKey.current?.dispose?.();
                     localModelKey.current = null;
                     setReading(false);
                     setFileError(false);
+                    setFolderError(false);
                   }
                   void manager.current?.recover(item.clientNonce);
                 }}

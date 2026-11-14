@@ -1,5 +1,9 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const TR_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Yedekleme klasörü seç",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "Klasörün tamamı okunamadı. Bunun yerine bir yedekleme arşivi seçin.",
+
   "Left channel": "Kanaldan ayrıldı",
   "Agent connections": "Ajan bağlantıları",
   "Always act": "Her zaman harekete geç",
