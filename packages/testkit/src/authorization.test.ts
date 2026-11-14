@@ -723,6 +723,55 @@ describeWithDatabase("API authorization and resource isolation", () => {
     }
   });
 
+  it("persists approval presets, precise revocation and review preferences per Space", async () => {
+    const cookie = await signup(app, `approval-settings-${stamp}@rakazo.test`, "Approval Settings");
+    const actor = await rpc<Actor>(app, cookie, "me");
+    const other = await rpc<Space>(app, cookie, "spaces/create", { name: "Other approvals" });
+    const saved = [];
+    for (const matchValue of ["email", "purchase"]) {
+      const input = { effect: "require_approval", matchKind: "category", matchValue };
+      const rule = await rpc<{ id: string }>(
+        app,
+        cookie,
+        "approvalRules/set",
+        input,
+        actor.spaceId,
+      );
+      saved.push(rule);
+      expect(await rpc(app, cookie, "approvalRules/set", input, actor.spaceId)).toEqual(rule);
+    }
+    expect(await rpc(app, cookie, "approvalRules/list", {}, actor.spaceId)).toEqual(saved);
+    expect(await rpc(app, cookie, "approvalRules/list", {}, other.id)).toEqual([]);
+    await rpc(app, cookie, "approvalRules/remove", { id: saved[0]!.id }, other.id);
+    expect(await rpc(app, cookie, "approvalRules/list", {}, actor.spaceId)).toEqual(saved);
+    await rpc(app, cookie, "approvalRules/remove", { id: saved[0]!.id }, actor.spaceId);
+    expect(await rpc(app, cookie, "approvalRules/list", {}, actor.spaceId)).toEqual([saved[1]]);
+    expect(
+      await handles.prisma.actionApprovalRule.findUnique({ where: { id: saved[0]!.id } }),
+    ).toBeNull();
+    expect(
+      await handles.prisma.actionApprovalRule.findUnique({ where: { id: saved[1]!.id } }),
+    ).not.toBeNull();
+    await rpc(app, cookie, "autoReview/set", { enabled: false }, other.id);
+    const review = await rpc<{ enabled: boolean; checkerAvailable: boolean }>(
+      app,
+      cookie,
+      "autoReview/set",
+      { enabled: true },
+      actor.spaceId,
+    );
+    expect(review.enabled).toBe(true);
+    expect(await rpc(app, cookie, "autoReview/get", {}, actor.spaceId)).toEqual(review);
+    expect(await rpc(app, cookie, "autoReview/get", {}, other.id)).toMatchObject({
+      enabled: false,
+    });
+    expect(
+      await handles.prisma.actionAutoReviewPreference.findUnique({
+        where: { spaceId_userId: { spaceId: actor.spaceId, userId: actor.userId } },
+      }),
+    ).toMatchObject({ enabled: true });
+  });
+
   it("keeps approval rules private to each user in a shared Space", async () => {
     const owner = await signup(app, `approval-owner-${stamp}@rakazo.test`, "Approval Owner");
     const member = await signup(app, `approval-member-${stamp}@rakazo.test`, "Approval Member");

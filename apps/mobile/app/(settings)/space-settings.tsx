@@ -196,6 +196,14 @@ function SpaceSettingsForm({ spaceId, name }: { spaceId?: string; name?: string 
               }}
             />
             <SettingsRow
+              title={t("Action confirmations")}
+              chevron="right"
+              onPress={() => {
+                if (settings.isCurrent())
+                  router.push({ pathname: "/approval-rules", params: { spaceId } });
+              }}
+            />
+            <SettingsRow
               title={t("Voice")}
               chevron="right"
               onPress={() => {

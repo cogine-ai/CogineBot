@@ -6,6 +6,7 @@ let closeSheet: (() => void) | null = null;
 const settingsScreens = new Set([
   "account",
   "ai-data-sharing",
+  "approval-rules",
   "archived-bots",
   "change-password",
   "integration-setup",
