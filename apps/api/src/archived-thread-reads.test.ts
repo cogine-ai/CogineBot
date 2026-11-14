@@ -71,7 +71,10 @@ function fixture() {
       }),
       { prefix: "/rpc", context: { actor: requestActor } },
     );
-    return { status: response.status, body: await response.json() };
+    return {
+      status: response.status,
+      body: proc === "threads/subscribe" ? await response.text() : await response.json(),
+    };
   }
   return { actor, call, findBot, findMessages };
 }
@@ -125,4 +128,20 @@ describe("archived thread read authorization", () => {
       expect.objectContaining({ where: expect.objectContaining({ archivedAt: null }) }),
     );
   });
+});
+
+it("keeps authorized archived history readable while the real subscribe RPC denies live access", async () => {
+  const { call, findBot } = fixture();
+  expect((await call("threads/get", { botId: "bot-1" })).status).toBe(200);
+  expect((await call("threads/messages", { botId: "bot-1", includePeerRuns: true })).status).toBe(
+    200,
+  );
+  const denied = await call("threads/subscribe", { botId: "bot-1", cursor: 0 });
+  expect(denied.body).toContain("event: error");
+  expect(denied.body).toContain('"code":"INTERNAL_SERVER_ERROR"');
+  expect(findBot).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      where: expect.objectContaining({ archivedAt: null }),
+    }),
+  );
 });

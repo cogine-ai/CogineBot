@@ -1645,11 +1645,28 @@ export async function subscribeThread(
     buffer = chunks.pop() ?? "";
     for (const chunk of chunks) {
       if (signal.aborted || !current()) return;
-      const data = chunk
-        .split("\n")
+      const lines = chunk.split("\n");
+      const eventType = lines
+        .findLast((line) => line.startsWith("event:"))
+        ?.slice(6)
+        .trim();
+      const data = lines
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("");
+      if (eventType === "error") {
+        // RPCHandler encodes ORPCError as event:error with the details in data.json.
+        // A malformed error frame still terminates this subscription fail-closed.
+        void reader.cancel().catch(() => undefined);
+        let detail: { code?: unknown; status?: unknown } | undefined;
+        try {
+          detail = JSON.parse(data)?.json;
+        } catch {}
+        throw Object.assign(new Error("rpc threads/subscribe failed"), {
+          code: typeof detail?.code === "string" ? detail.code : undefined,
+          status: typeof detail?.status === "number" ? detail.status : undefined,
+        });
+      }
       if (!data || data === "[DONE]") continue;
       let parsed: { json?: ThreadEvent; error?: { message?: string } };
       try {

@@ -888,7 +888,7 @@ function Thread({
     scope: MobileScope;
     route: string;
   } | null>(null);
-  const peerRoute = JSON.stringify([previewScope, snap?.threadId, requestedThreadId]);
+  const peerRoute = JSON.stringify([previewScope, snap?.threadId, requestedThreadId, readOnly]);
   const peerVisible = Boolean(
     peerConversation &&
       peerConversation.route === peerRoute &&
@@ -2828,6 +2828,7 @@ function Thread({
           peerBotName,
           peerBotColor,
           groupId,
+          readOnly,
         },
       });
     },

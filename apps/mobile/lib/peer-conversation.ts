@@ -14,6 +14,8 @@ export type PeerConversationTarget = {
   peerBotName: string;
   peerBotColor: string;
   groupId?: string;
+  /** Archived chat routes allow history reads but not live subscriptions. */
+  readOnly: boolean;
 };
 
 export type PeerConversationState =
@@ -102,6 +104,7 @@ export async function runPeerConversation({
       snapshots.set("botId" in threadTarget ? threadTarget.botId : threadTarget.groupId, snapshot);
     }
     publish();
+    if (target.readOnly) return;
     await Promise.all(
       targets.map(async (threadTarget) => {
         const key = "botId" in threadTarget ? threadTarget.botId : threadTarget.groupId;
@@ -134,7 +137,11 @@ export async function runPeerConversation({
   } catch {
     // Permission revocation must remove even previously loaded bodies. The same
     // explicit retry also recovers transient failures without a hot reconnect loop.
-    if (current()) onState({ status: "error" });
+    if (current()) {
+      abort.abort();
+      snapshots.clear();
+      onState({ status: "error" });
+    }
   } finally {
     signal.removeEventListener("abort", cancel);
     abort.abort();

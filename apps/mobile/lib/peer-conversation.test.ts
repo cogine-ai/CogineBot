@@ -29,6 +29,7 @@ vi.mock("./api", async (importOriginal) => ({
 
 const scope = {} as MobileScope;
 const target = {
+  readOnly: false,
   botId: "origin",
   botName: "Origin",
   botColor: "ink",

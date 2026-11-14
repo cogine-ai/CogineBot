@@ -12,6 +12,7 @@ import { resetI18nForTests } from "./i18n";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  subscribe: vi.fn(),
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn(), setParams: vi.fn() },
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
   params: {
@@ -49,10 +50,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     rpc: state.rpc,
-    subscribeThread: async (...[, , , signal]: Parameters<typeof Api.subscribeThread>) =>
-      new Promise<void>((resolve) =>
-        signal.addEventListener("abort", () => resolve(), { once: true }),
-      ),
+    subscribeThread: (...args: Parameters<typeof Api.subscribeThread>) => state.subscribe(...args),
     currentApiBase: () => "https://api.example.test",
     currentApiBaseGeneration: () => 0,
     currentSpaceSelectionGeneration: () => 0,
@@ -286,6 +284,14 @@ beforeEach(() => {
     text: "Private peer body",
     deliveryStatus: "policy_disabled",
   };
+  state.subscribe
+    .mockReset()
+    .mockImplementation(
+      (...[, , , signal]: Parameters<typeof Api.subscribeThread>) =>
+        new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        ),
+    );
   state.rpc.mockReset().mockImplementation(async (procedure: string) => {
     if (procedure === "threads/get")
       return {
@@ -649,4 +655,25 @@ it("opens a group receipt using the message's originating Bot, not the group or 
       ([proc, input]) => proc === "threads/messages" && input.botId === "bot-b",
     ),
   ).toBe(false);
+});
+
+it("keeps a receipt opened from the archived read-only route as history without subscribing", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) =>
+    procedure === "threads/messages"
+      ? { messages: [], olderCursor: null }
+      : original(procedure, input),
+  );
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain("Private peer body");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a" }),
+    expect.anything(),
+  );
+  expect(state.subscribe).not.toHaveBeenCalled();
+  expect(container.querySelector("[data-peer-sheet] input")).toBeNull();
 });
