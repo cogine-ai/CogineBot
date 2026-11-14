@@ -24,27 +24,10 @@ export async function saveRoutineDraft(
   const desired = copy(requested);
   if (state.pending) {
     const previous = state.pending;
-    // Recovery errors stay bound to the original identity, including tombstones.
-    let saved: Routine;
-    try {
-      saved = await send(copy(previous));
-    } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        ["BAD_REQUEST", "FORBIDDEN", "CONFLICT"].includes(String(error.code))
-      ) {
-        if (state.recovered) {
-          const root = copy(state.recovered);
-          state.pending = root.pending;
-          state.baseline = root.baseline;
-          state.draft = root.draft;
-          state.draftBaseline = root.draftBaseline;
-        } else delete state.pending;
-      }
-      throw error;
-    }
+    // A refused replay says nothing about the earlier commit: authorization or
+    // validation may now fail before receipt lookup. Keep this exact request
+    // (including an uncertain follow-up), even when the response is a 4xx.
+    const saved = await send(copy(previous));
     if (!current()) return;
     state.recovered ??= copy({
       pending: previous,
@@ -177,7 +160,9 @@ export async function saveRoutineDraft(
     delete state.recovered;
     return saved;
   } catch (error) {
-    // These server responses establish that this transaction did not commit.
+    // This is the first dispatch of this new intent, not recovery of an uncertain
+    // submission. A definitive rejection can release it; an already recovered
+    // create identity must still survive a rejected follow-up.
     if (
       error &&
       typeof error === "object" &&

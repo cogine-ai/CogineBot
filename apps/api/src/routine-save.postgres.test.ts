@@ -242,6 +242,81 @@ describePostgres("routine save transaction regressions", () => {
     },
   );
 
+  it.each(["create", "update"] as const)(
+    "preserves uncertain %s identity across revoked and restored membership",
+    async (operation) => {
+      const o = await fixture(),
+        state: RoutineSaveState = {};
+      const input = {
+        mutationId: randomUUID(),
+        name: "First",
+        prompt: "First prompt",
+        ...(operation === "create"
+          ? { botId: o.bot.id, crons: ["0 9 * * *"] }
+          : { routineId: o.routine.id }),
+      };
+      const request = { operation, input };
+      let committed: Routine | undefined;
+      const send = async (attempt: Parameters<typeof saveRoutineDraft>[1]) => {
+        const response = await raw(
+          o.cookie,
+          `routines/${attempt.operation}`,
+          attempt.input,
+          o.actor.spaceId,
+        );
+        const body = await response.json();
+        if (!response.ok) throw { code: body.json?.code ?? body.code, status: response.status };
+        if (!committed) {
+          committed = body.json;
+          throw new Error("Lost response");
+        }
+        return body.json as Routine;
+      };
+      const baseline = operation === "create" ? null : o.routine;
+      await expect(saveRoutineDraft(state, request, baseline, send, () => true)).rejects.toThrow(
+        "Lost response",
+      );
+      const membership = await database.prisma.spaceMember.findUniqueOrThrow({
+        where: { spaceId_userId: { spaceId: o.actor.spaceId, userId: o.actor.userId } },
+      });
+      await database.prisma.spaceMember.delete({ where: { id: membership.id } });
+      try {
+        await expect(
+          saveRoutineDraft(state, request, baseline, send, () => true),
+        ).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
+      } finally {
+        await database.prisma.spaceMember.create({ data: membership });
+      }
+      // A new follow-up is different from a refused recovery: this first dispatch
+      // is actually rejected by schema validation and may be corrected safely.
+      await expect(
+        saveRoutineDraft(
+          state,
+          { operation, input: { ...input, mutationId: randomUUID(), name: "Later", crons: [""] } },
+          baseline,
+          send,
+          () => true,
+        ),
+      ).rejects.toMatchObject({ status: 400, code: "BAD_REQUEST" });
+      const saved = await saveRoutineDraft(
+        state,
+        {
+          operation,
+          input: { ...input, mutationId: randomUUID(), name: "Later", prompt: "Later prompt" },
+        },
+        baseline,
+        send,
+        () => true,
+      );
+      expect
+        .soft(saved)
+        .toMatchObject({ id: committed!.id, name: "Later", prompt: "Later prompt" });
+      expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(
+        operation === "create" ? 2 : 1,
+      );
+    },
+  );
+
   it("sparse update preserves concurrent schedule, model, pause and external flags", async () => {
     const o = await fixture();
     await database.prisma.routine.update({

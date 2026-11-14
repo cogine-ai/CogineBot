@@ -12,6 +12,7 @@ const callback = stripTypeScriptTypes(
 function fixture(operation: string) {
   const calls: any[] = [];
   let original: any;
+  let denied = false;
   let blockResolve: any;
   const scope: any = {
     saveRoutineDraft,
@@ -58,6 +59,7 @@ function fixture(operation: string) {
   for (const method of ["create", "update"])
     scope.rpc.routines[method] = async (input: any) => {
       calls.push(structuredClone(input));
+      if (denied) throw { code: "FORBIDDEN", message: "Permission revoked" };
       if (blockResolve)
         return await new Promise((resolve) => {
           blockResolve = resolve;
@@ -77,6 +79,9 @@ function fixture(operation: string) {
     };
   return {
     scope,
+    deny: (value: boolean) => {
+      denied = value;
+    },
     calls,
     run: () =>
       new Function(...Object.keys(scope), `return (${callback})`)(...Object.values(scope))(),
@@ -143,5 +148,21 @@ it.each(["create", "update"])(
     expect(h.calls).toHaveLength(2);
     expect(h.scope.setRoutineDraft).not.toHaveBeenCalled();
     expect(h.scope.setEditingRoutine).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["create", "update"])(
+  "Web %s recovers original input after authorization returns",
+  async (operation) => {
+    const h = fixture(operation);
+    await h.run();
+    h.deny(true);
+    await h.run();
+    h.deny(false);
+    h.scope.routineDraft = { ...h.scope.routineDraft, name: "Later", prompt: "Later prompt" };
+    await h.run();
+    expect(h.calls[2]).toEqual(h.calls[0]);
+    expect(h.calls[3]).toMatchObject({ routineId: "saved", name: "Later", prompt: "Later prompt" });
+    expect(h.scope.setEditingRoutine).toHaveBeenCalledOnce();
   },
 );

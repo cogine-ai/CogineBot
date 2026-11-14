@@ -52,21 +52,24 @@ it("does not dispatch subsequent edits after scope cancellation during recovery"
   ).toBeUndefined();
   expect(send).toHaveBeenCalledTimes(1);
 });
-it("allows corrected drafts after a definite non-commit rejection", async () => {
-  const state: RoutineSaveState = {};
-  await expect(
-    saveRoutineDraft(
-      state,
-      { operation: "create", input: { name: "First" } },
-      null,
-      async () => {
-        throw { code: "BAD_REQUEST" };
-      },
-      () => true,
-    ),
-  ).rejects.toEqual({ code: "BAD_REQUEST" });
-  expect(state.pending).toBeUndefined();
-});
+it.each(["BAD_REQUEST", "FORBIDDEN", "NOT_FOUND", "CONFLICT"])(
+  "allows corrected drafts after a first-dispatch %s rejection",
+  async (code) => {
+    const state: RoutineSaveState = {};
+    await expect(
+      saveRoutineDraft(
+        state,
+        { operation: "create", input: { name: "First" } },
+        null,
+        async () => {
+          throw { code };
+        },
+        () => true,
+      ),
+    ).rejects.toEqual({ code });
+    expect(state.pending).toBeUndefined();
+  },
+);
 it("keeps the immutable request and latest draft when recovery itself fails", async () => {
   const state: RoutineSaveState = {
     pending: { operation: "create", input: { mutationId: "first", name: "First" } },
@@ -207,22 +210,54 @@ it("keeps a deleted recovered result bound to its original create identity", asy
   ).rejects.toEqual({ code: "NOT_FOUND" });
   expect(state.pending?.input.mutationId).toBe("first");
 });
-it("releases an uncertain submission when replay proves validation rejected it", async () => {
+it.each([
+  "FORBIDDEN",
+  "BAD_REQUEST",
+  "CONFLICT",
+  "NOT_FOUND",
+  "UNAUTHORIZED",
+  "INTERNAL_SERVER_ERROR",
+])("retains the immutable recovery submission after %s", async (code) => {
   const state: RoutineSaveState = {
-    pending: { operation: "create", input: { mutationId: "first", name: "Invalid" } },
+    pending: { operation: "create", input: { mutationId: "first", name: "First" } },
   };
+  const before = JSON.parse(JSON.stringify(state));
   await expect(
     saveRoutineDraft(
       state,
-      { operation: "create", input: { name: "Corrected" } },
+      { operation: "create", input: { mutationId: "later", name: "Later" } },
       null,
       async () => {
-        throw { code: "BAD_REQUEST" };
+        throw { code };
       },
       () => true,
     ),
-  ).rejects.toEqual({ code: "BAD_REQUEST" });
-  expect(state.pending).toBeUndefined();
+  ).rejects.toEqual({ code });
+  expect(state).toEqual(before);
+});
+it("does not replace an uncertain follow-up with the older recovered request after refusal", async () => {
+  const state: RoutineSaveState = {
+    pending: {
+      operation: "update",
+      input: { mutationId: "uncertain-update", routineId: "routine", name: "Later" },
+    },
+    recovered: {
+      pending: { operation: "create", input: { mutationId: "original-create", name: "First" } },
+    },
+  };
+  const before = JSON.parse(JSON.stringify(state));
+  await expect(
+    saveRoutineDraft(
+      state,
+      { operation: "create", input: { name: "Newest" } },
+      null,
+      async () => {
+        throw { code: "FORBIDDEN" };
+      },
+      () => true,
+    ),
+  ).rejects.toEqual({ code: "FORBIDDEN" });
+  expect(state).toEqual(before);
 });
 it("does not restore cancelled trigger edits when a new edit changes only the name", async () => {
   const state: RoutineSaveState = {

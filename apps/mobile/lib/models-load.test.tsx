@@ -2818,3 +2818,47 @@ it.each(["create", "update", "cancel"])(
     expect(container.textContent).not.toContain("CONFLICT");
   },
 );
+
+it("keeps an uncertain create through authorization refusal and restored access", async () => {
+  state.params = { botId: "bot-1" };
+  const normal = state.rpc.getMockImplementation()!;
+  let denied = false;
+  const receipts = new Map<string, Record<string, unknown>>();
+  const creates: Record<string, unknown>[] = [];
+  const updates: Record<string, unknown>[] = [];
+  state.rpc.mockImplementation(async (path, input, options) => {
+    if (path === "routines/create") {
+      if (denied) throw { code: "FORBIDDEN", message: "Permission revoked" };
+      const previous = receipts.get(input.mutationId);
+      if (previous) return previous;
+      const saved = { ...input, id: `created-${creates.length}` };
+      creates.push(saved);
+      receipts.set(input.mutationId, saved);
+      if (creates.length === 1) throw new Error("Lost response");
+      return saved;
+    }
+    if (path === "routines/update") {
+      updates.push(input);
+      return { ...creates[0], ...input };
+    }
+    return normal(path, input, options);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await edit(routineInput("Name"), "First");
+  await edit(routineInput("Prompt"), "First prompt");
+  await act(async () => button("Create").click());
+  denied = true;
+  await act(async () => button("Create").click());
+  expect(routineInput("Name").value).toBe("First");
+  denied = false;
+  await edit(routineInput("Name"), "Later");
+  await edit(routineInput("Prompt"), "Later prompt");
+  await act(async () => button("Create").click());
+  expect(creates).toHaveLength(1);
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toMatchObject({
+    routineId: creates[0]!.id,
+    name: "Later",
+    prompt: "Later prompt",
+  });
+});
