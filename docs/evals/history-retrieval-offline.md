@@ -140,6 +140,22 @@ Pi HTTP test verifies all twelve dependent tool results, including the terminal
 null cursor, survive serialization and context selection. This makes future live
 failures diagnosable; it does not establish the cause of an earlier failed run.
 
+The fresh-check fixture puts the previous report and its read-only constraint
+outside the recent context, with tool steps in later turns. The scripted endpoint
+reads the old source, follows its file path through the real executor, and answers
+from the current fake-sandbox file. The grader requires both a Run tool event and
+a successful read of that file before grading readback, and checks that its
+contents remain unchanged. A separate cross-chat fixture follows the prior
+constraint to a current directory entry. Both keep the configured context and
+output budget and record input estimates and call counts. Linked history
+distinguishes completed, failed and cancelled work, and a deleted original
+cannot be reopened by reference.
+
+To qualify model choice separately, select only `history-1000-fresh-check` with
+`--suite history --strategy retrieval --trials 1` in the existing eval CLI. Live
+execution needs an approved model connection, pricing and a spend cap. The offline
+fixtures do not establish that a live model will independently choose those steps.
+
 Reproduce the ordinary offline checks with:
 
 ```sh

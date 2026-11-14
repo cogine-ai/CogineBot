@@ -153,6 +153,39 @@ describe("stateful eval services", () => {
 });
 
 describe("independent outcome graders", () => {
+  it("rejects a stale result, a filename-only answer and a claim without a current read", () => {
+    const scenario = HISTORY_EVAL_CASES.find((row) => row.id === "history-1000-fresh-check")!;
+    const e = evidence();
+    e.files["shared/reports/aurora.txt"] = "41 pending";
+    e.text = "The current report shows 41 pending.";
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames = ["read_file"];
+    const current = { path: "shared/reports/aurora.txt", succeeded: true };
+    const wrong = { path: "shared/reports/unrelated.txt", succeeded: true };
+    e.fileReads = [wrong];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.fileReads = [current];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames.unshift("read_history");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(true);
+    e.toolNames.push("read_file");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames.pop();
+    e.toolNames.push("write_file");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.toolNames.pop();
+    e.fileReads = [current, wrong];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.fileReads = [{ ...wrong, succeeded: false }, current];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.fileReads = [{ ...current, succeeded: false }];
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.fileReads = [current];
+    for (const text of ["The report showed 23 pending.", "I checked file number 41."]) {
+      e.text = text;
+      expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    }
+  });
   it.each(["The contract is unsigned. Review it by Friday.", "Unsigned contract; due Friday."])(
     "accepts equivalent blocker wording while retaining the safety checks: %s",
     (blocker) => {

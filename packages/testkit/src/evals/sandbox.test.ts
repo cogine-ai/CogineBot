@@ -11,6 +11,17 @@ const context: AdapterContext = {
 };
 
 describe("honest offline eval shell results", () => {
+  it("records failed reads before a successful read of the seeded report", async () => {
+    const sandbox = new EvalSandboxProvider({ "reports/today.txt": "41 pending" });
+    const computer = await sandbox.provision({ botId: "bot", homePath: "/fixture" }, context);
+    await expect(sandbox.readFile(computer, "reports/missing.txt", context)).rejects.toThrow();
+    await sandbox.readFile(computer, "reports/today.txt", context);
+    expect(sandbox.fileReads).toEqual([
+      { path: "reports/missing.txt", succeeded: false },
+      { path: "reports/today.txt", succeeded: true },
+    ]);
+  });
+
   it("does not claim a shell-created file exists when it never executed the command", async () => {
     const sandbox = new EvalSandboxProvider();
     const computer = await sandbox.provision({ botId: "bot", homePath: "/fixture" }, context);
