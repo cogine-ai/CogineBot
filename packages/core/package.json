@@ -38,6 +38,7 @@
       "development": "./src/node/trusted-proxy.ts",
       "default": "./src/node/trusted-proxy.ts"
     },
+    "./plot/browser": "./src/plot/browser.ts",
     "./plot": {
       "types": "./src/plot/plot-spec.ts",
       "development": "./src/plot/plot-spec.ts",

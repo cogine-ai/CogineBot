@@ -12,6 +12,10 @@ import { resetI18nForTests } from "./i18n";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  chartViews: [] as Array<{
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+    injectedJavaScript?: string;
+  }>,
   subscribe: vi.fn(),
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn(), setParams: vi.fn() },
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
@@ -30,6 +34,16 @@ const state = vi.hoisted(() => ({
     text: "Private peer body",
     deliveryStatus: "policy_disabled",
   } as MessageBlock,
+}));
+
+vi.mock("react-native-webview", () => ({
+  WebView: (props: {
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+    injectedJavaScript?: string;
+  }) => {
+    state.chartViews.push(props);
+    return <div data-chart-webview />;
+  },
 }));
 
 vi.mock("@rakazo/chat-ui/native", () => ({
@@ -125,7 +139,6 @@ vi.mock("expo-document-picker", () => ({}));
 vi.mock("expo-image-picker", () => ({}));
 vi.mock("expo-sharing", () => ({}));
 vi.mock("react-native-svg", () => ({ default: () => null, G: () => null, Path: () => null }));
-vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: {} } }));
 vi.mock("./call-sounds", () => ({
@@ -276,6 +289,7 @@ beforeEach(() => {
   state.params.groupId = undefined;
   state.params.botId = "bot-a";
   state.approvals = [];
+  state.chartViews.length = 0;
   state.router.push.mockReset();
   state.block = {
     kind: "bot_message_sent",
@@ -677,3 +691,53 @@ it("keeps a receipt opened from the archived read-only route as history without 
   expect(state.subscribe).not.toHaveBeenCalled();
   expect(container.querySelector("[data-peer-sheet] input")).toBeNull();
 });
+
+it.each([false, true])(
+  "renders one chart in the actual thread with attachments=%s and preserves adjacent content on failure",
+  async (attachments) => {
+    const original = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+      const result = await original(procedure, input);
+      if (procedure !== "threads/get") return result;
+      return {
+        ...result,
+        messages: [
+          {
+            ...result.messages[0],
+            blocks: [
+              { kind: "text", text: "Synthetic result\n```mermaid\ngraph TD; A-->B\n```" },
+              {
+                kind: "chart",
+                name: "Sales",
+                spec: { title: "Sales", marks: [{ type: "dot" }] },
+                data: [1, 2],
+              },
+              ...(attachments
+                ? [
+                    { kind: "image", name: "Synthetic picture" },
+                    { kind: "file", name: "Synthetic document" },
+                  ]
+                : []),
+            ],
+          },
+        ],
+      };
+    });
+    await act(async () => root.render(<ThreadRoute />));
+    expect(container.querySelectorAll("[data-chart-webview]")).toHaveLength(1);
+    expect(container.textContent).not.toContain("[chart:");
+    expect(container.textContent).toContain("Synthetic result");
+    expect(container.textContent).toContain("graph TD; A-->B");
+    const chart = state.chartViews.at(-1)!;
+    const requestId = /"requestId":"([^"]+)"/.exec(chart.injectedJavaScript!)![1];
+    act(() =>
+      chart.onMessage?.({ nativeEvent: { data: JSON.stringify({ requestId, type: "failed" }) } }),
+    );
+    expect(container.textContent).toContain("Chart unavailable");
+    expect(container.textContent).toContain("Synthetic result");
+    if (attachments) {
+      expect(container.textContent).toContain("Synthetic picture");
+      expect(container.textContent).toContain("Synthetic document");
+    }
+  },
+);

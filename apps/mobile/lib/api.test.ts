@@ -5610,3 +5610,65 @@ it("surfaces SSE RPC errors so a peer viewer can discard previously authorized b
     subscribeThread({ botId: "origin" }, 3, vi.fn(), new AbortController().signal),
   ).rejects.toThrow("rpc threads/subscribe failed");
 });
+
+it("retains one structured chart through first load, completion, replay, and history reload", () => {
+  const blocks: MobileMessage["blocks"] = [
+    { kind: "text", text: "Synthetic results\n```mermaid\ngraph TD; A-->B\n```" },
+    {
+      kind: "chart",
+      name: "Sales",
+      spec: { title: "Sales", marks: [{ type: "dot" }] },
+      data: [1, 2],
+    },
+    { kind: "image", artifactId: "synthetic-image", name: "Image", mimeType: "image/png" },
+  ];
+  const committed = { id: "chart-final", role: "bot" as const, runId: "run-chart", seq: 4, blocks };
+  const first: MobileSnapshot = {
+    threadId: "thread-chart",
+    cursor: 4,
+    olderCursor: null,
+    messages: [committed],
+    run: null,
+  };
+  expect(mergeMobileSnapshot(null, first)?.messages[0]?.blocks).toEqual(blocks);
+  let live: MobileSnapshot | null = {
+    ...first,
+    cursor: 1,
+    messages: [],
+    run: { id: "run-chart", status: "running" },
+  };
+  live = applyMobileThreadEvent(live, {
+    type: "thread.progress",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 2,
+    payload: { text: "Preparing results" },
+  });
+  const event = {
+    type: "thread.message.created",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 4,
+    payload: { messageId: "chart-final", messageSeq: 4, role: "bot", blocks },
+  };
+  live = applyMobileThreadEvent(live, event);
+  live = applyMobileThreadEvent(live, {
+    type: "run.completed",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 5,
+    payload: { messageId: "chart-final" },
+  });
+  live = applyMobileThreadEvent(live, event);
+  live = mergeMobileSnapshot(live, { ...first, cursor: 5 });
+  live = prependMobileMessagePage(live, {
+    threadId: "thread-chart",
+    olderCursor: null,
+    messages: [committed],
+  });
+  expect(live?.messages).toHaveLength(1);
+  expect(live?.messages[0]?.blocks).toEqual(blocks);
+  expect(
+    live?.messages.flatMap((message) => message.blocks).filter((block) => block.kind === "chart"),
+  ).toHaveLength(1);
+});

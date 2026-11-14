@@ -1,4 +1,7 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Expand chart": "展开图表",
+  "Close chart": "关闭图表",
+  "Chart unavailable": "图表暂不可用",
   Test: "试跑",
   Recording: "录制中",
   "Start recording": "开始录制",
