@@ -116,6 +116,7 @@ import { BotAvatar } from "../components/bot-avatar";
 import { BotSettingsCard } from "../components/bot-settings-card";
 import { ChoiceCard } from "../components/ChoiceCard";
 import { ComputerCard } from "../components/ComputerCard";
+import { ChartCard } from "../components/chart-card";
 import { ComposerReplyPreview } from "../components/composer-reply-preview";
 import { FailedSendBubble } from "../components/failed-send-bubble";
 import { GlassSurface } from "../components/glass-surface";
@@ -4672,6 +4673,9 @@ const MessageBubble = memo(function MessageBubble({
   const pageBlocks = message.blocks.filter(
     (block): block is Extract<MessageBlock, { kind: "page" }> => block.kind === "page",
   );
+  const chartCards = message.blocks.flatMap((block, index) =>
+    block.kind === "chart" ? [<ChartCard key={`chart-${index}`} block={block} />] : [],
+  );
   const historyCards = message.blocks.flatMap((block, index) =>
     block.kind === "history_sources" ? [<HistorySourcesCard key={index} block={block} />] : [],
   );
@@ -4735,6 +4739,7 @@ const MessageBubble = memo(function MessageBubble({
           <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
         ))}
         {historyCards}
+        {chartCards}
         {attachments.map((attachment, index) =>
           attachment.kind === "image" ? (
             attachment.artifactId && isInlineImageMimeType(attachment.mimeType) ? (
@@ -4884,6 +4889,7 @@ const MessageBubble = memo(function MessageBubble({
         <PageCard key={`${block.pageId}:${block.version}`} block={block} messageId={message.id} />
       ))}
       {historyCards}
+      {chartCards}
       {choiceBlocks.map((block, index) => (
         <ChoiceCard
           key={`choice-${index}`}

@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Expand chart": "Развернуть диаграмму",
+  "Close chart": "Закрыть диаграмму",
+  "Chart unavailable": "Диаграмма недоступна",
   Test: "Проверить",
   Recording: "Запись",
   "Start recording": "Начать запись",

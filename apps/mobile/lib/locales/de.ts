@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Expand chart": "Diagramm vergrößern",
+  "Close chart": "Diagramm schließen",
+  "Chart unavailable": "Diagramm nicht verfügbar",
   "Teach a task": "Eine Aufgabe beibringen",
   Test: "Testen",
   Recording: "Aufnahme",
