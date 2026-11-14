@@ -17,6 +17,7 @@ import {
   Prisma,
   runAsTenant,
   searchHistory,
+  touchActionApprovalPolicy,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
@@ -75,6 +76,78 @@ describeIntegration("run executor lifecycle", () => {
     expect(run.status).toBe("completed");
     expect(attempts).toHaveLength(1);
     expect(attempts[0]).toMatchObject({ fence: 1, status: "completed" });
+  });
+
+  it("records memory review evidence only for the bound direct messaging sender", async () => {
+    const seeded = await seedRun("memory-messaging-authorship", "Initial reply");
+    const actor = { spaceId: seeded.me.spaceId, userId: seeded.me.userId };
+    const events = createThreadEvents(handles.prisma);
+    const identity = await handles.prisma.messagingIdentity.create({
+      data: {
+        ...actor,
+        botId: seeded.bot.id,
+        provider: "fixture",
+        address: `direct-sender-${seeded.bot.id}`,
+      },
+    });
+    const key = `inbound:memory-authorship:${identity.id}`;
+    await handles.prisma.messagingOutbound.create({
+      data: {
+        idempotencyKey: key,
+        identityId: identity.id,
+        threadId: seeded.thread.id,
+        kind: "inbound",
+        status: "inbound",
+        body: "",
+      },
+    });
+    const input = {
+      ...actor,
+      botId: seeded.bot.id,
+      threadId: seeded.thread.id,
+      trigger: "messaging" as const,
+      prompt: "Direct fixture",
+      blocks: [{ kind: "text" as const, text: "Remember my preference." }],
+      createRun: false,
+    };
+    try {
+      await expect(
+        events.sendUserMessage({
+          ...input,
+          messagingReceiptKey: key,
+          messagingOwnerIdentityId: "different-sender",
+        }),
+      ).rejects.toThrow();
+      await handles.prisma.bot.update({
+        where: { id: seeded.bot.id },
+        data: { archivedAt: new Date() },
+      });
+      await expect(
+        events.sendUserMessage({
+          ...input,
+          messagingReceiptKey: key,
+          messagingOwnerIdentityId: identity.id,
+        }),
+      ).rejects.toThrow();
+      await handles.prisma.bot.update({
+        where: { id: seeded.bot.id },
+        data: { archivedAt: null },
+      });
+      const direct = await events.sendUserMessage({
+        ...input,
+        messagingReceiptKey: key,
+        messagingOwnerIdentityId: identity.id,
+      });
+      const external = await events.sendUserMessage(input);
+      await expect(
+        handles.prisma.message.findUniqueOrThrow({ where: { id: direct.messageId } }),
+      ).resolves.toMatchObject({ authorUserId: seeded.me.userId, blocks: input.blocks });
+      await expect(
+        handles.prisma.message.findUniqueOrThrow({ where: { id: external.messageId } }),
+      ).resolves.toMatchObject({ authorUserId: null });
+    } finally {
+      await cleanupHeldRuns(seeded.bot.id, () => undefined);
+    }
   });
 
   it("reclaims an expired running lease with a higher fence", async () => {
@@ -343,6 +416,154 @@ describeIntegration("run executor lifecycle", () => {
       expect(
         await handles.prisma.memoryDocument.count({ where: { spaceId: seeded.me.spaceId, path } }),
       ).toBe(0);
+      expect(
+        await handles.prisma.memoryRevision.count({ where: { sourceRunId: seeded.run.id } }),
+      ).toBe(0);
+    },
+  );
+
+  it("checks the current deny before an actual Markdown commit and still reads existing receipts", async () => {
+    const seeded = await seedRun("memory-store-deny", "Save the synthetic preference", {
+      status: "running",
+      leaseOwner: "fixture-worker",
+      leaseFence: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const actor = { spaceId: seeded.me.spaceId, userId: seeded.me.userId };
+    const context = {
+      ...actor,
+      botId: seeded.bot.id,
+      operationId: "fixture-store-deny",
+      traceId: "fixture-store-deny",
+      signal: new AbortController().signal,
+    };
+    const request = {
+      scope: "user" as const,
+      path: "fixture-policy.md",
+      content: "Original preference",
+      sourceRunId: seeded.run.id,
+      sourceThreadId: seeded.thread.id,
+      idempotencyKey: "fixture-deny-first",
+      runLease: { owner: "fixture-worker", fence: 1 },
+      runApproval: { tool: "save_shared_memory" as const },
+    };
+    const store = new MarkdownMemoryStore(handles.prisma);
+    const committed = await runAsTenant(actor, () => store.commit(request, context));
+    await runAsTenant(actor, () =>
+      handles.prisma.actionApprovalRule.create({
+        data: {
+          spaceId: actor.spaceId,
+          createdByUserId: actor.userId,
+          effect: "deny",
+          matchKind: "tool",
+          matchValue: "save_shared_memory",
+        },
+      }),
+    );
+    await expect(
+      runAsTenant(actor, () =>
+        store.commit(
+          { ...request, content: "Changed preference", idempotencyKey: "fixture-denied" },
+          context,
+        ),
+      ),
+    ).rejects.toMatchObject({ name: "MemoryWriteAuthorizationError", reason: "rule" });
+    await expect(runAsTenant(actor, () => store.commit(request, context))).resolves.toEqual(
+      committed,
+    );
+    expect(
+      await handles.prisma.memoryRevision.count({ where: { sourceRunId: seeded.run.id } }),
+    ).toBe(1);
+  });
+
+  it.each(["removed grant", "disabled tool", "new confirmation rule"] as const)(
+    "rejects a Markdown write after a %s",
+    async (change) => {
+      const seeded = await seedRun(`memory-revoked-${change.replaceAll(" ", "-")}`, "Save a fact", {
+        status: "running",
+        leaseOwner: "fixture-worker",
+        leaseFence: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      });
+      const actor = { spaceId: seeded.me.spaceId, userId: seeded.me.userId };
+      const tool = "save_shared_memory" as const;
+      const rule = await runAsTenant(actor, () =>
+        handles.prisma.actionApprovalRule.create({
+          data: {
+            spaceId: actor.spaceId,
+            createdByUserId: actor.userId,
+            effect: "always_allow",
+            matchKind: "tool",
+            matchValue: tool,
+          },
+        }),
+      );
+      const receiptId = "fixture-revoked";
+      let revoked = false;
+      const racing = handles.prisma.$extends({
+        query: {
+          memoryRevision: {
+            async findUnique({ args, query }) {
+              const result = await query(args);
+              if (!revoked) {
+                revoked = true;
+                // A separate connection commits revocation after the write snapshot starts.
+                if (change === "removed grant")
+                  await runAsTenant(actor, () =>
+                    handles.prisma.actionApprovalRule.delete({ where: { id: rule.id } }),
+                  );
+                else if (change === "disabled tool")
+                  await handles.prisma.bot.update({
+                    where: { id: seeded.bot.id },
+                    data: { disabledBuiltinTools: [tool] },
+                  });
+                else
+                  await runAsTenant(actor, () =>
+                    handles.prisma.$transaction(async (tx) => {
+                      await touchActionApprovalPolicy(tx, actor.spaceId, actor.userId);
+                      await tx.actionApprovalRule.create({
+                        data: {
+                          spaceId: actor.spaceId,
+                          createdByUserId: actor.userId,
+                          effect: "require_approval",
+                          matchKind: "tool",
+                          matchValue: tool,
+                        },
+                      });
+                    }),
+                  );
+              }
+              return result;
+            },
+          },
+        },
+      }) as typeof handles.prisma;
+      const context = {
+        ...actor,
+        botId: seeded.bot.id,
+        operationId: "fixture-revoked",
+        traceId: "fixture-revoked",
+        signal: new AbortController().signal,
+      };
+      const store = new MarkdownMemoryStore(racing);
+      await expect(
+        runAsTenant(actor, () =>
+          store.commit(
+            {
+              scope: "user",
+              path: "fixture-revoked.md",
+              content: "Not authorized",
+              sourceRunId: seeded.run.id,
+              sourceThreadId: seeded.thread.id,
+              idempotencyKey: receiptId,
+              runLease: { owner: "fixture-worker", fence: 1 },
+              runApproval: { tool, requireAlwaysAllow: true },
+            },
+            context,
+          ),
+        ),
+      ).rejects.toMatchObject({ name: "MemoryWriteAuthorizationError", reason: "revoked" });
+      expect(revoked).toBe(true);
       expect(
         await handles.prisma.memoryRevision.count({ where: { sourceRunId: seeded.run.id } }),
       ).toBe(0);

@@ -139,6 +139,7 @@ import {
   isOneShotRoutineCrons,
   isOwnerStartedRun,
   isTerminal,
+  memoryWriteNeedsApproval,
   messagingChannelId,
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
@@ -181,6 +182,7 @@ import {
   authorizeCollaborationRunStart,
   BOT_COLLABORATION_ORIGINS,
   beginRoutineRetryExecution,
+  checkMemoryWritePolicy,
   claimDelegatedApprovedEffect,
   claimRunQuotaResume,
   createSpaceForMember,
@@ -196,6 +198,8 @@ import {
   loadRunHistoryMessages,
   loadRunProgressReset,
   loadRunTurnCheckpoint,
+  lockMemoryWritePolicyRows,
+  MemoryWriteAuthorizationError,
   mergeHistorySourceReferences,
   Prisma,
   parkRunQuotaWait,
@@ -655,6 +659,34 @@ const MEMORY_MUTATION_TOOLS = new Set([
   "forget_memory",
 ]);
 const MEMORY_MUTATION_EFFECT_PREFIX = "memory-write:";
+const SEMANTIC_MEMORY_DESTINATION_CHANGED = {
+  error: "The memory destination changed. Request a new approval.",
+  unchanged: true,
+};
+const MEMORY_WRITE_REVOKED = { error: "Memory write is no longer authorized.", unchanged: true };
+
+function readSemanticMemoryApproval(request: unknown) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) return;
+  const { memoryWrite, args, target } = request as Record<string, unknown>;
+  if (
+    memoryWrite !== 1 ||
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args) ||
+    !target ||
+    typeof target !== "object" ||
+    Array.isArray(target)
+  )
+    return;
+  const { provider, scope, connectionId } = target as Record<string, unknown>;
+  if (
+    typeof provider !== "string" ||
+    (scope !== "isolated" && scope !== "shared") ||
+    (connectionId !== null && typeof connectionId !== "string")
+  )
+    return;
+  return { args: args as Record<string, unknown>, target: { provider, scope, connectionId } };
+}
 
 const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
@@ -3333,6 +3365,11 @@ export function buildApprovalContinuation(
           ? `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: request.args })}`
           : "The previously approved Page update could not be restored.";
       }
+      if (effect.kind === "save_memory") {
+        const request = readSemanticMemoryApproval(effect.request);
+        if (request)
+          return `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: request.args })}`;
+      }
       const catalog = catalogApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);
       if (catalog) {
         const exposed = options?.exposedToolNames;
@@ -4628,6 +4665,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)
           : null;
         const semanticMemory: SemanticMemoryProvider | null = configuredMemory?.provider ?? null;
+        const semanticMemoryTarget =
+          semanticMemory && memoryScope
+            ? {
+                provider: semanticMemory.describe().id,
+                scope: memoryScope,
+                connectionId: configuredMemory?.connectionId ?? null,
+              }
+            : null;
 
         await deps.events.append({
           spaceId: run.spaceId,
@@ -5205,20 +5250,68 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const taskCatalogInstruction = tools.some((tool) => tool.name === "task_catalog")
           ? TASK_CATALOG_GUIDANCE
           : undefined;
-        const approvedEffects = await deps.prisma.externalEffect.findMany({
+        const loadedApprovedEffects = await deps.prisma.externalEffect.findMany({
           where: { runId, status: "approved" },
           orderBy: APPROVED_EFFECT_REPLAY_ORDER,
           select: { id: true, idempotencyKey: true, kind: true, request: true },
         });
         if (
           isSteeringContinuation &&
-          approvedEffects.some(
+          loadedApprovedEffects.some(
             (effect) =>
               effect.id !== scriptedResume.stored?.pendingEffect?.id ||
               effect.idempotencyKey !== scriptedResume.stored.pendingEffect.idempotencyKey,
           )
         )
           throw new ScriptedStateInvalidError();
+        const memorySaveUnavailable = !tools.some((tool) => tool.name === "save_memory");
+        const memoryUnavailableResult = semanticMemoryTarget
+          ? MEMORY_WRITE_REVOKED
+          : SEMANTIC_MEMORY_DESTINATION_CHANGED;
+        const disconnectedApprovals = memorySaveUnavailable
+          ? loadedApprovedEffects.filter((effect) => effect.kind === "save_memory")
+          : [];
+        const approvedEffects = memorySaveUnavailable
+          ? loadedApprovedEffects.filter((effect) => effect.kind !== "save_memory")
+          : loadedApprovedEffects;
+        const completedMemoryApprovals =
+          !scripted || isSteeringContinuation
+            ? await deps.prisma.externalEffect.findMany({
+                where: {
+                  runId,
+                  spaceId: run.spaceId,
+                  kind: "save_memory",
+                  status: { in: ["completed", "denied", "executing", "uncertain"] },
+                },
+                select: { idempotencyKey: true, status: true, result: true },
+              })
+            : [];
+        const unavailableResult = (value: unknown) =>
+          stableJsonValue(value) === stableJsonValue(SEMANTIC_MEMORY_DESTINATION_CHANGED) ||
+          stableJsonValue(value) === stableJsonValue(MEMORY_WRITE_REVOKED);
+        const recoveredMemoryApprovals = new Map<string, { value: unknown; isError: boolean }>();
+        for (const effect of completedMemoryApprovals) {
+          if (!memorySaveUnavailable && effect.status !== "completed") continue;
+          const gate = resolveDuplicateEffectGate(effect, "save_memory");
+          const value =
+            gate.action === "return" ? gate.result : uncertainEffectResult("save_memory");
+          if (value === null || value === undefined) continue;
+          const failed =
+            isFailedToolResult(value) ||
+            (typeof value === "object" && "ok" in value && value.ok === false);
+          recoveredMemoryApprovals.set(effect.idempotencyKey, {
+            value,
+            isError: failed,
+          });
+        }
+        for (const effect of disconnectedApprovals)
+          recoveredMemoryApprovals.set(effect.idempotencyKey, {
+            value: memoryUnavailableResult,
+            isError: true,
+          });
+        const memoryRecoveryNote = [...recoveredMemoryApprovals.values()].findLast(({ value }) =>
+          unavailableResult(value),
+        )?.value as { error: string } | undefined;
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
         // Answering an approval ends the paused attempt. A resumed worker reloads its refusals.
         let deniedActionTargets: ReturnType<typeof loadDeniedActionTargets> | undefined;
@@ -5532,6 +5625,29 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const mutatingEffectOccurrences = new Map<string, number>(
           scriptedResume.stored?.effectOccurrences,
         );
+        if (disconnectedApprovals.length) {
+          context.signal.throwIfAborted();
+          const settled = await deps.prisma.$transaction(async (tx) => {
+            if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+            context.signal.throwIfAborted();
+            for (const effect of disconnectedApprovals) {
+              if (
+                !(await completeExternalEffect(
+                  tx,
+                  effect.id,
+                  "approved",
+                  memoryUnavailableResult,
+                  run.origin === "bot_peer"
+                    ? approvedActionReceipt(memoryUnavailableResult, "error")
+                    : undefined,
+                ))
+              )
+                throw uncertainEffectError("save_memory");
+            }
+            return true;
+          });
+          if (!settled) return;
+        }
         let turnState: RunTurnCheckpointState;
         let markerOnlyPageEffect: Awaited<ReturnType<typeof loadRestoredSharedPageEffect>>;
         try {
@@ -5545,6 +5661,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             tools,
             instructionsBaseline: settingsBaseline?.instructions ?? bot.instructions,
             counts: mutatingEffectOccurrences,
+            recoveredMemoryApprovals,
+            memorySaveUnavailable,
           });
           if (!turnState.blob && turnState.sharedPageApproval) {
             markerOnlyPageEffect = await loadRestoredSharedPageEffect(
@@ -6402,7 +6520,35 @@ export function createRunExecutor(deps: ExecutorDeps) {
               CATALOG_APPROVAL_TOOL,
             );
             if (resourceError) return { error: resourceError };
-            const approvedRequest = approvedEffectReplays.take(nextApprovedTool)!;
+            let approvedRequest = approvedEffectReplays.take(nextApprovedTool)!;
+            if (name === "save_memory") {
+              const memoryApproval = readSemanticMemoryApproval(approvedRequest);
+              if (
+                !memoryApproval ||
+                !semanticMemoryTarget ||
+                stableJsonValue(memoryApproval.target) !== stableJsonValue(semanticMemoryTarget)
+              ) {
+                if (queuedApprovalKey) {
+                  const approvedEffect = await deps.prisma.externalEffect.findUnique({
+                    where: { idempotencyKey: queuedApprovalKey },
+                  });
+                  if (approvedEffect?.runId === runId && approvedEffect.spaceId === run.spaceId) {
+                    const settled = await completeEffect(
+                      deps,
+                      approvedEffect.id,
+                      "approved",
+                      SEMANTIC_MEMORY_DESTINATION_CHANGED,
+                      run.origin === "bot_peer"
+                        ? approvedActionReceipt(SEMANTIC_MEMORY_DESTINATION_CHANGED, "error")
+                        : undefined,
+                    );
+                    if (!settled) return uncertainEffectResult(name);
+                  }
+                }
+                return SEMANTIC_MEMORY_DESTINATION_CHANGED;
+              }
+              approvedRequest = memoryApproval.args;
+            }
             const approvedCatalog = catalogApprovalDetails(approvedRequest, CATALOG_APPROVAL_TOOL);
             if (approvedCatalog && !catalogRemapped) {
               // Shrink-to-direct: restore approved inner arguments, not the wrapper envelope.
@@ -6792,8 +6938,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 tool.readOnly,
               ),
             );
+          const memoryWriteGated =
+            !viaConnector && (await memoryWriteNeedsApproval(name, () => trust.isTainted()));
+          if (name === "save_memory" && semanticMemoryTarget) {
+            effectRequest = { memoryWrite: 1, args, target: semanticMemoryTarget };
+          }
           const requiresApprovalByDefault =
             requiresUnattendedApproval ||
+            memoryWriteGated ||
             siteGate === "new" ||
             (genericBatch && toolRequiresApproval(wireToolName, viaConnector, declaredReadOnly)) ||
             approvalTools.some((tool) =>
@@ -7235,10 +7387,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const runAutoReview = async () => {
             if (!injectedReview && !checker) return;
             try {
-              const task =
-                authenticatedRequest || newSite || trust.state.pageInput
+              const task = memoryWriteGated
+                ? await trust.loadMemoryOwnerWords()
+                : authenticatedRequest || newSite || trust.state.pageInput
                   ? await trust.loadOwnerWords()
                   : ownerTaskPrompt;
+              if (memoryWriteGated && !task.trim()) {
+                gateDecision = "ask";
+                return;
+              }
               const reviewContext: AdapterContext = {
                 operationId: `auto-review:${runId}`,
                 traceId: `auto-review:${runId}`,
@@ -7319,7 +7476,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               // Resolve checker credentials first so all currently known secrets are redacted.
               const reviewArgs = redactToolArgsForReview(
-                newSite ? { url: outboundUrl } : args,
+                newSite
+                  ? { url: outboundUrl }
+                  : name === "save_memory" && semanticMemoryTarget
+                    ? {
+                        ...args,
+                        scope: semanticMemoryTarget.scope,
+                        provider: semanticMemoryTarget.provider,
+                      }
+                    : args,
                 runSecrets,
               );
               const redactedArgsJson = reviewArgs && reviewArgsJson(reviewArgs);
@@ -7340,6 +7505,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 args: reviewArgs,
                 userTask: redactSecrets(task, runSecrets),
                 ...(newSite ? { newSite: true } : {}),
+                ...(memoryWriteGated ? { memoryWrite: true } : {}),
                 botDescription: redactSecrets(
                   `${bot.name}: ${bot.title}\n${bot.description}`,
                   runSecrets,
@@ -7672,6 +7838,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           /** Show the stored intended effect using metadata only from its matching connector route. */
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
+            if (name === "save_memory") {
+              const stored = readSemanticMemoryApproval(applied!.effect.request);
+              if (
+                !stored ||
+                !semanticMemoryTarget ||
+                stableJsonValue(stored.target) !== stableJsonValue(semanticMemoryTarget)
+              ) {
+                return (await completeEffect(
+                  deps,
+                  applied!.effect.id,
+                  "intended",
+                  SEMANTIC_MEMORY_DESTINATION_CHANGED,
+                ))
+                  ? SEMANTIC_MEMORY_DESTINATION_CHANGED
+                  : uncertainEffectResult(name);
+              }
+            }
             await flushConnectionNarration(executionId);
             if (ownSettings) {
               const block = ownSettingsApprovalBlock(applied!.effect.id, ownSettings, runSecrets);
@@ -7693,7 +7876,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               name !== AGENT_CONNECTION_RESPONSE_TOOL &&
               name !== "request_secret" &&
               name !== "request_takeover";
+            const memoryApproval =
+              name === "save_memory" ? readSemanticMemoryApproval(request) : undefined;
             const persistedArgs =
+              (memoryApproval && { ...memoryApproval.args, scope: memoryApproval.target.scope }) ??
               connectorApproval?.args ??
               (routine ? routine.args : undefined) ??
               (request && typeof request === "object" && !Array.isArray(request)
@@ -7737,7 +7923,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ordinary && persistedArgs && matchesStoredRoute
                     ? {
                         action,
-                        connection,
+                        connection: memoryApproval?.target.provider ?? connection,
                         destination: storedRoute && connectorTool?.approvalDestination,
                         batch: connectorTool?.batch,
                         managedAccounts,
@@ -7910,14 +8096,74 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : Promise.resolve(true);
           const finish = async (result: unknown, outcome?: "result" | "error") =>
             (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
+          const currentMemoryPermission = () => ({
+            ...(claimedApproval ? { approved: true as const } : {}),
+            ...(!claimedApproval &&
+              approvalResolved.source === "always_allow" && { requireAlwaysAllow: true as const }),
+          });
+          const markdownRunApproval = (tool: "remember" | "save_shared_memory") => ({
+            ...currentMemoryPermission(),
+            tool,
+            ...(claimedApproval &&
+              applied?.effect.requiresPeerApprovalRecheck && {
+                delegatedEffectId: applied.effect.id,
+              }),
+          });
           const claimMemoryWrite = async () => {
             context.signal.throwIfAborted();
-            const claimed = await deps.prisma.$transaction(async (tx) => {
-              if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+            const claim = await deps.prisma.$transaction(async (tx) => {
+              if (
+                !markdownMemoryWrite &&
+                claimedApproval &&
+                applied?.effect.requiresPeerApprovalRecheck &&
+                !(await recheckDelegatedApprovalDispatchInTransaction(
+                  tx,
+                  delegatedApprovalScope(applied.effect.id),
+                ))
+              )
+                return "unowned";
+              if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return "unowned";
               context.signal.throwIfAborted();
-              return claimedEffect || !applied || claimIntendedEffect(tx, applied.effect.id);
+              const policy = {
+                ...currentMemoryPermission(),
+                spaceId: run.spaceId,
+                userId: run.userId,
+                botId: bot.id,
+                tool: name,
+              };
+              if (!markdownMemoryWrite) await lockMemoryWritePolicyRows(tx, policy);
+              const reason = await checkMemoryWritePolicy(tx, policy);
+              if (reason) return reason;
+              if (name === "save_memory" && semanticMemoryTarget?.connectionId) {
+                const [target] = await tx.$queryRaw<
+                  { provider: string; secretId: string; scope: string }[]
+                >`
+                  SELECT c.provider, c."secretId",
+                    coalesce(b."memoryScope", c."defaultMemoryScope") AS scope
+                  FROM space_memory_configs c
+                  JOIN bots b ON b.id = ${bot.id} AND b."spaceId" = c."spaceId"
+                  WHERE c."spaceId" = ${run.spaceId} AND b."userId" = ${run.userId}
+                    AND b."archivedAt" IS NULL
+                  FOR SHARE OF c, b
+                `;
+                if (
+                  !target ||
+                  target.provider !== semanticMemoryTarget.provider ||
+                  target.secretId !== semanticMemoryTarget.connectionId ||
+                  target.scope !== semanticMemoryTarget.scope
+                )
+                  return "destination-changed";
+              }
+              context.signal.throwIfAborted();
+              return claimedEffect || !applied || (await claimIntendedEffect(tx, applied.effect.id))
+                ? "claimed"
+                : "unowned";
             });
-            if (!claimed) return uncertainEffectResult(name);
+            if (claim === "rule") return finishPolicyBlock();
+            if (claim === "revoked") return finish(MEMORY_WRITE_REVOKED, "error");
+            if (claim === "destination-changed")
+              return finish(SEMANTIC_MEMORY_DESTINATION_CHANGED, "error");
+            if (claim === "unowned") return uncertainEffectResult(name);
             if (applied) claimedEffect = true;
             return undefined;
           };
@@ -7926,6 +8172,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
             trust.invalidateDestinationTrust();
             return result;
           };
+          const handleMemoryAuthorizationError = (error: MemoryWriteAuthorizationError) =>
+            error.reason === "rule"
+              ? finishPolicyBlock()
+              : finish(
+                  error.reason === "revoked"
+                    ? MEMORY_WRITE_REVOKED
+                    : { error: "The delegated action is no longer authorized." },
+                  "error",
+                );
           if (ownSettings && applied) {
             if (!boundSettingsEffect || applied.effect.status !== "approved")
               return {
@@ -8539,6 +8794,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     content,
                     expectedRevision: existing?.revision ?? 0,
                     runLease: { owner: workerId, fence },
+                    runApproval: markdownRunApproval("remember"),
                     ...(applied
                       ? memoryReceiptRequest(applied.effect)
                       : { sourceRunId: runId, sourceThreadId: thread.id }),
@@ -8547,6 +8803,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 );
                 return finish({ ok: true });
               } catch (error) {
+                if (error instanceof MemoryWriteAuthorizationError)
+                  return handleMemoryAuthorizationError(error);
                 const message = error instanceof Error ? error.message : "";
                 if (message !== MEMORY_REVISION_CONFLICT_ERROR || attempt >= 3) throw error;
               }
@@ -8571,6 +8829,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   content: String(args.content ?? ""),
                   expectedRevision,
                   runLease: { owner: workerId, fence },
+                  runApproval: markdownRunApproval("save_shared_memory"),
                   ...(applied
                     ? memoryReceiptRequest(applied.effect)
                     : { sourceRunId: runId, sourceThreadId: thread.id }),
@@ -8579,6 +8838,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
               return finish({ ok: true, path: saved.path, revision: saved.revision });
             } catch (error) {
+              if (error instanceof MemoryWriteAuthorizationError)
+                return handleMemoryAuthorizationError(error);
               const message =
                 error instanceof Error ? error.message : "Could not save shared memory.";
               if (message === MEMORY_REVISION_CONFLICT_ERROR) return finish({ error: message });
@@ -9280,6 +9541,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(redacted);
           }
           if (name === "save_memory") {
+            const stored = applied && readSemanticMemoryApproval(applied.effect.request);
+            if (
+              !stored ||
+              !semanticMemoryTarget ||
+              stableJsonValue(stored.target) !== stableJsonValue(semanticMemoryTarget)
+            )
+              return finish(SEMANTIC_MEMORY_DESTINATION_CHANGED, "error");
             const early = await claimMemoryWrite();
             if (early !== undefined) return early;
             context.signal.throwIfAborted();
@@ -10536,6 +10804,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           scripted ? basePrompt : `${basePrompt}${modelPageContext}`,
           takeoverResume?.promptNote,
           pageRecoveryContinuation,
+          !turnState.blob ? memoryRecoveryNote?.error : undefined,
           approvalContinuation,
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
@@ -10920,6 +11189,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     },
                     pageToolSecrets: () => runSecrets,
                     turnCheckpoint: turnState.blob,
+                    ...(turnState.recoveredMemoryToolResults
+                      ? { recoveredMemoryToolResults: turnState.recoveredMemoryToolResults }
+                      : {}),
                     ...(!heldForTakeover &&
                     !takeoverResume &&
                     turnState.pendingToolName === "request_takeover"

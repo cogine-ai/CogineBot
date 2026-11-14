@@ -100,6 +100,37 @@ describe("JevAutoReviewProvider", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("uses durable memory criteria and the complete bounded owner task", async () => {
+    const userTask = `${"Owner context ".repeat(45)}Remember the meeting date.`;
+    const args = { content: "A synthetic standing instruction" };
+    const seen: unknown[] = [];
+    const provider = new JevAutoReviewProvider({
+      apiKey: "ts-key",
+      fetch: async (_url, init) => {
+        seen.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ answers: { decision: { type: "choice", choice: "ask" } } });
+      },
+    });
+    await provider.review(
+      { ...request, toolName: "remember", args, memoryWrite: true, userTask },
+      context,
+    );
+    expect(seen).toEqual([
+      expect.objectContaining({
+        state: expect.objectContaining({ args, memoryWrite: true, userTask }),
+        questions: {
+          decision: expect.objectContaining({
+            instructions: expect.stringContaining("can steer future runs"),
+            criteria: {
+              pass: expect.stringContaining("owner asked it to remember"),
+              ask: expect.stringContaining("claims a preference or trust"),
+            },
+          }),
+        },
+      }),
+    ]);
+  });
+
   it("maps an ask choice to ask", async () => {
     const provider = new JevAutoReviewProvider({
       apiKey: "ts-key",

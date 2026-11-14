@@ -541,6 +541,7 @@ describe("createMessagingInboundHandler DM routing", () => {
       prompt: expect.stringContaining('"text": "hello bot"'),
       trigger: "messaging",
       clientNonce: "messaging:sendblue:handle-1",
+      messagingOwnerIdentityId: "mi-1",
     });
     expect(deps.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-1" } }),

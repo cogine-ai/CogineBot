@@ -297,6 +297,7 @@ import {
   toBoardDto,
   toTicketCommentDto,
   toTicketDto,
+  touchActionApprovalPolicy,
   touchGroupUpdatedAt,
   updateSpaceCollaborationForMember,
   withTransactionRetry,
@@ -7967,24 +7968,27 @@ export function createRouter(deps: RouterDeps) {
           input.matchKind === "site" ? canonicalApprovalSite(input.matchValue) : input.matchValue;
         if (!matchValue)
           throw new ORPCError("BAD_REQUEST", { message: "Enter an HTTP(S) site or hostname." });
-        const row = await deps.prisma.actionApprovalRule.upsert({
-          where: {
-            spaceId_createdByUserId_effect_matchKind_matchValue: {
+        const row = await deps.prisma.$transaction(async (tx) => {
+          await touchActionApprovalPolicy(tx, context.actor.spaceId, context.actor.userId);
+          return tx.actionApprovalRule.upsert({
+            where: {
+              spaceId_createdByUserId_effect_matchKind_matchValue: {
+                spaceId: context.actor.spaceId,
+                createdByUserId: context.actor.userId,
+                effect: input.effect,
+                matchKind: input.matchKind,
+                matchValue,
+              },
+            },
+            create: {
               spaceId: context.actor.spaceId,
               createdByUserId: context.actor.userId,
               effect: input.effect,
               matchKind: input.matchKind,
               matchValue,
             },
-          },
-          create: {
-            spaceId: context.actor.spaceId,
-            createdByUserId: context.actor.userId,
-            effect: input.effect,
-            matchKind: input.matchKind,
-            matchValue,
-          },
-          update: {},
+            update: {},
+          });
         });
         return {
           id: row.id,
@@ -7995,12 +7999,15 @@ export function createRouter(deps: RouterDeps) {
         };
       }),
       remove: authed.approvalRules.remove.handler(async ({ context, input }) => {
-        await deps.prisma.actionApprovalRule.deleteMany({
-          where: {
-            id: input.id,
-            spaceId: context.actor.spaceId,
-            createdByUserId: context.actor.userId,
-          },
+        await deps.prisma.$transaction(async (tx) => {
+          await touchActionApprovalPolicy(tx, context.actor.spaceId, context.actor.userId);
+          await tx.actionApprovalRule.deleteMany({
+            where: {
+              id: input.id,
+              spaceId: context.actor.spaceId,
+              createdByUserId: context.actor.userId,
+            },
+          });
         });
         return { ok: true as const };
       }),

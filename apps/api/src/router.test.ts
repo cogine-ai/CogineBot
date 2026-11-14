@@ -99,7 +99,12 @@ describe("account preferences", () => {
         }) => ({ id: "rule-1", ...create, createdAt: new Date("2026-11-01T00:00:00Z") }),
       );
       const findMany = vi.fn(async () => [await upsert.mock.results[0]!.value]);
-      Object.assign(deps.prisma, { actionApprovalRule: { upsert, findMany } });
+      const executeRaw = vi.fn(async () => 1);
+      const tx = { $executeRaw: executeRaw, actionApprovalRule: { upsert } };
+      Object.assign(deps.prisma, {
+        $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
+        actionApprovalRule: { findMany },
+      });
       const client = createRouterClient(createRouter(deps), { context: { actor } as never });
       const saved = await client.approvalRules.set({
         effect,
@@ -107,6 +112,7 @@ describe("account preferences", () => {
         matchValue: "https://Docs.Example.com/report",
       });
       expect(saved.matchValue).toBe("example.com");
+      expect(executeRaw).toHaveBeenCalledOnce();
       await expect(client.approvalRules.list()).resolves.toEqual([saved]);
       expect(findMany).toHaveBeenCalledWith({
         where: { spaceId: actor.spaceId, createdByUserId: actor.userId },

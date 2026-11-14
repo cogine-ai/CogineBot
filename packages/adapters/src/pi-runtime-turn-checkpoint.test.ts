@@ -974,6 +974,88 @@ describe("real Pi turn checkpoint producer and recovery", () => {
     expect(provider.stream).toHaveBeenCalledOnce();
   });
 
+  it.each(["direct", "bridge", "bridge with unstarted tail"] as const)(
+    "restores an already settled memory call through %s without executing it",
+    async (route) => {
+      const id = "settled-memory";
+      const args = { content: "Synthetic fact" };
+      const pending =
+        route === "direct"
+          ? call(id, "save_memory", args)
+          : call(id, USE_TOOL, { name: "save_memory", arguments: args });
+      const tail =
+        route === "bridge with unstarted tail"
+          ? call("unstarted-memory", USE_TOOL, {
+              name: "save_memory",
+              arguments: { content: "Another fact" },
+            })
+          : undefined;
+      const checkpoint: TurnCheckpoint = {
+        version: 1,
+        provider: model.provider,
+        model: model.id,
+        systemPrompt: "Fixture",
+        pendingToolCallId: id,
+        executionMode: "sequential",
+        messages: [
+          {
+            role: "assistant",
+            content: tail ? [pending, tail] : [pending],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            stopReason: "toolUse",
+            timestamp: 1,
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+          },
+        ],
+      };
+      const executeTool = vi.fn();
+      provider.stream.mockImplementationOnce((_model, context: TranscriptContext) => {
+        expect(result(context, id).isError).toBe(true);
+        expect(resultText(context, id)).toContain("The memory destination changed.");
+        if (tail) {
+          expect(result(context, tail.id).isError).toBe(true);
+          expect(resultText(context, tail.id)).toContain("This tool is no longer available.");
+        }
+        return response();
+      });
+      const events = await consume(
+        request([], {
+          turnCheckpoint: JSON.stringify(checkpoint),
+          recoveredMemoryToolResults: {
+            [JSON.stringify(["pi-tool", "main", id])]: {
+              value: {
+                error: "The memory destination changed. Request a new approval.",
+                unchanged: true,
+              },
+              isError: true,
+            },
+            ...(tail
+              ? {
+                  [JSON.stringify(["pi-tool", "main", tail.id])]: {
+                    value: { error: "This tool is no longer available.", unchanged: true },
+                    isError: true,
+                  },
+                }
+              : {}),
+          },
+          executeTool,
+        }),
+      );
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(events.some((event) => event.type === "done")).toBe(true);
+      expect(provider.stream).toHaveBeenCalledOnce();
+    },
+  );
+
   it("refuses a removed pending tool without replaying the original prompt", async () => {
     const captured = await capturedApproval();
     const execute = vi.fn(async () => ({ ok: true }));

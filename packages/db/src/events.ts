@@ -61,6 +61,7 @@ import {
   findPendingAsk,
   RunHistoryWriteError,
 } from "./messages.js";
+import { lockBotCreationIntro } from "./repos.js";
 import {
   firstRoutineRetryExecutionFence,
   lockRoutineRetryExecution,
@@ -329,6 +330,8 @@ export interface SendUserMessageInput {
   clientNonce?: string;
   /** Server-owned receipt for a verified messaging delivery. */
   messagingReceiptKey?: string;
+  /** Identity of the authenticated sender of a direct delivery; absent for group fan-out. */
+  messagingOwnerIdentityId?: string;
   /** Server-owned route reservation checked in the Run creation transaction. */
   teamChatClaim?: TeamChatMessageClaim;
   linkMessageToRun?: boolean;
@@ -708,6 +711,7 @@ export async function sendUserMessage(
   const commit = () =>
     prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Keep the selected model and authorized Routine snapshot consistent with enqueue.
+      if (input.messagingOwnerIdentityId) await lockBotCreationIntro(tx, input.botId);
       if (input.teamChatClaim) await lockTeamChatClaim(tx, input, input.teamChatClaim);
       const routineProvenance = await lockInboundRoutines(tx, input);
       if (input.messagingReceiptKey) {
@@ -723,11 +727,41 @@ export async function sendUserMessage(
             idempotencyKey: input.messagingReceiptKey,
             threadId: input.threadId,
             kind: "inbound",
+            ...(input.messagingOwnerIdentityId && { identityId: input.messagingOwnerIdentityId }),
             status: { in: ["inbound", status] },
           },
           data: { status },
         });
         if (claim.count !== 1) throw new MessagingRouteAlreadyChosen();
+      }
+      let ownerMessage = input.trigger === "user" || input.trigger === "follow_up";
+      if (input.messagingOwnerIdentityId) {
+        if (
+          input.trigger !== "messaging" ||
+          !input.messagingReceiptKey ||
+          input.teamChatClaim ||
+          input.blocks.some((block) => block.kind === "channel_message")
+        )
+          throw new IsolationError("Messaging owner is unavailable.");
+        // Preserve receipt → Thread order, then take Bot after Thread as settings do.
+        const [thread] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM threads WHERE id = ${input.threadId}
+            AND "spaceId" = ${input.spaceId} AND "botId" = ${input.botId}
+            AND "userId" = ${input.userId} AND "groupId" IS NULL
+            AND "externalConversationId" IS NULL
+          FOR NO KEY UPDATE
+        `;
+        if (!thread) throw new MessagingRouteAlreadyChosen();
+        const [identity] = await tx.$queryRaw<{ id: string }[]>`
+          SELECT i.id FROM messaging_identities i
+          JOIN bots b ON b.id = i."botId" AND b."spaceId" = i."spaceId" AND b."userId" = i."userId"
+          JOIN space_members m ON m."spaceId" = i."spaceId" AND m."userId" = i."userId"
+          WHERE i.id = ${input.messagingOwnerIdentityId} AND i."spaceId" = ${input.spaceId}
+            AND i."userId" = ${input.userId} AND i."botId" = ${input.botId} AND b."archivedAt" IS NULL
+          FOR SHARE OF i, b, m
+        `;
+        if (!identity) throw new MessagingRouteAlreadyChosen();
+        ownerMessage = true;
       }
       // Message first: its thread-row lock serializes the whole send against clearThread, so a
       // concurrent clear either sees the committed run and cancels it, or strictly precedes this
@@ -737,8 +771,7 @@ export async function sendUserMessage(
       const message = await createThreadMessageInTransaction(tx, {
         threadId: input.threadId,
         role: "user",
-        authorUserId:
-          input.trigger === "user" || input.trigger === "follow_up" ? input.userId : undefined,
+        authorUserId: ownerMessage ? input.userId : undefined,
         blocks: input.blocks,
         clientNonce: input.clientNonce,
       });

@@ -472,7 +472,11 @@ async function handleDirectEvent(
     prompt: externalMessagePrompt(event, prompt),
     trigger: "messaging",
     clientNonce: messagingInboundNonce(event),
-    ...(receiptKey && { messagingReceiptKey: receiptKey }),
+    ...(receiptKey &&
+      owner && {
+        messagingReceiptKey: receiptKey,
+        messagingOwnerIdentityId: owner.id,
+      }),
   });
   if (sent?.runId) {
     // Typing bubbles only make sense once a reply is actually coming. Fire
