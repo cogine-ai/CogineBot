@@ -292,25 +292,28 @@ export class ModelOAuthSessions {
   }
 
   async assertSaving(tx: Prisma.TransactionClient, ref: ModelOAuthLease) {
-    await this.assertActiveSpace(tx, ref);
-    const rows = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM cogine_model_auth.model_oauth_sessions
-      WHERE id = ${ref.id} AND "userId" = ${ref.userId} AND "spaceId" = ${ref.spaceId}
-        AND status = 'saving' AND "leaseOwner" = ${ref.leaseOwner}
-        AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
-        AND "expiresAt" > (clock_timestamp() AT TIME ZONE 'UTC') FOR UPDATE
-    `;
-    if (rows.length !== 1) throw new Error(MODEL_OAUTH_INTERRUPTED);
+    await this.assertLease(tx, ref, "saving");
   }
 
   async assertPending(tx: Prisma.TransactionClient, ref: ModelOAuthLease) {
+    await this.assertLease(tx, ref, "pending");
+  }
+
+  private async assertLease(
+    tx: Prisma.TransactionClient,
+    ref: ModelOAuthLease,
+    status: "pending" | "saving",
+  ) {
     await this.assertActiveSpace(tx, ref);
+    // A pure lock wait does not re-evaluate the deadline predicates in a
+    // locking SELECT. Check the deadlines after holding the row.
+    if (!(await this.lockLeaseRow(tx, ref))) throw new Error(MODEL_OAUTH_INTERRUPTED);
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM cogine_model_auth.model_oauth_sessions
       WHERE id = ${ref.id} AND "userId" = ${ref.userId} AND "spaceId" = ${ref.spaceId}
-        AND status = 'pending' AND "leaseOwner" = ${ref.leaseOwner}
+        AND status = ${status} AND "leaseOwner" = ${ref.leaseOwner}
         AND "leaseExpiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
-        AND "expiresAt" > (clock_timestamp() AT TIME ZONE 'UTC') FOR UPDATE
+        AND "expiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')
     `;
     if (rows.length !== 1) throw new Error(MODEL_OAUTH_INTERRUPTED);
   }

@@ -268,6 +268,80 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     },
   );
 
+  it.each([
+    ["assertPending", "pending", "leaseExpiresAt"],
+    ["assertSaving", "saving", "expiresAt"],
+  ] as const)("checks %s after acquiring the row lock", async (method, status, deadlineField) => {
+    const actor = await member();
+    const sessions = new ModelOAuthSessions(a.prisma);
+    const ref = {
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      id: randomUUID(),
+      leaseOwner: randomUUID(),
+    };
+    await sessions.register({
+      ...ref,
+      provider: "github-copilot",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await a.prisma.modelOAuthSession.update({ where: { id: ref.id }, data: { status } });
+    await runAsTenant(ref, () => a.prisma.$transaction((tx) => sessions[method](tx, ref)));
+    const deadline = new Date(Date.now() + 1_200);
+    await a.prisma.modelOAuthSession.update({
+      where: { id: ref.id },
+      data: { [deadlineField]: deadline },
+    });
+    const blocker = await b.pool.connect();
+    let guarded: Promise<void> | undefined;
+    const write = vi.fn();
+    try {
+      await blocker.query("BEGIN");
+      const {
+        rows: [row],
+      } = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+      await blocker.query(
+        "SELECT id FROM cogine_model_auth.model_oauth_sessions WHERE id = $1 FOR UPDATE",
+        [ref.id],
+      );
+      guarded = runAsTenant(ref, () =>
+        a.prisma.$transaction(async (tx) => {
+          await sessions[method](tx, ref);
+          write();
+        }),
+      );
+      void guarded.catch(() => undefined);
+      await vi.waitFor(
+        async () => {
+          const { rows } = await b.pool.query<{ beforeDeadline: boolean; blocked: boolean }>(
+            `SELECT clock_timestamp() < $1::timestamptz AS "beforeDeadline",
+                  EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'model-sign-in-a'
+                    AND $2 = ANY(pg_blocking_pids(pid))) AS blocked`,
+            [deadline, row!.pid],
+          );
+          expect(rows[0]).toEqual({ beforeDeadline: true, blocked: true });
+        },
+        { timeout: 900 },
+      );
+      await vi.waitFor(
+        async () => {
+          const { rows } = await b.pool.query<{ expired: boolean }>(
+            "SELECT clock_timestamp() >= $1::timestamptz AS expired",
+            [deadline],
+          );
+          expect(rows[0]?.expired).toBe(true);
+        },
+        { timeout: 1_500 },
+      );
+      await blocker.query("COMMIT");
+    } finally {
+      blocker.release(true);
+      await guarded?.catch(() => undefined);
+    }
+    await expect(guarded).rejects.toThrow(/interrupted/i);
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("redeems a handed-off code once and persists without a finish request", async () => {
     const actor = await member();
     const first = process(a, actor);
@@ -703,10 +777,24 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       disconnected = true;
       return value;
     });
+    void disconnect.catch(() => undefined);
     try {
       await expect(
         second.client.models.completeOAuth({ loginId: started.loginId }),
       ).resolves.toEqual({ status: "pending" });
+      await vi.waitFor(async () => {
+        const { rows } = await b.pool.query<{ blocked: boolean }>(`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_stat_activity AS waiter
+            JOIN pg_stat_activity AS writer
+              ON writer.pid = ANY(pg_blocking_pids(waiter.pid))
+            WHERE waiter.application_name = 'model-sign-in-b'
+              AND writer.application_name = 'model-sign-in-a'
+              AND waiter.wait_event_type = 'Lock'
+          ) AS blocked
+        `);
+        expect(rows[0]?.blocked).toBe(true);
+      });
       expect(disconnected).toBe(false);
       let stopped = false;
       const stop = writer.oauth.stop().then(() => {
@@ -719,6 +807,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       expect(stopped).toBe(true);
     } finally {
       release.resolve();
+      await disconnect.catch(() => undefined);
     }
     await expect(disconnect).resolves.toEqual({ ok: true });
     expect(await a.prisma.userModelCredential.count({ where: { userId: actor.userId } })).toBe(0);
