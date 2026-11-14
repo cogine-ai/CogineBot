@@ -46,7 +46,10 @@ type Entry = { path: string; data?: Uint8Array; skipped?: true };
  * Paths are mapped under `.openclaw/` or `.hermes/` when the layout is known. Files outside
  * what an import reads were never kept, so reading them fails.
  */
-export function openAgentImportArchive(data: Uint8Array): {
+export function openAgentImportArchive(
+  data: Uint8Array,
+  includeModelCredential = false,
+): {
   paths: string[];
   skippedPaths: string[];
   declaredWorkspace: boolean;
@@ -64,11 +67,12 @@ export function openAgentImportArchive(data: Uint8Array): {
   const isGzip = data[0] === 0x1f && data[1] === 0x8b;
   if (!isZip && !isGzip) throw unreadable();
   const zip = isZip ? zipEntries(data, limits) : null;
-  const entries = zip ? zip.entries : tarEntries(data, limits);
+  const readable = (path: string) => mayBeRead(path, includeModelCredential);
+  const entries = zip ? zip.entries : tarEntries(data, limits, readable);
   let read = 0;
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   function readEntryBytes(entry: Entry): Uint8Array | undefined {
-    if (entry.skipped || !mayBeRead(entry.path)) throw unreadable();
+    if (entry.skipped || !readable(entry.path)) throw unreadable();
     const bytes = entry.data ?? zip?.read(entry.path);
     if (!bytes) return undefined;
     if (read + bytes.length > limits.readBytes) throw tooLarge();
@@ -95,7 +99,7 @@ export function openAgentImportArchive(data: Uint8Array): {
   // Counted once per selected file.
   const texts = new Map<string, string>();
   function readOptionalEntry(entry: Entry | undefined) {
-    if (!entry || entry.skipped || !mayBeRead(entry.path)) return undefined;
+    if (!entry || entry.skipped || !readable(entry.path)) return undefined;
     const cached = texts.get(entry.path);
     if (cached !== undefined) return cached;
     const bytes = readEntryBytes(entry);
@@ -168,7 +172,7 @@ const READ_MARKDOWN = new Set([
 const NOISE_FOLDERS = new Set(["node_modules", ".git", ".venv", "venv", "site-packages"]);
 
 /** Only these are kept while a gzip stream is inflated. */
-function mayBeRead(path: string): boolean {
+function mayBeRead(path: string, includeModelCredential: boolean): boolean {
   const segments = path.split("/");
   const name = segments.at(-1) ?? "";
   const folder = segments.at(-2) ?? "";
@@ -180,7 +184,8 @@ function mayBeRead(path: string): boolean {
     name === "manifest.json" ||
     (folder === "cron" && name === "jobs.json") ||
     name === "openclaw.json" ||
-    name === "config.yaml"
+    name === "config.yaml" ||
+    (includeModelCredential && (name === ".env" || name === "auth.json"))
   );
 }
 
@@ -323,9 +328,13 @@ function inflateCapped(body: Uint8Array, cap: number): Uint8Array {
  * names). Only entries an import might read are kept; links, devices and other types are
  * skipped. Stops at the first cap passed.
  */
-function tarEntries(data: Uint8Array, limits: AgentImportArchiveLimits): Entry[] {
+function tarEntries(
+  data: Uint8Array,
+  limits: AgentImportArchiveLimits,
+  readable: (path: string) => boolean,
+): Entry[] {
   const entries: Entry[] = [];
-  const tar = new TarStream(entries, limits);
+  const tar = new TarStream(entries, limits, readable);
   let inflated = 0;
   const gunzip = new Gunzip((chunk) => {
     inflated += chunk.length;
@@ -364,6 +373,7 @@ class TarStream {
   constructor(
     private readonly entries: Entry[],
     private readonly limits: AgentImportArchiveLimits,
+    private readonly readable: (path: string) => boolean,
   ) {}
 
   push(chunk: Uint8Array): void {
@@ -434,7 +444,7 @@ class TarStream {
     } else if (type === "0" || type === "\0" || type === "7") {
       this.nextName = null;
       const path = safeArchivePath(name);
-      const read = path !== null && !NESTED_ARCHIVE.test(path) && mayBeRead(path);
+      const read = path !== null && !NESTED_ARCHIVE.test(path) && this.readable(path);
       this.current = { path, kind: "file" };
       this.keep = read && size <= this.limits.fileBytes;
       if (this.keep) {

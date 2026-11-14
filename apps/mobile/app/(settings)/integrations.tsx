@@ -1350,6 +1350,15 @@ export default function Integrations() {
           />
         ) : null}
 
+        {!detailItem ? (
+          <NativeActionButton
+            label={t("Messaging")}
+            fill={false}
+            prominence="secondary"
+            onPress={() => router.push("/(settings)/messaging")}
+          />
+        ) : null}
+
         {!detailItem && messagingScope && isMobileScopeCurrent(messagingScope) ? (
           <NativeActionButton
             label={t("Slack workspaces")}

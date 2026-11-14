@@ -1,3 +1,4 @@
+import type { AgentBackupModel } from "@rakazo/contracts";
 import {
   agentBackupMcpOmissionReasons,
   agentBackupOmissionReasons,
@@ -6,8 +7,17 @@ import {
   BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
 import type { BotPackageImportState } from "@rakazo/core";
-import { createBotPackageImport } from "@rakazo/core";
-import { agentBackupFileGroups, agentBackupSelectableGroups } from "@rakazo/core/agent-backup";
+import {
+  BackupModelKeyMismatch,
+  BackupModelKeyUnavailable,
+  backupModelKeySourceDigest,
+  createBotPackageImport,
+} from "@rakazo/core";
+import {
+  agentBackupFileGroups,
+  agentBackupSelectableGroups,
+  isBackupModelKeyProvider,
+} from "@rakazo/core/agent-backup";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
@@ -45,6 +55,10 @@ export function NativeBotPackageImport({
   const [backupContentOpen, setBackupContentOpen] = useState(false);
   const manager = useRef<ReturnType<typeof createBotPackageImport> | null>(null);
   const fileGeneration = useRef(0);
+  const localModelKey = useRef<{
+    read(model: AgentBackupModel): string | undefined;
+    projection: string;
+  } | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -63,6 +77,13 @@ export function NativeBotPackageImport({
           review = createBotPackageImport({
             preview: (input, signal) => next.request("botPackages/preview", input, signal),
             import: (input, signal) => next.request("botPackages/import", input, signal),
+            readModelKey: async (model, sourceDigest, signal) => {
+              if (!next.isCurrent() || signal.aborted) return undefined;
+              const source = localModelKey.current;
+              return source && backupModelKeySourceDigest(source.projection) === sourceDigest
+                ? source.read(model)
+                : undefined;
+            },
             status: (input, signal) => next.request("botPackages/status", input, signal),
             recent: (signal) => next.request("botPackages/recent", {}, signal),
             resume: (input, signal) => next.request("botPackages/resume", input, signal),
@@ -71,7 +92,10 @@ export function NativeBotPackageImport({
               globalThis.crypto?.randomUUID?.() ??
               `package-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
             isCurrent: next.isCurrent,
-            changed: setState,
+            changed(next) {
+              if (next.phase === "completed") localModelKey.current = null;
+              setState(next);
+            },
           });
           manager.current = review;
         })
@@ -80,6 +104,7 @@ export function NativeBotPackageImport({
         });
       return () => {
         active = false;
+        localModelKey.current = null;
         fileGeneration.current++;
         review?.dispose();
         manager.current = null;
@@ -93,7 +118,10 @@ export function NativeBotPackageImport({
   const preview = state?.preview;
   const backupNotice = preview?.document.routines.length
     ? t("Imported routines start paused.")
-    : preview?.model || preview?.document.connections.length || preview?.canImport === false
+    : preview?.model ||
+        preview?.modelKey ||
+        preview?.document.connections.length ||
+        preview?.canImport === false
       ? null
       : t("This import includes supported text only.");
   const fileGroups = useMemo(() => agentBackupFileGroups(state?.source ?? ""), [state?.source]);
@@ -117,16 +145,21 @@ export function NativeBotPackageImport({
     phase === "unknown" ||
     receipt?.status === "importing" ||
     receipt?.status === "failed";
+  const reattachingKey = phase === "unknown" && Boolean(receipt?.modelKey ?? preview?.modelKey);
   function edit(input: {
     source?: string;
     name?: string;
     includeMemory?: boolean;
     includeBackupModel?: boolean;
+    importModelKey?: boolean;
   }) {
     fileGeneration.current++;
     setReading(false);
     setFileError(false);
-    if (input.source !== undefined) setBackupContentOpen(false);
+    if (input.source !== undefined) {
+      setBackupContentOpen(false);
+      localModelKey.current = null;
+    }
     manager.current?.edit(input);
   }
   async function pick() {
@@ -136,13 +169,14 @@ export function NativeBotPackageImport({
     setReading(true);
     setFileError(false);
     try {
-      const source = await pickBotPackageFile(valid);
+      let readKey: ((model: AgentBackupModel) => string | undefined) | undefined;
+      const source = await pickBotPackageFile(valid, (read) => {
+        readKey = read;
+      });
       if (valid() && source !== null) {
+        localModelKey.current = readKey ? { read: readKey, projection: source } : null;
         setBackupContentOpen(false);
-        manager.current?.edit({
-          source,
-          includeMemory: false,
-        });
+        if (!reattachingKey) manager.current?.edit({ source, includeMemory: false });
       }
     } catch {
       if (valid()) setFileError(true);
@@ -193,10 +227,14 @@ export function NativeBotPackageImport({
               />
             </>
           )}
-          <Text>{t("OpenClaw or Hermes backup")}</Text>
+          <Text>
+            {reattachingKey
+              ? t("Choose the backup again to resume importing the API key.")
+              : t("OpenClaw or Hermes backup")}
+          </Text>
           <NativeActionButton
             label={t("Choose package file")}
-            disabled={locked || reading}
+            disabled={reading || phase === "previewing" || (locked && !reattachingKey)}
             busy={reading}
             onPress={() => void pick()}
             prominence="secondary"
@@ -239,6 +277,20 @@ export function NativeBotPackageImport({
                     value={selection.model.selected}
                     disabled={locked || reading}
                     onValueChange={(includeBackupModel) => edit({ includeBackupModel })}
+                  />
+                </View>
+              ) : null}
+              {selection.model?.selected &&
+              fileGroups.modelProvider &&
+              isBackupModelKeyProvider(fileGroups.modelProvider) &&
+              localModelKey.current ? (
+                <View style={styles.row}>
+                  <Text style={styles.text}>{t("Also import this model’s API key")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Also import this model’s API key")}
+                    value={state?.importModelKey ?? false}
+                    disabled={locked || reading}
+                    onValueChange={(importModelKey) => edit({ importModelKey })}
                   />
                 </View>
               ) : null}
@@ -314,9 +366,13 @@ export function NativeBotPackageImport({
       ) : null}
       {state?.error ? (
         <Text accessibilityRole="alert" style={styles.secondary}>
-          {phase === "editing" || phase === "review"
-            ? t("Could not preview this package.")
-            : t("Could not confirm import. Check status before trying again.")}
+          {state.error instanceof BackupModelKeyMismatch
+            ? t("Select the original backup to resume this model connection.")
+            : state.error instanceof BackupModelKeyUnavailable
+              ? t("Could not read the API key. Choose the backup again.")
+              : phase === "editing" || phase === "review"
+                ? t("Could not preview this package.")
+                : t("Could not confirm import. Check status before trying again.")}
         </Text>
       ) : null}
       {preview && phase !== "completed" ? (
@@ -325,6 +381,11 @@ export function NativeBotPackageImport({
           {preview.model ? (
             <Text selectable style={styles.text}>
               {t("Model")} · {preview.model.provider}/{preview.model.modelId}
+            </Text>
+          ) : null}
+          {preview.modelKey ? (
+            <Text selectable style={styles.text}>
+              {t("Import API key")} · {preview.modelKey.provider}/{preview.modelKey.modelId}
             </Text>
           ) : null}
           <BotPackageLeftOutList items={preview.leftOut} />
@@ -360,14 +421,14 @@ export function NativeBotPackageImport({
         <>
           <NativeActionButton
             label={t("Check status")}
-            disabled={busy}
+            disabled={busy || reading}
             onPress={() => void manager.current?.check()}
             prominence="secondary"
           />
           {state?.canRetry && (receipt || preview) ? (
             <NativeActionButton
               label={t("Resume import")}
-              disabled={busy}
+              disabled={busy || reading || (reattachingKey && localModelKey.current === null)}
               onPress={() =>
                 void (receipt ? manager.current?.resume() : manager.current?.confirm())
               }
@@ -376,7 +437,7 @@ export function NativeBotPackageImport({
           ) : null}
           <NativeActionButton
             label={t("Cancel import")}
-            disabled={busy}
+            disabled={busy || reading}
             onPress={() => void manager.current?.cancel()}
             prominence="secondary"
           />
@@ -465,7 +526,15 @@ export function NativeBotPackageImport({
               <NativeActionButton
                 label={t("Review import")}
                 disabled={locked}
-                onPress={() => void manager.current?.recover(item.clientNonce)}
+                onPress={() => {
+                  if (state?.clientNonce !== item.clientNonce) {
+                    fileGeneration.current++;
+                    localModelKey.current = null;
+                    setReading(false);
+                    setFileError(false);
+                  }
+                  void manager.current?.recover(item.clientNonce);
+                }}
                 prominence="secondary"
               />
             </View>

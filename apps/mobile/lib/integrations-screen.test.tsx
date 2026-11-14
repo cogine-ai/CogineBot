@@ -606,6 +606,10 @@ it("retries the Slack management entry and opens its native settings page", asyn
   expect(container.textContent).not.toContain("Couldn't load messaging settings");
   await press("Slack workspaces");
   expect(router.push).toHaveBeenCalledWith("/slack-workspaces");
+  // The general messaging manager and Slack installation manager coexist.
+  expect(container.textContent).toContain("Messaging");
+  await press("Messaging");
+  expect(router.push).toHaveBeenLastCalledWith("/(settings)/messaging");
 });
 
 it("rebuilds a stale space and continues refreshing while the screen stays open", async () => {

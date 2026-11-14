@@ -115,6 +115,7 @@ import {
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
   ModelOAuthBeginSchema,
+  NativeRoutineTriggerBaselineSchema,
   REPLY_QUOTE_MAX_LENGTH,
   RemovedBotSectionSchema,
   ReorderBotsInput,
@@ -500,7 +501,7 @@ export const appContract = {
     recent: oc.output(z.array(BotPackageRecentReceiptSchema)),
     forBot: oc.input(z.object({ botId: Id })).output(BotPackageReceiptSchema.nullable()),
     resume: oc
-      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .input(BotPackageImportInput.pick({ clientNonce: true, apiKey: true }))
       .output(BotPackageReceiptSchema),
     cancel: oc
       .input(z.object({ clientNonce: BotPackageNonceSchema }))
@@ -783,6 +784,8 @@ export const appContract = {
             modelCredentialId: Id.nullable().optional(),
             thinkingLevel: ThinkingLevelSchema.nullable().optional(),
             expectedRevision: z.number().int().positive().optional(),
+            mutationId: z.string().min(16).max(128).optional(),
+            nativeTriggerBaseline: NativeRoutineTriggerBaselineSchema.optional(),
             nativeTriggers: NativeRoutineTriggersInputSchema.optional(),
             name: z.string().optional(),
             prompt: z.string().optional(),

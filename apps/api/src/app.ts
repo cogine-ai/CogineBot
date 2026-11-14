@@ -672,6 +672,7 @@ async function buildApp(
     pageSharingEnabled: env.pageSharingEnabled,
     pluginRead,
     openApiPreviewKey: env.encryptionKey,
+    botPackageBindingKey: env.encryptionKey,
     openApiNow,
     cloudAgent,
     codexCatalog,

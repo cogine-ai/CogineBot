@@ -83,6 +83,8 @@ import {
   withoutLegacyPageCardFallbacks,
   withPageReplyContext,
 } from "@rakazo/core";
+import type { RoutineSaveState } from "@rakazo/core/routine-save";
+import { saveRoutineDraft } from "@rakazo/core/routine-save";
 import {
   AccountAvatar,
   AttachmentPreview,
@@ -954,6 +956,7 @@ export function ShellPage() {
   }, []);
   const autoBooted = useRef<string | null>(null);
   const routineSavePending = useRef(false);
+  const routineSaveState = useRef<{ key: string; state: RoutineSaveState }>({ key: "", state: {} });
   const webhookSecretProvisionRef = useRef(new Map<string, Promise<string>>());
   const ensureWebhookSecret = (botId: string) =>
     sharedInflight(webhookSecretProvisionRef.current, botId, async () => {
@@ -6757,7 +6760,36 @@ export function ShellPage() {
                             expectedRevision: chosenModel ? routineDraft.modelRevision : undefined,
                           }
                         : {};
-                    let saved: Routine;
+                    const intentKey = JSON.stringify([
+                      panelStorageKey,
+                      targetBotId,
+                      routineDraft.mutationId,
+                    ]);
+                    if (routineSaveState.current.key !== intentKey)
+                      routineSaveState.current = { key: intentKey, state: {} };
+                    const save = (operation: "create" | "update", input: Record<string, unknown>) =>
+                      saveRoutineDraft(
+                        routineSaveState.current.state,
+                        {
+                          operation,
+                          input,
+                          triggerKeys: routineDraft.nativeTriggers.map((t) => t.key),
+                        },
+                        targetRoutine,
+                        ({ operation, input }) =>
+                          operation === "create"
+                            ? rpc.routines.create(
+                                input as Parameters<typeof rpc.routines.create>[0],
+                              )
+                            : rpc.routines.update(
+                                input as Parameters<typeof rpc.routines.update>[0],
+                              ),
+                        () =>
+                          routineSaveRequest.current === saveRequest &&
+                          activeBotId.current === targetBotId &&
+                          panelStorageKeyRef.current === panelStorageKey,
+                      );
+                    let saved: Routine | undefined;
                     if (targetRoutine) {
                       const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
                       let runAt: string | undefined;
@@ -6773,10 +6805,18 @@ export function ShellPage() {
                         }
                         runAt = parsed.toISOString();
                       }
-                      saved = await rpc.routines.update({
+                      saved = await save("update", {
+                        mutationId: routineDraft.mutationId,
                         routineId: targetRoutine.id,
                         ...modelPatch,
-                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
+                        ...(nativeResult?.success
+                          ? {
+                              nativeTriggers: nativeResult.data,
+                              nativeTriggerBaseline: (targetRoutine.nativeTriggers ?? []).map(
+                                ({ id, version }) => ({ id, version }),
+                              ),
+                            }
+                          : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
@@ -6787,7 +6827,8 @@ export function ShellPage() {
                         ...(runAt ? { runAt } : {}),
                       });
                     } else {
-                      saved = await rpc.routines.create({
+                      saved = await save("create", {
+                        mutationId: routineDraft.mutationId,
                         botId: targetBotId,
                         ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
@@ -6803,8 +6844,10 @@ export function ShellPage() {
                       });
                     }
                     if (
+                      saved &&
                       routineSaveRequest.current === saveRequest &&
-                      activeBotId.current === targetBotId
+                      activeBotId.current === targetBotId &&
+                      panelStorageKeyRef.current === panelStorageKey
                     ) {
                       setEditingRoutine(saved);
                       setRoutineDraft(draftFromRoutine(saved));
@@ -6812,7 +6855,8 @@ export function ShellPage() {
                   } catch (error) {
                     if (
                       routineSaveRequest.current !== saveRequest ||
-                      activeBotId.current !== targetBotId
+                      activeBotId.current !== targetBotId ||
+                      panelStorageKeyRef.current !== panelStorageKey
                     ) {
                       return;
                     }
@@ -6824,7 +6868,8 @@ export function ShellPage() {
                   }
                   if (
                     routineSaveRequest.current !== saveRequest ||
-                    activeBotId.current !== targetBotId
+                    activeBotId.current !== targetBotId ||
+                    panelStorageKeyRef.current !== panelStorageKey
                   ) {
                     return;
                   }

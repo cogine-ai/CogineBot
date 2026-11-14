@@ -8,6 +8,7 @@ import {
   TICKET_STATUSES,
   TICKET_TITLE_MAX_LENGTH,
 } from "@rakazo/contracts";
+import { ticketUpdate } from "@rakazo/core";
 import {
   Button,
   Dialog,
@@ -217,16 +218,19 @@ function TicketDialog({
     setError("");
     try {
       if (ticket)
-        await rpc.tickets.update({
-          id: ticket.id,
-          ...(title !== ticket.title ? { title } : {}),
-          ...(description !== (ticket.description ?? "") ? { description } : {}),
-          ...(owner !== (ticket.assigneeBotId ?? bots[0]?.id ?? "")
-            ? { assigneeBotId: owner }
-            : {}),
-          ...(status !== ticket.status ? { status } : {}),
-          ...(priority !== ticket.priority ? { priority } : {}),
-        });
+        await rpc.tickets.update(
+          ticketUpdate(
+            ticket,
+            {
+              title,
+              description,
+              assigneeBotId: owner,
+              status,
+              priority,
+            },
+            bots[0]?.id,
+          ),
+        );
       else await rpc.tickets.create({ title, description, assigneeBotId: owner, priority });
       await onSaved();
       onClose();

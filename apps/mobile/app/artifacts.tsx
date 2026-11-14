@@ -1,3 +1,5 @@
+import type { DateFilter } from "@rakazo/contracts";
+import { matchesCalendarDateFilter } from "@rakazo/contracts";
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import type { ReactNode } from "react";
 import {
@@ -23,6 +25,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BotAvatar } from "../components/bot-avatar";
+import { MenuPicker } from "../components/menu-picker";
 import { NativeSymbol } from "../components/native-symbol";
 import { formatActivityRelativeTime } from "../lib/activity";
 import type { MobileBot } from "../lib/api";
@@ -110,6 +113,7 @@ function Artifacts({
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [searchPageFailed, setSearchPageFailed] = useState(false);
   const loadingMoreRef = useRef(false);
   const generationRef = useRef(0);
@@ -288,26 +292,31 @@ function Artifacts({
     );
   }
 
-  const queryActive = query.trim().length > 0;
+  const clientFilterActive = query.trim().length > 0 || dateFilter !== "all";
   const filtered = useMemo(() => {
     if (!items) return null;
-    if (!queryActive) return items;
-    return items.filter((item) => matchesArtifactQuery(item, query));
-  }, [items, query, queryActive]);
+    const now = new Date();
+    return items.filter(
+      (item) =>
+        matchesCalendarDateFilter(item.createdAt, dateFilter, now) &&
+        matchesArtifactQuery(item, query),
+    );
+  }, [items, query, dateFilter]);
   const botsById = useMemo(() => new Map(bots.map((bot) => [bot.id, bot])), [bots]);
 
   useEffect(() => {
     autoFetchedCursorRef.current = null;
     setSearchPageFailed(false);
-  }, [query, activeBotId]);
+  }, [query, dateFilter, activeBotId]);
 
   useEffect(() => {
-    if (searchPageFailed || !queryActive || !nextCursor || loadingMore || items === null) return;
+    if (searchPageFailed || !clientFilterActive || !nextCursor || loadingMore || items === null)
+      return;
     if (filtered && filtered.length > 0) return;
     if (autoFetchedCursorRef.current === nextCursor) return;
     autoFetchedCursorRef.current = nextCursor;
     void loadMore();
-  }, [filtered, items, loadMore, loadingMore, nextCursor, queryActive, searchPageFailed]);
+  }, [filtered, items, loadMore, loadingMore, nextCursor, clientFilterActive, searchPageFailed]);
 
   useEffect(() => {
     void load(activeBotId, "replace");
@@ -317,49 +326,64 @@ function Artifacts({
     <View style={[styles.screen, { paddingBottom: insets.bottom }]}>
       <FlatList<MobileArtifactSummary>
         ListHeaderComponent={
-          <ScrollView
-            ref={chipsScrollRef}
-            onLayout={(event) => {
-              initialChipLayout.current.viewportWidth = event.nativeEvent.layout.width;
-              revealInitialChip();
-            }}
-            onContentSizeChange={(width) => {
-              initialChipLayout.current.contentWidth = width;
-              revealInitialChip();
-            }}
-            horizontal
-            contentInsetAdjustmentBehavior="never"
-            showsHorizontalScrollIndicator={false}
-            style={styles.chipsScroll}
-            contentContainerStyle={styles.chipsRow}
-          >
-            <Chip
-              label={t("All bots")}
-              active={activeBotId === null}
-              onPress={() => {
-                if (current()) setActiveBotId(null);
+          <>
+            <MenuPicker
+              label={t("Filter by date")}
+              value={dateFilter}
+              choices={[
+                { key: "all", label: t("All time") },
+                { key: "today", label: t("Today") },
+                { key: "week", label: t("This week") },
+                { key: "month", label: t("This month") },
+              ]}
+              onChange={(value) => {
+                if (current()) setDateFilter(value as DateFilter);
               }}
             />
-            {bots.map((bot) => (
+            <ScrollView
+              ref={chipsScrollRef}
+              onLayout={(event) => {
+                initialChipLayout.current.viewportWidth = event.nativeEvent.layout.width;
+                revealInitialChip();
+              }}
+              onContentSizeChange={(width) => {
+                initialChipLayout.current.contentWidth = width;
+                revealInitialChip();
+              }}
+              horizontal
+              contentInsetAdjustmentBehavior="never"
+              showsHorizontalScrollIndicator={false}
+              style={styles.chipsScroll}
+              contentContainerStyle={styles.chipsRow}
+            >
               <Chip
-                key={bot.id}
-                onLayout={
-                  bot.id === initialBotId && activeBotId === initialBotId
-                    ? (event) => {
-                        initialChipLayout.current.chip = event.nativeEvent.layout;
-                        revealInitialChip();
-                      }
-                    : undefined
-                }
-                label={bot.name}
-                active={activeBotId === bot.id}
+                label={t("All bots")}
+                active={activeBotId === null}
                 onPress={() => {
-                  if (current()) setActiveBotId(bot.id);
+                  if (current()) setActiveBotId(null);
                 }}
-                avatar={<BotAvatar color={bot.color} identity={bot.id} size={16} />}
               />
-            ))}
-          </ScrollView>
+              {bots.map((bot) => (
+                <Chip
+                  key={bot.id}
+                  onLayout={
+                    bot.id === initialBotId && activeBotId === initialBotId
+                      ? (event) => {
+                          initialChipLayout.current.chip = event.nativeEvent.layout;
+                          revealInitialChip();
+                        }
+                      : undefined
+                  }
+                  label={bot.name}
+                  active={activeBotId === bot.id}
+                  onPress={() => {
+                    if (current()) setActiveBotId(bot.id);
+                  }}
+                  avatar={<BotAvatar color={bot.color} identity={bot.id} size={16} />}
+                />
+              ))}
+            </ScrollView>
+          </>
         }
         style={styles.listView}
         contentInsetAdjustmentBehavior="automatic"
@@ -385,7 +409,7 @@ function Artifacts({
                 <ActivityIndicator color={native.secondaryLabel} />
               )}
             </View>
-          ) : queryActive && filtered?.length === 0 && nextCursor && searchPageFailed ? (
+          ) : clientFilterActive && filtered?.length === 0 && nextCursor && searchPageFailed ? (
             <Pressable
               accessibilityRole="button"
               onPress={() => {
@@ -397,7 +421,7 @@ function Artifacts({
               <Text style={styles.empty}>{t("Could not load artifacts.")}</Text>
               <Text style={styles.empty}>{t("Try again.")}</Text>
             </Pressable>
-          ) : queryActive &&
+          ) : clientFilterActive &&
             filtered?.length === 0 &&
             nextCursor &&
             (loadingMore || autoFetchedCursorRef.current !== nextCursor) ? (
@@ -406,7 +430,7 @@ function Artifacts({
             </View>
           ) : (
             <Text style={styles.empty}>
-              {queryActive ? t("No matching artifacts") : t("No artifacts yet")}
+              {clientFilterActive ? t("No matching artifacts") : t("No artifacts yet")}
             </Text>
           )
         }

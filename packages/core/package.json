@@ -38,6 +38,7 @@
       "development": "./src/node/trusted-proxy.ts",
       "default": "./src/node/trusted-proxy.ts"
     },
+    "./plot/browser": "./src/plot/browser.ts",
     "./plot": {
       "types": "./src/plot/plot-spec.ts",
       "development": "./src/plot/plot-spec.ts",
@@ -62,6 +63,22 @@
       "types": "./src/egress.ts",
       "development": "./src/egress.ts",
       "default": "./src/egress.ts"
+    },
+    "./routine-native-events": {
+      "types": "./src/routine-native-events.ts",
+      "default": "./src/routine-native-events.ts"
+    },
+    "./routine-trigger-patch": {
+      "types": "./src/routine-trigger-patch.ts",
+      "default": "./src/routine-trigger-patch.ts"
+    },
+    "./routine-save": {
+      "types": "./src/routine-save.ts",
+      "default": "./src/routine-save.ts"
+    },
+    "./ui-locale": {
+      "types": "./src/ui-locale.ts",
+      "default": "./src/ui-locale.ts"
     }
   },
   "scripts": {
@@ -69,6 +86,7 @@
     "test": "vitest run --root ../.. packages/core/src"
   },
   "dependencies": {
+    "@noble/hashes": "2.3.0",
     "@observablehq/plot": "0.6.17",
     "@rakazo/contracts": "workspace:*",
     "@rakazo/logging": "workspace:*",

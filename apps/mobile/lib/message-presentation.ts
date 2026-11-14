@@ -24,6 +24,7 @@ function isCardBlock(block: MessageBlock): boolean {
     block.kind === "app_connect" ||
     block.kind === "choice" ||
     block.kind === "computer" ||
+    block.kind === "chart" ||
     block.kind === "page"
   );
 }

@@ -9,59 +9,51 @@ import {
   UI_LOCALES,
 } from "./ui-locale";
 
-describe("UI_LOCALES", () => {
-  it("offers every locale with a mobile catalog", () => {
-    expect([...UI_LOCALES]).toEqual(["en", "zh-CN", "ru", "de"]);
-    expect(Object.keys(UI_LOCALE_LABELS).sort()).toEqual(["de", "en", "ru", "zh-CN"]);
-    expect(isUiLocale("ko")).toBe(false);
-    expect(isUiLocale("tr")).toBe(false);
-    expect(isUiLocale("hi")).toBe(false);
-    expect(isUiLocale("pt-BR")).toBe(false);
-    expect(isUiLocale("ru")).toBe(true);
-    expect(isUiLocale("de")).toBe(true);
-  });
-});
-
-describe("ACCOUNT_UI_LOCALES", () => {
-  it("limits the Account picker to English and Simplified Chinese", () => {
-    expect([...ACCOUNT_UI_LOCALES]).toEqual(["en", "zh-CN"]);
-    expect(ACCOUNT_UI_LOCALES).not.toContain("ru");
-    expect(ACCOUNT_UI_LOCALES).not.toContain("de");
+describe("mobile UI locales", () => {
+  it("offers the ten Web languages without a picker-only subset", () => {
+    expect(UI_LOCALES).toEqual(["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr"]);
+    expect(ACCOUNT_UI_LOCALES).toEqual(UI_LOCALES);
+    expect(Object.keys(UI_LOCALE_LABELS).sort()).toEqual([...UI_LOCALES].sort());
+    for (const locale of UI_LOCALES) expect(isUiLocale(locale)).toBe(true);
+    expect(isUiLocale("ja")).toBe(false);
   });
 });
 
 describe("normalizeUiLocale", () => {
-  it("maps regional tags onto supported locales", () => {
-    expect(normalizeUiLocale("en-US")).toBe("en");
-    expect(normalizeUiLocale("zh-CN")).toBe("zh-CN");
-    expect(normalizeUiLocale("zh")).toBe("zh-CN");
-    expect(normalizeUiLocale("zh-Hans")).toBe("zh-CN");
-    expect(normalizeUiLocale("zh-SG")).toBe("zh-CN");
-    expect(normalizeUiLocale("ru-RU")).toBe("ru");
-    expect(normalizeUiLocale("ru_KZ")).toBe("ru");
-    expect(normalizeUiLocale("de")).toBe("de");
-    expect(normalizeUiLocale("de-DE")).toBe("de");
-    expect(normalizeUiLocale("de-CH")).toBe("de");
-    expect(normalizeUiLocale("de_AT")).toBe("de");
+  it.each([
+    ["en-US", "en"],
+    ["DE_ch", "de"],
+    ["KO_kr", "ko"],
+    ["tr-TR", "tr"],
+    ["hi-IN", "hi"],
+    ["pt_PT", "pt-BR"],
+    ["pt", "pt-BR"],
+    ["pt-BR", "pt-BR"],
+    ["zh", "zh-CN"],
+    ["ZH_hans_CN", "zh-CN"],
+    ["zh-SG", "zh-CN"],
+    [" es-419 ", "es"],
+    ["ru_KZ", "ru"],
+    ["FR_ca", "fr"],
+  ])("normalizes %s to %s", (tag, expected) => {
+    expect(normalizeUiLocale(tag)).toBe(expected);
   });
 
-  it("does not fold Traditional Chinese into Simplified", () => {
-    expect(normalizeUiLocale("zh-TW")).toBe("en");
-    expect(normalizeUiLocale("zh-HK")).toBe("en");
-    expect(normalizeUiLocale("zh-Hant")).toBe("en");
-  });
-
-  it("falls back to English for unknown locales and web-only languages", () => {
-    expect(normalizeUiLocale("fr-FR")).toBe("en");
-    expect(normalizeUiLocale("ko")).toBe("en");
-    expect(normalizeUiLocale("ko-KR")).toBe("en");
-    expect(normalizeUiLocale("tr")).toBe("en");
-    expect(normalizeUiLocale("hi")).toBe("en");
-    expect(normalizeUiLocale("pt")).toBe("en");
-    expect(normalizeUiLocale("pt-BR")).toBe("en");
-    expect(normalizeUiLocale("")).toBe("en");
-    expect(normalizeUiLocale(null)).toBe("en");
-  });
+  it.each([
+    "zh-TW",
+    "zh-HK",
+    "zh-MO",
+    "zh-Hant",
+    "zh-Hant-TW",
+    "zh_Hant_HK",
+    "ja-JP",
+    "unknown",
+    "",
+    null,
+    undefined,
+  ])("uses English for unsupported %s without silently choosing Simplified Chinese", (tag) =>
+    expect(normalizeUiLocale(tag)).toBe("en"),
+  );
 });
 
 describe("htmlLangForLocale", () => {

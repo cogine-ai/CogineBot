@@ -1,5 +1,10 @@
+import type { AgentBackupModel } from "@rakazo/contracts";
 import { BOT_PACKAGE_MAX_BYTES } from "@rakazo/contracts";
-import { AgentImportArchiveError, readBotImportBytes } from "@rakazo/core/agent-backup";
+import {
+  AgentImportArchiveError,
+  readAgentBackupModelKey,
+  readBotImportBytes,
+} from "@rakazo/core/agent-backup";
 import * as DocumentPicker from "expo-document-picker";
 import { Directory, File, FileMode, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
@@ -31,7 +36,7 @@ function checkSize(bytes: number | undefined) {
 }
 
 /** A missing or stale size cannot cause an unbounded whole-file read. */
-async function readPackage(file: File): Promise<string> {
+function readPackageBytes(file: File): Uint8Array {
   const handle = file.open(FileMode.ReadOnly);
   try {
     const chunks: Uint8Array[] = [];
@@ -49,21 +54,17 @@ async function readPackage(file: File): Promise<string> {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    try {
-      return readBotImportBytes(bytes);
-    } catch (error) {
-      if (error instanceof AgentImportArchiveError) {
-        throw new BotPackageFileError(error.reason === "too_large" ? "too_large" : "read_failed");
-      }
-      throw new BotPackageFileError("invalid_utf8");
-    }
+    return bytes;
   } finally {
     handle.close();
   }
 }
 
 /** The picker reduces a local backup to text; the server validates the import plan. */
-export async function pickBotPackageFile(isCurrent: () => boolean): Promise<string | null> {
+export async function pickBotPackageFile(
+  isCurrent: () => boolean,
+  selected?: (read: (model: AgentBackupModel) => string | undefined) => void,
+): Promise<string | null> {
   assertCurrent(isCurrent);
   try {
     const result = await DocumentPicker.getDocumentAsync({
@@ -84,8 +85,22 @@ export async function pickBotPackageFile(isCurrent: () => boolean): Promise<stri
     if (!asset || !/^(?:file|content):\/\//.test(asset.uri))
       throw new BotPackageFileError("read_failed");
     checkSize(asset.size);
-    const text = await readPackage(new File(asset.uri));
+    const file = new File(asset.uri);
+    const bytes = readPackageBytes(file);
+    // Give a queued scope change a chance to invalidate the file before publishing it.
+    await Promise.resolve();
+    let text: string;
+    try {
+      text = readBotImportBytes(bytes);
+    } catch (error) {
+      if (error instanceof AgentImportArchiveError) {
+        throw new BotPackageFileError(error.reason === "too_large" ? "too_large" : "read_failed");
+      }
+      if (error instanceof BotPackageFileError) throw error;
+      throw new BotPackageFileError("invalid_utf8");
+    }
     assertCurrent(isCurrent);
+    selected?.((model) => readAgentBackupModelKey(readPackageBytes(file), model));
     return text;
   } catch (error) {
     if (error instanceof BotPackageFileError) throw error;
@@ -128,7 +143,11 @@ function shareRetainedAt(directory: Directory, fallback: number, now: number): n
   return now;
 }
 
-function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<ShareFile> {
+function reserveShareFile(
+  bytes: Uint8Array,
+  isCurrent: () => boolean,
+  markdown: boolean,
+): Promise<ShareFile> {
   const reserve = () => {
     assertCurrent(isCurrent);
     const root = new Directory(Paths.cache, SHARE_ROOT);
@@ -146,7 +165,9 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
         continue;
       }
       count += 1;
-      const knownSize = new File(entry, "package.json").info().size;
+      const packageFile = new File(entry, "package.json");
+      const knownSize = (packageFile.exists ? packageFile : new File(entry, "memory.md")).info()
+        .size;
       size +=
         typeof knownSize === "number" && Number.isSafeInteger(knownSize) && knownSize >= 0
           ? knownSize
@@ -162,7 +183,7 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
       globalThis.crypto?.randomUUID?.() ??
       `${now.toString(36)}-${++fallbackNonce}-${Math.random().toString(36).slice(2).padEnd(8, "0")}`;
     const directory = new Directory(root, `${now}-${nonce}`);
-    const file = new File(directory, "package.json");
+    const file = new File(directory, markdown ? "memory.md" : "package.json");
     const retention = new File(directory, "retention.json");
     directory.create();
     try {
@@ -190,7 +211,11 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
 }
 
 /** OS sharing does not prove the receiver read the file, so handed-off copies expire lazily. */
-export async function shareBotPackageFile(text: string, isCurrent: () => boolean): Promise<void> {
+async function shareTextFile(
+  text: string,
+  isCurrent: () => boolean,
+  markdown: boolean,
+): Promise<void> {
   assertCurrent(isCurrent);
   const bytes = new TextEncoder().encode(text);
   checkSize(bytes.byteLength);
@@ -209,11 +234,14 @@ export async function shareBotPackageFile(text: string, isCurrent: () => boolean
   let shareInvoked = false;
   let failure: BotPackageFileError | null = null;
   try {
-    owned = await reserveShareFile(bytes, isCurrent);
+    owned = await reserveShareFile(bytes, isCurrent, markdown);
     assertCurrent(isCurrent);
     // Once invoked, even a rejected native promise cannot prove no receiver got the URI.
     shareInvoked = true;
-    await Sharing.shareAsync(owned.file.uri, { mimeType: "application/json" });
+    await Sharing.shareAsync(owned.file.uri, {
+      mimeType: markdown ? "text/markdown" : "application/json",
+      ...(markdown ? { UTI: "net.daringfireball.markdown" } : {}),
+    });
     owned.retention.write(JSON.stringify({ version: 1, retainedAt: Math.max(0, Date.now()) }));
     assertCurrent(isCurrent);
   } catch (error) {
@@ -232,4 +260,12 @@ export async function shareBotPackageFile(text: string, isCurrent: () => boolean
     }
   }
   if (failure) throw failure;
+}
+
+export function shareBotPackageFile(text: string, isCurrent: () => boolean): Promise<void> {
+  return shareTextFile(text, isCurrent, false);
+}
+
+export function shareMemoryMarkdown(text: string, isCurrent: () => boolean): Promise<void> {
+  return shareTextFile(text, isCurrent, true);
 }
