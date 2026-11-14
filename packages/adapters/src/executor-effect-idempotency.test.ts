@@ -234,6 +234,7 @@ function fixture(
       findMany: vi.fn(async () => []),
     },
     attempt: {
+      count: vi.fn(async () => 1),
       create: vi.fn(async () => ({ id: "attempt-1" })),
       update: vi.fn(),
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -241,6 +242,7 @@ function fixture(
     thread: { findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })) },
     message: { findMany: vi.fn(async () => []) },
     event: { findMany: vi.fn(async () => []) },
+    steeringMessage: { findFirst: vi.fn(async () => null) },
     task: {
       findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Update shared state" })),
     },

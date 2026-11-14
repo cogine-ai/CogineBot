@@ -397,6 +397,13 @@ export interface MemoryCommitRequest extends MemoryCommitTarget {
   expectedRevision?: number;
   /** A Run write must still own this lease when its transaction starts. */
   runLease?: { owner: string; fence: number };
+  /** Current action rules and any delegated approval must still permit this Run write. */
+  runApproval?: {
+    tool: "remember" | "save_shared_memory";
+    delegatedEffectId?: string;
+    requireAlwaysAllow?: true;
+    approved?: true;
+  };
   /** Verified key replays return the first result before revision checks; a different request fails. */
   idempotencyKey?: string;
 }
@@ -1319,6 +1326,8 @@ export interface AutoReviewRequest {
   userTask: string;
   /** A new outbound destination, reviewed using only authenticated owner instructions. */
   newSite?: true;
+  /** A durable memory write reviewed using only authenticated owner instructions. */
+  memoryWrite?: true;
   botDescription: string;
   matchingRules: AutoReviewMatchingRule[];
 }

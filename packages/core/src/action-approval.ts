@@ -172,6 +172,16 @@ export function toolResultTaintsRun(toolName: string): boolean {
   return !OWN_STATE_RESULT_TOOLS.has(toolName);
 }
 
+const MEMORY_WRITE_TOOLS = new Set(["remember", "save_memory", "save_shared_memory"]);
+
+/** Outside input reduces the authority to save durable memory. */
+export async function memoryWriteNeedsApproval(
+  toolName: string,
+  isTainted: () => Promise<boolean>,
+): Promise<boolean> {
+  return MEMORY_WRITE_TOOLS.has(toolName) && (await isTainted());
+}
+
 /**
  * A connector read still sends its arguments to the connector's server. Until outside content
  * enters the run, those arguments come from the owner's request. After that, injected text could

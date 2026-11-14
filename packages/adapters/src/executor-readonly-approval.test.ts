@@ -10,6 +10,7 @@ import type {
   ConnectorTool,
   SandboxProvider,
   SecretStore,
+  SemanticMemoryProvider,
   WebProvider,
 } from "@rakazo/adapter-kit";
 import {
@@ -131,6 +132,9 @@ function fixture({
   builtin = false,
   disabledBuiltinTools = [],
   existingSharedMemory,
+  semanticMemory,
+  semanticTarget,
+  onMemoryRead,
   advanceRevisionAfterRead = false,
   connections = [],
   connectionIds = [],
@@ -154,6 +158,9 @@ function fixture({
   builtin?: boolean;
   disabledBuiltinTools?: string[];
   existingSharedMemory?: string;
+  semanticMemory?: SemanticMemoryProvider;
+  semanticTarget?: { scope: "isolated" | "shared"; connectionId: string };
+  onMemoryRead?: () => void;
   /** Simulates another writer landing between the save's read and its commit. */
   advanceRevisionAfterRead?: boolean;
   name?: string;
@@ -292,8 +299,8 @@ function fixture({
           where.id ? effect.id === where.id : effect.idempotencyKey === where.idempotencyKey,
         ) ?? null,
     ),
-    create: vi.fn(async ({ data }: { data: Omit<Effect, "id"> }) => {
-      const effect = { ...data, id: `effect-${effects.length + 1}` };
+    create: vi.fn(async ({ data }: { data: Omit<Effect, "id"> & { id?: string } }) => {
+      const effect = { ...data, id: data.id ?? `effect-${effects.length + 1}` };
       effects.push(effect);
       return { ...effect };
     }),
@@ -347,6 +354,17 @@ function fixture({
   };
   let connectionReadCount = 0;
   const prisma = {
+    $queryRaw: vi.fn(async () =>
+      semanticTarget && semanticMemory
+        ? [
+            {
+              provider: semanticMemory.describe().id,
+              secretId: semanticTarget.connectionId,
+              scope: semanticTarget.scope,
+            },
+          ]
+        : [],
+    ),
     run: {
       findUnique: vi.fn(async () => run),
       findUniqueOrThrow: vi.fn(async () => run),
@@ -440,7 +458,7 @@ function fixture({
     botSecret: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
     agentSkill: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
-    actionApprovalRule: { findMany: vi.fn(async () => rules) },
+    actionApprovalRule: { findMany: vi.fn(async (_query?: unknown) => rules) },
     actionAutoReviewPreference: { findUnique: vi.fn(async () => ({ enabled: autoReview })) },
     externalEffect,
     mcpServer: { findMany: vi.fn(async () => []) },
@@ -550,11 +568,22 @@ function fixture({
           sharedMemoryState.content = "Someone else edited";
           sharedMemoryState.revision += 1;
         }
+        if (request.path) onMemoryRead?.();
         return { documents };
       },
       commit,
+      readCommitReceipt: async () => undefined,
     },
-    memoryProviders: { resolve: async () => null },
+    memoryProviders: {
+      resolve: async () =>
+        semanticMemory
+          ? {
+              provider: semanticMemory,
+              defaultScope: semanticTarget?.scope ?? "isolated",
+              connectionId: semanticTarget?.connectionId,
+            }
+          : null,
+    },
     events: {
       append,
       notifyDelegatedApprovalParent,
@@ -5685,6 +5714,329 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(reviewMock).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["remember", "save_shared_memory", "save_memory"] as const)(
+    "reviews a tainted %s using only authenticated owner words",
+    async (name) => {
+      reviewMock.mockResolvedValue({
+        decision: "ask",
+        reason: "Owner did not request this",
+        model: "mock",
+      });
+      const save = vi
+        .fn<SemanticMemoryProvider["save"]>()
+        .mockResolvedValue({ ok: true, value: undefined });
+      const f = fixture({
+        name,
+        builtin: true,
+        autoReview: true,
+        outsideSteering: true,
+        prompt: "A third party supplied the task text",
+        ...(name === "save_memory" && {
+          semanticMemory: {
+            describe: () => ({
+              id: "fixture",
+              contractVersion: "1",
+              adapterVersion: "1",
+              capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+            }),
+            save,
+            recall: async () => ({ ok: true, value: [] }),
+            purgeHistory: async () => ({ ok: true, value: undefined }),
+          },
+        }),
+      });
+      const args = {
+        ...(name === "save_shared_memory" && { path: "MEMORY.md" }),
+        content: "Synthetic preference",
+      };
+      Object.assign(f.runRecord, { sourceMessageId: "memory-owner-source" });
+      f.prisma.message.findUnique.mockResolvedValue({
+        id: "memory-owner-source",
+        role: "user",
+        authorUserId: f.runRecord.userId,
+        blocks: [{ kind: "text", text: "Summarize the reference." }],
+      });
+      f.setCalls([{ args, executionId: "memory-after-outside-input" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          toolName: name,
+          userTask: "Summarize the reference.",
+          args: name === "save_memory" ? { ...args, scope: "isolated", provider: "fixture" } : args,
+          memoryWrite: true,
+        }),
+        expect.anything(),
+      );
+      expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+      expect(f.effects).toEqual([
+        expect.objectContaining({
+          kind: name,
+          status: "intended",
+          request:
+            name === "save_memory"
+              ? {
+                  memoryWrite: 1,
+                  args,
+                  target: { provider: "fixture", scope: "isolated", connectionId: null },
+                }
+              : args,
+        }),
+      ]);
+      expect(f.commit).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reviews a permanent save after a real web search result in the same Run", async () => {
+    reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+    const search = vi.fn(async () => [
+      { url: "https://example.test/report", title: "Report", snippet: "External source text" },
+    ]);
+    const f = fixture({
+      name: "save_shared_memory",
+      builtin: true,
+      autoReview: true,
+      webProvider: {
+        describe: () => ({
+          id: "fixture",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { search: true, fetch: true, readability: true },
+        }),
+        search,
+        fetch: vi.fn(),
+      },
+    });
+    Object.assign(f.runRecord, { sourceMessageId: "memory-search-owner" });
+    f.prisma.message.findUnique.mockResolvedValue({
+      role: "user",
+      authorUserId: f.runRecord.userId,
+      blocks: [{ kind: "text", text: "Summarize the report." }],
+    });
+    const args = { path: "MEMORY.md", content: "Synthetic standing instruction" };
+    f.setCalls([
+      { name: "web_search", args: { query: "report" }, executionId: "read" },
+      { args, executionId: "write" },
+    ]);
+    await f.run();
+    expect(search).toHaveBeenCalledOnce();
+    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ args, memoryWrite: true, userTask: "Summarize the report." }),
+      expect.anything(),
+    );
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(["same", "scope", "connection", "disconnected-at-dispatch"] as const)(
+    "binds a semantic approval to its destination (%s)",
+    async (change) => {
+      const save = vi
+        .fn<SemanticMemoryProvider["save"]>()
+        .mockResolvedValue({ ok: true, value: undefined });
+      const semanticTarget: { scope: "isolated" | "shared"; connectionId: string } = {
+        scope: "isolated",
+        connectionId: "fixture-private-connection",
+      };
+      const name = "save_memory";
+      const f = fixture({
+        name,
+        builtin: true,
+        semanticTarget,
+        semanticMemory: {
+          describe: () => ({
+            id: "fixture",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+          }),
+          save,
+          recall: async () => ({ ok: true, value: [] }),
+          purgeHistory: async () => ({ ok: true, value: undefined }),
+        },
+        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: name }],
+      });
+      const args = { content: "Approved fact" };
+      f.setCalls([{ args, executionId: "first" }]);
+      await f.run();
+      const block = f.pauseRunForInput.mock.calls[0]?.[0].blocks[0];
+      expect(block).toMatchObject({
+        approvalDetails: expect.stringMatching(/"scope": "isolated"/),
+      });
+      expect(JSON.stringify(block)).not.toContain(semanticTarget.connectionId);
+      const effect = f.effects[0]!;
+      effect.status = "approved";
+      if (change === "scope") semanticTarget.scope = "shared";
+      if (change === "connection") semanticTarget.connectionId = "replacement";
+      if (change === "disconnected-at-dispatch") f.prisma.$queryRaw.mockResolvedValue([]);
+      f.setCalls([{ args: { content: "Replacement" }, executionId: "resume" }]);
+      await f.run();
+      if (change === "same") {
+        expect(save).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ ...args, scope: "isolated" }),
+          expect.anything(),
+        );
+      } else {
+        expect(save).not.toHaveBeenCalled();
+        expect(f.results.at(-1)).toMatchObject({ unchanged: true });
+      }
+      expect(effect.status).toBe("completed");
+    },
+  );
+
+  it.each(["allow", "deny", "ask", "webhook"] as const)(
+    "keeps the existing %s policy for a tainted memory write",
+    async (policy) => {
+      const name = "save_shared_memory";
+      const args = { path: "MEMORY.md", content: "Synthetic fact" };
+      const f = fixture({
+        name,
+        builtin: true,
+        autoReview: true,
+        outsideSteering: true,
+        ...(policy === "webhook" && { trigger: "webhook" }),
+        rules: [
+          {
+            matchKind: "tool",
+            matchValue: name,
+            effect:
+              policy === "ask" ? "require_approval" : policy === "deny" ? "deny" : "always_allow",
+          },
+        ],
+      });
+      f.setCalls([{ args, executionId: "first" }]);
+      await f.run();
+      expect(reviewMock).not.toHaveBeenCalled();
+      if (policy === "allow") {
+        expect(f.commit).toHaveBeenCalledOnce();
+      } else {
+        expect(f.commit).not.toHaveBeenCalled();
+      }
+      if (policy === "ask" || policy === "webhook") {
+        expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            blocks: [
+              expect.objectContaining({
+                kind: "ask",
+                approvalEffectId: f.effects[0]?.id,
+                approvalDetails: expect.anything(),
+              }),
+            ],
+          }),
+        );
+        expect(f.effects[0]?.request).toEqual(args);
+      } else {
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("uses exactly the approved memory request on resume and does not write it again", async () => {
+    reviewMock.mockResolvedValue({ decision: "ask", model: "mock" });
+    const f = fixture({
+      name: "save_shared_memory",
+      builtin: true,
+      autoReview: true,
+      attemptCount: 2,
+    });
+    const args = { path: "MEMORY.md", content: "Confirmed original" };
+    f.setCalls([{ args, executionId: "first" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    const effect = f.effects[0]!;
+    effect.status = "approved";
+    f.setCalls([{ args: { ...args, content: "Different request" }, executionId: "approved" }]);
+    await f.run();
+    expect(f.commit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining(args),
+      expect.anything(),
+    );
+    expect(effect.status).toBe("completed");
+    f.setCalls([{ args, executionId: "replay" }]);
+    await f.run();
+    expect(f.commit).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])(
+    "requires authenticated direct sender evidence in a messaging Run (verified: %s)",
+    async (verified) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const f = fixture({
+        name: "save_shared_memory",
+        builtin: true,
+        autoReview: true,
+        trigger: "messaging",
+        prompt: "External delivery plus conversation context",
+      });
+      Object.assign(f.runRecord, { sourceMessageId: "external-source" });
+      f.prisma.message.findUnique.mockResolvedValue({
+        role: "user",
+        authorUserId: verified ? f.runRecord.userId : null,
+        blocks: [{ kind: "text", text: "Remember my preference." }],
+      });
+      const args = { path: "MEMORY.md", content: "Synthetic preference" };
+      f.setCalls([{ args, executionId: "save" }]);
+      await f.run();
+      if (verified) {
+        expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ args, memoryWrite: true, userTask: "Remember my preference." }),
+          expect.anything(),
+        );
+        expect(f.commit).toHaveBeenCalledOnce();
+        expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      } else {
+        expect(reviewMock).not.toHaveBeenCalled();
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        expect(f.commit).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("allows an owner's Routine to save a record the checker confirms", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const instructions = "Remember each report you completed.";
+    const f = fixture({
+      name: "save_shared_memory",
+      builtin: true,
+      autoReview: true,
+      trigger: "routine",
+      prompt: "External event plus Routine prompt",
+      routineInstructions: instructions,
+    });
+    const args = { path: "MEMORY.md", content: "The report was completed." };
+    f.setCalls([{ args, executionId: "save" }]);
+    await f.run();
+    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ args, memoryWrite: true, userTask: instructions }),
+      expect.anything(),
+    );
+    expect(f.commit).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  });
+
+  it("honors a deny added after a memory request was approved but before dispatch", async () => {
+    const name = "save_shared_memory";
+    const args = { path: "MEMORY.md", content: "Confirmed content" };
+    const rules: ActionApprovalRule[] = [
+      { effect: "require_approval", matchKind: "tool", matchValue: name },
+    ];
+    const f = fixture({
+      name,
+      builtin: true,
+      rules,
+      onMemoryRead: () => rules.push({ effect: "deny", matchKind: "tool", matchValue: name }),
+    });
+    f.setCalls([{ args, executionId: "first" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    f.effects[0]!.status = "approved";
+    f.setCalls([{ args, executionId: "approved" }]);
+    await f.run();
+    expect(f.commit).not.toHaveBeenCalled();
+    expect(f.results.at(-1)).toMatchObject({ code: "action_rule_blocked" });
+  });
 
   it("writes shared memory directly, including when an always-allow rule exists", async () => {
     const args = { path: " MEMORY.md ", content: "Printing: all print jobs go to Clyde." };

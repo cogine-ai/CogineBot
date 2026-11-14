@@ -13,6 +13,7 @@ import {
   DEFAULT_JEV_MODEL,
   MAX_REVIEW_ARGS_CHARS,
   MAX_SITE_REVIEW_TASK_CHARS,
+  MEMORY_WRITE_REVIEW,
   reviewArgsJson,
   SITE_REVIEW_ASK,
   SITE_REVIEW_PASS,
@@ -113,9 +114,10 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
             args: JSON.parse(argsJson),
             userTask: truncate(
               request.userTask,
-              request.newSite ? MAX_SITE_REVIEW_TASK_CHARS : MAX_TASK_CHARS,
+              request.newSite || request.memoryWrite ? MAX_SITE_REVIEW_TASK_CHARS : MAX_TASK_CHARS,
             ),
             ...(request.newSite ? { newSite: true } : {}),
+            ...(request.memoryWrite ? { memoryWrite: true } : {}),
             botDescription: truncate(request.botDescription, MAX_BOT_CHARS),
             matchingRules: request.matchingRules.map((rule) => ({
               effect: rule.effect,
@@ -128,13 +130,17 @@ export class JevAutoReviewProvider implements AutoReviewProvider {
               type: "choice",
               instructions: request.newSite
                 ? "The run was not given this site. The whole URL reaches it. The task contains only the owner's words."
-                : "Should this bot tool call auto-pass or ask the user to approve?",
+                : request.memoryWrite
+                  ? MEMORY_WRITE_REVIEW.instructions
+                  : "Should this bot tool call auto-pass or ask the user to approve?",
               criteria: request.newSite
                 ? { pass: SITE_REVIEW_PASS, ask: SITE_REVIEW_ASK }
-                : {
-                    pass: "Clearly fits the user task and looks low risk",
-                    ask: "Unexpected, high risk, or outside the task. Ask the user",
-                  },
+                : request.memoryWrite
+                  ? { pass: MEMORY_WRITE_REVIEW.pass, ask: MEMORY_WRITE_REVIEW.ask }
+                  : {
+                      pass: "Clearly fits the user task and looks low risk",
+                      ask: "Unexpected, high risk, or outside the task. Ask the user",
+                    },
             },
           },
         }),

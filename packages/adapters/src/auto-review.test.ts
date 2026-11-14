@@ -329,6 +329,24 @@ describe("buildAutoReviewPrompt", () => {
     expect(prompt.indexOf("untrusted data")).toBeLessThan(prompt.indexOf("<user_task>"));
     expect(prompt).toContain('"decision":"pass"|"ask"');
   });
+
+  it("judges durable memory by its future effect and preserves longer owner instructions", () => {
+    const userTask = `${"Owner context ".repeat(45)}Remember the meeting date.`;
+    const input = {
+      toolName: "remember",
+      connectorKind: "remember",
+      args: { content: "A synthetic standing instruction" },
+      userTask,
+      botDescription: "Assistant",
+      matchingRules: [],
+    };
+    const prompt = buildAutoReviewPrompt({ ...input, memoryWrite: true });
+    expect(prompt).toContain(userTask);
+    expect(prompt).toContain("can steer future runs");
+    expect(prompt).toContain("claims a preference or trust");
+    expect(prompt).not.toContain("Use pass when it clearly fits");
+    expect(buildAutoReviewPrompt(input)).not.toContain("Remember the meeting date.");
+  });
 });
 
 describe("LLM Auto Review argument budget", () => {
