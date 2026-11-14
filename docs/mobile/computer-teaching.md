@@ -31,3 +31,14 @@ For owner verification, use a synthetic list export: start on each platform, ent
 Development used Node 22 and Corepack pnpm 9.15 with the existing offline cache and single-worker targeted Vitest runs. Mobile and core type checks, formatting, localization coverage, teaching controller/UI/input tests, and existing recording/keyboard/routine-editor/session regression tests were run. No PostgreSQL service, test database, role or connection was created; no app server, simulator, browser, paid upstream or production instance was started.
 
 CI and independent acceptance are managed separately. No acceptance session was started by development; at most two independent rounds are allowed. The reported PG2 model-connections / parallel routines-create failure is outside this path, was not reproduced here, and is not described as flaky.
+
+## First acceptance revision: keyboard ownership and original regressions
+
+First acceptance on `7354e3db8c4a992e56f9634c131e16be377a711c` failed F1 and F2. The original offline evidence above did not cover the page's pre-ready keyboard buffer or the two original computer-page suites.
+
+- **F1 negative control:** before changing product code, the permanent page test restored a recording, opened the computer, withheld keyboard-ready, typed synthetic text, closed the computer and stopped teaching. It failed because no `computer/input` was dispatched. The ready-first control passed and waited for a pending input request before stopping.
+- **F1 fix:** recording commands now enter the teaching queue immediately and never enter the renderer's keyboard-ready buffer. Closing the renderer cannot discard those commands; the existing stop drain owns them. Both ready-before-input and delayed-ready cases pass, stop waits for pending input, and a late ready message does not duplicate input. A separate page test preserves ordinary non-recording keyboard buffering and one-time delivery after ready.
+- **F2:** the original 39 computer-screen/visibility tests first reproduced their missing `useRouter` mock failures. Fixtures now supply the router, native controls, scoped synthetic request context and empty skills list needed by the real teaching component. All original behavior assertions remain; all 39 pass. This was a test-fixture failure, not evidence of an actual native application crash.
+- **Verification:** eight targeted files / 70 tests pass, covering both original page suites plus keyboard, teaching UI/controller, input queue and touch mapping. Mobile type/SDK checks and Biome pass. Node 22 / pnpm 9.15, `nice -n 10`, one worker, no file parallelism, existing caches; no database or native platform installation.
+
+This is a development repair for the second and final independent acceptance round, not an independent acceptance verdict. Real-device, authorized provider/model and same-instance App/Web evidence remain unproven / needs-owner. No additional user-facing copy was introduced.

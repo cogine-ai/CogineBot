@@ -1,15 +1,24 @@
 // @vitest-environment jsdom
 
-import type { ComputerStatus } from "@rakazo/contracts";
+import type { ComputerStatus, TaughtSkill } from "@rakazo/contracts";
 import type { ReactNode } from "react";
-import { act, createElement, Fragment } from "react";
+import { act, createElement, Fragment, forwardRef, useImperativeHandle } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Computer from "../app/computer";
+import type { ComputerKeyboardCommand } from "./computer-keyboard";
 
 const rpc = vi.hoisted(() => vi.fn());
+const keyboard = vi.hoisted(() => ({
+  command: null as null | ((command: ComputerKeyboardCommand) => void),
+  screen: null as null | {
+    injectedJavaScript?: string;
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+  },
+  inject: vi.fn(),
+}));
 
 const nativeFiles = vi.hoisted(() => ({
   createDirectory: vi.fn(),
@@ -69,6 +78,8 @@ vi.mock("react-native", () => {
       currentState: "active",
       addEventListener: () => ({ remove: () => undefined }),
     },
+    StyleSheet: { absoluteFill: {} },
+    TextInput: MockView,
     Modal: MockModal,
     Pressable: MockPressable,
     ScrollView: MockView,
@@ -82,20 +93,37 @@ vi.mock("react-native-keyboard-controller", () => ({
     createElement(Fragment, null, children),
 }));
 vi.mock("../components/computer-keyboard-bar", () => ({
-  ComputerKeyboardBar: () => createElement("div", { "data-keyboard-bar": true }),
+  ComputerKeyboardBar: ({
+    onCommand,
+  }: {
+    onCommand: (command: ComputerKeyboardCommand) => void;
+  }) => {
+    keyboard.command = onCommand;
+    return createElement("div", { "data-keyboard-bar": true });
+  },
 }));
 
 vi.mock("react-native-webview", () => {
   return {
-    WebView: (props: {
-      accessibilityElementsHidden?: boolean;
-      importantForAccessibility?: string;
-    }) =>
-      createElement("iframe", {
-        title: "screen",
-        "data-elements-hidden": String(Boolean(props.accessibilityElementsHidden)),
-        "data-important": props.importantForAccessibility ?? "auto",
-      }),
+    WebView: forwardRef(
+      (
+        props: {
+          accessibilityElementsHidden?: boolean;
+          importantForAccessibility?: string;
+          injectedJavaScript?: string;
+          onMessage?: (event: { nativeEvent: { data: string } }) => void;
+        },
+        ref,
+      ) => {
+        keyboard.screen = props;
+        useImperativeHandle(ref, () => ({ injectJavaScript: keyboard.inject }));
+        return createElement("iframe", {
+          title: "screen",
+          "data-elements-hidden": String(Boolean(props.accessibilityElementsHidden)),
+          "data-important": props.importantForAccessibility ?? "auto",
+        });
+      },
+    ),
   };
 });
 
@@ -110,6 +138,7 @@ vi.mock("react-native-safe-area-context", () => {
 });
 
 vi.mock("expo-router", () => ({
+  useRouter: () => ({ push: vi.fn() }),
   useIsFocused: () => true,
   useLocalSearchParams: () => ({ botId: "bot-1", name: "Basil" }),
   useNavigation: () => ({ setOptions: () => undefined }),
@@ -160,6 +189,17 @@ vi.mock("./mobile-scope", () => ({
   subscribeMobileScope: () => () => undefined,
 }));
 
+vi.mock("./space-request-context", () => ({
+  spaceRequestContext: async (_scope: unknown, isCurrent: () => boolean) => {
+    if (!isCurrent()) throw new Error("Stale synthetic scope");
+    return {
+      apiBase: "https://api.example.test",
+      headers: { "x-rakazo-space-id": "space-1" },
+      isCurrent,
+    };
+  },
+}));
+
 vi.mock("./i18n", () => {
   const t = (text: string, values?: Record<string, string>) =>
     text.replace(/\{(\w+)\}/g, (_, key: string) => values?.[key] ?? key);
@@ -167,6 +207,7 @@ vi.mock("./i18n", () => {
 });
 
 vi.mock("./native", () => ({
+  native: {},
   useMobileTokens: () => ({
     background: "background",
     border: "border",
@@ -200,6 +241,7 @@ const botWorking: ComputerStatus = {
 
 function respond(status: ComputerStatus) {
   rpc.mockImplementation(async (method: string) => {
+    if (method === "skills/list") return [];
     if (method === "computer/status") return status;
     if (method === "computer/screenUrl") return { url: "https://screen.example.test/embed" };
     return {};
@@ -217,6 +259,8 @@ describe("computer screen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     rpc.mockReset();
+    keyboard.command = null;
+    keyboard.screen = null;
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   });
 
@@ -370,6 +414,7 @@ describe("computer screen", () => {
 
   it("shows the workspace failure reason and opens the live files for inspection", async () => {
     rpc.mockImplementation(async (method: string) => {
+      if (method === "skills/list") return [];
       if (method === "computer/status") {
         return { ...botWorking, workspaceSaveFailure: "too_many_files" };
       }
@@ -426,6 +471,7 @@ describe("computer screen", () => {
     "downloads saved files from a $state computer without starting it",
     async (status) => {
       rpc.mockImplementation(async (method: string) => {
+        if (method === "skills/list") return [];
         if (method === "computer/status") {
           return {
             ...botWorking,
@@ -522,5 +568,101 @@ describe("computer screen", () => {
     expect(screens).toHaveLength(1);
     expect(screens[0]?.getAttribute("data-elements-hidden")).toBe("false");
     expect(screens[0]?.getAttribute("data-important")).toBe("auto");
+  });
+  it.each([false, true])(
+    "drains recording keyboard input before stop when WebView ready is %s",
+    async (ready) => {
+      let skill: TaughtSkill = {
+        id: "skill-1",
+        botId: "bot-1",
+        name: "Synthetic export",
+        goal: "Export a synthetic list",
+        status: "recording",
+        playbook: {
+          whenToUse: "Weekly",
+          inputs: [],
+          steps: ["Export"],
+          howToCheck: "File exists",
+          whatToReturn: "File",
+          approvalBoundaries: "Ask",
+          failureHandling: "Stop",
+        },
+        recording: { events: [], snapshots: [] },
+        startedAt: null,
+        stoppedAt: null,
+        expiresAt: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      };
+      let resolveInput!: () => void;
+      const input = new Promise<void>((resolve) => {
+        resolveInput = resolve;
+      });
+      respond({ ...botWorking, controlHolder: "user", controlBotId: "bot-1", busyBotName: null });
+      const original = rpc.getMockImplementation()!;
+      rpc.mockImplementation((method: string, ...args: unknown[]) => {
+        if (method === "skills/list") return Promise.resolve([skill]);
+        if (method === "computer/input") return input;
+        if (method === "skills/stop") {
+          skill = { ...skill, status: "draft" };
+          return Promise.resolve(skill);
+        }
+        return original(method, ...args);
+      });
+      const view = await render();
+      await act(async () => preview(view).click());
+      await settle();
+      const screen = keyboard.screen!;
+      const data = screen.injectedJavaScript!.match(/rakazo-computer-keyboard-ready:\d+/)![0];
+      if (ready) await act(async () => screen.onMessage?.({ nativeEvent: { data } }));
+      expect(keyboard.command).not.toBeNull();
+      await act(async () => keyboard.command!({ type: "text", text: "synthetic input" }));
+      await act(async () =>
+        view.querySelector<HTMLButtonElement>('[aria-label="Close computer"]')!.click(),
+      );
+      await settle();
+      const stop = [...view.querySelectorAll("button")].find(
+        (button) => button.textContent === "Stop teaching",
+      )!;
+      await act(async () => stop.click());
+      await settle();
+      try {
+        expect(calls("computer/input")).toHaveLength(1);
+        expect(calls("computer/input")[0]?.[1]).toEqual({
+          botId: "bot-1",
+          kind: "clipboard",
+          payload: { text: "synthetic input" },
+        });
+        expect(calls("skills/stop")).toHaveLength(0);
+      } finally {
+        await act(async () => resolveInput());
+        await settle();
+      }
+      expect(calls("skills/stop")).toHaveLength(1);
+      expect(view.textContent).toContain("Synthetic export");
+      await act(async () => screen.onMessage?.({ nativeEvent: { data } }));
+      expect(calls("computer/input")).toHaveLength(1);
+    },
+  );
+  it("keeps non-recording keyboard input owned by the WebView ready gate", async () => {
+    respond({ ...botWorking, controlHolder: "user", controlBotId: "bot-1", busyBotName: null });
+    const view = await render();
+    await act(async () => preview(view).click());
+    await settle();
+    const screen = keyboard.screen!;
+    const data = screen.injectedJavaScript!.match(/rakazo-computer-keyboard-ready:\d+/)![0];
+    const injectedCommands = () =>
+      keyboard.inject.mock.calls.filter(([script]) =>
+        script.includes("rakazoComputerKeyboard?.run"),
+      );
+    await act(async () => keyboard.command!({ type: "text", text: "ordinary input" }));
+    expect(injectedCommands()).toHaveLength(0);
+    expect(calls("computer/input")).toHaveLength(0);
+    await act(async () => screen.onMessage?.({ nativeEvent: { data } }));
+    expect(injectedCommands()).toHaveLength(1);
+    expect(injectedCommands()[0]?.[0]).toContain("ordinary input");
+    expect(calls("computer/input")).toHaveLength(0);
+    await act(async () => screen.onMessage?.({ nativeEvent: { data } }));
+    expect(injectedCommands()).toHaveLength(1);
   });
 });

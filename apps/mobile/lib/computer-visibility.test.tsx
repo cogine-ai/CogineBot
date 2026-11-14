@@ -36,6 +36,7 @@ vi.mock("./mobile-scope", () => ({
   },
 }));
 vi.mock("expo-router", () => ({
+  useRouter: () => ({ push: vi.fn() }),
   useLocalSearchParams: () => state.params,
   useNavigation: () => state.navigation,
   useIsFocused: () => state.focused,
@@ -47,6 +48,8 @@ vi.mock("expo-screen-orientation", () => ({
 vi.mock("react-native", () => {
   const View = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   return {
+    StyleSheet: { absoluteFill: {} },
+    TextInput: View,
     View,
     ScrollView: View,
     Text: View,
@@ -89,11 +92,21 @@ vi.mock("react-native-webview", () => ({
     return <div data-screen={props.source.uri} data-pointer={props.pointerEvents} />;
   },
 }));
+vi.mock("./space-request-context", () => ({
+  spaceRequestContext: async (_scope: unknown, isCurrent: () => boolean) => {
+    if (!isCurrent()) throw new Error("Stale synthetic scope");
+    return {
+      apiBase: "https://api.example.test",
+      headers: { "x-rakazo-space-id": "space-1" },
+      isCurrent,
+    };
+  },
+}));
 vi.mock("./i18n", () => {
   const t = (text: string) => text;
   return { t, useI18n: () => ({ t }) };
 });
-vi.mock("./native", () => ({ useMobileTokens: () => ({}) }));
+vi.mock("./native", () => ({ native: {}, useMobileTokens: () => ({}) }));
 vi.mock("./native-controls", () => ({ iosAtLeast: () => false }));
 vi.mock("../components/computer-keyboard-bar", () => ({ ComputerKeyboardBar: () => null }));
 vi.mock("../components/computer-maintenance-actions", () => ({
@@ -185,6 +198,7 @@ beforeEach(() => {
   nextScreen = undefined;
   nextHeartbeat = undefined;
   state.rpc.mockImplementation(async (proc: string, body: { botId: string }) => {
+    if (proc === "skills/list") return [];
     if (proc === "computer/status") {
       if (statusError) throw statusError;
       const pending = nextStatus;

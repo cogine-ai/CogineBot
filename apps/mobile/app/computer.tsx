@@ -194,12 +194,13 @@ export default function Computer() {
   function injectKeyboardCommands(commands: ComputerKeyboardCommand[]) {
     const webView = screenWebViewRef.current;
     if (!webView) return;
-    if (!teachingRef.current.verified || teachingRef.current.busy) return;
-    for (const command of commands) {
-      if (teachingRef.current.recordingId)
-        for (const input of teachingKeyboardInputs(command)) teachingInput(input);
-      else webView.injectJavaScript(computerKeyboardScript(command));
-    }
+    if (
+      !teachingRef.current.verified ||
+      teachingRef.current.busy ||
+      teachingRef.current.recordingId
+    )
+      return;
+    for (const command of commands) webView.injectJavaScript(computerKeyboardScript(command));
   }
 
   const label = computerLabel(computer?.mode, name);
@@ -915,7 +916,14 @@ export default function Computer() {
                       screenRecoveryRef.current.generation !== screenRecovery.generation
                     )
                       return;
-                    injectKeyboardCommands(keyboardGate.current.bridge.push(command));
+                    // Recording input belongs to the teaching session, not the WebView.
+                    // Queue it immediately so closing an unready renderer cannot discard it
+                    // and Stop teaching drains every accepted native keyboard command.
+                    if (teachingRef.current.recordingId) {
+                      for (const input of teachingKeyboardInputs(command)) teachingInput(input);
+                    } else {
+                      injectKeyboardCommands(keyboardGate.current.bridge.push(command));
+                    }
                   }}
                 />
               ) : null}
