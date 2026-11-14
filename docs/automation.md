@@ -2,7 +2,7 @@
 
 The active [Repository CI workflow](../.github/workflows/repository-ci.yml) checks the source checkout and contains a separate, credentialed mobile OTA publishing job. It runs on pushes to `main`, pull requests, and manual dispatch. It has no scheduled trigger or release-tag trigger. Newer runs cancel older checks for the same pull request or non-main branch. Running `main` workflows finish so a newer push cannot interrupt an OTA publication.
 
-The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.16.0, and pnpm 9.15.0. Action revisions are pinned to full commit hashes. Checkout does not persist Git credentials, the repository token has only `contents: read`, and no repository or environment secrets are passed to the source checks. Those jobs cannot deploy the application, publish packages or releases, push branches, or post issue and pull-request comments. They store dependency caches and can upload synthetic UI screenshots and failed-check diagnostics, retained for seven days. The mobile publishing job described below is separate from these offline checks.
+The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.22.3, and pnpm 9.15.0. Action revisions are pinned to full commit hashes. Checkout does not persist Git credentials, the repository token has only `contents: read`, and no repository or environment secrets are passed to the source checks. Those jobs cannot deploy the application, publish packages or releases, push branches, or post issue and pull-request comments. They store dependency caches and can upload synthetic UI screenshots and failed-check diagnostics, retained for seven days. The mobile publishing job described below is separate from these offline checks.
 
 ## Checks and boundaries
 

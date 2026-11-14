@@ -499,7 +499,7 @@ export const appContract = {
     recent: oc.output(z.array(BotPackageRecentReceiptSchema)),
     forBot: oc.input(z.object({ botId: Id })).output(BotPackageReceiptSchema.nullable()),
     resume: oc
-      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .input(BotPackageImportInput.pick({ clientNonce: true, apiKey: true }))
       .output(BotPackageReceiptSchema),
     cancel: oc
       .input(z.object({ clientNonce: BotPackageNonceSchema }))

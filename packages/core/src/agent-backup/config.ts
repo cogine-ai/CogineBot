@@ -14,6 +14,15 @@ export function readBackupConfig(
   }
 }
 
+export function readBackupAuth(content: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ""));
+    return validConfig(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseConfig(source: AgentBackupSource, content: string): unknown {
   const input = content.replace(/^\uFEFF/, "");
   if (source === "openclaw") return JSON5.parse(input);

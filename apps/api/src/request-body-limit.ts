@@ -25,32 +25,33 @@ export function requestBodyLimit(maxSize: number): MiddlewareHandler {
     }
 
     const reader = request.body.getReader();
-    const chunks: Uint8Array[] = [];
+    let buffer = new Uint8Array(0);
     let size = 0;
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        size += value.byteLength;
-        if (size > maxSize) {
+        const nextSize = size + value.byteLength;
+        if (nextSize > maxSize) {
           cancelBody(reader);
           return c.json({ error: "Request body is too large." }, 413);
         }
-        chunks.push(value);
+        if (nextSize > buffer.byteLength) {
+          const capacity = Math.min(maxSize, Math.max(nextSize, buffer.byteLength * 2, 4096));
+          const grown = new Uint8Array(capacity);
+          grown.set(buffer.subarray(0, size));
+          buffer = grown;
+        }
+        buffer.set(value, size);
+        size = nextSize;
       }
     } finally {
       reader.releaseLock();
     }
 
     c.req.raw = new Request(request, {
-      body: new ReadableStream({
-        start(controller) {
-          for (const chunk of chunks) controller.enqueue(chunk);
-          controller.close();
-        },
-      }),
-      duplex: "half",
-    } as RequestInit & { duplex: "half" });
+      body: buffer.subarray(0, size),
+    });
     return next();
   };
 }

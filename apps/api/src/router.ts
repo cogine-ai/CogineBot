@@ -779,6 +779,7 @@ export interface RouterDeps {
   /** Offline public GitHub acquisition boundary for repositories and fixed registries. */
   pluginRead?: PluginRead;
   openApiPreviewKey?: string;
+  botPackageBindingKey?: string;
   openApiNow?: () => number;
   cloudAgent?: CloudAgentConnection | null;
   prisma: PrismaClient;

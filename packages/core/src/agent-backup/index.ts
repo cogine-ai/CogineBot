@@ -2,6 +2,7 @@ import type {
   AgentBackupDocument,
   AgentBackupMcp,
   AgentBackupMcpOmission,
+  AgentBackupModel,
   AgentBackupOmissionReason,
   AgentBackupSource,
   BotPackagePreviewInput,
@@ -38,6 +39,10 @@ import { isPortableBackupMcp, projectBackupMcp } from "./mcp.js";
 export { isPortableBackupMcp } from "./mcp.js";
 
 import { backupModelConfigPath, backupModelLabel, projectBackupModel } from "./model.js";
+import { readBackupModelApiKey } from "./model-credentials.js";
+
+export { isBackupModelKeyProvider } from "./model-credentials.js";
+
 import {
   backupJobsPath,
   backupStateDatabasePath,
@@ -601,6 +606,97 @@ export function readBotImportBytes(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
+/** Reopen the selected local archive only when the user opts in to importing a key. */
+export function readAgentBackupModelKey(
+  bytes: Uint8Array,
+  model: AgentBackupModel,
+): string | undefined {
+  const archive = openAgentImportArchive(bytes, true);
+  const { source, home } = sourceLayout(archive.paths);
+  const configPath = `${home}${backupModelConfigPath(source)}`;
+  const config = archive.declaredConfig
+    ? archive.readOpenClawConfig()
+    : archive.readOptional(configPath);
+  if (config === undefined && (archive.declaredConfig || archive.has(configPath))) return undefined;
+  const settings = config === undefined ? undefined : readBackupConfig(source, config);
+  const workspace =
+    source === "openclaw"
+      ? selectBackupWorkspace(
+          archive.paths
+            .filter((path) => path.startsWith(home))
+            .map((path) => path.slice(home.length)),
+          (path) => isBackupTextFile(source, path) && !isBackupRuntimeFile(source, path),
+        )
+      : undefined;
+  const workspacePath =
+    archive.workspaceSourcePath ??
+    (archive.stateSourcePath && workspace ? `${archive.stateSourcePath}/${workspace}` : undefined);
+  const agentId =
+    source === "openclaw" && config !== undefined
+      ? backupWorkspaceAgent(config, workspacePath)
+      : null;
+  if (agentId && archive.has(`${home}agents/${agentId}/agent/models.json`)) return undefined;
+  const current = projectBackupModel(source, settings, agentId);
+  if (
+    !current ||
+    current === "unavailable" ||
+    current.provider !== model.provider ||
+    current.modelId !== model.modelId
+  )
+    return undefined;
+  const envPath = `${home}.env`;
+  const env = archive.readOptional(envPath);
+  if (env === undefined && archive.has(envPath)) return undefined;
+  const authPath = `${home}auth.json`;
+  const auth = source === "hermes" ? archive.readOptional(authPath) : undefined;
+  if (source === "hermes" && auth === undefined && archive.has(authPath)) return undefined;
+  return readBackupModelApiKey(source, model.provider, {
+    config,
+    env,
+    auth,
+  });
+}
+
+/** Folder inputs retain file handles only for the current import editor. */
+export async function readAgentBackupFolderModelKey(
+  entries: readonly AgentBackupFolderFile[],
+  model: AgentBackupModel,
+  isCurrent: () => boolean,
+): Promise<string | undefined> {
+  const root = entries[0]?.path.split("/", 1)[0];
+  if (!root || !isCurrent()) return undefined;
+  const relative = entries.map((entry) => entry.path.slice(root.length + 1));
+  const source = identifyFolderSource(root, relative);
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  async function read(name: string) {
+    const file = entries.find((entry) => entry.path === `${root}/${name}`);
+    if (!file) return undefined;
+    if (!isCurrent() || file.size > AGENT_IMPORT_ARCHIVE_LIMITS.fileBytes)
+      throw new AgentImportArchiveError("unreadable");
+    const bytes = await file.read(file.size + 1);
+    if (!isCurrent() || bytes.length !== file.size) throw new AgentImportArchiveError("unreadable");
+    return decoder.decode(bytes);
+  }
+  const config = await read(backupModelConfigPath(source));
+  const current = projectBackupModel(
+    source,
+    config === undefined ? undefined : readBackupConfig(source, config),
+    null,
+  );
+  if (
+    !current ||
+    current === "unavailable" ||
+    current.provider !== model.provider ||
+    current.modelId !== model.modelId
+  )
+    return undefined;
+  return readBackupModelApiKey(source, model.provider, {
+    config,
+    env: await read(".env"),
+    auth: source === "hermes" ? await read("auth.json") : undefined,
+  });
+}
+
 export { parseOpenClawIdentity } from "./identity.js";
 export { isHermesDefault, isOpenClawDefault } from "./stock.js";
 export { AgentImportArchiveError };
@@ -637,6 +733,10 @@ export function agentBackupFileGroups(raw: string) {
   const { source, files, incompleteSkills, routineOmissions } = parsed.data;
   const incomplete = new Set(incompleteSkills);
   const groups = {
+    modelProvider:
+      parsed.data.model && parsed.data.model !== "unavailable"
+        ? parsed.data.model.provider
+        : undefined,
     ...(parsed.data.model && parsed.data.model !== "unavailable"
       ? { model: backupModelLabel(parsed.data.model) }
       : {}),

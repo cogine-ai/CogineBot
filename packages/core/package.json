@@ -69,6 +69,7 @@
     "test": "vitest run --root ../.. packages/core/src"
   },
   "dependencies": {
+    "@noble/hashes": "2.3.0",
     "@observablehq/plot": "0.6.17",
     "@rakazo/contracts": "workspace:*",
     "@rakazo/logging": "workspace:*",

@@ -10,6 +10,7 @@ export * from "./artifacts.js";
 export * from "./auto-review.js";
 export * from "./auto-review-factory.js";
 export * from "./background-job-handlers.js";
+export { supportsBackupModelKey, verifyBackupModelKey } from "./backup-model-key.js";
 export * from "./billing-emulator.js";
 export * from "./bot-avatar.js";
 export * from "./bot-messages.js";

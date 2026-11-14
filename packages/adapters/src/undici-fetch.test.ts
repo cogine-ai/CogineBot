@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { parseErrorResponse } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Agent, Response as UndiciResponse } from "undici";
 import { describe, expect, it } from "vitest";
@@ -83,7 +84,7 @@ describe("dispatcherFetch OAuth responses", () => {
     expect(masked.message).toContain("[object Response]");
     expect(masked.message).not.toContain("HTTP 403");
 
-    const served = await withPackageResponse(
+    const served = await withLocalResponse(
       body,
       403,
       {
@@ -100,7 +101,7 @@ describe("dispatcherFetch OAuth responses", () => {
     expect(served.message).toBe("Dynamic client registration is not supported");
     expect(served.message).not.toContain("[object Response]");
 
-    const fallback = await withPackageResponse(
+    const fallback = await withLocalResponse(
       "missing bearer token",
       401,
       { "content-type": "text/plain" },
@@ -112,7 +113,58 @@ describe("dispatcherFetch OAuth responses", () => {
   });
 });
 
-async function withPackageResponse<T>(
+describe.each([
+  ["Node fetch", globalThis.fetch],
+  ["package fetch", dispatcherFetch],
+] as const)("%s response handling", (_name, fetch) => {
+  it("decodes gzip and reports a damaged gzip body as a read error", async () => {
+    const body = gzipSync("compressed response");
+    const damaged = Buffer.from(body);
+    const checksum = damaged.length - 8;
+    damaged[checksum] = damaged.readUInt8(checksum) ^ 1;
+    const server = createServer((request, response) => {
+      response.writeHead(200, { "content-encoding": "gzip" });
+      response.end(request.url === "/damaged" ? damaged : body);
+    });
+    await withServer(server, async (url) => {
+      const response = await fetch(`${url}/damaged`);
+      await expect(response.text()).rejects.toBeInstanceOf(Error);
+      await expect((await fetch(url)).text()).resolves.toBe("compressed response");
+    });
+  });
+
+  it.each(["client cancellation", "peer disconnect"])(
+    "reports %s during a response body and leaves the service reachable",
+    async (interruption) => {
+      let disconnectPeer: (() => void) | undefined;
+      const server = createServer((request, response) => {
+        if (request.url === "/stream") {
+          disconnectPeer = () => response.destroy();
+          response.writeHead(200, { "content-type": "text/plain" });
+          response.write("partial response");
+          return;
+        }
+        response.end("still available");
+      });
+      await withServer(server, async (url) => {
+        const controller = new AbortController();
+        const response = await fetch(`${url}/stream`, { signal: controller.signal });
+        const body = response.text();
+        if (interruption === "client cancellation") {
+          controller.abort();
+          await expect(body).rejects.toMatchObject({ name: "AbortError" });
+        } else {
+          if (!disconnectPeer) throw new Error("Fixture did not start a response");
+          disconnectPeer();
+          await expect(body).rejects.toBeInstanceOf(Error);
+        }
+        await expect((await fetch(url)).text()).resolves.toBe("still available");
+      });
+    },
+  );
+});
+
+async function withLocalResponse<T>(
   body: string,
   status: number,
   headers: Record<string, string>,
@@ -122,6 +174,13 @@ async function withPackageResponse<T>(
     response.writeHead(status, headers);
     response.end(body);
   });
+  return withServer(server, async (url) => read(await dispatcherFetch(url)));
+}
+
+async function withServer<T>(
+  server: ReturnType<typeof createServer>,
+  run: (url: string) => Promise<T>,
+): Promise<T> {
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => resolve());
   });
@@ -130,8 +189,7 @@ async function withPackageResponse<T>(
     throw new Error("Missing test server address");
   }
   try {
-    const response = await dispatcherFetch(`http://127.0.0.1:${address.port}/oauth-error`);
-    return await read(response);
+    return await run(`http://127.0.0.1:${address.port}`);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => {

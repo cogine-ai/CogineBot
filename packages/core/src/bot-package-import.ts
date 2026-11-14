@@ -1,4 +1,7 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import type {
+  AgentBackupModel,
   BotPackageImportInput,
   BotPackagePreview,
   BotPackagePreviewInput,
@@ -6,18 +9,34 @@ import type {
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
 import {
+  AgentBackupModelSchema,
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_ROUTINES,
+  BOT_PACKAGE_MODEL_KEY_MISMATCH,
   botPackageUtf8Bytes,
   isBackupMcpPath,
 } from "@rakazo/contracts";
-import { agentBackupPreview, isBackupRoutine } from "./agent-backup/index.js";
+import { agentBackupPreview, botImportJsonObject, isBackupRoutine } from "./agent-backup/index.js";
+
+export class BackupModelKeyUnavailable extends Error {
+  constructor() {
+    super("Could not read the selected backup model key.");
+  }
+}
+
+export class BackupModelKeyMismatch extends Error {}
+
+/** The projection excludes credentials and preserves the source kind and reviewed content. */
+export function backupModelKeySourceDigest(source: string) {
+  return bytesToHex(sha256(new TextEncoder().encode(source)));
+}
 
 export type BotPackageImportState = {
   source: string;
   name: string;
   includeMemory: boolean;
   includeBackupModel: boolean;
+  importModelKey: boolean;
   excludedBackupPaths: readonly string[];
   includedBackupRoutines: readonly string[];
   includedBackupConnections: readonly string[];
@@ -37,6 +56,7 @@ export const initialBotPackageImport: BotPackageImportState = {
   name: "",
   includeMemory: false,
   includeBackupModel: false,
+  importModelKey: false,
   excludedBackupPaths: [],
   includedBackupRoutines: [],
   includedBackupConnections: [],
@@ -56,7 +76,15 @@ type Deps = {
   import(input: BotPackageImportInput, signal: AbortSignal): Promise<BotPackageReceipt>;
   status(input: { clientNonce: string }, signal: AbortSignal): Promise<BotPackageReceipt | null>;
   recent(signal: AbortSignal): Promise<BotPackageRecentReceipt[]>;
-  resume(input: { clientNonce: string }, signal: AbortSignal): Promise<BotPackageReceipt>;
+  resume(
+    input: { clientNonce: string; apiKey?: string },
+    signal: AbortSignal,
+  ): Promise<BotPackageReceipt>;
+  readModelKey?(
+    model: AgentBackupModel,
+    sourceDigest: string,
+    signal: AbortSignal,
+  ): Promise<string | undefined>;
   cancel(input: { clientNonce: string }, signal: AbortSignal): Promise<BotPackageReceipt>;
   newNonce(): string;
   isCurrent(): boolean;
@@ -94,6 +122,17 @@ export function createBotPackageImport(deps: Deps) {
     publish({ ...state, phase, clientNonce, error: null, canRetry: false });
     return { controller, version };
   }
+  async function readModelKey(
+    model: AgentBackupModel,
+    sourceDigest: string | null | undefined,
+    signal: AbortSignal,
+  ) {
+    try {
+      return sourceDigest ? await deps.readModelKey?.(model, sourceDigest, signal) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   function receive(receipt: BotPackageReceipt, nonce: string) {
     if (receipt.clientNonce !== nonce) throw new Error("Could not confirm this import.");
     if (
@@ -113,6 +152,7 @@ export function createBotPackageImport(deps: Deps) {
             name: "",
             includeMemory: false,
             includeBackupModel: false,
+            importModelKey: false,
             excludedBackupPaths: [],
             includedBackupRoutines: [],
             includedBackupConnections: [],
@@ -136,7 +176,19 @@ export function createBotPackageImport(deps: Deps) {
       const receipt = await request(controller.signal);
       if (current(version)) receive(receipt, nonce);
     } catch (error) {
-      if (current(version)) publish({ ...state, phase: "unknown", error, canRetry: false });
+      if (current(version)) {
+        const mismatch =
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === BOT_PACKAGE_MODEL_KEY_MISMATCH;
+        publish({
+          ...state,
+          phase: "unknown",
+          error: mismatch ? new BackupModelKeyMismatch() : error,
+          canRetry: mismatch,
+        });
+      }
     } finally {
       if (current(version)) pending = null;
     }
@@ -177,7 +229,10 @@ export function createBotPackageImport(deps: Deps) {
   return {
     edit(
       input: Partial<
-        Pick<BotPackageImportState, "source" | "name" | "includeMemory" | "includeBackupModel">
+        Pick<
+          BotPackageImportState,
+          "source" | "name" | "includeMemory" | "includeBackupModel" | "importModelKey"
+        >
       >,
     ) {
       if (!active() || state.clientNonce !== null) return;
@@ -186,11 +241,13 @@ export function createBotPackageImport(deps: Deps) {
       const includeBackupModel = replacingSource
         ? false
         : (input.includeBackupModel ?? state.includeBackupModel);
+      const importModelKey = includeBackupModel && (input.importModelKey ?? state.importModelKey);
       if (
         (input.source === undefined || input.source === state.source) &&
         (input.name === undefined || input.name === state.name) &&
         includeMemory === state.includeMemory &&
         includeBackupModel === state.includeBackupModel &&
+        importModelKey === state.importModelKey &&
         !(
           replacingSource &&
           (state.excludedBackupPaths.length ||
@@ -205,6 +262,7 @@ export function createBotPackageImport(deps: Deps) {
         ...input,
         includeMemory,
         includeBackupModel,
+        importModelKey,
         ...(replacingSource
           ? { excludedBackupPaths: [], includedBackupRoutines: [], includedBackupConnections: [] }
           : {}),
@@ -253,22 +311,40 @@ export function createBotPackageImport(deps: Deps) {
       const { controller, version } = begin("previewing");
       if (!current(version)) return;
       try {
+        const projection = agentBackupPreview(
+          state.source,
+          state.includeMemory,
+          state.excludedBackupPaths,
+          state.includedBackupRoutines,
+          state.includeBackupModel,
+          state.includedBackupConnections,
+        );
+        const model = state.importModelKey
+          ? AgentBackupModelSchema.safeParse(botImportJsonObject(projection.source)?.model).data
+          : undefined;
+        const sourceDigest = model ? backupModelKeySourceDigest(state.source) : null;
+        const available = Boolean(
+          model && (await readModelKey(model, sourceDigest, controller.signal)),
+        );
         const input = {
-          ...agentBackupPreview(
-            state.source,
-            state.includeMemory,
-            state.excludedBackupPaths,
-            state.includedBackupRoutines,
-            state.includeBackupModel,
-            state.includedBackupConnections,
-          ),
+          ...projection,
           ...(state.name.trim() ? { name: state.name } : {}),
           includeMemory: state.includeMemory,
+          ...(state.importModelKey ? { importModelKey: available } : {}),
+          ...(available && sourceDigest ? { modelKeySourceDigest: sourceDigest } : {}),
         };
+        if (!current(version)) return;
         const preview = await deps.preview(input, controller.signal);
         if (!current(version)) return;
         if (preview.includeMemory !== input.includeMemory)
           throw new Error("Could not confirm the preview options.");
+        if (
+          preview.modelKey &&
+          (!input.importModelKey ||
+            preview.modelKey.provider !== model?.provider ||
+            preview.modelKey.modelId !== model.modelId)
+        )
+          throw new Error("Could not confirm the reviewed model key selection.");
         if (
           input.backupRoutines?.length &&
           preview.document.routines.length !== input.backupRoutines.length
@@ -291,9 +367,36 @@ export function createBotPackageImport(deps: Deps) {
           !(state.phase === "unknown" && state.canRetry && state.receipt === null))
       )
         return;
+      let apiKey: string | undefined;
+      if (preview.modelKey) {
+        const { controller, version } = begin("previewing");
+        apiKey = await readModelKey(
+          preview.modelKey,
+          backupModelKeySourceDigest(state.source),
+          controller.signal,
+        );
+        if (!current(version)) return;
+        pending = null;
+        if (!apiKey) {
+          publish({
+            ...state,
+            phase: state.clientNonce ? "unknown" : "review",
+            canRetry: state.clientNonce !== null,
+            error: new BackupModelKeyUnavailable(),
+          });
+          return;
+        }
+      }
       const nonce = state.clientNonce ?? deps.newNonce();
       await write(nonce, (signal) =>
-        deps.import({ previewToken: preview.previewToken, clientNonce: nonce }, signal),
+        deps.import(
+          {
+            previewToken: preview.previewToken,
+            clientNonce: nonce,
+            ...(apiKey ? { apiKey } : {}),
+          },
+          signal,
+        ),
       );
     },
     check,
@@ -316,6 +419,7 @@ export function createBotPackageImport(deps: Deps) {
         name: "",
         includeMemory: false,
         includeBackupModel: false,
+        importModelKey: false,
         excludedBackupPaths: [],
         includedBackupRoutines: [],
         includedBackupConnections: [],
@@ -339,7 +443,26 @@ export function createBotPackageImport(deps: Deps) {
         !["importing", "failed"].includes(state.receipt.status)
       )
         return;
-      await write(nonce, (signal) => deps.resume({ clientNonce: nonce }, signal));
+      const model = state.receipt.modelKey;
+      let apiKey: string | undefined;
+      if (model) {
+        const { controller, version } = begin("checking");
+        apiKey = await readModelKey(model, state.receipt?.modelKeySourceDigest, controller.signal);
+        if (!current(version)) return;
+        pending = null;
+        if (!apiKey) {
+          publish({
+            ...state,
+            phase: "unknown",
+            canRetry: true,
+            error: new BackupModelKeyUnavailable(),
+          });
+          return;
+        }
+      }
+      await write(nonce, (signal) =>
+        deps.resume({ clientNonce: nonce, ...(apiKey ? { apiKey } : {}) }, signal),
+      );
     },
     async cancel() {
       const nonce = state.clientNonce;
