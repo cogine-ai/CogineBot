@@ -141,6 +141,51 @@ integration("Slack workspace installation lifecycle", () => {
     expect((await changedApp.list(owner))[0]?.status).toBe("revoked");
   });
 
+  it("keeps native callbacks bound to the initiating authenticated user and Space", async () => {
+    const before = await service.activeByWorkspace(workspaceId);
+    const issued = await service.start(
+      owner,
+      botId,
+      { id: before!.id, expectedRevision: before!.revision },
+      "mobile",
+    );
+    const state = new URL(issued.url).searchParams.get("state")!;
+    expect(state).toMatch(/^m\.[A-Za-z0-9_-]{43}$/);
+    const url = new URL((await service.mobileCallback(state, "native-code"))!);
+    expect(url.protocol).toBe("coginebot:");
+    expect(url.host).toBe("slack-workspaces");
+    expect(url.searchParams.get("state")).toBe(state);
+    const calls = exchange.mock.calls.length;
+    await expect(service.completeMobile(other, state, "native-code")).rejects.toThrow();
+    await expect(
+      service.completeMobile({ ...owner, spaceId: other.spaceId }, state, "native-code"),
+    ).rejects.toThrow();
+    expect(exchange).toHaveBeenCalledTimes(calls);
+    await expect(service.completeMobile(owner, state, "native-code")).resolves.toBe(true);
+    await expect(service.completeMobile(owner, state, "replayed")).rejects.toThrow();
+    expect(exchange).toHaveBeenCalledTimes(calls + 1);
+    expect(await service.attempt(owner, issued.attemptId)).toBe("connected");
+    expect(await service.mobileCallback(state, "replayed")).toBeNull();
+    // Retire this test's replaced credential before later cleanup-failure assertions.
+    await service.cleanup();
+  });
+
+  it("cannot relabel a Web attempt as native and handles native cancellation without exchange", async () => {
+    const web = await start();
+    expect(await service.mobileCallback(`m.${web.state}`, "code")).toBeNull();
+    await expect(service.completeMobile(owner, web.state, "code")).rejects.toThrow();
+    const native = await service.start(owner, botId, undefined, "mobile");
+    const state = new URL(native.url).searchParams.get("state")!;
+    const calls = exchange.mock.calls.length;
+    expect(
+      new URL((await service.mobileCallback(state, undefined))!).searchParams.has("code"),
+    ).toBe(false);
+    await expect(service.completeMobile(owner, state, undefined)).resolves.toBe(false);
+    expect(exchange).toHaveBeenCalledTimes(calls);
+    expect(await service.attempt(owner, native.attemptId)).toBe("cancelled");
+    await service.cancel(owner, web.attemptId);
+  });
+
   it("rejects cancelled and expired callbacks before the provider exchange", async () => {
     const calls = exchange.mock.calls.length;
     const cancelled = await start();

@@ -320,6 +320,12 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         scope: "tenant",
         tenantPredicate: either(local(), all('("spaceId" IS NULL)', own())),
       },
+      {
+        model: "McpCreateRequest",
+        table: "mcp_create_requests",
+        scope: "tenant",
+        tenantPredicate: all(local(), own()),
+      },
       { model: "McpServer", table: "mcp_servers", scope: "tenant", tenantPredicate: local() },
       {
         model: "McpOAuthSession",

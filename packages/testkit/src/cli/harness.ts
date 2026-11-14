@@ -123,6 +123,8 @@ async function main() {
     "packages/db/src/readiness.postgres.test.ts",
     "packages/db/src/row-security.postgres.test.ts",
     "apps/api/src/row-security-policies.postgres.test.ts",
+    "apps/api/src/mcp-receipt-policies.postgres.test.ts",
+    "apps/api/src/mcp-create-recovery.postgres.test.ts",
     "apps/api/src/control-plane-metadata.postgres.test.ts",
     serviceStartupSuite,
     databaseRestoreSuite,
@@ -264,6 +266,7 @@ async function main() {
         const dualDeployment = suite === "apps/api/src/deployment-transfer.postgres.test.ts";
         const completeRowPolicies =
           suite === "apps/api/src/row-security-policies.postgres.test.ts" ||
+          suite === "apps/api/src/mcp-receipt-policies.postgres.test.ts" ||
           suite === "apps/api/src/control-plane-metadata.postgres.test.ts" ||
           suite === databaseRestoreSuite ||
           suite === privatePagesMigrationSuite ||

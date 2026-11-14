@@ -35,7 +35,7 @@ export class MessagingInstallations {
     return Boolean(this.provider);
   }
 
-  async start(actor: Actor, botId: string, reconnect?: Revision) {
+  async start(actor: Actor, botId: string, reconnect?: Revision, returnTo?: "mobile") {
     const provider = this.provider;
     if (!provider) throw new Error("Slack installation is unavailable");
     return runAsSystem("start Slack workspace authorization", async () => {
@@ -43,7 +43,7 @@ export class MessagingInstallations {
       await this.requireOwner(this.db, scope);
       const target = reconnect ? await this.owned(this.db, actor, reconnect) : null;
       if (target && target.botId !== botId) throw new Error("Select the connected bot");
-      const state = randomBytes(32).toString("base64url");
+      const state = `${returnTo === "mobile" ? "m." : ""}${randomBytes(32).toString("base64url")}`;
       const id = credentialDigest(state);
       const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
       await this.db.messagingInstallSession.create({
@@ -73,10 +73,50 @@ export class MessagingInstallations {
     );
   }
 
+  /** The prefix is covered by the stored digest; it cannot convert a Web attempt to native. */
+  async mobileCallback(state: string, code: string | undefined) {
+    if (!/^m\.[A-Za-z0-9_-]{43}$/.test(state) || (code?.length ?? 0) > 4096) return null;
+    return runAsSystem("resolve native Slack authorization callback", async () => {
+      const row = await this.db.messagingInstallSession.findUnique({
+        where: { id: credentialDigest(state) },
+      });
+      if (
+        !row ||
+        row.provider !== PROVIDER ||
+        row.clientId !== this.provider?.clientId ||
+        row.consumedAt ||
+        row.expiresAt <= new Date()
+      )
+        return null;
+      const url = new URL("coginebot://slack-workspaces");
+      url.searchParams.set("state", state);
+      if (code) url.searchParams.set("code", code);
+      return url.href;
+    });
+  }
+
+  /** Native completion requires the initiating App's authenticated user AND Space. */
+  async completeMobile(actor: Actor, state: string, code: string | undefined) {
+    if (!/^m\.[A-Za-z0-9_-]{43}$/.test(state)) throw new Error("Invalid Slack authorization");
+    const owned = await runAsSystem("verify native Slack authorization owner", () =>
+      this.db.messagingInstallSession.findFirst({
+        where: {
+          id: credentialDigest(state),
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          provider: PROVIDER,
+        },
+        select: { id: true },
+      }),
+    );
+    if (!owned) throw new Error("Invalid Slack authorization");
+    return this.complete(actor.userId, state, code);
+  }
+
   async complete(userId: string, state: string, code: string | undefined) {
     const provider = this.provider;
     if (!provider) throw new Error("Slack installation is unavailable");
-    if (!/^[A-Za-z0-9_-]{43}$/.test(state) || (code?.length ?? 0) > 4096)
+    if (!/^(?:m\.)?[A-Za-z0-9_-]{43}$/.test(state) || (code?.length ?? 0) > 4096)
       throw new Error("Invalid Slack authorization");
     return runAsSystem("complete Slack workspace authorization", async () => {
       const id = credentialDigest(state);

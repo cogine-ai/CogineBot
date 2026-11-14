@@ -23,6 +23,8 @@ import {
   verifyDatabaseRestore,
 } from "@rakazo/db";
 import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
 } from "@rakazo/db/testing/row-security-expectations";
@@ -339,6 +341,22 @@ postgres("custom archive recovery into a different cluster and database identity
       connectionEnforced: true,
     });
     expect(status.problems).toEqual([]);
+    await targetWork(async (client) => {
+      expectPhysicalPolicyTables(
+        (
+          await client.query(
+            "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+          )
+        ).rows,
+      );
+      expectExactPolicyCatalog(
+        (
+          await client.query(
+            "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+          )
+        ).rows,
+      );
+    });
     restored = true;
   }
 
@@ -384,6 +402,14 @@ postgres("custom archive recovery into a different cluster and database identity
       tocPath = `/tmp/database-restore-${suffix}.list`;
     }
     sourceOwner = createDb(source.url);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    expectPhysicalPolicyTables(
+      (
+        await sourceOwner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     const sourceOid = Number(
       (await sourceOwner.pool.query("SELECT oid FROM pg_database WHERE datname=current_database()"))
         .rows[0].oid,
@@ -546,6 +572,13 @@ postgres("custom archive recovery into a different cluster and database identity
       expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,
     });
+    expectExactPolicyCatalog(
+      (
+        await sourceOwner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
     const publisher = new GraphileJobPublisher(sourceRuntime.pool);
     try {

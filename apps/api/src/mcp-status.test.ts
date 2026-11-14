@@ -291,3 +291,37 @@ describe("MCP header patch status agrees with list", () => {
     },
   );
 });
+
+it("allows the fixed native OAuth callback while binding begin to the authenticated actor", async () => {
+  const begin = vi.fn().mockResolvedValue({ status: "authorization_not_requested" });
+  const deps = {
+    prisma: {},
+    mcpOAuth: { begin },
+    env: {
+      defaultProvider: "fake",
+      defaultModel: "fake-model",
+      webOrigin: "https://app.example.test",
+    },
+    dataDir: "/tmp/mcp-status-fixture",
+  } as unknown as RouterDeps;
+  const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+  await expect(
+    client.mcp.oauth.begin({ serverId: "server", redirectUri: "coginebot:///mcp" }),
+  ).resolves.toEqual({ status: "authorization_not_requested" });
+  expect(begin).toHaveBeenCalledWith({
+    serverId: "server",
+    redirectUri: "coginebot:///mcp",
+    spaceId: actor.spaceId,
+    userId: actor.userId,
+  });
+  for (const redirectUri of [
+    "coginebot:///mcp?next=other",
+    "coginebot://mcp",
+    "https://evil.example.test/mcp/oauth/callback",
+  ]) {
+    await expect(client.mcp.oauth.begin({ serverId: "server", redirectUri })).rejects.toMatchObject(
+      { code: "BAD_REQUEST" },
+    );
+  }
+  expect(begin).toHaveBeenCalledTimes(1);
+});

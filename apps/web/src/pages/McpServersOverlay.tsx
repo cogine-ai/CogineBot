@@ -1,7 +1,7 @@
 import { t } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { McpServer, McpTransport } from "@rakazo/contracts";
-import { deriveMcpSlug } from "@rakazo/core";
+import { mcpServerInput } from "@rakazo/core";
 import {
   Badge,
   Button,
@@ -106,32 +106,19 @@ export function McpServersOverlay({
     }
     setSaving(true);
     try {
-      const slug = deriveMcpSlug(name);
-      const headers = headerValue.trim()
-        ? { [headerName.trim() || "Authorization"]: headerValue.trim() }
-        : {};
-      await (transport === "stdio"
-        ? rpc.mcp.servers.create({
-            slug,
-            name: name.trim(),
-            transport,
-            command: command.trim(),
-            args: args.split(/\s+/).filter(Boolean),
-            env: {},
-            secret: secret || undefined,
-            enabled: true,
-            verbatimResults,
-          })
-        : rpc.mcp.servers.create({
-            slug,
-            name: name.trim(),
-            transport,
-            endpoint: endpoint.trim(),
-            headers,
-            secret: secret || undefined,
-            enabled: true,
-            verbatimResults,
-          }));
+      await rpc.mcp.servers.create(
+        mcpServerInput({
+          name,
+          transport,
+          endpoint,
+          secret,
+          headerName,
+          headerValue,
+          command,
+          args,
+          verbatimResults,
+        }),
+      );
       await refresh();
       setName("");
       setEndpoint("");
@@ -160,6 +147,10 @@ export function McpServersOverlay({
       if (result !== "cancelled") setOauthPending(null);
       await refresh();
       if (result === "connected") return;
+      if (result === "disconnect_required") {
+        setError(t`Disconnect OAuth before authorizing from another app.`);
+        return;
+      }
       if (result === "already_connected") {
         setError(t`This server is already connected. Disconnect it first to authorize again.`);
         return;

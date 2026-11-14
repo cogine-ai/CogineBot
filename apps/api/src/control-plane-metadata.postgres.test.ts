@@ -18,6 +18,8 @@ import {
   runAsTenant,
 } from "@rakazo/db";
 import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
 } from "@rakazo/db/testing/row-security-expectations";
@@ -182,6 +184,14 @@ postgres("control-plane metadata with complete row policies", () => {
     )
       throw new Error("Metadata tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    expectPhysicalPolicyTables(
+      (
+        await owner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     url.username = role;
     url.password = randomBytes(24).toString("hex");
     url.searchParams.delete("user");
@@ -248,6 +258,14 @@ postgres("control-plane metadata with complete row policies", () => {
       },
     });
     const status = await applyRowSecurityPolicies(databaseUrl!, runtimeUrl);
+    expectExactPolicyCatalog(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
+
     expect(status).toMatchObject({
       expectedTables: schemaPolicyTables.length,
       connectionEnforced: true,

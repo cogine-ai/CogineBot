@@ -25,6 +25,8 @@ import { PAGE_RUNTIME_PATH } from "@rakazo/core";
 import * as database from "@rakazo/db";
 import { ROW_SECURITY_POLICIES } from "@rakazo/db";
 import {
+  expectExactPolicyCatalog,
+  expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   schemaPolicyTables,
 } from "@rakazo/db/testing/row-security-expectations";
@@ -370,6 +372,13 @@ describePostgres("protected database app composition", () => {
     await legacyCatalog();
     await adapters.migrateJobQueue(ownerUrl);
     expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    expectPhysicalPolicyTables(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     grantRole = (
       await owner.pool.query<{ role: string }>(
         "SELECT 'coginebot_app_' || oid::text AS role FROM pg_database WHERE datname=current_database()",
@@ -405,6 +414,14 @@ describePostgres("protected database app composition", () => {
       connectionEnforced: true,
     });
     previousSecretStore = process.env.SECRET_STORE;
+    expectExactPolicyCatalog(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table,p.polname AS policy FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages')",
+        )
+      ).rows,
+    );
+
     process.env.SECRET_STORE = "encrypted";
     secretStoreChanged = true;
   }, 120_000);

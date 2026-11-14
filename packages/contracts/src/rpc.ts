@@ -1,3 +1,4 @@
+import type { InferContractRouterInputs, InferContractRouterOutputs } from "@orpc/contract";
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
@@ -162,7 +163,11 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
-import { PluginServerConnectionInputSchema } from "./mcp.js";
+import {
+  McpCreateReceiptSchema,
+  McpCreateRequestSchema,
+  PluginServerConnectionInputSchema,
+} from "./mcp.js";
 import { ModelHeadersSchema } from "./model-headers.js";
 import {
   NativeBeginInputSchema,
@@ -968,6 +973,12 @@ export const appContract = {
       list: oc.output(z.array(McpServerSchema)),
       check: oc.input(z.object({ id: Id })).output(McpServerHealthSchema),
       create: oc.input(McpServerConfigInput).output(McpServerSchema),
+      newCreateRequest: oc.output(McpCreateRequestSchema),
+      createOnce: oc
+        .input(McpCreateRequestSchema.extend({ config: McpServerConfigInput }))
+        .output(McpCreateReceiptSchema),
+      creation: oc.input(McpCreateRequestSchema).output(McpCreateReceiptSchema.nullable()),
+      cancelCreate: oc.input(McpCreateRequestSchema).output(McpCreateReceiptSchema),
       setTools: oc
         .input(
           z.object({
@@ -1030,7 +1041,11 @@ export const appContract = {
             authorizationUrl: z.string().url(),
           }),
           z.object({
-            status: z.enum(["already_connected", "authorization_not_requested"]),
+            status: z.enum([
+              "already_connected",
+              "authorization_not_requested",
+              "disconnect_required",
+            ]),
           }),
         ]),
       ),
@@ -1147,12 +1162,21 @@ export const appContract = {
         .input(
           z.object({
             botId: Id,
+            returnTo: z.literal("mobile").optional(),
             reconnect: z
               .object({ id: Id, expectedRevision: z.number().int().positive() })
               .optional(),
           }),
         )
         .output(z.object({ url: z.url(), attemptId: Id, expiresAt: IsoDate })),
+      completeMobile: oc
+        .input(
+          z.object({
+            state: z.string().regex(/^m\.[A-Za-z0-9_-]{43}$/),
+            code: z.string().max(4096).optional(),
+          }),
+        )
+        .output(z.object({ ok: z.literal(true) })),
       attempt: oc
         .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
         .output(
@@ -1404,3 +1428,8 @@ export const appContract = {
 };
 
 export type AppContract = typeof appContract;
+
+export type SlackInstallationInputs =
+  InferContractRouterInputs<AppContract>["messaging"]["installations"];
+export type SlackInstallationOutputs =
+  InferContractRouterOutputs<AppContract>["messaging"]["installations"];

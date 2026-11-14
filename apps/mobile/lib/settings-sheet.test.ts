@@ -113,6 +113,15 @@ describe("settings links", () => {
     expect(redirectSystemPath({ path: "coginebot:///plugins", initial: false })).toBe(
       "coginebot:///plugins",
     );
+    for (const path of [
+      "coginebot://slack-workspaces?state=synthetic&code=synthetic",
+      "coginebot:///slack-workspaces",
+      "/slack-workspaces",
+      "coginebot:///messaging",
+      "coginebot:///memory",
+    ]) {
+      expect(redirectSystemPath({ path, initial: false })).toBe(path);
+    }
     expect(
       redirectSystemPath({ path: "coginebot:///approval-rules?spaceId=space-a", initial: false }),
     ).toBe("coginebot:///approval-rules?spaceId=space-a");
@@ -124,4 +133,16 @@ describe("settings links", () => {
     expect(close).toHaveBeenCalledTimes(1);
     unregister();
   });
+});
+
+it("keeps MCP auth returns inside settings without retaining codes in route history", () => {
+  expect(isSettingsLink("coginebot:///mcp?state=fixture&code=synthetic")).toBe(true);
+  expect(
+    redirectSystemPath({ path: "coginebot:///mcp?state=fixture&code=synthetic", initial: false }),
+  ).toBe("/mcp");
+  expect(
+    redirectSystemPath({ path: "coginebot:///mcp?state=fixture&code=synthetic", initial: true }),
+  ).toBe("/mcp");
+  const screen = readFileSync(resolve(mobileRoot, "app/(settings)/mcp.tsx"), "utf8");
+  expect(screen).toContain('contentInsetAdjustmentBehavior="automatic"');
 });

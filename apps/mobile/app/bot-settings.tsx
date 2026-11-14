@@ -722,6 +722,16 @@ function BotSettingsEditor({ scope }: { scope: MobileScope }) {
         />
         {bot?.id === botId ? (
           <NativeActionButton
+            label={t("Memory")}
+            prominence="secondary"
+            onPress={() =>
+              router.push({ pathname: "/memory", params: { spaceId: bot.spaceId, botId } })
+            }
+            style={{ marginTop: 16 }}
+          />
+        ) : null}
+        {bot?.id === botId ? (
+          <NativeActionButton
             label={t("Knowledge")}
             prominence="secondary"
             selected={knowledgeOpen}

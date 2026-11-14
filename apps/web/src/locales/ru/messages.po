@@ -7591,3 +7591,8 @@ msgstr "Не удалось подтвердить владельца распи
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Импортированные процедуры изначально приостановлены."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Отключите OAuth перед авторизацией из другого приложения."

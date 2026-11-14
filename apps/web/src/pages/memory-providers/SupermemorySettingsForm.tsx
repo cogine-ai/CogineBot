@@ -1,4 +1,5 @@
 import { Trans } from "@lingui/react/macro";
+import { supermemoryConnectionDraft } from "@rakazo/core";
 import { Button, Field, FieldLabel, Input, Toggle } from "@rakazo/ui-web";
 import { useId, useState } from "react";
 import type { MemoryProviderConnectionDraft, MemoryProviderSettingsFormProps } from "./registry";
@@ -14,13 +15,11 @@ export function SupermemorySettingsForm({ busy, onConnect }: MemoryProviderSetti
 
   async function connect() {
     if (!apiKey.trim()) return;
-    const draft: MemoryProviderConnectionDraft = {
-      settings: {
-        mode,
-        ...(mode === "local" ? { baseUrl: baseUrl.trim() } : {}),
-      },
-      credentials: { apiKey: apiKey.trim() },
-    };
+    const draft: MemoryProviderConnectionDraft = supermemoryConnectionDraft({
+      mode,
+      baseUrl,
+      apiKey,
+    });
     if (await onConnect(draft)) setApiKey("");
   }
 

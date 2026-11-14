@@ -1,9 +1,12 @@
 # Native backup folders (#156)
 
-**Android directory import is incomplete and technically blocked.** The previous
-SAF implementation could accept a successful but incomplete inventory. It has
-been removed and replaced with an explicit failure. Archive recovery is still
-available; it does not fulfill Android directory import or complete this ticket.
+**Android 文件夹导入不在本票，Owner 2026-11-15 选 A 调整标准**
+
+The accepted scope is iOS local-folder import and Android archive import only.
+Android folders are explicitly unsupported; the fail-closed behavior from
+`335c8bb4fd510a389ef7b99489d4902d711f5506` is retained. Archive import is not
+presented as Android directory support. The following F1 history explains that
+boundary; it is no longer an unmet Android-folder requirement for this ticket.
 
 iOS retains **Choose backup folder** in the current Import bot editor. A successful
 selection replaces the source after bounded traversal, shared encoding and a change
@@ -27,13 +30,12 @@ the latter omits a hidden Skill dependency. They demonstrate that the incomplete
 input loses its warning under shared encoding, then require rejection by the
 actual mobile adapter. Existing error/cancel/scope/draft/archive tests remain.
 
-[等 ZenYang] A usable Android implementation still needs a reviewable reader that
-reports traversal failures without filtering or silently omitting descendants,
-and authorized native build/provider validation. The investigated SAF APIs supply
-no such proof. A URI grant is not a trustworthy raw filesystem path. This change
-does not guess paths, request broad storage access, require a new backup manifest,
-or claim that an archive fulfills the directory requirement. Any different access
-mechanism must be scoped and authorized separately; the requirements are unchanged.
+A usable Android directory implementation still needs a reviewable reader that
+reports traversal failures without filtering or silently omitting descendants.
+The investigated SAF APIs supply no such proof. A URI grant is not a trustworthy
+raw filesystem path. Management will track reliable Android directory reading in
+a separate needs-owner issue; it is outside #156 under the Owner's scope decision.
+No new Android access mechanism or implementation is introduced here.
 
 ## F2: iOS source boundary
 
@@ -73,26 +75,28 @@ That host test does not compile or run the iOS module or picker.
 | iOS / Documents under the runtime-anchored app-container root | Scoped coordinated traversal and reads | Host boundary tests and syntax only; real native build, picker, grant, hidden entries and import unproven |
 | iOS / shared containers, arbitrary roots, provider caches outside that boundary | Reject, including nested lookalike container paths | Actual production Swift boundary negative controls; OS/provider behavior unproven |
 | iOS / ubiquitous cloud items or nonlocal volumes | Reject; archive recovery | Code inspection; device behavior unproven |
-| Android / all providers, including system external storage | Explicit failure; no usable directory reader | **Platform directory implementation incomplete / technically blocked**, not merely missing device evidence |
+| Android / all providers, including system external storage | Explicit failure; no usable directory reader | Folders explicitly unsupported and out of #156 scope by Owner choice A; archive import retained |
 | Expo Go / build without module | Error and archive recovery | Missing-module regression; no directory support |
 
 No actual OS/provider version is certified. In particular, no row claims Android
 complete enumeration, nor that any third-party provider name alone determines an
 iOS path's origin. The existing translated recovery message is shown only after a
-failed attempt; no new copy or archive-product exemption is introduced.
+failed attempt. No new user-facing copy is introduced by the scope/integration update.
 
 ## C1–C4 evidence and handoff
 
-| Criterion | Current implementation / substitute evidence | Not complete |
+| Criterion under Owner choice A | Current implementation / substitute evidence | Needs-owner evidence (nonblocking) |
 | --- | --- | --- |
-| C1 | iOS module and explicit preview/confirm UI | Android directory implementation; both platforms' real build/grant/import evidence |
-| C2 | Synthetic shared/mobile/server projection parity retained | Android directory workflow and actual backend/Web cross-read |
-| C3 | Successful incomplete Android results now fail closed; old cancel/error/limit/scope/draft recovery tests retained | A usable trustworthy Android reader; real OS revocation/provider fault testing |
-| C4 | Matrix corrected to distinguish implemented iOS source boundary from Android technical blocker | Actual OS/provider certification and screenshots |
+| C1 | iOS local-folder module and explicit preview/confirm UI; Android archives only, folders unsupported | Both platforms' real native build, authorization and import/read evidence |
+| C2 | Synthetic shared/mobile/server archive-folder projection parity retained for iOS folder scope | Actual backend/Web cross-read |
+| C3 | Android folder results fail closed; cancel/error/limit/scope/draft/archive recovery tests retained | Real OS revocation/provider fault testing |
+| C4 | Matrix distinguishes supported iOS source boundary, rejected sources and out-of-scope Android folders | Actual OS/provider certification and screenshots |
 
-Do not mark #156 PASS or close it from these safety fixes. Independent acceptance
-has used round 1 of 2; management schedules the second/final round. The development
-session does not wake acceptance or start a third round.
+[等 ZenYang] Real dual-platform native builds, system authorization, reads and Web
+cross-read remain needs-owner evidence, nonblocking under the Owner's decision.
+Offline evidence does not certify those behaviors. Both independent acceptance
+rounds have ended; no third round is scheduled or requested. Management owns final
+merge and the separate Android follow-up.
 
 Offline tests use synthetic fixtures and mocked native access. The Foundation
 boundary executable, syntax checks and module discovery are not iOS/Android native

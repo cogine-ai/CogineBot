@@ -7630,3 +7630,8 @@ msgstr "The schedule owner could not be confirmed."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Imported routines start paused."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Disconnect OAuth before authorizing from another app."

@@ -11,6 +11,7 @@
     },
     "./testing/row-security-expectations": {
       "types": "./src/testing/row-security-expectations.ts",
+      "development": "./src/testing/row-security-expectations.ts",
       "default": "./src/testing/row-security-expectations.ts"
     }
   },

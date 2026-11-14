@@ -19,7 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { isLocalMcpHost } from "@rakazo/contracts";
+import { isLocalMcpHost, MCP_NATIVE_REDIRECT_URI } from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -304,6 +304,14 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     // new discovery must not silently rebind that credential to another server.
     bindKnownIssuer(this.material.oauth);
     if (options.redirectUri) {
+      if (
+        this.material.oauth &&
+        !this.material.oauth.tokens &&
+        this.material.oauth.redirectUri !== options.redirectUri
+      ) {
+        delete this.material.oauth.clientInformation;
+        delete this.material.oauth.codeVerifier;
+      }
       this.material.oauth = { ...(this.material.oauth ?? {}), redirectUri: options.redirectUri };
     }
   }
@@ -316,7 +324,12 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     const redirectUri = this.redirectUrl;
     if (!redirectUri) throw new McpReauthorizationRequiredError(this.serverId);
     const hostname = new URL(redirectUri).hostname;
-    const applicationType = hostname === "localhost" || hostname === "127.0.0.1" ? "native" : "web";
+    const applicationType =
+      redirectUri === MCP_NATIVE_REDIRECT_URI ||
+      hostname === "localhost" ||
+      hostname === "127.0.0.1"
+        ? "native"
+        : "web";
     return {
       redirect_uris: [redirectUri],
       client_name: "CogineBot",
@@ -847,7 +860,7 @@ export class McpOAuthBroker {
     redirectUri: string;
   }): Promise<
     | { status: "authorization_required"; sessionId: string; authorizationUrl: string }
-    | { status: "already_connected" | "authorization_not_requested" }
+    | { status: "already_connected" | "authorization_not_requested" | "disconnect_required" }
   > {
     const server = await this.prisma.mcpServer.findFirst({
       where: {
@@ -877,6 +890,14 @@ export class McpOAuthBroker {
     const sessionId = randomUUID();
     const context = { spaceId: input.spaceId, userId: input.userId };
     const loaded = await this.loadMaterial(server, context);
+    // Registrations and refresh tokens belong to their original redirect. Require an
+    // explicit disconnect before crossing surfaces; never silently destroy a working grant.
+    if (
+      loaded.material.oauth?.clientInformation &&
+      loaded.material.oauth.redirectUri !== input.redirectUri
+    ) {
+      if (loaded.material.oauth.tokens) return { status: "disconnect_required" };
+    }
     let authorizationUrl: URL | undefined;
     const provider = this.createProvider(server, context, loaded, {
       redirectUri: input.redirectUri,

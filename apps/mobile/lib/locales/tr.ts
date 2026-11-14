@@ -3,6 +3,66 @@ export const TR_MESSAGES: Record<string, string> = {
   "Choose backup folder": "Yedekleme klasörü seç",
   "Could not read the complete folder. Choose a backup archive instead.":
     "Klasörün tamamı okunamadı. Bunun yerine bir yedekleme arşivi seçin.",
+  "Cancel creation": "Oluşturmayı iptal et",
+  "Created server is no longer available. Review the draft.":
+    "Oluşturulan sunucu artık kullanılamıyor. Taslağı gözden geçirin.",
+  "Disconnect OAuth before authorizing from another app.":
+    "Başka bir uygulamadan yetkilendirmeden önce OAuth bağlantısını kesin.",
+  "Access token (optional)": "Erişim belirteci (isteğe bağlı)",
+  "Add server": "Sunucu ekle",
+  Arguments: "Bağımsız değişkenler",
+  "Authorization cancelled.": "Yetkilendirme iptal edildi.",
+  "Authorization expired. Try again.": "Yetkilendirmenin süresi doldu. Tekrar deneyin.",
+  "Authorization failed. Try again.": "Yetkilendirme başarısız oldu. Tekrar deneyin.",
+  "Check status before retrying this server.":
+    "Bu sunucuyu yeniden denemeden önce durumunu kontrol edin.",
+  "Check the server fields.": "Sunucu alanlarını kontrol edin.",
+  Command: "Komut",
+  "Connect OAuth": "OAuth bağla",
+  "Could not update MCP server. Check status and retry.":
+    "MCP sunucusu güncellenemedi. Durumunu kontrol edip tekrar deneyin.",
+  "Reconnect OAuth": "OAuth yeniden bağla",
+  "Remove MCP server?": "MCP sunucusu kaldırılsın mı?",
+  "Runs on the connected instance.": "Bağlı örnekte çalışır.",
+  "Server name": "Sunucu adı",
+  "This server did not request browser authorization.":
+    "Bu sunucu tarayıcı yetkilendirmesi istemedi.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Bu sunucu zaten bağlı. Yeniden yetkilendirmek için önce bağlantısını kesin.",
+  Transport: "Aktarım",
+  "Slack workspaces": "Slack çalışma alanları",
+  "Slack installation is unavailable.": "Slack kurulumu kullanılamıyor.",
+  "Slack request unconfirmed": "Slack isteği doğrulanmadı",
+  "Slack authorization expired. Try again.":
+    "Slack yetkilendirmesinin süresi doldu. Tekrar deneyin.",
+  "Slack authorization cancelled. Try again.":
+    "Slack yetkilendirmesi iptal edildi. Tekrar deneyin.",
+  "Disconnect Slack?": "Slack bağlantısı kesilsin mi?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "Bot bu çalışma alanında mesaj almayı ve göndermeyi durduracak. Sohbet geçmişi CogineBot’ta kalır.",
+  "Bot unavailable": "Bot kullanılamıyor",
+  Unavailable: "Kullanılamıyor",
+  "Reconnect required": "Yeniden bağlantı gerekli",
+  "Bot for Slack": "Slack için bot",
+  "Connect Slack": "Slack’i bağla",
+  "Waiting for Slack authorization": "Slack yetkilendirmesi bekleniyor",
+  "Allow writing": "Yazmaya izin ver",
+  "Base URL": "Temel URL",
+  "Brain label": "Beyin etiketi",
+  Cloud: "Bulut",
+  Configured: "Yapılandırıldı",
+  "Connecting…": "Bağlanıyor…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "Bellek ayarları güncellenemedi. Geçerli durumu kontrol etmek için yeniden yükleyin.",
+  "Default scope": "Varsayılan kapsam",
+  "Inherit default": "Varsayılanı devral",
+  "Instance API key": "Örnek API anahtarı",
+  Isolated: "Yalıtılmış",
+  Local: "Yerel",
+  "MCP endpoint": "MCP uç noktası",
+  "Memory scope": "Bellek kapsamı",
+  "Organization API key": "Kuruluş API anahtarı",
+  Provider: "Sağlayıcı",
 
   "Left channel": "Kanaldan ayrıldı",
   "Agent connections": "Ajan bağlantıları",

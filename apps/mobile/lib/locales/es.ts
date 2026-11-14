@@ -3,6 +3,66 @@ export const ES_MESSAGES: Record<string, string> = {
   "Choose backup folder": "Elegir carpeta de copia de seguridad",
   "Could not read the complete folder. Choose a backup archive instead.":
     "No se pudo leer la carpeta completa. Elige un archivo de copia de seguridad.",
+  "Cancel creation": "Cancelar creación",
+  "Created server is no longer available. Review the draft.":
+    "El servidor creado ya no está disponible. Revisa el borrador.",
+  "Disconnect OAuth before authorizing from another app.":
+    "Desconecta OAuth antes de autorizar desde otra aplicación.",
+  "Access token (optional)": "Token de acceso (opcional)",
+  "Add server": "Añadir servidor",
+  Arguments: "Argumentos",
+  "Authorization cancelled.": "Autorización cancelada.",
+  "Authorization expired. Try again.": "La autorización ha caducado. Inténtalo de nuevo.",
+  "Authorization failed. Try again.": "Error de autorización. Inténtalo de nuevo.",
+  "Check status before retrying this server.":
+    "Comprueba el estado antes de reintentar este servidor.",
+  "Check the server fields.": "Revisa los campos del servidor.",
+  Command: "Comando",
+  "Connect OAuth": "Conectar OAuth",
+  "Could not update MCP server. Check status and retry.":
+    "No se pudo actualizar el servidor MCP. Comprueba el estado y reinténtalo.",
+  "Reconnect OAuth": "Reconectar OAuth",
+  "Remove MCP server?": "¿Eliminar el servidor MCP?",
+  "Runs on the connected instance.": "Se ejecuta en la instancia conectada.",
+  "Server name": "Nombre del servidor",
+  "This server did not request browser authorization.":
+    "Este servidor no solicitó autorización en el navegador.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Este servidor ya está conectado. Desconéctalo antes de volver a autorizarlo.",
+  Transport: "Transporte",
+  "Slack workspaces": "Espacios de trabajo de Slack",
+  "Slack installation is unavailable.": "La instalación de Slack no está disponible.",
+  "Slack request unconfirmed": "Solicitud a Slack sin confirmar",
+  "Slack authorization expired. Try again.":
+    "La autorización de Slack ha caducado. Inténtalo de nuevo.",
+  "Slack authorization cancelled. Try again.":
+    "La autorización de Slack se ha cancelado. Inténtalo de nuevo.",
+  "Disconnect Slack?": "¿Desconectar Slack?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "El bot dejará de recibir y enviar mensajes en este espacio de trabajo. El historial de conversaciones se conserva en CogineBot.",
+  "Bot unavailable": "Bot no disponible",
+  Unavailable: "No disponible",
+  "Reconnect required": "Es necesario volver a conectar",
+  "Bot for Slack": "Bot para Slack",
+  "Connect Slack": "Conectar Slack",
+  "Waiting for Slack authorization": "Esperando la autorización de Slack",
+  "Allow writing": "Permitir escritura",
+  "Base URL": "URL base",
+  "Brain label": "Etiqueta del cerebro",
+  Cloud: "Nube",
+  Configured: "Configurado",
+  "Connecting…": "Conectando…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "No se pudieron actualizar los ajustes de memoria. Recarga para comprobar el estado actual.",
+  "Default scope": "Ámbito predeterminado",
+  "Inherit default": "Heredar predeterminado",
+  "Instance API key": "Clave API de la instancia",
+  Isolated: "Aislado",
+  Local: "Local",
+  "MCP endpoint": "Punto de conexión MCP",
+  "Memory scope": "Ámbito de memoria",
+  "Organization API key": "Clave API de la organización",
+  Provider: "Proveedor",
 
   "Left channel": "Canal abandonado",
   "Always act": "Actuar siempre",

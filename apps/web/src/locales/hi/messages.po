@@ -7535,3 +7535,8 @@ msgstr "शेड्यूल के स्वामी की पुष्ट�
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "आयात की गई रूटीन रुकी हुई स्थिति में शुरू होती हैं।"
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "किसी अन्य ऐप से अधिकृत करने से पहले OAuth डिस्कनेक्ट करें।"

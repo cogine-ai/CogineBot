@@ -7535,3 +7535,8 @@ msgstr "Zamanlamanın sahibi doğrulanamadı."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "İçe aktarılan rutinler duraklatılmış olarak başlar."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Başka bir uygulamadan yetkilendirmeden önce OAuth bağlantısını kesin."

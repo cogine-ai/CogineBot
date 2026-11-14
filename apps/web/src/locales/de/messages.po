@@ -7591,3 +7591,8 @@ msgstr "Der Eigentümer des Zeitplans konnte nicht bestätigt werden."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Importierte Routinen sind zunächst pausiert."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Vor der Autorisierung aus einer anderen App OAuth trennen."

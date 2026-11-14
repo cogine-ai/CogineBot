@@ -7535,3 +7535,8 @@ msgstr "Impossible de confirmer le propriétaire de la programmation."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Les routines importées sont initialement en pause."
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "Déconnectez OAuth avant d’autoriser depuis une autre application."

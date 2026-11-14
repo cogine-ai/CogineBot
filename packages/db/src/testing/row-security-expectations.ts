@@ -1,16 +1,16 @@
 import { readFileSync } from "node:fs";
 import { expect } from "vitest";
 
-// Schema is independent of the runtime registry under test.
-const source = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
-export const schemaPolicyTables = [...source.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)].map(
+// Independent of the runtime registry: missing registrations must fail coverage.
+const schema = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
+export const schemaPolicyTables = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)].map(
   ([, model, body]) => ({
     model: model!,
-    table: body!.match(/@@map\("([^"]+)"\)/)?.[1] ?? model!,
-    schema: body!.match(/@@schema\("([^"]+)"\)/)?.[1] ?? "public",
+    table: body!.match(/@@map\(\s*"([^"]+)"\s*\)/)?.[1] ?? model!,
+    schema: body!.match(/@@schema\(\s*"([^"]+)"\s*\)/)?.[1] ?? "public",
   }),
 );
-// Explicitly reviewed system-only boundaries; never inferred from production predicates.
+// Reviewed system-only boundaries; schema alone cannot infer which tables expose tenant rows.
 const systemOnly = new Set([
   "verification",
   "rateLimit",
@@ -31,31 +31,46 @@ const systemOnly = new Set([
   "native_slack_event_inbox",
 ]);
 export function expectRegisteredPolicyTables(
-  rows: readonly { model: string; table: string; schema?: string }[],
+  registry: readonly { model: string; table: string; schema?: string }[],
 ) {
-  expect(
-    rows.map(({ model, table, schema = "public" }) => `${model}:${schema}.${table}`).sort(),
-  ).toEqual(
-    schemaPolicyTables.map(({ model, table, schema }) => `${model}:${schema}.${table}`).sort(),
-  );
-}
-export function expectPhysicalPolicyTables(rows: { schema: string; table: string }[]) {
-  expect(rows.map((r) => `${r.schema}.${r.table}`).sort()).toEqual(
-    schemaPolicyTables.map((r) => `${r.schema}.${r.table}`).sort(),
+  expect(schemaPolicyTables).toContainEqual({
+    model: "McpCreateRequest",
+    schema: "public",
+    table: "mcp_create_requests",
+  });
+  expect(schemaPolicyTables).toContainEqual({
+    model: "RoutineMutation",
+    schema: "public",
+    table: "routine_mutations",
+  });
+  const normalized = registry.map(({ model, table, schema = "public" }) => ({
+    model,
+    table,
+    schema,
+  }));
+  expect(normalized.sort((a, b) => a.model.localeCompare(b.model))).toEqual(
+    [...schemaPolicyTables].sort((a, b) => a.model.localeCompare(b.model)),
   );
 }
 export function expectExactPolicyCatalog(
-  rows: { schema: string; relname: string; polname: string }[],
+  rows: { schema: string; table: string; policy: string }[],
 ) {
-  expect(rows.map((r) => `${r.schema}.${r.relname}.${r.polname}`).sort()).toEqual(
-    schemaPolicyTables
-      .flatMap(({ schema, table }) => [
-        `${schema}.${table}.${table}_system`,
-        ...(systemOnly.has(table) ? [] : [`${schema}.${table}.${table}_tenant`]),
-      ])
-      .sort(),
+  const expected = schemaPolicyTables
+    .flatMap(({ schema, table }) => [
+      `${schema}.${table}.${table}_system`,
+      ...(systemOnly.has(table) ? [] : [`${schema}.${table}.${table}_tenant`]),
+    ])
+    .sort();
+  expect(rows.map(({ schema, table, policy }) => `${schema}.${table}.${policy}`).sort()).toEqual(
+    expected,
   );
 }
+export function expectPhysicalPolicyTables(rows: { schema: string; table: string }[]) {
+  expect(rows.map(({ schema, table }) => `${schema}.${table}`).sort()).toEqual(
+    schemaPolicyTables.map(({ schema, table }) => `${schema}.${table}`).sort(),
+  );
+}
+
 export function isolatedDatabaseUrl() {
   const raw = process.env.DATABASE_URL;
   if (!raw) throw new Error("An isolated harness database is required");
