@@ -1639,4 +1639,15 @@ export const RU_MESSAGES: Record<string, string> = {
   days: "дни",
   Edit: "Редактировать",
   Resume: "Возобновить",
+  "Open work": "Открытые задачи",
+  "None yet": "Пока нет",
+  Complete: "Завершить",
+  Park: "Отложить",
+  Parked: "Отложено",
+  Reopen: "Открыть снова",
+  "New open-work item": "Новая открытая задача",
+  "Add item": "Добавить задачу",
+  "Could not load open work": "Не удалось загрузить открытые задачи",
+  "Could not save. Refresh before trying again.":
+    "Не удалось сохранить. Обновите перед повторной попыткой.",
 };
