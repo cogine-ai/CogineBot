@@ -9,6 +9,36 @@ import { FakeSandboxProvider } from "@rakazo/adapters";
 /** A model must not receive successful shell results for commands the fixture never ran. */
 export class EvalSandboxProvider extends FakeSandboxProvider {
   readonly harnessIssues: string[] = [];
+  readonly fileReads: Array<{ path: string; succeeded: boolean }> = [];
+
+  constructor(private readonly seedFiles: Readonly<Record<string, string>> = {}) {
+    super();
+  }
+
+  override async provision(
+    request: Parameters<FakeSandboxProvider["provision"]>[0],
+    context: AdapterContext,
+  ) {
+    const computer = await super.provision(request, context);
+    if (computer.fresh) {
+      for (const [path, content] of Object.entries(this.seedFiles)) {
+        await this.writeFile(
+          computer,
+          { path, content: new TextEncoder().encode(content) },
+          context,
+        );
+      }
+    }
+    return computer;
+  }
+
+  override async readFile(...args: Parameters<FakeSandboxProvider["readFile"]>) {
+    const read = { path: args[1], succeeded: false };
+    if (Object.keys(this.seedFiles).length) this.fileReads.push(read);
+    const content = await super.readFile(...args);
+    read.succeeded = true;
+    return content;
+  }
 
   override async *execute(
     computer: ComputerRef,
