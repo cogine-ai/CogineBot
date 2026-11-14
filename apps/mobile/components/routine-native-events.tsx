@@ -74,7 +74,7 @@ export function RoutineNativeEventFields({
           ...accounts.map((row) => ({ key: row.id, label: row.displayName })),
         ]}
         onChange={(id) => {
-          if (!disabled && accounts.some((row) => row.id === id))
+          if (!disabled && id !== draft.connectionId && accounts.some((row) => row.id === id))
             onChange(resetNativeRoutineTriggerDraft(draft, id));
         }}
       />
@@ -91,7 +91,7 @@ export function RoutineNativeEventFields({
         ]}
         onChange={(value) => {
           const kind = kinds.find((kind) => kind === value);
-          if (!locked && kind)
+          if (!locked && kind && kind !== draft.kind)
             onChange(resetNativeRoutineTriggerDraft(draft, draft.connectionId, kind));
         }}
       />
@@ -109,7 +109,11 @@ export function RoutineNativeEventFields({
               { key: "instance", label: t("Recurring instance") },
             ]}
             onChange={(value) => {
-              if (!locked && ["calendar", "single", "series", "instance"].includes(value))
+              if (
+                !locked &&
+                value !== draft.calendarTarget &&
+                ["calendar", "single", "series", "instance"].includes(value)
+              )
                 onChange({
                   ...draft,
                   calendarTarget: value as NativeRoutineTriggerDraft["calendarTarget"],
@@ -140,6 +144,7 @@ export function RoutineNativeEventFields({
           onChange={(value) => {
             if (
               !locked &&
+              value !== draft.notionTarget &&
               (properties ? ["page", "data_source"] : ["page", "block", "discussion"]).includes(
                 value,
               )

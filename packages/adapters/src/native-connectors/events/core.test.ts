@@ -319,6 +319,7 @@ test("replaces native triggers from a tenant while global metadata stays a narro
         "routine-a",
         [{ input: { connectionId: binding.connectionId, spec }, proof }],
         NOW,
+        [{ id: row().id, version: row().version }],
       );
       assert.equal(saved.length, 1);
       assert.deepEqual(currentDbContext(), { kind: "tenant", ...scope });
@@ -600,7 +601,11 @@ test("unchanged save preserves cursor, armedAt and generation; no update", async
 test("batch empty cannot remove the final Routine trigger", async () => {
   const { db } = database({ hasOtherTrigger: false });
   await assert.rejects(
-    db.$transaction((tx) => replaceNativeRoutineTriggersTx(tx, scope, "routine-a", [], NOW)),
+    db.$transaction((tx) =>
+      replaceNativeRoutineTriggersTx(tx, scope, "routine-a", [], NOW, [
+        { id: row().id, version: row().version },
+      ]),
+    ),
     /Add a schedule/,
   );
 });

@@ -7,7 +7,7 @@ import {
 } from "@rakazo/core";
 import { nativeRoutineTriggerInputs } from "@rakazo/core/routine-native-events";
 import type { RoutineTriggerDraft } from "@rakazo/core/routine-trigger-patch";
-import { routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
+import { newRoutineMutationId, routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, ScrollView, Text, View } from "react-native";
@@ -39,6 +39,7 @@ type RoutineOwner = {
   key: string;
   mutationError?: string;
   createdRoutineId?: string;
+  saveMutationId?: string;
 };
 
 type RoutineScope = MobileScope & {
@@ -370,14 +371,26 @@ export default function RoutineDetail() {
           await rpc("bots/rotateWebhookSecret", { botId }, { requestContext });
         if (!current(scope)) return;
       }
+      if (!scope || !current(scope)) return;
+      scope.owner.saveMutationId ??= newRoutineMutationId();
+      const mutationId = scope.owner.saveMutationId;
       const saved = await rpc<Routine>(
         routine ? "routines/update" : "routines/create",
         routine
-          ? { routineId: routine.id, ...fields, ...triggerFields }
-          : { botId, ...fields, ...triggerFields, timezone, active: true, notify: true },
+          ? { routineId: routine.id, ...fields, ...triggerFields, mutationId }
+          : {
+              botId,
+              ...fields,
+              ...triggerFields,
+              timezone,
+              active: true,
+              notify: true,
+              mutationId,
+            },
         { requestContext },
       );
       if (!scope || scope.owner !== routeOwner.current || !isMobileScopeCurrent(scope)) return;
+      delete scope.owner.saveMutationId;
       if (!routine) {
         // An acknowledged create belongs to the intent, not the focus that sent it.
         // Retain its identity until navigation replaces this owner; never replay it.

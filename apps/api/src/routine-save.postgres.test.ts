@@ -1,0 +1,458 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Actor, Bot, NativeRoutineTrigger, Routine } from "@rakazo/contracts";
+import { nativeEventApp, nativeEventResource } from "@rakazo/contracts";
+import { draftFromNativeRoutineTrigger } from "@rakazo/core/routine-native-events";
+import { routineTriggerDraft, routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
+import { createDb } from "@rakazo/db";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { NativeEventResourceVerifier } from "../../../packages/adapters/src/native-connectors/events/resource-verifier.js";
+import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
+import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
+import { createApp } from "./app.js";
+
+const describePostgres =
+  process.env.VERIFY_DATABASE === "1" && process.env.DATABASE_URL
+    ? describe.sequential
+    : describe.skip;
+const origin = "http://127.0.0.1:5173";
+
+describePostgres("routine save transaction regressions", () => {
+  let database: ReturnType<typeof createDb>;
+  let handles: Awaited<ReturnType<typeof createApp>>;
+  let dataDir: string;
+  let beforePrepare: (() => Promise<void>) | undefined;
+
+  beforeAll(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "routine-history-acceptance-"));
+    database = createDb(process.env.DATABASE_URL!);
+    handles = await createApp({
+      prisma: database.prisma,
+      databaseUrl: process.env.DATABASE_URL!,
+      dataDir,
+      sandboxProvider: "fake",
+      agentRuntime: "scripted",
+      wakeupDriver: "memory",
+      signupsEnabled: "true",
+      encryptionKey: "offline-routine-history-test-key",
+      webOrigin: origin,
+      authUrl: origin,
+    });
+    vi.spyOn(handles.jobs, "enqueue").mockResolvedValue(undefined as never);
+    vi.spyOn(NativeEventResourceVerifier.prototype, "prepare").mockImplementation(
+      async (scope, input) => {
+        await beforePrepare?.();
+        const c = await database.prisma.connection.findUniqueOrThrow({
+          where: { id: input.connectionId },
+          include: { oauthGrant: true, nativeConfig: true },
+        });
+        const g = c.oauthGrant!;
+        return {
+          input,
+          proof: {
+            ...scope,
+            connectionId: c.id,
+            authorizationRevision: `${g.id}:${g.authGeneration}`,
+            grantId: g.id,
+            authGeneration: g.authGeneration,
+            configId: c.nativeConfig!.id,
+            configRevision: c.nativeConfig!.revision,
+            appId: nativeEventApp(input.spec),
+            resource: nativeEventResource(input.spec),
+            spec: input.spec,
+          },
+        };
+      },
+    );
+  });
+  afterAll(async () => {
+    await handles?.stop();
+    await database?.prisma.$disconnect();
+    await database?.pool.end();
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  });
+
+  function raw(cookie: string, procedure: string, input: unknown = {}, spaceId?: string) {
+    return handles.app.request(`/rpc/${procedure}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        ...(cookie ? { cookie } : {}),
+        ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
+      },
+      body: JSON.stringify({ json: input }),
+    });
+  }
+  async function rpc<T>(cookie: string, procedure: string, input: unknown = {}, spaceId?: string) {
+    const response = await raw(cookie, procedure, input, spaceId);
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${procedure}: ${response.status} ${text}`);
+    const result = (JSON.parse(text) as { json: T }).json;
+    return discardBotIntroFromCreate(handles, cookie, procedure, result);
+  }
+  async function account() {
+    const response = await handles.app.request("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: JSON.stringify({
+        email: `routine-history-${randomUUID()}@example.test`,
+        password: "password12",
+        name: "Routine history tester",
+      }),
+    });
+    expect(response.ok).toBe(true);
+    const cookie = sessionCookieHeader(response);
+    const actor = await rpc<Actor>(cookie, "me");
+    return { cookie, actor };
+  }
+  async function fixture() {
+    const owner = await account();
+    const bot = await rpc<Bot>(owner.cookie, "bots/create", { name: "History bot" });
+    const routine = await rpc<Routine>(owner.cookie, "routines/create", {
+      botId: bot.id,
+      name: "History routine",
+      prompt: "Record a synthetic observation",
+      crons: ["0 9 * * *"],
+    });
+    const thread = await database.prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    return { ...owner, bot, routine, thread };
+  }
+
+  async function connected(
+    owner: Awaited<ReturnType<typeof fixture>>,
+    provider = "google-calendar",
+  ) {
+    const scope = { userId: owner.actor.userId, spaceId: owner.actor.spaceId };
+    const config = await database.prisma.nativeAppConfig.create({
+      data: {
+        appId: provider,
+        label: "Synthetic acceptance",
+        ownership: "byo",
+        credentialKind: "oauth",
+        callbackUri: "https://example.test/callback",
+        config: {},
+      },
+    });
+    const secret = await database.prisma.secret.create({
+      data: { ...scope, kind: "native_grant", ciphertext: "synthetic-never-used" },
+    });
+    const grant = await database.prisma.nativeOAuthGrant.create({
+      data: {
+        ...scope,
+        id: randomUUID(),
+        configId: config.id,
+        configRevision: config.revision,
+        authority: "https://example.test",
+        subject: "synthetic",
+        secretId: secret.id,
+        scopes: [],
+      },
+    });
+    const c = await database.prisma.connection.create({
+      data: {
+        ...scope,
+        connectorId: "native",
+        provider,
+        providerRef: grant.id,
+        displayName: "Synthetic",
+        status: "connected",
+        oauthGrantId: grant.id,
+        nativeConfigId: config.id,
+        nativeConfigRevision: config.revision,
+        metadata: { authRevision: `${grant.id}:${grant.authGeneration}` },
+      },
+    });
+    return (id: string) => ({
+      connectionId: c.id,
+      spec: {
+        kind: "calendar.event_changed" as const,
+        calendarId: id,
+        target: { kind: "calendar" as const },
+      },
+    });
+  }
+  const inputOf = (t: NativeRoutineTrigger) => ({
+    id: t.id,
+    expectedVersion: t.version,
+    connectionId: t.connectionId,
+    spec: t.spec,
+  });
+  async function update(o: Awaited<ReturnType<typeof fixture>>, input: Record<string, unknown>) {
+    return rpc<Routine>(o.cookie, "routines/update", { routineId: o.routine.id, ...input });
+  }
+  it("sparse update preserves concurrent schedule, model, pause and external flags", async () => {
+    const o = await fixture();
+    await database.prisma.routine.update({
+      where: { id: o.routine.id },
+      data: {
+        active: false,
+        modelProvider: "synthetic",
+        modelId: "synthetic-model",
+        crons: ["30 6 * * *"],
+        githubEnabled: true,
+      },
+    });
+    const v = await update(o, { webhookEnabled: true });
+    expect(v).toMatchObject({
+      active: false,
+      modelProvider: "synthetic",
+      modelId: "synthetic-model",
+      crons: ["30 6 * * *"],
+      githubEnabled: true,
+      webhookEnabled: true,
+    });
+    const stranger = await account();
+    expect(
+      (
+        await raw(stranger.cookie, "routines/update", {
+          routineId: o.routine.id,
+          webhookEnabled: false,
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (await raw("", "routines/update", { routineId: o.routine.id, webhookEnabled: false })).status,
+    ).toBe(401);
+  });
+  it("stale event edit must preserve a concurrently added second trigger", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { active: false, nativeTriggers: [make("calendar-a")] });
+    const draft = routineTriggerDraft(initial);
+    draft.nativeTriggers![0]!.calendarId = "calendar-a-edited";
+    await update(o, { nativeTriggers: [inputOf(initial.nativeTriggers![0]!), make("calendar-b")] });
+    const response = await raw(o.cookie, "routines/update", {
+      routineId: o.routine.id,
+      ...routineTriggerPatch(initial, draft),
+    });
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(
+      response.status === 409 && read.nativeTriggers!.length === 2,
+      "must conflict or retain unseen trigger B",
+    ).toBe(true);
+  });
+  it("stale remove-all must not erase a concurrently edited trigger", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { active: false, nativeTriggers: [make("calendar-a")] });
+    await update(o, {
+      nativeTriggers: [
+        { ...inputOf(initial.nativeTriggers![0]!), spec: make("calendar-new").spec },
+      ],
+    });
+    const draft = routineTriggerDraft(initial);
+    draft.nativeTriggers = [];
+    const response = await raw(o.cookie, "routines/update", {
+      routineId: o.routine.id,
+      ...routineTriggerPatch(initial, draft),
+    });
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(
+      response.status === 409 && read.nativeTriggers!.length === 1,
+      "must conflict or retain concurrently updated trigger",
+    ).toBe(true);
+  });
+  it("lost create response and retry should retain one routine identity", async () => {
+    const o = await fixture();
+    const input = {
+      mutationId: randomUUID(),
+      botId: o.bot.id,
+      name: "lost-response",
+      prompt: "Synthetic",
+      crons: [],
+      webhookEnabled: true,
+      active: false,
+    };
+    const first = await raw(o.cookie, "routines/create", input);
+    expect(first.ok).toBe(true);
+    // Response deliberately discarded, as when transport drops after commit.
+    const retried = await rpc<Routine>(o.cookie, "routines/create", input);
+    const all = await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id });
+    expect(all.filter((r) => r.name === "lost-response").map((r) => r.id)).toEqual([retried.id]);
+  });
+  it("stale included version conflicts atomically and disconnected account is rejected", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { active: false, nativeTriggers: [make("calendar-a")] });
+    const item = inputOf(initial.nativeTriggers![0]!);
+    await update(o, { nativeTriggers: [{ ...item, spec: make("calendar-b").spec }] });
+    expect(
+      (
+        await raw(o.cookie, "routines/update", {
+          routineId: o.routine.id,
+          name: "must-not-save",
+          nativeTriggers: [item],
+        })
+      ).status,
+    ).toBe(409);
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(read.name).not.toBe("must-not-save");
+    await database.prisma.connection.update({
+      where: { id: item.connectionId },
+      data: { status: "disconnected" },
+    });
+    expect(
+      (
+        await raw(o.cookie, "routines/update", {
+          routineId: o.routine.id,
+          nativeTriggers: [inputOf(read.nativeTriggers![0]!)],
+        })
+      ).status,
+    ).toBe(400);
+  });
+
+  it("lost update response: added trigger identity must survive identical retry", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { active: false, nativeTriggers: [make("calendar-a")] });
+    const draft = routineTriggerDraft(initial);
+    const added = draftFromNativeRoutineTrigger({
+      ...initial.nativeTriggers![0],
+      id: "temporary",
+      spec: make("calendar-b").spec,
+    });
+    delete added.id;
+    delete added.expectedVersion;
+    draft.nativeTriggers.push(added);
+    const patch = { ...routineTriggerPatch(initial, draft), mutationId: randomUUID() };
+    const first = await update(o, patch);
+    const addedId = first.nativeTriggers!.find(
+      (t) => t.spec.kind === "calendar.event_changed" && t.spec.calendarId === "calendar-b",
+    )!.id;
+    await database.prisma.nativeRoutineTrigger.update({
+      where: { id: addedId },
+      data: { state: { cursor: "retained" }, leaseId: "synthetic-lease" },
+    });
+    const before = await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({
+      where: { id: addedId },
+    });
+    const second = await update(o, patch);
+    expect(
+      await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: addedId } }),
+    ).toEqual(before);
+    expect(
+      second.nativeTriggers!.map((t) => t.id).sort(),
+      "retry must not delete/recreate the just-added trigger",
+    ).toEqual(first.nativeTriggers!.map((t) => t.id).sort());
+  });
+  it("simultaneous identical creates commit one identity; changed, foreign, and deleted replays are safe", async () => {
+    const o = await fixture();
+    const input = {
+      mutationId: randomUUID(),
+      botId: o.bot.id,
+      name: "Concurrent",
+      prompt: "Synthetic",
+      crons: ["0 9 * * *"],
+    };
+    const saved = await Promise.all([
+      rpc<Routine>(o.cookie, "routines/create", input),
+      rpc<Routine>(o.cookie, "routines/create", input),
+    ]);
+    expect(saved[0]!.id).toBe(saved[1]!.id);
+    expect((await raw(o.cookie, "routines/create", { ...input, prompt: "Changed" })).status).toBe(
+      409,
+    );
+    const other = await account();
+    expect((await raw(other.cookie, "routines/create", input)).status).toBe(404);
+    const space = await rpc<{ id: string }>(o.cookie, "spaces/create", { name: "Other scope" });
+    expect((await raw(o.cookie, "routines/create", input, space.id)).status).toBe(404);
+    await rpc(o.cookie, "routines/remove", { routineId: saved[0]!.id });
+    expect((await raw(o.cookie, "routines/create", input)).status).toBe(404);
+    expect(await database.prisma.routine.count({ where: { id: saved[0]!.id } })).toBe(0);
+  });
+  it("racing distinct event writes under real transactions cannot lose an addition", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { nativeTriggers: [make("calendar-a")] });
+    const a = routineTriggerDraft(initial),
+      b = routineTriggerDraft(initial);
+    a.nativeTriggers[0]!.calendarId = "edited-a";
+    const added = draftFromNativeRoutineTrigger({
+      ...initial.nativeTriggers![0]!,
+      id: "temporary",
+      spec: make("calendar-b").spec,
+    });
+    delete added.id;
+    delete added.expectedVersion;
+    b.nativeTriggers.push(added);
+    const responses = await Promise.all(
+      [a, b].map((d) =>
+        raw(o.cookie, "routines/update", {
+          routineId: o.routine.id,
+          ...routineTriggerPatch(initial, d),
+          mutationId: randomUUID(),
+        }),
+      ),
+    );
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(read.nativeTriggers!.length).toBe(responses[1]!.ok ? 2 : 1);
+  });
+  it("rejects legacy blind removals and rolls back its receipt and ordinary fields", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { nativeTriggers: [make("calendar-a")] });
+    const mutationId = randomUUID();
+    expect(
+      (
+        await raw(o.cookie, "routines/update", {
+          routineId: o.routine.id,
+          mutationId,
+          name: "must rollback",
+          nativeTriggers: [],
+        })
+      ).status,
+    ).toBe(409);
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(read.name).toBe(initial.name);
+    // A failed transaction leaves no receipt; corrected request can use the intent.
+    const removed = await update(o, {
+      mutationId,
+      nativeTriggers: [],
+      nativeTriggerBaseline: initial.nativeTriggers!.map(({ id, version }) => ({ id, version })),
+    });
+    expect(removed.nativeTriggers).toEqual([]);
+  });
+
+  it("rechecks the entire baseline after resource verification pauses across another commit", async () => {
+    const o = await fixture(),
+      make = await connected(o);
+    const initial = await update(o, { nativeTriggers: [make("calendar-a")] });
+    const draft = routineTriggerDraft(initial);
+    draft.nativeTriggers[0]!.calendarId = "edited-a";
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    beforePrepare = async () => {
+      beforePrepare = undefined;
+      entered();
+      await gate;
+    };
+    const stale = raw(o.cookie, "routines/update", {
+      routineId: o.routine.id,
+      name: "must rollback",
+      ...routineTriggerPatch(initial, draft),
+    });
+    await waiting;
+    try {
+      await update(o, {
+        nativeTriggers: [inputOf(initial.nativeTriggers![0]!), make("calendar-b")],
+      });
+    } finally {
+      release();
+      beforePrepare = undefined;
+    }
+    expect((await stale).status).toBe(409);
+    const read = (await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!;
+    expect(read.nativeTriggers).toHaveLength(2);
+    expect(read.name).toBe(initial.name);
+  });
+});

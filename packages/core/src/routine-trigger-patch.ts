@@ -26,6 +26,7 @@ export function routineTriggerDraft(routine: Routine): RoutineTriggerDraft {
 export function routineTriggerPatch(routine: Routine, draft: RoutineTriggerDraft) {
   const patch: Partial<Pick<Routine, "webhookEnabled" | "githubEnabled" | "messageProvider">> & {
     nativeTriggers?: NativeRoutineTriggerInput[];
+    nativeTriggerBaseline?: Array<{ id: string; version: number }>;
   } = {};
   for (const key of ["webhookEnabled", "githubEnabled"] as const) {
     if (draft[key] !== routine[key]) patch[key] = draft[key];
@@ -43,6 +44,7 @@ export function routineTriggerPatch(routine: Routine, draft: RoutineTriggerDraft
     draft.nativeTriggers.length !== original.length ||
     draft.nativeTriggers.some((item, index) => !unchanged(item) || item.id !== original[index]?.id)
   ) {
+    patch.nativeTriggerBaseline = original.map(({ id, version }) => ({ id, version }));
     patch.nativeTriggers = draft.nativeTriggers.map((item) => {
       const saved = unchanged(item);
       if (saved)
@@ -63,4 +65,12 @@ export function routineTriggerPatch(routine: Routine, draft: RoutineTriggerDraft
   )
     throw new Error("Invalid application event");
   return patch;
+}
+
+/** Save identity, not a credential; works in native runtimes and non-secure Web contexts. */
+export function newRoutineMutationId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `routine-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  );
 }

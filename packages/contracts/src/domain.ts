@@ -527,9 +527,15 @@ export const RoutineSchema = z.object({
 });
 export type Routine = z.infer<typeof RoutineSchema>;
 
+export const NativeRoutineTriggerBaselineSchema = z
+  .array(z.object({ id: Id, version: z.number().int().positive() }))
+  .max(20)
+  .refine((items) => new Set(items.map((item) => item.id)).size === items.length);
+
 export const CreateRoutineInput = z
   .object({
     botId: Id,
+    mutationId: z.string().min(16).max(128).optional(),
     nativeTriggers: NativeRoutineTriggersInputSchema.default([]),
     name: z.string().min(1).max(80),
     prompt: z.string().min(1),

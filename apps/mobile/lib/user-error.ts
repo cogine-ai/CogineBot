@@ -7,6 +7,11 @@ export function errorText(
   error: unknown,
   fallback = t("Something went wrong. Try again."),
 ): string {
+  if (
+    error instanceof Error &&
+    error.message === "Save intent changed. Restore the previous save and retry."
+  )
+    return t("Restore the previous save and retry.");
   return userErrorMessage(error, { fallback, offline: t("Could not reach the server") });
 }
 

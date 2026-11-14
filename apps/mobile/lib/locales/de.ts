@@ -1,4 +1,6 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Restore the previous save and retry.":
+    "Stelle die vorherige Speicherung wieder her und versuche es erneut.",
   "Connect an account": "Konto verbinden",
   "Add application event": "Anwendungsereignis hinzufügen",
   "Anchor block ID": "Ankerblock-ID",

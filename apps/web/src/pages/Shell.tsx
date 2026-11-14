@@ -6774,9 +6774,17 @@ export function ShellPage() {
                         runAt = parsed.toISOString();
                       }
                       saved = await rpc.routines.update({
+                        mutationId: routineDraft.mutationId,
                         routineId: targetRoutine.id,
                         ...modelPatch,
-                        ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
+                        ...(nativeResult?.success
+                          ? {
+                              nativeTriggers: nativeResult.data,
+                              nativeTriggerBaseline: (targetRoutine.nativeTriggers ?? []).map(
+                                ({ id, version }) => ({ id, version }),
+                              ),
+                            }
+                          : {}),
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
@@ -6788,6 +6796,7 @@ export function ShellPage() {
                       });
                     } else {
                       saved = await rpc.routines.create({
+                        mutationId: routineDraft.mutationId,
                         botId: targetBotId,
                         ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),

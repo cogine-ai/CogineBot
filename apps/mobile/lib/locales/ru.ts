@@ -1,4 +1,6 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Restore the previous save and retry.":
+    "Восстановите предыдущие сохраняемые данные и повторите попытку.",
   "Connect an account": "Подключить аккаунт",
   "Add application event": "Добавить событие приложения",
   "Anchor block ID": "ID опорного блока",

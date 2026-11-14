@@ -563,6 +563,38 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     }
   }, 20_000);
 
+  it("isolates save receipts by both authenticated user and Space", async () => {
+    const rows = [
+      { id: id("receipt-own"), userId: userA, spaceId: spaceA },
+      { id: id("receipt-user"), userId: userB, spaceId: spaceA },
+      { id: id("receipt-space"), userId: userA, spaceId: spaceB },
+    ];
+    await owner.prisma.routineMutation.createMany({
+      data: rows.map((row) => ({ ...row, requestHash: "synthetic" })),
+    });
+    try {
+      expect(await runtime!.prisma.routineMutation.findMany()).toEqual([]);
+      const visible = await inA(() => runtime!.prisma.routineMutation.findMany());
+      expect(visible.map((row) => row.id)).toEqual([id("receipt-own")]);
+      await inA(() =>
+        rejectedByPolicy(
+          runtime!.prisma.routineMutation.create({
+            data: {
+              id: id("receipt-forged"),
+              userId: userB,
+              spaceId: spaceA,
+              requestHash: "synthetic",
+            },
+          }),
+        ),
+      );
+    } finally {
+      await owner.prisma.routineMutation.deleteMany({
+        where: { id: { in: rows.map((row) => row.id) } },
+      });
+    }
+  });
+
   it("installs the exact schema-wide policy set for a real restricted connection", async () => {
     expect(beforePolicies.policyInstalled).toBe(false);
     expect(installed).toMatchObject({
@@ -589,7 +621,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(161);
+    expect(snapshot).toHaveLength(163);
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1603,7 +1635,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(161);
+        expect((await catalog()).length).toBe(163);
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -1896,7 +1928,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(161);
+        expect(committed).toHaveLength(163);
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -1942,7 +1974,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(161);
+      expect(committed).toHaveLength(163);
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

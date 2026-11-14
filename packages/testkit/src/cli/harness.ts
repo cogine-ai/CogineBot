@@ -58,6 +58,8 @@ async function main() {
   const pageShareSuite = "apps/api/src/page-shares.postgres.test.ts";
   const pageDeletionSuite = "packages/testkit/src/page-deletion.postgres.test.ts";
   const suites = [
+    "apps/api/src/routine-save.postgres.test.ts",
+    "packages/db/src/routine-mutation-migration.postgres.test.ts",
     "packages/testkit/src/pi-offline.postgres.test.ts",
     "packages/testkit/src/pi-lazy-computer.postgres.test.ts",
     "packages/testkit/src/reply-announcements.postgres.test.ts",

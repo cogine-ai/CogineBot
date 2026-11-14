@@ -1,13 +1,17 @@
 import type { NativeRoutineEventSpec, Routine } from "@rakazo/contracts";
-import { CreateRoutineInput } from "@rakazo/contracts";
-import { expect, it } from "vitest";
+import { CreateRoutineInput, NativeRoutineEventKindSchema } from "@rakazo/contracts";
+import { expect, it, vi } from "vitest";
 import triggerFixtures from "../../testkit/src/routine-trigger-fixtures.json" with { type: "json" };
 import {
   draftFromNativeRoutineTrigger,
   NATIVE_ROUTINE_EVENT_KINDS,
   nativeRoutineTriggerInputs,
 } from "./routine-native-events.js";
-import { routineTriggerDraft, routineTriggerPatch } from "./routine-trigger-patch.js";
+import {
+  newRoutineMutationId,
+  routineTriggerDraft,
+  routineTriggerPatch,
+} from "./routine-trigger-patch.js";
 
 const routineTriggerSpecs = triggerFixtures.specs as NativeRoutineEventSpec[];
 function routineTriggerFixture(spec: NativeRoutineEventSpec) {
@@ -31,6 +35,12 @@ const routine = {
   nativeTriggers: [routineTriggerFixture({ kind: "gmail.message_received", labelIds: ["Z", "A"] })],
 } as Routine;
 
+it("picker matches the independent contract exactly without duplicates", () => {
+  expect([...NATIVE_ROUTINE_EVENT_KINDS].sort()).toEqual(
+    [...NativeRoutineEventKindSchema.options].sort(),
+  );
+  expect(new Set(NATIVE_ROUTINE_EVENT_KINDS).size).toBe(NATIVE_ROUTINE_EVENT_KINDS.length);
+});
 it("covers every Web-open application kind", () => {
   expect([...new Set(routineTriggerSpecs.map((spec) => spec.kind))].sort()).toEqual(
     [...NATIVE_ROUTINE_EVENT_KINDS].sort(),
@@ -78,7 +88,10 @@ for (const spec of routineTriggerSpecs) {
 it("removes events without replaying unrelated routine settings", () => {
   const draft = routineTriggerDraft(routine);
   draft.nativeTriggers = [];
-  expect(routineTriggerPatch(routine, draft)).toEqual({ nativeTriggers: [] });
+  expect(routineTriggerPatch(routine, draft)).toEqual({
+    nativeTriggers: [],
+    nativeTriggerBaseline: routine.nativeTriggers!.map(({ id, version }) => ({ id, version })),
+  });
   expect(routine.nativeTriggers).toHaveLength(1);
 });
 it("rejects invalid, duplicate and oversized drafts before update", () => {
@@ -96,4 +109,16 @@ it("rejects invalid, duplicate and oversized drafts before update", () => {
     labelIds: String(i),
   }));
   expect(() => routineTriggerPatch(routine, duplicate)).toThrow();
+});
+
+it("creates retry identities when native/Web crypto.randomUUID is unavailable", () => {
+  vi.stubGlobal("crypto", undefined);
+  try {
+    const first = newRoutineMutationId(),
+      second = newRoutineMutationId();
+    expect(first.length).toBeGreaterThanOrEqual(16);
+    expect(second).not.toBe(first);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

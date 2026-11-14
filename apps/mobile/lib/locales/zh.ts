@@ -1,4 +1,5 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Restore the previous save and retry.": "恢复上次保存的内容后重试。",
   "Connect an account": "连接账户",
   "Add application event": "添加应用事件",
   "Channel ID": "频道 ID",
