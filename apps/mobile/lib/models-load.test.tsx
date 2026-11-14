@@ -2910,3 +2910,90 @@ it("receipt-only recovery keeps activation current and failed reads keep the dra
   await act(async () => button("Pause").click());
   expect(saved.active).toBe(false);
 });
+
+it.each(["create", "update"])(
+  "%s retains added trigger identities through a lost metadata-only follow-up",
+  async (operation) => {
+    if (operation === "create") state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    triggerSettings({
+      accounts: [
+        {
+          id: "fixture-connection",
+          connectorId: "native",
+          provider: "google-calendar",
+          status: "connected",
+          displayName: "Synthetic",
+        },
+      ],
+    });
+    const connected = state.rpc.getMockImplementation()!;
+    let saved = { ...(await normal("routines/list"))[0], nativeTriggers: [] as any[] };
+    const receipts = new Set<string>();
+    const writes: any[] = [];
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path !== "routines/create" && path !== "routines/update")
+        return connected(path, input, options);
+      if (receipts.has(input.mutationId))
+        return {
+          ...saved,
+          nativeTriggers: [...saved.nativeTriggers].sort((a, b) => b.id.localeCompare(a.id)),
+        };
+      writes.push(structuredClone(input));
+      receipts.add(input.mutationId);
+      saved = {
+        ...saved,
+        ...input,
+        nativeTriggers:
+          input.nativeTriggers?.map((t: any, i: number) => ({
+            ...t,
+            id: t.id ?? `saved-${i}`,
+            version: t.expectedVersion
+              ? t.expectedVersion + (t.spec.calendarId === "a-edited" ? 1 : 0)
+              : 1,
+          })) ?? saved.nativeTriggers,
+      };
+      if (writes.length <= 2) throw new Error("Lost committed response");
+      return saved;
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    if (operation === "update") await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "First");
+    await edit(routineInput("Prompt"), "Synthetic");
+    await act(async () => button("External triggers").click());
+    for (const [index, value] of ["a", "b", "c"].entries()) {
+      await act(async () => button("Add application event").click());
+      for (const [label, selection] of [
+        ["Account", "fixture-connection"],
+        ["Event", "calendar.event_changed"],
+      ]) {
+        const select = container.querySelectorAll<HTMLSelectElement>(
+          `select[aria-label="${label}"]`,
+        )[index]!;
+        await act(async () => {
+          select.value = selection!;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      }
+      await edit(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[index]!,
+        value,
+      );
+    }
+    const save = () => act(async () => button(operation === "create" ? "Create" : "Save").click());
+    await save();
+    await edit(routineInput("Name"), "Second");
+    await save();
+    expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    await edit(
+      container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
+      "a-edited",
+    );
+    await save();
+    expect(writes[2].nativeTriggers).toMatchObject([
+      { id: "saved-0", spec: { calendarId: "a-edited" } },
+      { id: "saved-1", spec: { calendarId: "b" } },
+      { id: "saved-2", spec: { calendarId: "c" } },
+    ]);
+  },
+);

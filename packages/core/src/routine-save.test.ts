@@ -286,3 +286,87 @@ it("does not restore cancelled trigger edits when a new edit changes only the na
   expect(send.mock.calls[1]![0].input).toMatchObject({ name: "New edit" });
   expect(send.mock.calls[1]![0].input).not.toHaveProperty("nativeTriggers");
 });
+
+it("uses retained key identities rather than baseline row order after an omitted patch", async () => {
+  const rows = ["b", "c", "a"].map((key) => ({
+    id: `id-${key}`,
+    version: 1,
+    connectionId: "connection",
+    spec: { kind: "calendar.event_changed", calendarId: key, target: { kind: "calendar" } },
+  }));
+  const saved = { ...baseline, nativeTriggers: rows } as Routine;
+  const state: RoutineSaveState = {
+    baseline: saved,
+    pending: {
+      operation: "update",
+      input: { routineId: saved.id, mutationId: "second", name: "Second" },
+    },
+    triggerIds: { a: "id-a", b: "id-b", c: "id-c" },
+    draft: {
+      operation: "create",
+      input: {
+        name: "Second",
+        nativeTriggers: [rows[2], rows[0], rows[1]].map((t) => ({
+          connectionId: t!.connectionId,
+          spec: t!.spec,
+        })),
+      },
+      triggerKeys: ["a", "b", "c"],
+    },
+  };
+  const send = vi.fn(async (_request: Parameters<typeof saveRoutineDraft>[1]) => saved);
+  await saveRoutineDraft(
+    state,
+    {
+      operation: "create",
+      input: {
+        name: "Third",
+        nativeTriggers: rows.map((t) => ({
+          connectionId: t.connectionId,
+          spec: { ...t.spec, calendarId: t.id === "id-a" ? "a-edited" : t.spec.calendarId },
+        })),
+      },
+      triggerKeys: ["b", "c", "a"],
+    },
+    null,
+    send,
+    () => true,
+  );
+  expect(send.mock.calls[1]![0].input.nativeTriggers).toMatchObject([
+    { id: "id-b" },
+    { id: "id-c" },
+    { id: "id-a", spec: { calendarId: "a-edited" } },
+  ]);
+});
+
+it("refuses ambiguous legacy creation results rather than guessing duplicate configurations", async () => {
+  const trigger = {
+    connectionId: "connection",
+    spec: { kind: "calendar.event_changed", calendarId: "same", target: { kind: "calendar" } },
+  };
+  const request = {
+    operation: "create" as const,
+    input: { name: "First", nativeTriggers: [trigger, trigger] },
+    triggerKeys: ["a", "b"],
+  };
+  const state: RoutineSaveState = { pending: request, draft: request };
+  const send = vi.fn(
+    async () =>
+      ({
+        ...baseline,
+        nativeTriggers: ["id-a", "id-b"].map((id) => ({ ...trigger, id, version: 1 })),
+      }) as Routine,
+  );
+  await expect(
+    saveRoutineDraft(
+      state,
+      { ...request, input: { ...request.input, name: "Second" } },
+      null,
+      send,
+      () => true,
+    ),
+  ).rejects.toThrow("This native trigger changed");
+  expect(send).toHaveBeenCalledOnce();
+  expect(state.pending).toEqual(request);
+  expect(state.triggerIds).toBeUndefined();
+});

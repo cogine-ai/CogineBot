@@ -8,6 +8,7 @@ type Submission = {
   baseline?: Routine | null;
   draft?: Request;
   draftBaseline?: Routine | null;
+  triggerIds?: Record<string, string>;
 };
 export type RoutineSaveState = Submission & { recovered?: Submission; discarded?: boolean };
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -34,6 +35,7 @@ export async function saveRoutineDraft(
       baseline: state.baseline,
       draft: state.draft,
       draftBaseline: state.draftBaseline,
+      triggerIds: state.triggerIds,
     });
     // Keep recovery information until the follow-up request has been constructed.
     const patch: Input = {};
@@ -74,12 +76,20 @@ export async function saveRoutineDraft(
         connectionId: t.connectionId,
         spec: t.spec,
       }));
-    if (
+    const triggersChanged =
       (!state.discarded || nextTriggers !== undefined) &&
       !equal(
         oldTriggers ?? inputs(state.draftBaseline ?? state.baseline),
         nextTriggers ?? inputs(baseline),
-      )
+      );
+    // Resolve the immutable submission even for a metadata-only follow-up. Its
+    // draft keys and input order are the only association we may establish; later
+    // receipt reads may return rows in a completely different order.
+    if (
+      triggersChanged ||
+      (!state.discarded &&
+        previous.triggerKeys?.length &&
+        previous.input.nativeTriggers !== undefined)
     ) {
       // Do not adopt concurrent versions blindly. Only our acknowledged configuration
       // may supply identities for formerly unsaved triggers.
@@ -117,24 +127,26 @@ export async function saveRoutineDraft(
       });
       if (rows.length !== resolved.length)
         throw new Error("This native trigger changed. Read it again before saving.");
-      patch.nativeTriggers = (
-        nextTriggers ??
-        (baseline?.nativeTriggers ?? []).map((t) => ({
-          id: t.id,
-          expectedVersion: t.version,
-          connectionId: t.connectionId,
-          spec: t.spec,
-        }))
-      ).map((item, index) => {
-        const priorIndex = item.id
-          ? submitted.findIndex((t) => t.id === item.id)
-          : desired.triggerKeys?.[index]
-            ? (previousDraft.triggerKeys ?? []).indexOf(desired.triggerKeys[index]!)
-            : -1;
-        const row = resolved[priorIndex];
-        return row ? { ...item, id: row.id, expectedVersion: row.version } : item;
-      });
-      patch.nativeTriggerBaseline = resolved.map(({ id, version }) => ({ id, version }));
+      const triggerIds = { ...state.triggerIds };
+      if (previous.input.nativeTriggers !== undefined) {
+        for (const [index, row] of resolved.entries()) {
+          const key = previous.triggerKeys?.[index];
+          if (key) triggerIds[key] = row.id;
+        }
+      }
+      state.triggerIds = triggerIds;
+      if (triggersChanged) {
+        patch.nativeTriggers = (nextTriggers ?? inputs(baseline)).map((item, index) => {
+          const key = desired.triggerKeys?.[index];
+          const id = item.id ?? (key ? triggerIds[key] : undefined);
+          const row = resolved.find((candidate) => candidate.id === id);
+          // A known identity cannot silently become a newly created trigger.
+          if (id && !row)
+            throw new Error("This native trigger changed. Read it again before saving.");
+          return row ? { ...item, id: row.id, expectedVersion: row.version } : item;
+        });
+        patch.nativeTriggerBaseline = resolved.map(({ id, version }) => ({ id, version }));
+      }
     }
     if (!Object.keys(patch).length) {
       delete state.pending;
@@ -175,6 +187,7 @@ export async function saveRoutineDraft(
         state.baseline = root.baseline;
         state.draft = root.draft;
         state.draftBaseline = root.draftBaseline;
+        state.triggerIds = root.triggerIds;
       } else delete state.pending;
     }
     throw error;

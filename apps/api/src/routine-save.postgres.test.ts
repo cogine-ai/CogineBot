@@ -380,6 +380,139 @@ describePostgres("routine save transaction regressions", () => {
     expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(2);
   });
 
+  it.each(["distinct", "same spec across accounts", "concurrent version"])(
+    "keeps three draft identities through an omitted trigger patch and reordered recovery: %s",
+    async (mode) => {
+      const o = await fixture(),
+        make = await connected(o),
+        state: RoutineSaveState = {};
+      const other = await connected(o);
+      const makeB = () => (mode === "same spec across accounts" ? other("a") : make("b"));
+      const calls: Array<Parameters<typeof saveRoutineDraft>[1]> = [];
+      const receipts = new Set<string>();
+      let first: Routine | undefined;
+      const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+        calls.push(structuredClone(request));
+        const saved = await rpc<Routine>(o.cookie, `routines/${request.operation}`, request.input);
+        if (!receipts.has(String(request.input.mutationId))) {
+          receipts.add(String(request.input.mutationId));
+          if (!first) {
+            first = saved;
+            // Force a different canonical read order, independently of random IDs.
+            for (const [index, row] of saved.nativeTriggers!.entries()) {
+              await database.prisma.nativeRoutineTrigger.update({
+                where: { id: row.id },
+                data: {
+                  createdAt: new Date(Date.UTC(2020, 0, index === 0 ? 3 : index)),
+                },
+              });
+            }
+          }
+          if (receipts.size <= 2) throw new Error("Lost committed response");
+        }
+        return saved;
+      };
+      const draft = (name: string, reorder = false) => ({
+        operation: "create" as const,
+        input: {
+          botId: o.bot.id,
+          name,
+          prompt: "Synthetic",
+          crons: ["0 9 * * *"],
+          mutationId: randomUUID(),
+          nativeTriggers: reorder
+            ? [makeB(), make("c"), make("a-edited")]
+            : [make("a"), makeB(), make("c")],
+        },
+        triggerKeys: reorder ? ["key-b", "key-c", "key-a"] : ["key-a", "key-b", "key-c"],
+      });
+      await expect(saveRoutineDraft(state, draft("First"), null, send, () => true)).rejects.toThrow(
+        "Lost committed response",
+      );
+      const [a, b, c] = first!.nativeTriggers!;
+      await expect(
+        saveRoutineDraft(state, draft("Second"), null, send, () => true),
+      ).rejects.toThrow("Lost committed response");
+      expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+      expect(state.baseline!.nativeTriggers!.map((t) => t.id)).toEqual([b!.id, c!.id, a!.id]);
+      for (const row of [b!, c!])
+        await database.prisma.nativeRoutineTrigger.update({
+          where: { id: row.id },
+          data: {
+            state: { cursor: row.id },
+            leaseId: `lease-${row.id}`,
+            leaseUntil: new Date("2030-01-01"),
+          },
+        });
+      const untouched = await database.prisma.nativeRoutineTrigger.findMany({
+        where: { id: { in: [b!.id, c!.id] } },
+        orderBy: { id: "asc" },
+      });
+      if (mode === "concurrent version") {
+        await rpc(o.cookie, "routines/update", {
+          routineId: first!.id,
+          nativeTriggerBaseline: first!.nativeTriggers!.map(({ id, version }) => ({ id, version })),
+          nativeTriggers: [
+            inputOf(a!),
+            { ...inputOf(b!), spec: make("b-concurrent").spec },
+            inputOf(c!),
+          ],
+        });
+        const before = await database.prisma.nativeRoutineTrigger.findMany({
+          where: { routineId: first!.id },
+          orderBy: { id: "asc" },
+        });
+        await expect(
+          saveRoutineDraft(state, draft("Third", true), null, send, () => true),
+        ).rejects.toThrow("This native trigger changed");
+        expect(calls).toHaveLength(4);
+        expect(
+          await database.prisma.nativeRoutineTrigger.findMany({
+            where: { routineId: first!.id },
+            orderBy: { id: "asc" },
+          }),
+        ).toEqual(before);
+        return;
+      }
+      const saved = await saveRoutineDraft(state, draft("Third", true), null, send, () => true);
+      expect(saved!.id).toBe(first!.id);
+      expect(saved!.nativeTriggers!.find((t) => t.id === a!.id)).toMatchObject({
+        version: 2,
+        spec: make("a-edited").spec,
+      });
+      expect(
+        await database.prisma.nativeRoutineTrigger.findMany({
+          where: { id: { in: [b!.id, c!.id] } },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(untouched);
+      expect(calls[4]!.input.nativeTriggers).toMatchObject([
+        { id: b!.id, expectedVersion: 1 },
+        { id: c!.id, expectedVersion: 1 },
+        { id: a!.id, expectedVersion: 1 },
+      ]);
+      expect(calls[1]).toEqual(calls[0]);
+      expect(calls[3]).toEqual(calls[2]);
+    },
+  );
+
+  it("rejects duplicate configurations before creating a routine or receipt", async () => {
+    const o = await fixture(),
+      make = await connected(o),
+      mutationId = randomUUID();
+    const before = await database.prisma.routine.count({ where: { botId: o.bot.id } });
+    const response = await raw(o.cookie, "routines/create", {
+      botId: o.bot.id,
+      name: "Duplicate",
+      prompt: "Synthetic",
+      mutationId,
+      nativeTriggers: [make("same"), make("same")],
+    });
+    expect(response.status).toBe(400);
+    expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(before);
+    expect(await database.prisma.routineMutation.count({ where: { id: mutationId } })).toBe(0);
+  });
+
   it("receipt-only update replay returns current activation after pause and resume", async () => {
     const o = await fixture();
     await update(o, { active: true });
