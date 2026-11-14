@@ -1212,7 +1212,6 @@ export async function rpc<T>(
           throw retryError;
         }
         if (!selectedSpaceId()) await clearStaleSpaceSelection();
-        throw new Error(message);
       }
       throw Object.defineProperties(new Error(message), {
         status: { value: res.status },

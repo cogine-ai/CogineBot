@@ -1,5 +1,31 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const KO_MESSAGES: Record<string, string> = {
+  "Cancel creation": "생성 취소",
+  "Created server is no longer available. Review the draft.":
+    "생성된 서버를 더 이상 사용할 수 없습니다. 초안을 검토하세요.",
+  "Disconnect OAuth before authorizing from another app.":
+    "다른 앱에서 인증하기 전에 OAuth 연결을 해제하세요.",
+  "Access token (optional)": "액세스 토큰(선택 사항)",
+  "Add server": "서버 추가",
+  Arguments: "인수",
+  "Authorization cancelled.": "인증이 취소되었습니다.",
+  "Authorization expired. Try again.": "인증이 만료되었습니다. 다시 시도하세요.",
+  "Authorization failed. Try again.": "인증에 실패했습니다. 다시 시도하세요.",
+  "Check status before retrying this server.": "이 서버를 다시 시도하기 전에 상태를 확인하세요.",
+  "Check the server fields.": "서버 입력 항목을 확인하세요.",
+  Command: "명령",
+  "Connect OAuth": "OAuth 연결",
+  "Could not update MCP server. Check status and retry.":
+    "MCP 서버를 업데이트하지 못했습니다. 상태를 확인하고 다시 시도하세요.",
+  "Reconnect OAuth": "OAuth 다시 연결",
+  "Remove MCP server?": "MCP 서버를 삭제할까요?",
+  "Runs on the connected instance.": "연결된 인스턴스에서 실행됩니다.",
+  "Server name": "서버 이름",
+  "This server did not request browser authorization.":
+    "이 서버는 브라우저 인증을 요청하지 않았습니다.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "이 서버는 이미 연결되어 있습니다. 다시 인증하려면 먼저 연결을 해제하세요.",
+  Transport: "전송 방식",
   "Slack workspaces": "Slack 워크스페이스",
   "Slack installation is unavailable.": "Slack 설치를 사용할 수 없습니다.",
   "Slack request unconfirmed": "Slack 요청 결과가 확인되지 않았습니다",

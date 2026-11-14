@@ -1818,3 +1818,79 @@ describe("managed plugin OAuth lifecycle", () => {
     },
   );
 });
+
+it("registers native MCP callbacks as native applications and replaces only an ungranted registration", async () => {
+  const oldOAuth = {
+    redirectUri: "https://app.example.test/mcp/oauth/callback",
+    clientInformation: { client_id: "web-client" },
+    codeVerifier: "old-verifier",
+  };
+  const persist = vi.fn().mockResolvedValue(undefined);
+  const provider = new StoredMcpOAuthProvider(
+    "server",
+    { oauth: structuredClone(oldOAuth) },
+    persist,
+    { redirectUri: "coginebot:///mcp" },
+  );
+  expect(provider.clientMetadata).toMatchObject({
+    application_type: "native",
+    redirect_uris: ["coginebot:///mcp"],
+  });
+  expect(provider.clientInformation()).toBeUndefined();
+  await provider.saveClientInformation({ client_id: "native-client" });
+  expect(persist).toHaveBeenCalledWith(
+    expect.objectContaining({
+      oauth: expect.objectContaining({ clientInformation: { client_id: "native-client" } }),
+    }),
+    oldOAuth,
+  );
+});
+
+it("requires explicit disconnect before a cross-surface authorization replaces an existing grant", async () => {
+  const material = {
+    oauth: {
+      redirectUri: "https://app.example.test/mcp/oauth/callback",
+      clientInformation: { client_id: "web-client" },
+      tokens: { access_token: "synthetic", token_type: "bearer" },
+    },
+  };
+  const store = new EncryptedSecretStore("fixture-cross-surface-key");
+  const record = await store.put(
+    JSON.stringify(material),
+    {
+      spaceId: "space",
+      userId: "user",
+      botId: "fixture",
+      operationId: "fixture",
+      traceId: "fixture",
+      signal: new AbortController().signal,
+    },
+    { recordId: "credential" },
+  );
+  const prisma = {
+    mcpServer: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: "server",
+        endpoint: "https://mcp.example.test/mcp",
+        secretId: "credential",
+      }),
+    },
+    secret: {
+      findFirst: vi.fn().mockResolvedValue({ id: "credential", ciphertext: record.ciphertext }),
+    },
+    mcpOAuthSession: { count: vi.fn().mockResolvedValue(0), deleteMany: vi.fn() },
+  };
+  const broker = new McpOAuthBroker(prisma as never, store);
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  await expect(
+    broker.begin({
+      serverId: "server",
+      spaceId: "space",
+      userId: "user",
+      redirectUri: "coginebot:///mcp",
+    }),
+  ).resolves.toEqual({ status: "disconnect_required" });
+  expect(fetch).not.toHaveBeenCalled();
+  expect(JSON.parse(await store.load(record.ciphertext, "credential"))).toEqual(material);
+});

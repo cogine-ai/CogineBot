@@ -10,6 +10,7 @@ import McpSettings from "../app/(settings)/mcp";
 import { ConnectorIcon } from "../components/connector-icon";
 
 const state = vi.hoisted(() => ({
+  browser: vi.fn(),
   rpc: vi.fn(),
   read: vi.fn(),
   write: vi.fn(),
@@ -28,6 +29,7 @@ const state = vi.hoisted(() => ({
   importEpoch: 0,
   scopeChanged: undefined as (() => void) | undefined,
 }));
+vi.mock("./mcp-browser", () => ({ openMcpBrowser: state.browser }));
 vi.mock("expo-router", () => ({
   router: { push: vi.fn() },
   useLocalSearchParams: () => state.params,
@@ -39,7 +41,8 @@ vi.mock("expo-router", () => ({
   },
 }));
 vi.mock("./api", () => ({
-  rpc: state.rpc,
+  rpc: (proc: string, ...args: unknown[]) =>
+    proc === "me" ? state.scope() : state.rpc(proc, ...args),
   captureApiRequestContext: async () => ({
     apiBase: "https://example.test",
     headers: {},
@@ -48,7 +51,8 @@ vi.mock("./api", () => ({
 }));
 vi.mock("./mobile-scope", () => ({
   captureMobileScope: () => ({ epoch: state.importEpoch, spaceId: "space-a" }),
-  isMobileScopeCurrent: (scope: { epoch: number }) => scope.epoch === state.importEpoch,
+  isMobileScopeCurrent: (scope: { epoch: number }) =>
+    state.current && scope.epoch === state.importEpoch,
   subscribeMobileScope: (changed: () => void) => {
     state.scopeChanged = changed;
     return () => {
@@ -181,14 +185,17 @@ vi.mock("react-native", () => {
       onChangeText,
       onEndEditing,
       editable,
+      secureTextEntry,
     }: {
       placeholder?: string;
       value?: string;
       onChangeText?: (value: string) => void;
       onEndEditing?: () => void;
       editable?: boolean;
+      secureTextEntry?: boolean;
     }) => (
       <input
+        type={secureTextEntry ? "password" : "text"}
         disabled={editable === false}
         onBlur={onEndEditing}
         placeholder={placeholder}
@@ -824,29 +831,29 @@ it("ignores an old focus identity error after the new focus succeeds", async () 
 });
 
 it("retries MCP server identity after an initial failure instead of leaving Reload inert", async () => {
-  state.scope.mockRejectedValueOnce(new Error("Unavailable"));
+  state.scope.mockRejectedValueOnce(new Error("Could not load MCP servers"));
   state.rpc.mockResolvedValue([]);
   await render(<McpSettings />);
-  expect(container.textContent).toContain("Unavailable");
+  expect(container.textContent).toContain("Could not load MCP servers");
   state.scope.mockResolvedValue({ userId: "user-a", spaceId: "space-a" });
   state.rpc.mockResolvedValue([
     { id: "server-a", name: "Fixture", revision: 2, allowAllTools: false, allowedTools: [] },
   ]);
   await act(async () =>
     [...container.querySelectorAll("button")]
-      .find((button) => button.textContent === "Reload settings")
+      .find((button) => button.textContent === "Retry")
       ?.click(),
   );
   expect(state.scope).toHaveBeenCalledTimes(2);
   expect(container.textContent).toContain("Fixture");
-  expect(container.textContent).not.toContain("Unavailable");
+  expect(container.textContent).not.toContain("Could not load MCP servers");
 });
 
 it.each([false, true])(
   "opens the requested MCP server without granting tools after a first-load failure: %s",
   async (firstLoadFails) => {
     state.params = { serverId: "server-target" };
-    if (firstLoadFails) state.scope.mockRejectedValueOnce(new Error("Unavailable"));
+    if (firstLoadFails) state.scope.mockRejectedValueOnce(new Error("Could not load MCP servers"));
     state.rpc.mockResolvedValue([
       { id: "server-other", name: "Other", revision: 1, allowAllTools: true, allowedTools: [] },
       {
@@ -859,8 +866,8 @@ it.each([false, true])(
     ]);
     await render(<McpSettings />);
     if (firstLoadFails) {
-      expect(container.textContent).toContain("Unavailable");
-      await press("Reload settings");
+      expect(container.textContent).toContain("Could not load MCP servers");
+      await press("Retry");
     }
     expect(
       container.querySelector<HTMLSelectElement>('select[aria-label="MCP server"]')?.value,
@@ -902,13 +909,17 @@ it("keeps the selected MCP server visible while saving the exact reviewed revisi
       .find((button) => button.textContent === "Save tool access")
       ?.click(),
   );
-  expect(state.rpc).toHaveBeenCalledWith("mcp/servers/setTools", {
-    id: "server-a",
-    revision: 2,
-    allowAllTools: false,
-    allowedTools: [],
-    verbatimResults: false,
-  });
+  expect(state.rpc).toHaveBeenCalledWith(
+    "mcp/servers/setTools",
+    {
+      id: "server-a",
+      revision: 2,
+      allowAllTools: false,
+      allowedTools: [],
+      verbatimResults: false,
+    },
+    expect.objectContaining({ requestContext: expect.any(Object) }),
+  );
   expect(container.textContent).toContain("Fixture");
   expect(container.textContent).not.toContain("No MCP servers yet.");
   await act(async () => finish({ ...server, revision: 3 }));
@@ -957,13 +968,17 @@ it.each([false, true])(
       )?.checked,
     ).toBe(false);
     await press("Save tool access");
-    expect(state.rpc).toHaveBeenCalledWith("mcp/servers/setTools", {
-      id: server.id,
-      revision: 2,
-      allowAllTools: false,
-      allowedTools: ["lookup"],
-      verbatimResults: !verbatimResults,
-    });
+    expect(state.rpc).toHaveBeenCalledWith(
+      "mcp/servers/setTools",
+      {
+        id: server.id,
+        revision: 2,
+        allowAllTools: false,
+        allowedTools: ["lookup"],
+        verbatimResults: !verbatimResults,
+      },
+      expect.objectContaining({ requestContext: expect.any(Object) }),
+    );
     expect(container.textContent).toContain("Tool access saved.");
     expect(
       container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
@@ -1012,7 +1027,7 @@ it("keeps the native whole-result draft when its reviewed revision is rejected",
   };
   state.rpc.mockImplementation((procedure: string) =>
     procedure === "mcp/servers/setTools"
-      ? Promise.reject(new Error("Server changed; reload settings"))
+      ? Promise.reject(new Error("Could not update MCP server. Check status and retry."))
       : Promise.resolve([server]),
   );
   await render(<McpSettings />);
@@ -1023,7 +1038,7 @@ it("keeps the native whole-result draft when its reviewed revision is rejected",
       ?.click(),
   );
   await press("Save tool access");
-  expect(container.textContent).toContain("Server changed; reload settings");
+  expect(container.textContent).toContain("Could not update MCP server. Check status and retry.");
   expect(container.textContent).not.toContain("Tool access saved.");
   expect(
     container.querySelector<HTMLInputElement>('input[aria-label="Keep tool results whole"]')
@@ -1512,4 +1527,194 @@ it("shows unknown MCP credential status without claiming saved credentials or OA
   expect(container.textContent).not.toContain("Credential saved");
   expect(container.textContent).not.toContain("No OAuth connection");
   expect(state.rpc.mock.calls.filter((call) => call[0] === "mcp/oauth/begin")).toHaveLength(0);
+});
+
+it.each(["streamable_http", "sse", "stdio"])(
+  "creates native %s servers, keeps secrets masked and opens tool access",
+  async (transport) => {
+    let rows: unknown[] = [];
+    const requestId = "00000000-0000-4000-8000-000000000146";
+    let receipt: { requestId: string; serverId: string } | null = null;
+    state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+      if (procedure === "mcp/servers/newCreateRequest") return { requestId };
+      if (procedure === "mcp/servers/creation") return receipt;
+      if (procedure === "mcp/servers/createOnce") {
+        const server = {
+          ...(input.config as Record<string, unknown>),
+          id: "created",
+          revision: 1,
+          allowAllTools: false,
+          allowedTools: [],
+          oauthStatus: "none",
+        };
+        rows = [server];
+        receipt = { requestId, serverId: server.id };
+        return receipt;
+      }
+      return rows;
+    });
+    await render(<McpSettings />);
+    await press("Add server");
+    await fillSource("Server name", "Fixture service");
+    await act(async () => {
+      const picker = container.querySelector<HTMLSelectElement>('select[aria-label="Transport"]')!;
+      picker.value = transport;
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    if (transport === "stdio") {
+      await fillSource("Command", "fixture-command");
+      await fillSource("Arguments", "--stdio --fixture");
+      expect(container.textContent).toContain("Runs on the connected instance.");
+    } else await fillSource("Server URL", "https://tools.example.test/mcp");
+    await press("Advanced");
+    await fillSource("Access token (optional)", "synthetic-secret");
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Access token (optional)"]')
+        ?.type,
+    ).toBe("password");
+    await press("Add server");
+    const create = state.rpc.mock.calls.find(
+      ([procedure]) => procedure === "mcp/servers/createOnce",
+    )!;
+    expect(create[1].requestId).toBe(requestId);
+    expect(create[1].config).toMatchObject({
+      transport,
+      name: "Fixture service",
+      secret: "synthetic-secret",
+      verbatimResults: false,
+    });
+    expect(create[1].config).toMatchObject(
+      transport === "stdio"
+        ? { command: "fixture-command", args: ["--stdio", "--fixture"] }
+        : { endpoint: "https://tools.example.test/mcp" },
+    );
+    expect(state.rpc.mock.calls.some(([proc]) => proc === "mcp/servers/create")).toBe(false);
+    expect(
+      state.rpc.mock.calls.filter(([proc]) => proc === "mcp/servers/newCreateRequest"),
+    ).toHaveLength(1);
+    expect(state.rpc.mock.calls.find(([proc]) => proc === "mcp/servers/creation")?.[1]).toEqual({
+      requestId,
+    });
+    expect(create[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-a");
+    expect(container.textContent).toContain("Save tool access");
+    expect(container.querySelector('input[placeholder="Access token (optional)"]')).toBeNull();
+  },
+);
+
+it("keeps failed creation input and requires confirmation before removing a server", async () => {
+  const server = {
+    id: "server-a",
+    slug: "existing",
+    name: "Fixture",
+    revision: 2,
+    allowAllTools: false,
+    allowedTools: [],
+  };
+  state.rpc.mockImplementation(async (procedure: string) => {
+    if (procedure === "mcp/servers/newCreateRequest")
+      return { requestId: "00000000-0000-4000-8000-000000000146" };
+    if (procedure === "mcp/servers/cancelCreate")
+      return { requestId: "00000000-0000-4000-8000-000000000146", serverId: null };
+    if (procedure === "mcp/servers/createOnce")
+      throw Object.assign(new Error("synthetic-secret should not display"), { status: 403 });
+    return [server];
+  });
+  await render(<McpSettings />);
+  await press("Add server");
+  await fillSource("Server name", "Failed service");
+  await fillSource("Server URL", "https://tools.example.test/mcp");
+  await press("Add server");
+  expect(container.querySelector<HTMLInputElement>('input[placeholder="Server name"]')?.value).toBe(
+    "Failed service",
+  );
+  expect(container.textContent).not.toContain("synthetic-secret");
+  await selectMcpServer();
+  await press("Remove");
+  expect(state.rpc.mock.calls.filter(([p]) => p === "mcp/servers/remove")).toHaveLength(0);
+  const buttons = state.alert.mock.calls.at(-1)![2];
+  expect(buttons[0].style).toBe("cancel");
+  await act(async () => buttons[1].onPress());
+  expect(state.rpc.mock.calls.filter(([p]) => p === "mcp/servers/remove")).toHaveLength(1);
+});
+
+it.each(["space", "account", "instance", "leave"])(
+  "ignores a delayed native OAuth return after %s changes",
+  async (change) => {
+    const server = {
+      id: "server-a",
+      name: "Fixture",
+      revision: 1,
+      allowAllTools: false,
+      allowedTools: [],
+      transport: "sse",
+      oauthStatus: "none",
+    };
+    let complete!: (result: unknown) => void;
+    state.browser.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    state.rpc.mockImplementation(async (procedure: string) =>
+      procedure === "mcp/oauth/begin"
+        ? {
+            status: "authorization_required",
+            sessionId: "attempt",
+            authorizationUrl: "https://auth.example.test/authorize?state=attempt",
+          }
+        : [server],
+    );
+    await render(<McpSettings />);
+    await selectMcpServer();
+    await press("Connect OAuth");
+    if (change === "leave") {
+      state.focused = false;
+      await render(<McpSettings />);
+    } else
+      await act(async () => {
+        state.importEpoch++;
+        state.scopeChanged?.();
+      });
+    await act(async () =>
+      complete({ type: "success", url: "coginebot:///mcp?state=attempt&code=synthetic" }),
+    );
+    expect(state.rpc.mock.calls.filter(([p]) => p === "mcp/oauth/complete")).toHaveLength(0);
+  },
+);
+
+it("completes OAuth in the original Space and refreshes its stored status", async () => {
+  const server = {
+    id: "server-a",
+    name: "Fixture",
+    revision: 1,
+    allowAllTools: false,
+    allowedTools: [],
+    transport: "sse",
+    oauthStatus: "none",
+  };
+  state.browser.mockResolvedValue({
+    type: "success",
+    url: "coginebot:///mcp?state=attempt&code=synthetic",
+  });
+  state.rpc.mockImplementation(async (procedure: string) => {
+    if (procedure === "mcp/oauth/begin")
+      return {
+        status: "authorization_required",
+        sessionId: "attempt",
+        authorizationUrl: "https://auth.example.test/authorize?state=attempt",
+      };
+    if (procedure === "mcp/oauth/complete") {
+      server.oauthStatus = "connected";
+      return { ok: true };
+    }
+    return [{ ...server }];
+  });
+  await render(<McpSettings />);
+  await selectMcpServer();
+  await press("Connect OAuth");
+  expect(container.textContent).toContain("OAuth connected");
+  const completion = state.rpc.mock.calls.find(([p]) => p === "mcp/oauth/complete")!;
+  expect(completion[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-a");
+  expect(state.rpc.mock.calls.at(-1)![0]).toBe("mcp/servers/list");
 });

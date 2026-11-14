@@ -42,6 +42,8 @@ export * from "./knowledge-editor.js";
 export * from "./load-failure.js";
 export * from "./markdown-plain.js";
 export * from "./mcp.js";
+export * from "./mcp-authorization.js";
+export * from "./mcp-management.js";
 export * from "./memory-connection-draft.js";
 export * from "./message-pages.js";
 export * from "./message-presentation.js";

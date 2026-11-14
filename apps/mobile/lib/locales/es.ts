@@ -1,5 +1,32 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const ES_MESSAGES: Record<string, string> = {
+  "Cancel creation": "Cancelar creación",
+  "Created server is no longer available. Review the draft.":
+    "El servidor creado ya no está disponible. Revisa el borrador.",
+  "Disconnect OAuth before authorizing from another app.":
+    "Desconecta OAuth antes de autorizar desde otra aplicación.",
+  "Access token (optional)": "Token de acceso (opcional)",
+  "Add server": "Añadir servidor",
+  Arguments: "Argumentos",
+  "Authorization cancelled.": "Autorización cancelada.",
+  "Authorization expired. Try again.": "La autorización ha caducado. Inténtalo de nuevo.",
+  "Authorization failed. Try again.": "Error de autorización. Inténtalo de nuevo.",
+  "Check status before retrying this server.":
+    "Comprueba el estado antes de reintentar este servidor.",
+  "Check the server fields.": "Revisa los campos del servidor.",
+  Command: "Comando",
+  "Connect OAuth": "Conectar OAuth",
+  "Could not update MCP server. Check status and retry.":
+    "No se pudo actualizar el servidor MCP. Comprueba el estado y reinténtalo.",
+  "Reconnect OAuth": "Reconectar OAuth",
+  "Remove MCP server?": "¿Eliminar el servidor MCP?",
+  "Runs on the connected instance.": "Se ejecuta en la instancia conectada.",
+  "Server name": "Nombre del servidor",
+  "This server did not request browser authorization.":
+    "Este servidor no solicitó autorización en el navegador.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Este servidor ya está conectado. Desconéctalo antes de volver a autorizarlo.",
+  Transport: "Transporte",
   "Slack workspaces": "Espacios de trabajo de Slack",
   "Slack installation is unavailable.": "La instalación de Slack no está disponible.",
   "Slack request unconfirmed": "Solicitud a Slack sin confirmar",

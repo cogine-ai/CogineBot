@@ -1,5 +1,30 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const HI_MESSAGES: Record<string, string> = {
+  "Cancel creation": "बनाना रद्द करें",
+  "Created server is no longer available. Review the draft.":
+    "बनाया गया सर्वर अब उपलब्ध नहीं है। ड्राफ़्ट की समीक्षा करें।",
+  "Disconnect OAuth before authorizing from another app.":
+    "दूसरे ऐप से अनुमति देने से पहले OAuth डिस्कनेक्ट करें।",
+  "Access token (optional)": "एक्सेस टोकन (वैकल्पिक)",
+  "Add server": "सर्वर जोड़ें",
+  Arguments: "आर्ग्युमेंट",
+  "Authorization cancelled.": "अनुमति रद्द कर दी गई।",
+  "Authorization expired. Try again.": "अनुमति की अवधि समाप्त हो गई। फिर से प्रयास करें।",
+  "Authorization failed. Try again.": "अनुमति देने में विफल। फिर से प्रयास करें।",
+  "Check status before retrying this server.": "इस सर्वर पर फिर से प्रयास करने से पहले स्थिति जाँचें।",
+  "Check the server fields.": "सर्वर के फ़ील्ड जाँचें।",
+  Command: "कमांड",
+  "Connect OAuth": "OAuth कनेक्ट करें",
+  "Could not update MCP server. Check status and retry.":
+    "MCP सर्वर अपडेट नहीं हो सका। स्थिति जाँचें और फिर से प्रयास करें।",
+  "Reconnect OAuth": "OAuth फिर से कनेक्ट करें",
+  "Remove MCP server?": "MCP सर्वर हटाएँ?",
+  "Runs on the connected instance.": "कनेक्ट किए गए इंस्टेंस पर चलता है।",
+  "Server name": "सर्वर का नाम",
+  "This server did not request browser authorization.": "इस सर्वर ने ब्राउज़र से अनुमति नहीं माँगी।",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "यह सर्वर पहले से कनेक्ट है। फिर से अनुमति देने के लिए पहले डिस्कनेक्ट करें।",
+  Transport: "ट्रांसपोर्ट",
   "Slack workspaces": "Slack कार्यस्थान",
   "Slack installation is unavailable.": "Slack इंस्टॉलेशन उपलब्ध नहीं है।",
   "Slack request unconfirmed": "Slack अनुरोध की पुष्टि नहीं हुई",

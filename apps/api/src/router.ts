@@ -171,6 +171,7 @@ import type {
   ComputerStatus,
   ExportManifest,
   McpServer,
+  McpServerConfigInput,
   Me,
   NativeRoutineTrigger,
   ProductEvent,
@@ -190,6 +191,7 @@ import {
   IDENTITY_CONFIRMATION_REQUIRED,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
+  isMcpOAuthRedirectAllowed,
   loginSecretFields,
   MCP_OAUTH_CLIENT_REQUIRED,
   normalizeCreateBotProfile,
@@ -1075,6 +1077,43 @@ async function resolveSpaceBoard(
   const found = await prisma.board.findFirst({ where: { id: boardId, spaceId } });
   if (!found) throw new ORPCError("BAD_REQUEST", { message: "Unknown board." });
   return found;
+}
+
+function mcpCreationData(
+  actor: { spaceId: string; userId: string },
+  input: McpServerConfigInput,
+  secretId?: string,
+): Prisma.McpServerUncheckedCreateInput {
+  return {
+    spaceId: actor.spaceId,
+    userId: actor.userId,
+    slug: input.slug,
+    name: input.name,
+    description: input.description,
+    transport: input.transport,
+    endpoint: "endpoint" in input ? input.endpoint : null,
+    command: "command" in input ? input.command : null,
+    args: ("args" in input ? input.args : []) as Prisma.InputJsonValue,
+    env: ("env" in input
+      ? Object.fromEntries(Object.keys(input.env).map((key) => [key, true]))
+      : {}) as Prisma.InputJsonValue,
+    headers: ("headers" in input
+      ? Object.fromEntries(Object.keys(input.headers).map((key) => [key, true]))
+      : {}) as Prisma.InputJsonValue,
+    secretId: secretId,
+    enabled: input.enabled,
+    verbatimResults: input.verbatimResults ?? false,
+    allowAllTools: false,
+    allowedTools: [],
+  };
+}
+
+async function lockMcpCreation(
+  tx: Prisma.TransactionClient,
+  actor: { spaceId: string; userId: string },
+  requestId: string,
+) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["mcp-create", actor.spaceId, actor.userId, requestId])}, 0))::text`;
 }
 
 export function createRouter(deps: RouterDeps) {
@@ -5787,31 +5826,101 @@ export function createRouter(deps: RouterDeps) {
               });
             }
             return tx.mcpServer.create({
-              data: {
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                slug: input.slug,
-                name: input.name,
-                description: input.description,
-                transport: input.transport,
-                endpoint: "endpoint" in input ? input.endpoint : null,
-                command: "command" in input ? input.command : null,
-                args: ("args" in input ? input.args : []) as Prisma.InputJsonValue,
-                env: ("env" in input
-                  ? Object.fromEntries(Object.keys(input.env).map((key) => [key, true]))
-                  : {}) as Prisma.InputJsonValue,
-                headers: ("headers" in input
-                  ? Object.fromEntries(Object.keys(input.headers).map((key) => [key, true]))
-                  : {}) as Prisma.InputJsonValue,
-                secretId: stored?.id,
-                enabled: input.enabled,
-                verbatimResults: input.verbatimResults ?? false,
-                allowAllTools: false,
-                allowedTools: [],
-              },
+              data: mcpCreationData(context.actor, input, stored?.id),
             });
           });
           return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
+        }),
+        newCreateRequest: authed.mcp.servers.newCreateRequest.handler(() => ({
+          requestId: randomUUID(),
+        })),
+        // Legacy create remains unchanged. New clients use a separate, fail-closed protocol.
+        creation: authed.mcp.servers.creation.handler(async ({ context, input }) => {
+          return deps.prisma.mcpCreateRequest.findUnique({
+            where: {
+              spaceId_userId_requestId: {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                requestId: input.requestId,
+              },
+            },
+            select: { requestId: true, serverId: true },
+          });
+        }),
+        cancelCreate: authed.mcp.servers.cancelCreate.handler(async ({ context, input }) => {
+          return deps.prisma.$transaction(async (tx) => {
+            await lockMcpCreation(tx, context.actor, input.requestId);
+            const identity = {
+              spaceId: context.actor.spaceId,
+              userId: context.actor.userId,
+              requestId: input.requestId,
+            };
+            return tx.mcpCreateRequest.upsert({
+              where: { spaceId_userId_requestId: identity },
+              create: identity,
+              update: {},
+              select: { requestId: true, serverId: true },
+            });
+          });
+        }),
+        createOnce: authed.mcp.servers.createOnce.handler(async ({ context, input }) => {
+          return deps.prisma.$transaction(
+            async (tx) => {
+              await lockMcpCreation(tx, context.actor, input.requestId);
+              const identity = {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                requestId: input.requestId,
+              };
+              const prior = await tx.mcpCreateRequest.findUnique({
+                where: { spaceId_userId_requestId: identity },
+                select: { requestId: true, serverId: true },
+              });
+              // First committed request wins; retries never update or recreate its object.
+              if (prior) return prior;
+              const config = input.config;
+              await assertMcpRemoteEndpoint(
+                "endpoint" in config ? config.endpoint : null,
+                context.actor,
+                deps,
+              );
+              // Resolve the unique slug before creating external secret material. A rejected
+              // insert rolls back this transaction without a secret write to compensate.
+              const row = await tx.mcpServer
+                .create({ data: mcpCreationData(context.actor, config) })
+                .catch((error: unknown) => {
+                  if (isUniqueViolation(error))
+                    throw new ORPCError("CONFLICT", {
+                      message: "An MCP server with this name already exists.",
+                    });
+                  throw error;
+                });
+              const payload = buildMcpCredentialBlob(config);
+              const stored = payload
+                ? await deps.secrets.put(
+                    payload,
+                    computerContext(context.actor, "mcp", "mcp.create"),
+                  )
+                : null;
+              if (stored)
+                await tx.secret.create({
+                  data: {
+                    id: stored.id,
+                    userId: context.actor.userId,
+                    spaceId: context.actor.spaceId,
+                    kind: "mcp",
+                    ciphertext: stored.ciphertext,
+                  },
+                });
+              if (stored)
+                await tx.mcpServer.update({ where: { id: row.id }, data: { secretId: stored.id } });
+              return tx.mcpCreateRequest.create({
+                data: { ...identity, serverId: row.id },
+                select: { requestId: true, serverId: true },
+              });
+            },
+            { timeout: 30_000 },
+          );
         }),
         setTools: authed.mcp.servers.setTools.handler(async ({ context, input }) => {
           const { row, seqs } = await withTransactionRetry(() =>
@@ -6338,8 +6447,7 @@ export function createRouter(deps: RouterDeps) {
       oauth: {
         begin: authed.mcp.oauth.begin.handler(async ({ context, input }) => {
           try {
-            const expectedRedirect = new URL("/mcp/oauth/callback", deps.env.webOrigin).toString();
-            if (new URL(input.redirectUri).toString() !== expectedRedirect) {
+            if (!isMcpOAuthRedirectAllowed(input.redirectUri, deps.env.webOrigin)) {
               throw new Error("MCP OAuth redirect URI is not allowed");
             }
             return await mcpOAuth.begin({

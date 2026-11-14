@@ -89,13 +89,15 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
     verifyRuntimeDatabase(runtime!.prisma, { allowPrePages });
 
   async function withPagesPredecessorCatalog<T>(work: () => Promise<T>): Promise<T> {
-    // The fixture is cloned from the latest schema. Move later integration and
-    // receipt tables out of the frozen catalog only while replaying the old SQL.
+    // The fixture is cloned from the latest schema. Move known later tables
+    // out of the frozen predecessor only while replaying the historical SQL.
+    // Keep their completed migration records so deploy cannot recreate them.
     const held = identifier(`pages_fixture_later_tables_${suffix}`);
     const tables = [
       "messaging_install_sessions",
       "messaging_installations",
       "messaging_credential_cleanups",
+      "mcp_create_requests",
       "routine_mutations",
     ];
     const pool = owner!.pool;
@@ -271,7 +273,30 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
       guardValid: true,
     });
 
+    // Unknown relations must still fail the historical fingerprint; only the
+    // explicitly listed successor tables may be held outside that catalog.
+    const unexpected = identifier(`pages_fixture_unexpected_${suffix}`);
+    await owner!.pool.query(`CREATE TABLE public.${unexpected} (id text)`);
+    try {
+      await expect(runMigrationSql()).rejects.toThrow(
+        "Private Pages requires the complete predecessor database catalog",
+      );
+      expect(await namespace()).toBe(false);
+    } finally {
+      await owner!.pool.query(`DROP TABLE public.${unexpected}`);
+    }
+    const receiptHistory = async () =>
+      (
+        await owner!.pool.query(
+          "SELECT checksum, finished_at, rolled_back_at FROM public._prisma_migrations WHERE migration_name='20261113000000_mcp_create_requests'",
+        )
+      ).rows;
+    const completedReceipt = await receiptHistory();
+    expect(completedReceipt).toEqual([
+      { checksum: expect.any(String), finished_at: expect.any(Date), rolled_back_at: null },
+    ]);
     await deploy(true);
+    expect(await receiptHistory()).toEqual(completedReceipt);
     expect(await catalog("public")).toEqual(publicBefore);
     expect(await catalog("cogine_pages")).toMatchObject([
       { name: "page_versions", enabled: false, policy: null },

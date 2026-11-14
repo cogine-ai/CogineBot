@@ -207,6 +207,37 @@ describe("mobile i18n", () => {
     }
   });
 
+  it("covers MCP fields and dynamic recovery messages in all nine translated catalogs", async () => {
+    const { catalogs } = await import("./i18n");
+    const ids = [
+      "Cancel creation",
+      "Created server is no longer available. Review the draft.",
+      "Disconnect OAuth before authorizing from another app.",
+      "Access token (optional)",
+      "Add server",
+      "Arguments",
+      "Authorization cancelled.",
+      "Authorization expired. Try again.",
+      "Authorization failed. Try again.",
+      "Check status before retrying this server.",
+      "Check the server fields.",
+      "Command",
+      "Connect OAuth",
+      "Could not update MCP server. Check status and retry.",
+      "Reconnect OAuth",
+      "Remove MCP server?",
+      "Runs on the connected instance.",
+      "Server name",
+      "This server did not request browser authorization.",
+      "This server is already connected. Disconnect it first to authorize again.",
+      "Transport",
+    ];
+    const translated = Object.values(catalogs).filter((catalog) => Object.keys(catalog).length > 0);
+    expect(translated).toHaveLength(9);
+    for (const messages of translated)
+      for (const id of ids) expect(messages[id]?.trim(), id).toBeTruthy();
+  });
+
   it("translates every mobile chrome t() id in every non-English catalog", async () => {
     const { EMPTY_PLUGIN_CATALOG_MESSAGE, SLASH_ACTIONS } = await import("@rakazo/core");
     const { AI_DATA_DISCLOSURES, OPENAI_COMPATIBLE_BASE_URL_HINT } = await import(

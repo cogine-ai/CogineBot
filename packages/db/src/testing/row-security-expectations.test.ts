@@ -1,13 +1,13 @@
-import { Client } from "pg";
-import { afterEach, expect, it, vi } from "vitest";
-import { ROW_SECURITY_POLICIES } from "../row-security-policies.js";
 import {
   expectExactPolicyCatalog,
   expectPhysicalPolicyTables,
   expectRegisteredPolicyTables,
   isolatedDatabaseUrl,
   schemaPolicyTables,
-} from "./row-security-expectations.js";
+} from "@rakazo/db/testing/row-security-expectations";
+import { Client } from "pg";
+import { afterEach, expect, it, vi } from "vitest";
+import { ROW_SECURITY_POLICIES } from "../row-security-policies.js";
 
 it("detects missing, extra and count-preserving replacement registrations and tables", () => {
   expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
@@ -23,13 +23,13 @@ it("detects missing, extra and count-preserving replacement registrations and ta
 });
 it("rejects missing, extra and count-preserving replacement policies", () => {
   const rows = ROW_SECURITY_POLICIES.flatMap((p) => [
-    { schema: p.schema ?? "public", relname: p.table, polname: `${p.table}_system` },
+    { schema: p.schema ?? "public", table: p.table, policy: `${p.table}_system` },
     ...(p.tenantPredicate
-      ? [{ schema: p.schema ?? "public", relname: p.table, polname: `${p.table}_tenant` }]
+      ? [{ schema: p.schema ?? "public", table: p.table, policy: `${p.table}_tenant` }]
       : []),
   ]);
   expectExactPolicyCatalog(rows);
-  const extra = { schema: "public", relname: "routine_mutations", polname: "unexpected" };
+  const extra = { schema: "public", table: "routine_mutations", policy: "unexpected" };
   for (const changed of [rows.slice(1), [...rows, extra], [extra, ...rows.slice(1)]])
     expect(() => expectExactPolicyCatalog(changed)).toThrow();
 });
@@ -79,3 +79,29 @@ it.each(["localhost", "127.0.0.1", "[::1]"])(
     expect(isolatedDatabaseUrl()).toBe(url);
   },
 );
+
+it.each(["McpCreateRequest", "RoutineMutation"])(
+  "rejects missing %s receipt registration",
+  (receiptModel) => {
+    const incomplete = ROW_SECURITY_POLICIES.filter(({ model }) => model !== receiptModel);
+    expect(() => expectRegisteredPolicyTables(incomplete)).toThrow();
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+  },
+);
+it("rejects missing or extra native policies independently of the production registry", () => {
+  const actual = ROW_SECURITY_POLICIES.flatMap(({ schema = "public", table, tenantPredicate }) => [
+    { schema, table, policy: `${table}_system` },
+    ...(tenantPredicate ? [{ schema, table, policy: `${table}_tenant` }] : []),
+  ]);
+  expectExactPolicyCatalog(actual);
+  expect(() =>
+    expectExactPolicyCatalog(actual.filter(({ table }) => table !== "mcp_create_requests")),
+  ).toThrow();
+  expect(() =>
+    expectExactPolicyCatalog([
+      ...actual,
+      { schema: "public", table: "mcp_create_requests", policy: "unexpected_permissive" },
+    ]),
+  ).toThrow();
+  expect(schemaPolicyTables.some(({ model }) => model === "McpCreateRequest")).toBe(true);
+});

@@ -163,7 +163,11 @@ import {
   IntegrationProviderConfigSchema,
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
-import { PluginServerConnectionInputSchema } from "./mcp.js";
+import {
+  McpCreateReceiptSchema,
+  McpCreateRequestSchema,
+  PluginServerConnectionInputSchema,
+} from "./mcp.js";
 import { ModelHeadersSchema } from "./model-headers.js";
 import {
   NativeBeginInputSchema,
@@ -969,6 +973,12 @@ export const appContract = {
       list: oc.output(z.array(McpServerSchema)),
       check: oc.input(z.object({ id: Id })).output(McpServerHealthSchema),
       create: oc.input(McpServerConfigInput).output(McpServerSchema),
+      newCreateRequest: oc.output(McpCreateRequestSchema),
+      createOnce: oc
+        .input(McpCreateRequestSchema.extend({ config: McpServerConfigInput }))
+        .output(McpCreateReceiptSchema),
+      creation: oc.input(McpCreateRequestSchema).output(McpCreateReceiptSchema.nullable()),
+      cancelCreate: oc.input(McpCreateRequestSchema).output(McpCreateReceiptSchema),
       setTools: oc
         .input(
           z.object({
@@ -1031,7 +1041,11 @@ export const appContract = {
             authorizationUrl: z.string().url(),
           }),
           z.object({
-            status: z.enum(["already_connected", "authorization_not_requested"]),
+            status: z.enum([
+              "already_connected",
+              "authorization_not_requested",
+              "disconnect_required",
+            ]),
           }),
         ]),
       ),

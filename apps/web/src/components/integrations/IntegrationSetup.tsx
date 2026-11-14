@@ -120,7 +120,16 @@ export function IntegrationSetup({
         await rpc.mcp.servers.update({ id: existing.id, secret: apiKey.trim() });
       }
       const result = await connectMcpOauth(server.id);
-      if (result === "cancelled") return;
+      if (result === "disconnect_required") {
+        setError(t`Disconnect OAuth before authorizing from another app.`);
+        return;
+      }
+      if (
+        result !== "connected" &&
+        result !== "already_connected" &&
+        result !== "authorization_not_requested"
+      )
+        return;
       if (shareTools) {
         const current = (await rpc.mcp.servers.list()).find((item) => item.id === server.id);
         if (!current) throw new Error(t`Server is no longer available`);

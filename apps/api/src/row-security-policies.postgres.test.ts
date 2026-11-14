@@ -116,6 +116,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     )
       throw new Error("Row-policy tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
+    expectPhysicalPolicyTables(
+      (
+        await owner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     url.username = role;
     url.password = password;
     url.searchParams.delete("user");
@@ -614,13 +622,6 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       legacyPolicyCount: 0,
     });
     expect(installed.tables).toHaveLength(schemaPolicyTables.length);
-    expectPhysicalPolicyTables(
-      (
-        await owner.pool.query(
-          "SELECT n.nspname AS schema, c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public', 'cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
-        )
-      ).rows,
-    );
     expect(
       installed.tables.every(
         (table) => table.present && table.enabled && table.active && table.policyMatch,
@@ -635,7 +636,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expectExactPolicyCatalog(snapshot);
+    expectExactPolicyCatalog(
+      snapshot.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+    );
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1707,7 +1710,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expectExactPolicyCatalog(await catalog());
+        expectExactPolicyCatalog(
+          (await catalog()).map((row) => ({
+            schema: row.schema,
+            table: row.relname,
+            policy: row.polname,
+          })),
+        );
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -2000,7 +2009,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expectExactPolicyCatalog(committed);
+        expectExactPolicyCatalog(
+          committed.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+        );
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -2046,7 +2057,9 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expectExactPolicyCatalog(committed);
+      expectExactPolicyCatalog(
+        committed.map((row) => ({ schema: row.schema, table: row.relname, policy: row.polname })),
+      );
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

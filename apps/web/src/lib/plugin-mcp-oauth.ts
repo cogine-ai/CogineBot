@@ -1,9 +1,10 @@
+import { t } from "@lingui/core/macro";
 import { newClientId } from "./client-id";
 import { MCP_OAUTH_CHANNEL } from "./mcp-connect";
 
 type Authorization =
   | { status: "authorization_required"; sessionId: string; authorizationUrl: string }
-  | { status: "already_connected" | "authorization_not_requested" };
+  | { status: "already_connected" | "authorization_not_requested" | "disconnect_required" };
 type Result =
   | "returned"
   | "pending"
@@ -88,6 +89,8 @@ export function authorizePluginMcp(options: {
         if (!current()) return abort();
         if (started.status !== "authorization_required") {
           closeOwnedPopup();
+          if (started.status === "disconnect_required")
+            throw new Error(t`Disconnect OAuth before authorizing from another app.`);
           finish(started.status);
           return;
         }

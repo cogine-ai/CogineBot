@@ -1,5 +1,32 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const TR_MESSAGES: Record<string, string> = {
+  "Cancel creation": "Oluşturmayı iptal et",
+  "Created server is no longer available. Review the draft.":
+    "Oluşturulan sunucu artık kullanılamıyor. Taslağı gözden geçirin.",
+  "Disconnect OAuth before authorizing from another app.":
+    "Başka bir uygulamadan yetkilendirmeden önce OAuth bağlantısını kesin.",
+  "Access token (optional)": "Erişim belirteci (isteğe bağlı)",
+  "Add server": "Sunucu ekle",
+  Arguments: "Bağımsız değişkenler",
+  "Authorization cancelled.": "Yetkilendirme iptal edildi.",
+  "Authorization expired. Try again.": "Yetkilendirmenin süresi doldu. Tekrar deneyin.",
+  "Authorization failed. Try again.": "Yetkilendirme başarısız oldu. Tekrar deneyin.",
+  "Check status before retrying this server.":
+    "Bu sunucuyu yeniden denemeden önce durumunu kontrol edin.",
+  "Check the server fields.": "Sunucu alanlarını kontrol edin.",
+  Command: "Komut",
+  "Connect OAuth": "OAuth bağla",
+  "Could not update MCP server. Check status and retry.":
+    "MCP sunucusu güncellenemedi. Durumunu kontrol edip tekrar deneyin.",
+  "Reconnect OAuth": "OAuth yeniden bağla",
+  "Remove MCP server?": "MCP sunucusu kaldırılsın mı?",
+  "Runs on the connected instance.": "Bağlı örnekte çalışır.",
+  "Server name": "Sunucu adı",
+  "This server did not request browser authorization.":
+    "Bu sunucu tarayıcı yetkilendirmesi istemedi.",
+  "This server is already connected. Disconnect it first to authorize again.":
+    "Bu sunucu zaten bağlı. Yeniden yetkilendirmek için önce bağlantısını kesin.",
+  Transport: "Aktarım",
   "Slack workspaces": "Slack çalışma alanları",
   "Slack installation is unavailable.": "Slack kurulumu kullanılamıyor.",
   "Slack request unconfirmed": "Slack isteği doğrulanmadı",

@@ -7690,3 +7690,8 @@ msgstr "无法确认此安排的归属。"
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "导入的例行任务默认暂停。"
+
+#: src/pages/McpServersOverlay.tsx
+#: src/lib/plugin-mcp-oauth.ts
+msgid "Disconnect OAuth before authorizing from another app."
+msgstr "从其他应用授权前，请先断开 OAuth。"

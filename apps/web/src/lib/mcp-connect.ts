@@ -6,6 +6,7 @@ const MCP_OAUTH_TIMEOUT_MS = 2 * 60 * 1000;
 export type McpOauthResult =
   | "connected"
   | "cancelled"
+  | "disconnect_required"
   | "already_connected"
   | "authorization_not_requested";
 

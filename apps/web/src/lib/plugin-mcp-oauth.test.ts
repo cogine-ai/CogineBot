@@ -240,3 +240,10 @@ it("does not navigate the provider when clearing the opener fails and cleans own
   expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
   expect(vi.getTimerCount()).toBe(0);
 });
+it("closes its blank popup and exposes the cross-app disconnect requirement", async () => {
+  begin.mockResolvedValue({ status: "disconnect_required" });
+  await expect(start()).rejects.toThrow("Disconnect OAuth before authorizing from another app.");
+  expect(popup.close).toHaveBeenCalled();
+  expect(popup.location.replace).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
