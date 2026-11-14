@@ -1,5 +1,9 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const FR_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Choisir un dossier de sauvegarde",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "Impossible de lire le dossier complet. Choisissez plutôt une archive de sauvegarde.",
+
   "Left channel": "Canal quitté",
   "Choose…": "Choisir…",
   Declined: "Refusé",
