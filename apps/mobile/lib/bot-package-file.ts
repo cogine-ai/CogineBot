@@ -143,7 +143,11 @@ function shareRetainedAt(directory: Directory, fallback: number, now: number): n
   return now;
 }
 
-function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<ShareFile> {
+function reserveShareFile(
+  bytes: Uint8Array,
+  isCurrent: () => boolean,
+  markdown: boolean,
+): Promise<ShareFile> {
   const reserve = () => {
     assertCurrent(isCurrent);
     const root = new Directory(Paths.cache, SHARE_ROOT);
@@ -161,7 +165,9 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
         continue;
       }
       count += 1;
-      const knownSize = new File(entry, "package.json").info().size;
+      const packageFile = new File(entry, "package.json");
+      const knownSize = (packageFile.exists ? packageFile : new File(entry, "memory.md")).info()
+        .size;
       size +=
         typeof knownSize === "number" && Number.isSafeInteger(knownSize) && knownSize >= 0
           ? knownSize
@@ -177,7 +183,7 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
       globalThis.crypto?.randomUUID?.() ??
       `${now.toString(36)}-${++fallbackNonce}-${Math.random().toString(36).slice(2).padEnd(8, "0")}`;
     const directory = new Directory(root, `${now}-${nonce}`);
-    const file = new File(directory, "package.json");
+    const file = new File(directory, markdown ? "memory.md" : "package.json");
     const retention = new File(directory, "retention.json");
     directory.create();
     try {
@@ -205,7 +211,11 @@ function reserveShareFile(bytes: Uint8Array, isCurrent: () => boolean): Promise<
 }
 
 /** OS sharing does not prove the receiver read the file, so handed-off copies expire lazily. */
-export async function shareBotPackageFile(text: string, isCurrent: () => boolean): Promise<void> {
+async function shareTextFile(
+  text: string,
+  isCurrent: () => boolean,
+  markdown: boolean,
+): Promise<void> {
   assertCurrent(isCurrent);
   const bytes = new TextEncoder().encode(text);
   checkSize(bytes.byteLength);
@@ -224,11 +234,14 @@ export async function shareBotPackageFile(text: string, isCurrent: () => boolean
   let shareInvoked = false;
   let failure: BotPackageFileError | null = null;
   try {
-    owned = await reserveShareFile(bytes, isCurrent);
+    owned = await reserveShareFile(bytes, isCurrent, markdown);
     assertCurrent(isCurrent);
     // Once invoked, even a rejected native promise cannot prove no receiver got the URI.
     shareInvoked = true;
-    await Sharing.shareAsync(owned.file.uri, { mimeType: "application/json" });
+    await Sharing.shareAsync(owned.file.uri, {
+      mimeType: markdown ? "text/markdown" : "application/json",
+      ...(markdown ? { UTI: "net.daringfireball.markdown" } : {}),
+    });
     owned.retention.write(JSON.stringify({ version: 1, retainedAt: Math.max(0, Date.now()) }));
     assertCurrent(isCurrent);
   } catch (error) {
@@ -247,4 +260,12 @@ export async function shareBotPackageFile(text: string, isCurrent: () => boolean
     }
   }
   if (failure) throw failure;
+}
+
+export function shareBotPackageFile(text: string, isCurrent: () => boolean): Promise<void> {
+  return shareTextFile(text, isCurrent, false);
+}
+
+export function shareMemoryMarkdown(text: string, isCurrent: () => boolean): Promise<void> {
+  return shareTextFile(text, isCurrent, true);
 }
