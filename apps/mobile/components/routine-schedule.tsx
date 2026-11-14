@@ -1,5 +1,11 @@
 import type { CronFreq, CronPreset, CronUnit } from "@rakazo/core";
-import { CRON_FREQS, clampIntervalAmount, cronFromPreset, cronIntervalAmounts } from "@rakazo/core";
+import {
+  CRON_FREQS,
+  clampIntervalAmount,
+  cronFromPreset,
+  cronIntervalAmounts,
+  formatCronTime,
+} from "@rakazo/core";
 import { TextInput, View } from "react-native";
 import { useI18n } from "../lib/i18n";
 import { native } from "../lib/native";
@@ -15,7 +21,7 @@ export function RoutineSchedule({
   onChange: (value: CronPreset) => void;
   disabled: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const patch = (change: Partial<CronPreset>) => {
     if (!disabled) onChange({ ...value, ...change });
   };
@@ -70,7 +76,7 @@ export function RoutineSchedule({
         <MenuPicker
           label={t("Time of day")}
           value={value.time}
-          choices={times.map((time) => ({ key: time, label: time }))}
+          choices={times.map((time) => ({ key: time, label: formatCronTime(time, locale) }))}
           onChange={(time) => patch({ time })}
         />
       ) : null}

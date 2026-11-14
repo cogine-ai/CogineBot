@@ -110,10 +110,10 @@ type LocaleCase = {
   localizationFailure?: boolean;
 };
 const localeCases: LocaleCase[] = [
-  { device: "es-ES", ui: "en", recognition: "es-ES", hint: "es" },
+  { device: "es-ES", ui: "es", recognition: "es-ES", hint: "es" },
   { device: "it-IT", ui: "en", recognition: "it-IT", hint: undefined },
-  { device: "fr-CA", ui: "en", recognition: "fr-CA", hint: "fr" },
-  { device: "pt-BR", ui: "en", recognition: "pt-BR", hint: "pt" },
+  { device: "fr-CA", ui: "fr", recognition: "fr-CA", hint: "fr" },
+  { device: "pt-BR", ui: "pt-BR", recognition: "pt-BR", hint: "pt" },
   { device: "en-GB", ui: "en", recognition: "en-GB", hint: "en" },
   { device: "de-CH", ui: "de", recognition: "de-CH", hint: "de" },
   { device: "zh-TW", ui: "en", recognition: "zh-TW", hint: undefined },
@@ -126,11 +126,11 @@ const localeCases: LocaleCase[] = [
   { device: "it-IT", env: "en", ui: "en", recognition: "en-US", hint: "en" },
   { device: "it-IT", stored: "zh-CN", env: "en", ui: "zh-CN", recognition: "zh-CN", hint: "zh" },
   { device: "it-IT", select: "en", writeFailure: true, ui: "en", recognition: "en-US", hint: "en" },
-  { device: "es-ES", readFailure: true, ui: "en", recognition: "es-ES", hint: "es" },
+  { device: "es-ES", readFailure: true, ui: "es", recognition: "es-ES", hint: "es" },
   { device: "it-IT", localizationFailure: true, ui: "en", recognition: "it-IT", hint: undefined },
   { device: null, ui: "en", recognition: "en-US", hint: undefined },
-  { device: "pt-PT", ui: "en", recognition: "pt-PT", hint: undefined },
-  { device: "it-IT", stored: "es-ES", ui: "en", recognition: "it-IT", hint: undefined },
+  { device: "pt-PT", ui: "pt-BR", recognition: "pt-PT", hint: undefined },
+  { device: "it-IT", stored: "es-ES", ui: "es", recognition: "es-ES", hint: "es" },
   { device: "es-ES", env: "it-IT", ui: "en", recognition: "es-ES", hint: "es" },
   { device: "zh-TW", stored: "zh-TW", ui: "en", recognition: "zh-TW", hint: undefined },
   { device: "it-IT", stored: "en-GB", ui: "en", recognition: "en-US", hint: "en" },

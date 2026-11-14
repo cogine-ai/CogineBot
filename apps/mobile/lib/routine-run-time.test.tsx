@@ -5,9 +5,12 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RoutineRunTime } from "../components/routine-run-time";
+import { activateUiLocale, resetI18nForTests } from "./i18n";
+import { UI_LOCALES } from "./ui-locale";
 
 type PickerProps = {
   mode?: string;
+  locale?: string;
   value: Date;
   onValueChange: (event: unknown, date: Date) => void;
   onDismiss: () => void;
@@ -50,6 +53,7 @@ const change = vi.fn();
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.os = "android";
+  resetI18nForTests();
   change.mockReset();
   container = document.createElement("div");
   document.body.append(container);
@@ -67,6 +71,8 @@ it("requires Android date then time confirmation before changing the instant", a
   );
   await act(async () => container.querySelector("button")!.click());
   expect(state.props.mode).toBe("date");
+  // The locked Expo Android picker does not support a locale override.
+  expect(state.props.locale).toBeUndefined();
   const day = new Date("2099-03-04T12:00:00Z");
   await act(async () => state.props.onValueChange({}, day));
   expect(state.props.mode).toBe("time");
@@ -103,3 +109,22 @@ it("commits the iOS date and time only on Done", async () => {
   );
   expect(change).toHaveBeenCalledWith(instant.toISOString());
 });
+
+it.each(UI_LOCALES)(
+  "passes %s into the open iOS picker and responds to language changes",
+  async (locale) => {
+    state.os = "ios";
+    const instant = "2099-03-04T14:30:00.000Z";
+    await act(async () =>
+      root.render(<RoutineRunTime value={instant} onChange={change} disabled={false} />),
+    );
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => {
+      activateUiLocale(locale);
+    });
+    expect(state.props.locale).toBe(locale);
+    expect(state.props.value.toISOString()).toBe(instant);
+    expect(state.props.mode).toBe("datetime");
+    expect(change).not.toHaveBeenCalled();
+  },
+);
