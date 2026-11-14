@@ -111,20 +111,14 @@ public class RakazoBackupFolderModule: Module {
     return try result.get()
   }
 
-  private func isLocalDocuments(_ url: URL) -> Bool {
-    let parts = url.standardizedFileURL.pathComponents
-    guard let index = parts.firstIndex(of: "Application"), index >= 2,
-      parts[index - 2] == "Containers", parts[index - 1] == "Data",
-      parts.count > index + 2 else { return false }
-    return parts[index + 2] == "Documents"
-  }
-
   private func inventory(_ root: URL, limit: Int) throws -> [FolderEntry] {
     try coordinated(root) { directory in
       // Cloud/file-provider completeness is not certified by this adapter. Use an archive there.
       let rootValues = try directory.resourceValues(forKeys: [.volumeIsLocalKey, .isUbiquitousItemKey])
       guard rootValues.volumeIsLocal == true, rootValues.isUbiquitousItem != true,
-        self.isLocalDocuments(directory) else { throw FolderFailure() }
+        BackupFolderBoundary.isLocalDocuments(
+          directory, appHome: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        ) else { throw FolderFailure() }
       let rootKind = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
       guard rootKind.isDirectory == true, rootKind.isSymbolicLink == false else { throw FolderFailure() }
       var entries: [FolderEntry] = []

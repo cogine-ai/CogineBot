@@ -5,6 +5,7 @@ import {
   readAgentBackupFolderModelKey,
 } from "@rakazo/core/agent-backup";
 import { requireOptionalNativeModule } from "expo-modules-core";
+import { Platform } from "react-native";
 
 /** Native code owns grants/URLs. JS only receives relative inventory and bounded bytes. */
 export type BackupFolderAccess = {
@@ -63,6 +64,9 @@ export async function pickBotBackupFolder(
   }));
   try {
     assertCurrent();
+    // SAF cursors have no trustworthy completeness signal, including the system
+    // provider. Also reject successful results from an older installed native module.
+    if (Platform.OS === "android") throw new Error("folder_inventory_unverifiable");
     const source = await encodeAgentBackupFolder(entries, isCurrent);
     if (readFailure) throw readFailure;
     await access.verify(result.session);

@@ -1,83 +1,100 @@
 # Native backup folders (#156)
 
-The current Import bot editor offers **Choose backup folder** alongside **Choose
-package file**. A successful selection replaces the source only after inventory,
-bounded reads, shared projection and a second inventory check finish. Preview and
-Import as new bot remain separate explicit actions. Archive recovery stays available.
+**Android directory import is incomplete and technically blocked.** The previous
+SAF implementation could accept a successful but incomplete inventory. It has
+been removed and replaced with an explicit failure. Archive recovery is still
+available; it does not fulfill Android directory import or complete this ticket.
 
-## Implementation
+iOS retains **Choose backup folder** in the current Import bot editor. A successful
+selection replaces the source after bounded traversal, shared encoding and a change
+check. Preview and Import as new bot remain separate actions. Neither a second
+scan nor an unchanged file list is presented as proof of completeness.
 
-- iOS: opening-mode folder picker, temporary security-scoped access and coordinated
-  reads. Only local application Documents directories are accepted; ubiquitous
-  items and other locations are rejected.
-- Android: `ACTION_OPEN_DOCUMENT_TREE`, read-only access and `DocumentsContract`
-  child queries. Only the system external-storage provider is accepted. Loading or
-  error cursors, unknown sizes, virtual documents and repeated IDs fail selection.
-  No persistent grants or broad storage permissions are requested.
-- Hidden entries are included. Native traversal counts directories against the
-  shared 2,000-entry limit and additionally caps depth at 64. Shared encoding owns
-  path validation, normalization collisions, workspace selection, Skill dependency
-  checks and content limits. Native readers enforce the supplied shared limits:
-  400,000 bytes per read file and 4 MiB across reads.
-- Native URLs/document IDs stay in an opaque session. Only relative paths, sizes
-  and bounded bytes cross the bridge. Only projected content reaches preview.
-  Credential reads retain the base branch's explicit opt-in and model matching;
-  no model preference behavior is introduced.
-- Cancellation preserves the old draft. Permission, inventory and selected-file
-  read failures reject the new selection, including optional-config I/O errors.
-  Existing shared omissions for known unsupported/oversized optional content stay
-  visible in review. Changed inventory or byte lengths cannot publish partial data.
-- Scope changes and newer edits reject late results. Replacement, completion,
-  recovery and editor cleanup dispose the session. iOS releases security-scoped
-  access; Android drops session references (the OS controls the lifetime of its
-  temporary activity grant). No backup is copied to an app cache.
+## F1: incomplete Android inventory
 
-## System / file provider matrix
+The old system-provider whitelist and error/loading checks were insufficient.
+AOSP's [FileSystemProvider](https://android.googlesource.com/platform/frameworks/base/+/01cd624ac1c185acef0ce51d4e5d65e7095c3692/core/java/com/android/internal/content/FileSystemProvider.java)
+uses `listFilesOrEmpty` in child queries; its metadata tree walk also continues past
+failed visits. [FileUtils](https://android.googlesource.com/platform/frameworks/base/+/fbd5595517061bb8965b4f1a6cdc16009df66cbe/core/java/android/os/FileUtils.java)
+turns a null file listing into an empty array. Authority, successful cursors,
+repeated scans and metadata counts therefore cannot certify the missing subtree.
 
-Device access was not authorized. No row claims real native compilation, a tested
-OS version, successful system authorization or production provider certification.
-Both native implementations exist; **both platform acceptance checks remain
-unfinished**, pending real builds and system-provider evidence.
+The native Android module now rejects directory selection. The JS boundary also
+rejects successful Android selections from older installed native modules and
+releases their sessions before any file read or shared projection. Permanent
+negative controls return successful stable full-looking and partial inventories;
+the latter omits a hidden Skill dependency. They demonstrate that the incomplete
+input loses its warning under shared encoding, then require rejection by the
+actual mobile adapter. Existing error/cancel/scope/draft/archive tests remain.
 
-| System / provider | Implemented behavior | Evidence / boundary |
+[等 ZenYang] A usable Android implementation still needs a reviewable reader that
+reports traversal failures without filtering or silently omitting descendants,
+and authorized native build/provider validation. The investigated SAF APIs supply
+no such proof. A URI grant is not a trustworthy raw filesystem path. This change
+does not guess paths, request broad storage access, require a new backup manifest,
+or claim that an archive fulfills the directory requirement. Any different access
+mechanism must be scoped and authorized separately; the requirements are unchanged.
+
+## F2: iOS source boundary
+
+The old predicate searched for a name sequence anywhere in the selected path.
+The replacement anchors to the canonical parent of the running app's OS-assigned
+`NSHomeDirectory()`. It fails closed unless that home has the expected app container
+layout, then requires the selected canonical path to be an immediate UUID app
+container's Documents directory or descendant under that exact root. Names nested
+under shared or arbitrary roots cannot establish trust. Security-scoped access,
+local-volume/ubiquitous checks and coordinated error-reporting traversal remain.
+
+This is a storage-location boundary, not a provider identity certificate or an OS
+authorization bypass fix. The production Foundation-only helper is executed against
+12 positive/negative cases, including valid UUIDs inside forged shared/arbitrary
+paths, component-prefix collisions, traversal and an unknown runtime-home layout.
+That host test does not compile or run the iOS module or picker.
+
+## Shared behavior retained
+
+- The iOS reader includes hidden entries, counts directories against the shared
+  2,000-entry budget, caps depth at 64, and applies the shared 400,000-byte per-file
+  and 4 MiB total-read limits. Shared encoding owns path validation, collisions,
+  workspace selection, Skill dependencies, content selection and existing omissions.
+- Only projected content reaches preview. Existing explicit credential opt-in and
+  model matching remain; no model preference rules are added.
+- Cancellation and failed reads preserve the draft. Unreadable optional inputs also
+  reject native selection. Scope changes/newer edits discard late results. Source
+  replacement, completion, recovery and cleanup release scoped iOS sessions.
+- Archive/folder synthetic parity covers content, hidden dependencies, selections,
+  warnings and server-parsed documents with memory on/off. ZIP ordering is not
+  semantic. Existing manifest/owner rules remain; arbitrary layouts are not certified.
+
+## System / provider matrix
+
+| System / source | Current behavior | Evidence / unfinished work |
 | --- | --- | --- |
-| iOS / local app Documents visible in Files | Folder picker, scoped coordinated traversal and reads | Swift syntax and module discovery only; build, picker visibility, hidden entries, revocation and import unproven |
-| iOS / iCloud Drive | Reject; use archive | Logic inspected; real picker behavior unproven |
-| iOS / third-party File Provider, shared containers or other locations | Reject; use archive | Completeness is not guaranteed; no provider certification |
-| Android / system external-storage provider, primary or removable | SAF tree selection, child queries, bounded reads | Module discovery only; build, authorization, hidden entries, media removal and import unproven |
-| Android / Downloads, cloud or third-party DocumentsProvider | Reject; use archive | No complete-enumeration contract accepted; device behavior unproven |
-| Expo Go / builds without the module | Error and archive recovery | Offline missing-module test; directory support unavailable in these builds |
+| iOS / Documents under the runtime-anchored app-container root | Scoped coordinated traversal and reads | Host boundary tests and syntax only; real native build, picker, grant, hidden entries and import unproven |
+| iOS / shared containers, arbitrary roots, provider caches outside that boundary | Reject, including nested lookalike container paths | Actual production Swift boundary negative controls; OS/provider behavior unproven |
+| iOS / ubiquitous cloud items or nonlocal volumes | Reject; archive recovery | Code inspection; device behavior unproven |
+| Android / all providers, including system external storage | Explicit failure; no usable directory reader | **Platform directory implementation incomplete / technically blocked**, not merely missing device evidence |
+| Expo Go / build without module | Error and archive recovery | Missing-module regression; no directory support |
 
-Android root-selection restrictions remain in force. iOS folders must be in a
-selectable local Documents location. Failure shows “Could not read the complete
-folder. Choose a backup archive instead.” only after a failed attempt. Fallback
-does not complete C1 or certify a platform.
+No actual OS/provider version is certified. In particular, no row claims Android
+complete enumeration, nor that any third-party provider name alone determines an
+iOS path's origin. The existing translated recovery message is shown only after a
+failed attempt; no new copy or archive-product exemption is introduced.
 
-## C1–C4 evidence
+## C1–C4 evidence and handoff
 
-| Criterion | Implementation / substitute evidence | Still unproven |
+| Criterion | Current implementation / substitute evidence | Not complete |
 | --- | --- | --- |
-| C1 | Both modules and current Bot import entry; UI tests require preview and explicit confirm | Real builds, system grants/reads, screenshots and persisted imports on both platforms |
-| C2 | Synthetic OpenClaw/Hermes ZIP/folder tests compare selection groups, hidden dependency warnings, projected files, server-parsed documents and warnings with memory on/off; old regressions retained | Persistent backend/Web cross-read; arbitrary layouts and provider enumeration |
-| C3 | Offline cancellation, permission, incomplete inventory, unreadable required/optional files, entry/file/total limits, changed inventory, stale scope and late-result tests; archive recovery | Native OS revocation and provider failures during reads |
-| C4 | Matrix distinguishes implemented adapters, rejected providers and unfinished acceptance | Actual OS/provider versions and screenshots |
+| C1 | iOS module and explicit preview/confirm UI | Android directory implementation; both platforms' real build/grant/import evidence |
+| C2 | Synthetic shared/mobile/server projection parity retained | Android directory workflow and actual backend/Web cross-read |
+| C3 | Successful incomplete Android results now fail closed; old cancel/error/limit/scope/draft recovery tests retained | A usable trustworthy Android reader; real OS revocation/provider fault testing |
+| C4 | Matrix corrected to distinguish implemented iOS source boundary from Android technical blocker | Actual OS/provider certification and screenshots |
 
-ZIP ordering is not semantic; projected files are compared by path. Existing
-archive manifest/owner binding and conservative shared directory rules remain.
-This does not claim universal equivalence for arbitrary layouts or manifest metadata.
+Do not mark #156 PASS or close it from these safety fixes. Independent acceptance
+has used round 1 of 2; management schedules the second/final round. The development
+session does not wake acceptance or start a third round.
 
-Offline fixtures and mocked native access are substitute evidence only. Swift
-parsing and Expo discovery do not compile or run native code. No offline bundle is
-presented as device proof. No device, emulator, server or paid upstream was used.
+Offline tests use synthetic fixtures and mocked native access. The Foundation
+boundary executable, syntax checks and module discovery are not iOS/Android native
+builds or device evidence. No device, emulator, server or paid upstream was used.
 Native-only UI cannot be captured by web CI; no unrelated screenshot is substituted.
-
-Authorized acceptance must record actual OS/provider and app/backend commits,
-walk folder → preview → confirm for both backup formats, exercise cancellation,
-revocation, incomplete/unreadable/oversized selections and scope changes, then
-cross-read synthetic imported Bots from Web. Management schedules independent
-acceptance; this development turn does not wake it.
-
-
-API references: [Apple directory access](https://developer.apple.com/documentation/uikit/providing-access-to-directories)
-and [Android DocumentsContract](https://developer.android.com/reference/android/provider/DocumentsContract).
-These describe the APIs, not validation of this implementation.

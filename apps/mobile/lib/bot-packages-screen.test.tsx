@@ -641,25 +641,29 @@ it("imports a selected folder only after preview and confirmation, then releases
   expect(dispose).toHaveBeenCalledOnce();
 });
 
-it.each(["cancel", "permission", "incomplete", "unreadable", "limit"])(
-  "preserves the original draft on folder %s and allows archive recovery",
-  async (failure) => {
-    if (failure !== "cancel") api.pickFolder.mockRejectedValueOnce(new Error(failure));
-    await mountImport();
-    await fill("Bot package or Grok JSON", "original draft");
-    await click("Choose backup folder");
-    expect(field("Bot package or Grok JSON").value).toBe("original draft");
-    expect(imports()).toHaveLength(0);
-    expect(
-      node.textContent?.includes(
-        "Could not read the complete folder. Choose a backup archive instead.",
-      ),
-    ).toBe(failure !== "cancel");
-    api.pick.mockResolvedValueOnce("archive recovery");
-    await click("Choose package file");
-    expect(field("Bot package or Grok JSON").value).toBe("archive recovery");
-  },
-);
+it.each([
+  "cancel",
+  "permission",
+  "incomplete",
+  "unreadable",
+  "limit",
+  "folder_inventory_unverifiable",
+])("preserves the original draft on folder %s and allows archive recovery", async (failure) => {
+  if (failure !== "cancel") api.pickFolder.mockRejectedValueOnce(new Error(failure));
+  await mountImport();
+  await fill("Bot package or Grok JSON", "original draft");
+  await click("Choose backup folder");
+  expect(field("Bot package or Grok JSON").value).toBe("original draft");
+  expect(imports()).toHaveLength(0);
+  expect(
+    node.textContent?.includes(
+      "Could not read the complete folder. Choose a backup archive instead.",
+    ),
+  ).toBe(failure !== "cancel");
+  api.pick.mockResolvedValueOnce("archive recovery");
+  await click("Choose package file");
+  expect(field("Bot package or Grok JSON").value).toBe("archive recovery");
+});
 
 it.each(["edit", "space", "blur"])(
   "discards and releases a late folder after %s",

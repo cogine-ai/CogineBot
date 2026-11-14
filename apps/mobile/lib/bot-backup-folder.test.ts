@@ -4,9 +4,21 @@ import {
   encodeAgentBackup,
 } from "@rakazo/core/agent-backup";
 import { strToU8, zipSync } from "fflate";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import type { BackupFolderAccess } from "./bot-backup-folder";
 import { pickBotBackupFolder } from "./bot-backup-folder";
+
+const nativePlatform = vi.hoisted(() => ({ os: "ios" }));
+vi.mock("react-native", () => ({
+  Platform: {
+    get OS() {
+      return nativePlatform.os;
+    },
+  },
+}));
+beforeEach(() => {
+  nativePlatform.os = "ios";
+});
 
 vi.mock("expo-modules-core", () => ({ requireOptionalNativeModule: () => null }));
 
@@ -181,3 +193,38 @@ it("keeps credential reads opt-in and refuses revoked access or disposed session
   selected.dispose();
   await expect(selected.readKey(model)).rejects.toThrow("folder_closed");
 });
+
+it.each([false, true])(
+  "fails closed on successful Android cursor results (hidden subtree omitted: %s)",
+  async (omitHidden) => {
+    const allFiles = {
+      ".openclaw/SOUL.md": "Synthetic review bot.",
+      ".openclaw/skills/report/SKILL.md":
+        "---\nname: report\ndescription: Review reports.\n---\nRead rows.",
+      ".openclaw/skills/report/.hidden/data.txt": "Dependency fixture.",
+    };
+    const files = { ...allFiles };
+    if (omitHidden)
+      delete (files as Record<string, string>)[".openclaw/skills/report/.hidden/data.txt"];
+    const { access } = fixture(files);
+    // Successful stable partial cursors have no reliable completeness signal. Neither
+    // a second successful scan nor a full-looking cursor may authorize this backend.
+    access.verify.mockResolvedValue(undefined);
+    const full = encodeAgentBackup(zipSync(fixture(allFiles).bytes));
+    expect(agentBackupFileGroups(full)?.unavailable).toContainEqual({
+      path: "skills/report/SKILL.md",
+      reason: "missingSkillFiles",
+    });
+    if (omitHidden) {
+      const partial = encodeAgentBackup(zipSync(fixture(files).bytes));
+      expect(agentBackupFileGroups(partial)?.skills).toContain("skills/report/SKILL.md");
+    }
+    nativePlatform.os = "android";
+    await expect(pickBotBackupFolder(() => true, access)).rejects.toThrow(
+      "folder_inventory_unverifiable",
+    );
+    expect(access.pick).toHaveBeenCalledOnce();
+    expect(access.read).not.toHaveBeenCalled();
+    expect(access.close).toHaveBeenCalledExactlyOnceWith("selection");
+  },
+);
