@@ -317,6 +317,89 @@ describePostgres("routine save transaction regressions", () => {
     },
   );
 
+  it("recovers two lost submissions while successive trigger drafts reorder stable keys", async () => {
+    const o = await fixture(),
+      make = await connected(o),
+      state: RoutineSaveState = {};
+    const calls: Array<Parameters<typeof saveRoutineDraft>[1]> = [];
+    const receipts = new Set<string>();
+    let committed: Routine | undefined;
+    const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+      calls.push(structuredClone(request));
+      const saved = await rpc<Routine>(o.cookie, `routines/${request.operation}`, request.input);
+      if (!receipts.has(String(request.input.mutationId))) {
+        receipts.add(String(request.input.mutationId));
+        committed = saved;
+        if (receipts.size <= 2) throw new Error("Lost committed response");
+      }
+      return saved;
+    };
+    const draft = (a: string, reverse = false) => ({
+      operation: "create" as const,
+      input: {
+        botId: o.bot.id,
+        name: "Trigger recovery",
+        prompt: "Synthetic",
+        crons: ["0 9 * * *"],
+        mutationId: randomUUID(),
+        nativeTriggers: reverse ? [make("stable-b"), make(a)] : [make(a), make("stable-b")],
+      },
+      triggerKeys: reverse ? ["key-b", "key-a"] : ["key-a", "key-b"],
+    });
+    await expect(saveRoutineDraft(state, draft("a-one"), null, send, () => true)).rejects.toThrow(
+      "Lost committed response",
+    );
+    const first = committed!;
+    const idA = first.nativeTriggers![0]!.id,
+      idB = first.nativeTriggers![1]!.id;
+    await expect(
+      saveRoutineDraft(state, draft("a-two", true), null, send, () => true),
+    ).rejects.toThrow("Lost committed response");
+    await database.prisma.nativeRoutineTrigger.update({
+      where: { id: idB },
+      data: { state: { cursor: "keep" }, leaseId: "synthetic-lease" },
+    });
+    const beforeB = await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({
+      where: { id: idB },
+    });
+    const saved = await saveRoutineDraft(state, draft("a-three"), null, send, () => true);
+    expect(saved?.id).toBe(first.id);
+    expect(saved?.nativeTriggers?.find((t) => t.id === idA)).toMatchObject({
+      version: 3,
+      spec: make("a-three").spec,
+    });
+    expect(
+      await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: idB } }),
+    ).toEqual(beforeB);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[3]).toEqual(calls[2]);
+    expect(calls[4]!.input.nativeTriggers).toMatchObject([
+      { id: idA, expectedVersion: 2 },
+      { id: idB, expectedVersion: 1 },
+    ]);
+    expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(2);
+  });
+
+  it("receipt-only update replay returns current activation after pause and resume", async () => {
+    const o = await fixture();
+    await update(o, { active: true });
+    const input = { mutationId: randomUUID(), name: "Edited", routineId: o.routine.id };
+    await rpc(o.cookie, "routines/update", input); // Simulate losing this result.
+    await update(o, { active: false });
+    expect(await rpc(o.cookie, "routines/update", input)).toMatchObject({
+      id: o.routine.id,
+      active: false,
+    });
+    await update(o, { active: true });
+    expect(await rpc(o.cookie, "routines/update", input)).toMatchObject({
+      id: o.routine.id,
+      active: true,
+    });
+    expect((await rpc<Routine[]>(o.cookie, "routines/list", { botId: o.bot.id }))[0]!.active).toBe(
+      true,
+    );
+  });
+
   it("sparse update preserves concurrent schedule, model, pause and external flags", async () => {
     const o = await fixture();
     await database.prisma.routine.update({

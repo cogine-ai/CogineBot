@@ -2862,3 +2862,51 @@ it("keeps an uncertain create through authorization refusal and restored access"
     prompt: "Later prompt",
   });
 });
+
+it("receipt-only recovery keeps activation current and failed reads keep the draft", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let saved = { ...(await normal("routines/list"))[0] };
+  let lost = true,
+    failRecovery = false;
+  const receipts = new Set<string>();
+  state.rpc.mockImplementation(async (path, input, options) => {
+    if (path === "routines/list") return [saved];
+    if (path !== "routines/update") return normal(path, input, options);
+    if (input.mutationId && receipts.has(input.mutationId)) {
+      if (failRecovery) throw new Error("Recovery read failed");
+      return saved; // The real API reads the current owned row for a receipt.
+    }
+    saved = { ...saved, ...input };
+    if (input.mutationId) {
+      receipts.add(input.mutationId);
+      if (lost) {
+        lost = false;
+        throw new Error("Lost committed response");
+      }
+    }
+    return saved;
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Keep draft");
+  await act(async () => button("Save").click());
+  await act(async () => button("Pause").click());
+  expect(saved.active).toBe(false);
+  failRecovery = true;
+  await act(async () => button("Save").click());
+  expect(routineInput("Name").value).toBe("Keep draft");
+  expect(button("Resume")).toBeDefined();
+  expect(container.textContent).toContain("Recovery read failed");
+  failRecovery = false;
+  await act(async () => button("Save").click());
+  expect(button("Resume")).toBeDefined();
+  await act(async () => button("Resume").click());
+  expect(saved.active).toBe(true);
+  lost = true;
+  await act(async () => button("Edit").click());
+  await edit(routineInput("Name"), "Cancelled draft");
+  await act(async () => button("Save").click());
+  await act(async () => button("Cancel").click());
+  await act(async () => button("Pause").click());
+  expect(saved.active).toBe(false);
+});

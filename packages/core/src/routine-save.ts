@@ -85,7 +85,7 @@ export async function saveRoutineDraft(
       // may supply identities for formerly unsaved triggers.
       const original = state.baseline?.nativeTriggers ?? [];
       const submitted =
-        oldTriggers ??
+        (previous.input.nativeTriggers as NativeRoutineTriggerInput[] | undefined) ??
         original.map((t) => ({
           id: t.id,
           expectedVersion: t.version,

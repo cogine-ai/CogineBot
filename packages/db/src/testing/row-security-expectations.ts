@@ -61,6 +61,10 @@ export function isolatedDatabaseUrl() {
   if (!raw) throw new Error("An isolated harness database is required");
   const url = new URL(raw);
   if (
+    // The isolated harness uses plain URLs. pg query options can override
+    // authority or select additional connection sources; reject them before
+    // a Client is constructed, including encoded and duplicate option keys.
+    [...url.searchParams].length !== 0 ||
     !["postgres:", "postgresql:"].includes(url.protocol) ||
     !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
     Number(url.port) <= 1024 ||
