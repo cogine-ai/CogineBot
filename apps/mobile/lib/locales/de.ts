@@ -1,4 +1,22 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Allow writing": "Schreiben erlauben",
+  "Base URL": "Basis-URL",
+  "Brain label": "Brain-Bezeichnung",
+  Cloud: "Cloud-Dienst",
+  Configured: "Konfiguriert",
+  "Connecting…": "Verbindung wird hergestellt…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "Die Speichereinstellungen konnten nicht aktualisiert werden. Lade sie neu, um den aktuellen Stand zu prüfen.",
+  "Default scope": "Standardbereich",
+  "Inherit default": "Standard übernehmen",
+  "Instance API key": "Instanz-API-Schlüssel",
+  Isolated: "Isoliert",
+  Local: "Lokal",
+  "MCP endpoint": "MCP-Endpunkt",
+  "Memory scope": "Speicherbereich",
+  "Organization API key": "Organisations-API-Schlüssel",
+  Provider: "Anbieter",
+
   "Left channel": "Kanal verlassen",
   "Agent connections": "Agentenverbindungen",
   "Always act": "Immer handeln",

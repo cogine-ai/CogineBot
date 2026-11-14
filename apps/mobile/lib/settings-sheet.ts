@@ -12,6 +12,7 @@ const settingsScreens = new Set([
   "integration-setup",
   "integrations",
   "messaging",
+  "memory",
   "models",
   "plugins",
   "space-credentials",

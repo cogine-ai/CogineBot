@@ -204,6 +204,13 @@ function SpaceSettingsForm({ spaceId, name }: { spaceId?: string; name?: string 
               }}
             />
             <SettingsRow
+              title={t("Memory")}
+              chevron="right"
+              onPress={() => {
+                if (settings.isCurrent()) router.push({ pathname: "/memory", params: { spaceId } });
+              }}
+            />
+            <SettingsRow
               title={t("Voice")}
               chevron="right"
               onPress={() => {
