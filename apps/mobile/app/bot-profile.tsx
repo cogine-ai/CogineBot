@@ -366,6 +366,20 @@ function Profile({
         </SettingsGroup>
       ) : null}
       <SettingsGroup label={t("Routines")}>
+        {!readOnly && bot ? (
+          <SettingsRow
+            accessibilityRole="button"
+            title={t("Create routine")}
+            chevron="right"
+            onPress={() => {
+              if (current())
+                router.push({
+                  pathname: "/routine",
+                  params: { botId, botName: name, origin: "profile" },
+                });
+            }}
+          />
+        ) : null}
         {routinesError ? (
           <SettingsRow
             accessibilityRole="button"
