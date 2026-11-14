@@ -2862,9 +2862,30 @@ describe("model credential persistence", () => {
     isDeploymentOwner: true,
   } satisfies Actor;
 
+  function started(provider: string) {
+    return {
+      loginId: "login-1",
+      provider,
+      mode: "auth-url",
+      verificationUri: "https://auth.example.test/authorize",
+      expiresInSeconds: 900,
+    };
+  }
+
   function persistDeps(options?: { envDefaultModel?: string }) {
     const upsert = vi.fn().mockResolvedValue({ id: "preference" });
+    const begin = vi.fn();
     const finish = vi.fn();
+    const assertSaving = vi.fn();
+    const recordConnected = vi.fn();
+    const claim = {
+      id: "fixture-signin",
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      leaseOwner: "fixture-process",
+      credentialId: null,
+      credentialRevision: null,
+    };
     // Connect loads any previous credential on the root client before the write transaction.
     const userModelCredential = {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -2900,7 +2921,9 @@ describe("model credential persistence", () => {
         put: vi.fn().mockResolvedValue({ id: "secret-1", ciphertext: "cipher" }),
       },
       oauthLogins: {
+        begin,
         finish,
+        sessions: { assertSaving, recordConnected },
       },
       env: {
         defaultProvider: "openrouter",
@@ -2911,7 +2934,17 @@ describe("model credential persistence", () => {
         agentRuntime: "pi",
       },
     } as unknown as RouterDeps;
-    return { upsert, finish, deps, tx, handler: new RPCHandler(createRouter(deps)) };
+    return {
+      upsert,
+      begin,
+      finish,
+      assertSaving,
+      recordConnected,
+      claim,
+      deps,
+      tx,
+      handler: new RPCHandler(createRouter(deps)),
+    };
   }
 
   async function call(handler: RPCHandler<never>, path: string, body: unknown): Promise<Response> {
@@ -2927,31 +2960,40 @@ describe("model credential persistence", () => {
   }
 
   it("locks the ChatGPT user/provider slot before finalization reads or creates its first credential", async () => {
-    const { finish, tx, handler } = persistDeps();
-    finish.mockImplementation(async (_loginId, _actor, persist) => ({
-      status: "connected" as const,
-      value: await persist({
-        status: "connected",
-        provider: "chatgpt-plan",
-        credential: {
-          type: "oauth",
-          access: "fake-access",
-          refresh: "fake-refresh",
-          expires: Date.now() + 60_000,
-          clientId: "oaiapp_fixture",
-          issuer: "https://auth.openai.com",
-          subject: "fixture-subject",
-          hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
-          idToken: "fake-id-token",
-          scopes: ["chatgpt.tokens.use.direct"],
-          chatgptPlanModels: [{ id: "account-model", name: "Account model" }],
+    const { begin, tx, handler, claim, assertSaving, recordConnected } = persistDeps();
+    begin.mockImplementation(async (input, persist) => {
+      await persist(
+        {
+          status: "connected",
+          provider: "chatgpt-plan",
+          credential: {
+            type: "oauth",
+            access: "fake-access",
+            refresh: "fake-refresh",
+            expires: Date.now() + 60_000,
+            clientId: "oaiapp_fixture",
+            issuer: "https://auth.openai.com",
+            subject: "fixture-subject",
+            hostId: "urn:uuid:8d497bea-75d5-4b56-9bed-401ec51007a3",
+            idToken: "fake-id-token",
+            scopes: ["chatgpt.tokens.use.direct"],
+            chatgptPlanModels: [{ id: "account-model", name: "Account model" }],
+          },
+          signal: new AbortController().signal,
         },
-        signal: new AbortController().signal,
-      }),
-    }));
-    const response = await call(handler, "models/finishOAuth", { loginId: "login-plan" });
+        claim,
+      );
+      return started(input.provider);
+    });
+    const response = await call(handler, "models/beginOAuth", { provider: "chatgpt-plan" });
     expect(response.status).toBe(200);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(assertSaving).toHaveBeenCalledWith(tx, claim);
+    expect(recordConnected).toHaveBeenCalledWith(
+      tx,
+      claim,
+      expect.objectContaining({ provider: "chatgpt-plan" }),
+    );
     expect(tx.$queryRaw.mock.calls[0]![1]).toBe(
       JSON.stringify(["space-model-selection", actor.spaceId, actor.userId]),
     );
@@ -2970,25 +3012,28 @@ describe("model credential persistence", () => {
   });
 
   it("does not persist a stringified null model id from subscription sign-in", async () => {
-    const { upsert, finish, handler } = persistDeps();
-    finish.mockImplementation(async (_loginId, _actor, persist) => ({
-      status: "connected" as const,
-      value: await persist({
-        status: "connected",
-        provider: "anthropic",
-        modelId: "null",
-        label: "Anthropic",
-        credential: {
-          type: "oauth",
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: Date.now() + 60_000,
+    const { upsert, begin, handler, claim, recordConnected } = persistDeps();
+    begin.mockImplementation(async (input, persist) => {
+      await persist(
+        {
+          status: "connected",
+          provider: "anthropic",
+          modelId: "null",
+          label: "Anthropic",
+          credential: {
+            type: "oauth",
+            access: "access-token",
+            refresh: "refresh-token",
+            expires: Date.now() + 60_000,
+          },
+          signal: new AbortController().signal,
         },
-        signal: new AbortController().signal,
-      }),
-    }));
+        claim,
+      );
+      return started(input.provider);
+    });
 
-    const response = await call(handler, "models/finishOAuth", { loginId: "login-1" });
+    const response = await call(handler, "models/beginOAuth", { provider: "anthropic" });
     expect(response.status).toBe(200);
     const persisted = upsert.mock.calls[0]?.[0] as {
       create: { modelId: string | null };
@@ -2997,12 +3042,11 @@ describe("model credential persistence", () => {
     expect(persisted.create.modelId).not.toBe("null");
     expect(persisted.create.modelId).toBeTruthy();
     expect(persisted.update.modelId).toBe(persisted.create.modelId);
-    await expect(response.json()).resolves.toEqual({
-      json: expect.objectContaining({
-        provider: "anthropic",
-        modelId: persisted.create.modelId,
-      }),
-    });
+    expect(recordConnected).toHaveBeenCalledWith(
+      expect.anything(),
+      claim,
+      expect.objectContaining({ provider: "anthropic", modelId: persisted.create.modelId }),
+    );
   });
 
   it("does not persist a missing model id as the string null", async () => {
@@ -3061,23 +3105,26 @@ describe("model credential persistence", () => {
     ["openai-codex", "OpenAI Codex (legacy)"],
     ["anthropic", "Anthropic"],
   ])("labels a %s subscription sign-in with its own provider name", async (provider, label) => {
-    const { finish, deps, handler } = persistDeps();
-    finish.mockImplementation(async (_loginId, _actor, persist) => ({
-      status: "connected" as const,
-      value: await persist({
-        status: "connected",
-        provider,
-        credential: {
-          type: "oauth",
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: Date.now() + 60_000,
+    const { begin, deps, handler, claim } = persistDeps();
+    begin.mockImplementation(async (input, persist) => {
+      await persist(
+        {
+          status: "connected",
+          provider,
+          credential: {
+            type: "oauth",
+            access: "access-token",
+            refresh: "refresh-token",
+            expires: Date.now() + 60_000,
+          },
+          signal: new AbortController().signal,
         },
-        signal: new AbortController().signal,
-      }),
-    }));
+        claim,
+      );
+      return started(input.provider);
+    });
 
-    const response = await call(handler, "models/finishOAuth", { loginId: "login-1" });
+    const response = await call(handler, "models/beginOAuth", { provider });
 
     expect(response.status).toBe(200);
     expect(deps.prisma.userModelCredential.create).toHaveBeenCalledWith(
@@ -3676,7 +3723,9 @@ describe("codex live catalog", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+        query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+      ),
       userModelCredential: explicitCredentialFixture([oauthCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -3790,7 +3839,9 @@ describe("codex live catalog", () => {
       };
       const upsert = vi.fn(async () => ({ id: "pref-spark" }));
       const tx = {
-        $queryRaw: vi.fn(async () => []),
+        $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+          query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+        ),
         userModelCredential: explicitCredentialFixture([oauthCredential]),
         spaceModelPreference: {
           findMany: vi.fn().mockResolvedValue([]),
@@ -3938,7 +3989,9 @@ describe("model set default auth", () => {
     });
     const upsert = vi.fn(async () => ({ id: "pref-spark" }));
     const tx = {
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+        query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+      ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
@@ -4041,7 +4094,9 @@ describe("model set default auth", () => {
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
     const tx = {
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+        query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+      ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
@@ -4134,7 +4189,9 @@ describe("model set default auth", () => {
     };
     const upsert = vi.fn(async () => ({ id: "pref-luna" }));
     const tx = {
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+        query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+      ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
@@ -4318,7 +4375,9 @@ describe("bot model auth on save", () => {
         : null;
     });
     const tx = {
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query?: { sql?: string; values?: unknown[] }) =>
+        query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
+      ),
       userModelCredential: { findFirst: credentialFindFirst },
       secret: { findFirst: secretFindFirst },
       bot: { findFirst: vi.fn(async () => bot), update: botUpdate },

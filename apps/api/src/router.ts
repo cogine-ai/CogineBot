@@ -34,7 +34,6 @@ import type {
   MemoryProviderResolver,
   MessagingInstallations,
   NativeConnectorProvider,
-  PiOAuthLogins,
   PluginRead,
   RemoteConnectorDependencies,
   TicketChangeNotifier,
@@ -100,6 +99,7 @@ import {
   listScratchpadItems,
   listSpaceBotCredentialMetadata,
   loadStoredModelSecret,
+  lockModelOAuthProvider,
   McpOAuthBroker,
   mapScratchpadItem,
   matchesComputerProvisionRoute,
@@ -138,6 +138,7 @@ import {
   resolveBotWorkspacePath,
   revokeScreenControl,
   routineRunModelPin,
+  SUBSCRIPTION_SIGN_IN_PROVIDERS,
   sanitizeComposioError,
   saveComputerBeforeStop,
   savePushToken,
@@ -156,6 +157,7 @@ import {
   updateTicket,
   validateModelAuthAvailability,
   verifyMcpInstall,
+  waitForModelOAuthSave,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
 import type {
@@ -283,6 +285,7 @@ import {
   replaceSpaceBackupModels,
   restoreBotUnderComputerQuota,
   runAsSystem,
+  runAsSystemInTransaction,
   runAsTenant,
   SPACE_DELETION_CLAIM_TIMEOUT_MS,
   SpaceDeletionInProgressError,
@@ -361,6 +364,7 @@ import {
   refuseAccountModelReferences,
   validateModelBinding,
 } from "./model-bindings.js";
+import type { ModelOAuth, SaveSubscription } from "./model-oauth.js";
 import { rethrowNativeRoutineError } from "./native-routine-errors.js";
 import {
   chooseFocus,
@@ -793,7 +797,7 @@ export interface RouterDeps {
   memoryProviders: MemoryProviderResolver;
   home: AgentHomeStore;
   secrets: SecretStore;
-  oauthLogins: PiOAuthLogins;
+  oauthLogins: ModelOAuth;
   /** Offline test seam for the optional ChatGPT plan protocol. */
   chatgptPlanFetch?: typeof fetch;
   /** Live Codex catalog seam; defaults to the shared per-process cache. */
@@ -1167,6 +1171,25 @@ export function createRouter(deps: RouterDeps) {
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
+  const saveSubscription =
+    (actor: Actor): SaveSubscription =>
+    (login, session) =>
+      persistModelCredential(
+        deps,
+        actor,
+        {
+          provider: login.provider,
+          plaintext: serializeModelSecret({ kind: "oauth", credential: login.credential }),
+          label:
+            login.label ??
+            listPiCatalog().find((entry) => entry.provider === login.provider)?.providerName,
+          modelId: login.modelId,
+          thinkingLevel: login.thinkingLevel,
+          signal: login.signal,
+          oauthSession: session,
+        },
+        codexCatalog,
+      );
   const imageAdmission = {
     secrets: deps.secrets,
     deployment: deps.env.deploymentModelConfigured
@@ -2110,16 +2133,24 @@ export function createRouter(deps: RouterDeps) {
             message: "Connect a ChatGPT plan from a local desktop or local web installation.",
           });
         }
-        const result = await deps.oauthLogins.begin({
-          userId: context.actor.userId,
-          spaceId: context.actor.spaceId,
-          provider: input.provider,
-          modelId: input.modelId,
-          thinkingLevel: input.thinkingLevel,
-          label: input.label,
-          signal: context.signal,
-          ...(isChatGPTPlan ? { login: createChatGPTPlanLogin(deps, context.actor, input) } : {}),
-        });
+        const result = await deps.oauthLogins.begin(
+          {
+            userId: context.actor.userId,
+            spaceId: context.actor.spaceId,
+            provider: input.provider,
+            modelId: input.modelId,
+            thinkingLevel: input.thinkingLevel,
+            label: input.label,
+            signal: context.signal,
+            ...(isChatGPTPlan
+              ? {
+                  login: (interaction, assertActive) =>
+                    createChatGPTPlanLogin(deps, context.actor, input, assertActive)(interaction),
+                }
+              : {}),
+          },
+          saveSubscription(context.actor),
+        );
         return isChatGPTPlan && result.mode === "auth-url"
           ? { ...result, callbackTransport: input.callbackTransport ?? "loopback" }
           : result;
@@ -2128,38 +2159,22 @@ export function createRouter(deps: RouterDeps) {
         listChatGPTPlanProfiles(deps, context.actor),
       ),
       submitOAuthCode: authed.models.submitOAuthCode.handler(async ({ context, input }) => {
-        return deps.oauthLogins.submit(input.loginId, context.actor, input.code);
+        return deps.oauthLogins.submit(
+          input.loginId,
+          context.actor,
+          input.code,
+          saveSubscription(context.actor),
+        );
       }),
       completeOAuth: authed.models.completeOAuth.handler(async ({ context, input }) => {
-        const result = await deps.oauthLogins.complete(input.loginId, {
+        return deps.oauthLogins.complete(input.loginId, {
           userId: context.actor.userId,
           spaceId: context.actor.spaceId,
         });
-        return result.status === "connected" ? { status: "ready" as const } : result;
       }),
       finishOAuth: authed.models.finishOAuth.handler(async ({ context, input }) => {
         throwIfAborted(context.signal);
-        const result = await deps.oauthLogins.finish(
-          input.loginId,
-          context.actor,
-          async (login) => {
-            return persistModelCredential(
-              deps,
-              context.actor,
-              {
-                provider: login.provider,
-                plaintext: serializeModelSecret({ kind: "oauth", credential: login.credential }),
-                label:
-                  login.label ??
-                  listPiCatalog().find((entry) => entry.provider === login.provider)?.providerName,
-                modelId: login.modelId,
-                thinkingLevel: login.thinkingLevel,
-                signal: login.signal,
-              },
-              codexCatalog,
-            );
-          },
-        );
+        const result = await deps.oauthLogins.finish(input.loginId, context.actor);
         if (result.status === "pending") {
           throw new ORPCError("CONFLICT", { message: "Sign-in has not finished yet." });
         }
@@ -2169,7 +2184,7 @@ export function createRouter(deps: RouterDeps) {
         return result.value;
       }),
       cancelOAuth: authed.models.cancelOAuth.handler(async ({ context, input }) => {
-        await deps.oauthLogins.cancel(input.loginId, context.actor);
+        await deps.oauthLogins.cancel(input.loginId, context.actor, context.signal);
         return { ok: true as const };
       }),
       setDefault: authed.models.setDefault.handler(async ({ context, input }) => {
@@ -2251,14 +2266,13 @@ export function createRouter(deps: RouterDeps) {
       disconnect: authed.models.disconnect.handler(async ({ context, input }) => {
         if (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID && !input.credentialId)
           throw new ORPCError("BAD_REQUEST", { message: "Choose a model connection." });
-        await deps.oauthLogins.cancelProvider({
-          userId: context.actor.userId,
-          provider: input.provider,
-        });
+        const slot = { userId: context.actor.userId, provider: input.provider };
         let prepared:
           | Awaited<ReturnType<typeof deps.prisma.userModelCredential.findMany>>
           | undefined;
         const validateRemoval = async (tx: Prisma.TransactionClient) => {
+          const subscription = Object.hasOwn(SUBSCRIPTION_SIGN_IN_PROVIDERS, input.provider);
+          if (subscription) await lockModelOAuthProvider(tx, slot);
           // The quota admission also locks the exact credential before spending the wait.
           await tx.$queryRaw(Prisma.sql`
             SELECT id FROM user_model_credentials
@@ -2274,24 +2288,37 @@ export function createRouter(deps: RouterDeps) {
             },
           });
           if (input.credentialId && existing.length === 0) throw new ORPCError("NOT_FOUND");
-          if (existing.length === 0) {
-            prepared = [];
-            return;
-          }
           if (input.credentialId) assertConnectionRevision(existing[0]!, input.expectedRevision);
           for (const credential of existing) {
-            const references = await listModelConnectionReferences(
-              tx,
-              context.actor.userId,
-              credential.id,
-              { includeQuotaWaits: false },
-            );
+            const readReferences = () =>
+              listModelConnectionReferences(tx, context.actor.userId, credential.id, {
+                includeQuotaWaits: false,
+              });
+            const references = subscription
+              ? await runAsSystemInTransaction(
+                  tx,
+                  "check all Spaces for references to the account's model connection",
+                  readReferences,
+                )
+              : await readReferences();
             await refuseAccountModelReferences(
               tx,
               context.actor.userId,
               references.filter((reference) => reference.kind !== "space-default"),
             );
           }
+          if (subscription)
+            await runAsSystemInTransaction(
+              tx,
+              "retire the account's disconnected model sign-ins",
+              () =>
+                deps.oauthLogins.sessions.cancelBeforeSave(tx, {
+                  ...slot,
+                  ...(input.credentialId
+                    ? { OR: [{ credentialId: input.credentialId }, { credentialId: null }] }
+                    : {}),
+                }),
+            );
 
           prepared = existing;
         };
@@ -2312,23 +2339,34 @@ export function createRouter(deps: RouterDeps) {
               secretId: row.secretId,
             });
         };
-        const remoteRevocation =
-          input.provider === CHATGPT_PLAN_PROVIDER_ID
-            ? await disconnectChatGPTPlan(deps, context.actor, removeCredentials, {
-                credentialId: input.credentialId,
-                validateRemoval,
-              })
-            : undefined;
+        const remoteRevocation = await waitForModelOAuthSave(
+          () =>
+            input.provider === CHATGPT_PLAN_PROVIDER_ID
+              ? disconnectChatGPTPlan(deps, context.actor, removeCredentials, {
+                  credentialId: input.credentialId,
+                  validateRemoval,
+                })
+              : Promise.resolve(undefined),
+          context.signal,
+        );
         if (!remoteRevocation) {
-          await withSerializableRetry(() =>
-            deps.prisma.$transaction(
-              async (tx) => {
-                prepared = undefined;
-                await validateRemoval(tx);
-                await removeCredentials(tx);
-              },
-              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-            ),
+          await waitForModelOAuthSave(
+            () =>
+              withSerializableRetry(() =>
+                deps.prisma.$transaction(
+                  async (tx) => {
+                    prepared = undefined;
+                    await validateRemoval(tx);
+                    await removeCredentials(tx);
+                  },
+                  {
+                    isolationLevel: Object.hasOwn(SUBSCRIPTION_SIGN_IN_PROVIDERS, input.provider)
+                      ? Prisma.TransactionIsolationLevel.ReadCommitted
+                      : Prisma.TransactionIsolationLevel.Serializable,
+                  },
+                ),
+              ),
+            context.signal,
           );
         }
         return {
@@ -9173,6 +9211,7 @@ async function persistModelCredential(
     thinkingLevel?: string | null;
     supportsImages?: boolean;
     signal?: AbortSignal;
+    oauthSession?: Parameters<SaveSubscription>[1];
   },
   codexCatalog: CodexLiveCatalog,
 ) {
@@ -9230,6 +9269,10 @@ async function persistModelCredential(
           await lockSpaceModelSelection(tx, actor, "write");
           if (input.provider === CHATGPT_PLAN_PROVIDER_ID)
             await lockChatGPTPlanConnection(tx, actor.userId);
+          if (Object.hasOwn(SUBSCRIPTION_SIGN_IN_PROVIDERS, input.provider))
+            await lockModelOAuthProvider(tx, { userId: actor.userId, provider: input.provider });
+          if (input.oauthSession)
+            await deps.oauthLogins.sessions.assertSaving(tx, input.oauthSession);
           const existing = input.credentialId
             ? await tx.userModelCredential.findFirst({
                 where: { id: input.credentialId, userId: actor.userId, provider: input.provider },
@@ -9241,6 +9284,14 @@ async function persistModelCredential(
                   orderBy: newestModelCredentialOrder,
                 });
           if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+          if (
+            input.oauthSession &&
+            ((existing?.id ?? null) !== input.oauthSession.credentialId ||
+              (existing?.connectionRevision ?? null) !== input.oauthSession.credentialRevision)
+          )
+            throw new ORPCError("CONFLICT", {
+              message: "Model connection changed. Reload and try again.",
+            });
           if (existing && input.credentialId) {
             assertConnectionRevision(existing, input.expectedRevision);
             if (input.expectedCiphertext !== undefined) {
@@ -9352,7 +9403,14 @@ async function persistModelCredential(
             });
             throwIfAborted(input.signal);
           }
-          return { ...credential, isDefault: true, defaultModel };
+          const saved = { ...credential, isDefault: true, defaultModel };
+          if (input.oauthSession)
+            await deps.oauthLogins.sessions.recordConnected(
+              tx,
+              input.oauthSession,
+              modelCredentialDto(saved, input.plaintext),
+            );
+          return saved;
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),

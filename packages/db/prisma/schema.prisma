@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  schemas = ["public", "cogine_pages"]
+  schemas = ["public", "cogine_pages", "cogine_model_auth"]
 }
 
 model AiDataConsent {
@@ -292,6 +292,7 @@ model SpaceMember {
   role             String                 @default("member")
   createdAt        DateTime
   modelPreferences SpaceModelPreference[]
+  modelOAuthSessions ModelOAuthSession[]
   voicePreferences SpaceVoicePreference[]
   aiDataConsents AiDataConsent[]
   backupModels SpaceBackupModel[]
@@ -351,6 +352,34 @@ model DeploymentSettings {
 
   @@map("deployment_settings")
   @@schema("public")
+}
+
+/// Temporary subscription sign-in state; account credentials stay in Secret.
+model ModelOAuthSession {
+  id                 String      @id
+  userId             String
+  spaceId            String
+  member             SpaceMember @relation(fields: [spaceId, userId], references: [spaceId, userId], onDelete: Cascade)
+  provider           String
+  modelId            String?
+  thinkingLevel      String?
+  hasThinkingLevel   Boolean     @default(false)
+  label              String?
+  credentialId       String?
+  credentialRevision Int?
+  status             String      @default("pending")
+  handoffCiphertext  String?
+  leaseOwner         String?
+  leaseExpiresAt     DateTime?
+  expiresAt          DateTime
+  error              String?
+  result             Json?
+  createdAt          DateTime    @default(now())
+
+  @@index([userId, provider, spaceId])
+  @@index([expiresAt])
+  @@map("model_oauth_sessions")
+  @@schema("cogine_model_auth")
 }
 
 model UserModelCredential {

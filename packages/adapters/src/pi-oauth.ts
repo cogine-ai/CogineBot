@@ -932,6 +932,10 @@ export class PiOAuthLogins {
     signal?: AbortSignal;
     /** Trusted composition-root override; never supplied by the RPC caller. */
     login?: (interaction: AuthInteraction) => Promise<Credential>;
+    /** The API registers its durable session before starting provider I/O. */
+    loginId?: string;
+    onReady?: (loginId: string) => Promise<void>;
+    onFailure?: () => Promise<void>;
   }): Promise<PiOAuthBegin> {
     if (!SUBSCRIPTION_SIGN_IN_PROVIDERS[input.provider]) {
       throw new Error(
@@ -950,7 +954,7 @@ export class PiOAuthLogins {
 
       const abort = new AbortController();
       const abortFromRequest = () => abort.abort(input.signal?.reason);
-      const loginId = randomUUID();
+      const loginId = input.loginId ?? randomUUID();
       const session: Session = {
         id: loginId,
         scope,
@@ -1045,6 +1049,14 @@ export class PiOAuthLogins {
           signInStarted.reject(error instanceof Error ? error : new Error(session.error));
           throw error;
         });
+      if (input.onReady || input.onFailure) {
+        void done
+          .then(
+            () => input.onReady?.(loginId),
+            () => input.onFailure?.(),
+          )
+          .catch(() => getLogger().warn("Could not update subscription sign-in state"));
+      }
 
       if (input.signal?.aborted) abortFromRequest();
       else

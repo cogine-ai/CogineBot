@@ -11,11 +11,14 @@ export const RUNTIME_ROLE = "coginebot_app";
 const databaseOid = Prisma.sql`(SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())`;
 const runtimeGrantRole = Prisma.sql`${RUNTIME_ROLE} || '_' || ${databaseOid}::text`;
 
-// The Pages schema is optional on old installations. Once present, only the
-// two managed tables may receive runtime grants, including after ACL-free restore.
-const pageGrantCatalog = Prisma.sql`SELECT n.oid,
-    (SELECT pg_catalog.count(*) = 2 AND pg_catalog.bool_and(c.relkind = 'r' AND NOT c.relispartition
-      AND c.relname IN ('pages', 'page_versions'))
+// Isolated feature schemas may be absent on older releases. Provision only
+// their registered tables, including when a database was restored without ACLs.
+const isolatedGrantCatalog = Prisma.sql`SELECT n.oid, n.nspname,
+    (SELECT pg_catalog.count(*) = CASE WHEN n.nspname = 'cogine_pages' THEN 2 ELSE 1 END
+      AND pg_catalog.bool_and(c.relkind = 'r' AND NOT c.relispartition
+        AND CASE WHEN n.nspname = 'cogine_pages'
+          THEN c.relname IN ('pages', 'page_versions')
+          ELSE c.relname = 'model_oauth_sessions' END)
       FROM pg_catalog.pg_class c WHERE c.relnamespace = n.oid AND c.relkind <> 'i')
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc f WHERE f.pronamespace = n.oid)
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(
@@ -37,10 +40,10 @@ const pageGrantCatalog = Prisma.sql`SELECT n.oid,
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
       CROSS JOIN LATERAL pg_catalog.aclexplode(
         CASE WHEN pg_catalog.cardinality(d.defaclacl) > 0 THEN d.defaclacl END) a
-      WHERE d.defaclnamespace = n.oid AND a.grantee <> d.defaclrole) AS "pageGrantsSafe"
+      WHERE d.defaclnamespace = n.oid AND a.grantee <> d.defaclrole) AS "grantsSafe"
   FROM pg_catalog.pg_namespace n
   LEFT JOIN pg_catalog.pg_roles g ON g.rolname = ${runtimeGrantRole}
-  WHERE n.nspname = 'cogine_pages'`;
+  WHERE n.nspname IN ('cogine_pages', 'cogine_model_auth')`;
 
 function foreignGrantDependencies(role: Prisma.Sql, currentDatabase: Prisma.Sql = databaseOid) {
   return Prisma.sql`EXISTS (SELECT 1 FROM pg_catalog.pg_shdepend d
@@ -151,23 +154,23 @@ type RolePrivileges = {
 };
 
 function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
-  return Prisma.sql`WITH page_catalog AS (${pageGrantCatalog})
+  return Prisma.sql`WITH isolated_catalog AS (${isolatedGrantCatalog})
     SELECT r.rolname AS role, session_user AS "sessionRole", r.rolsuper, r.rolbypassrls,
     r.rolcreatedb, r.rolcreaterole, r.rolreplication,
     (EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'graphile_worker', 'pg_catalog')
+      WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
         AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER'))
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
-        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'graphile_worker', 'pg_catalog')
+        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
           AND pg_catalog.pg_has_role(r.oid, n.nspowner, 'MEMBER'))
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
-        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'graphile_worker', 'pg_catalog')
+        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
           AND pg_catalog.pg_has_role(r.oid, f.proowner, 'MEMBER'))) AS owns,
     (CASE WHEN r.rolname ~ ${`^${RUNTIME_ROLE}_[1-9][0-9]{0,9}$`}
       THEN pg_catalog.substr(r.rolname, ${RUNTIME_ROLE.length + 2})::pg_catalog.numeric <= 4294967295
         AND r.rolname <> ${runtimeGrantRole}
       ELSE false END
-      OR EXISTS (SELECT 1 FROM page_catalog p WHERE NOT p."pageGrantsSafe")
+      OR EXISTS (SELECT 1 FROM isolated_catalog p WHERE NOT p."grantsSafe")
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles p
       WHERE pg_catalog.pg_has_role(r.oid, p.oid, 'MEMBER') AND (
         p.rolsuper OR p.rolbypassrls OR p.rolcreatedb OR p.rolcreaterole OR p.rolreplication
@@ -260,7 +263,7 @@ function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
             OR (g.rolcanlogin AND g.rolname <> ${runtimeLogin === undefined ? Prisma.sql`session_user` : runtimeLogin})))) AS "unsafePrivileges",
     EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE g.rolname = ${runtimeGrantRole}
       AND pg_catalog.pg_has_role(r.oid, g.oid, 'USAGE'))
-      AND NOT EXISTS (SELECT 1 FROM page_catalog p
+      AND NOT EXISTS (SELECT 1 FROM isolated_catalog p
         WHERE NOT pg_catalog.has_schema_privilege(r.oid, p.oid, 'USAGE')
           OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
             CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) v(privilege)
@@ -369,15 +372,16 @@ async function provisionWith(
   const configured = new Client({ connectionString: runtimeUrl });
   const login = configured.user;
   if (!login) throw new Error("DATABASE_URL must name the runtime login");
-  const {
-    rows: [pageSchema],
-  } = await owner.query<{ pageGrantsSafe: boolean }>(
-    pageGrantCatalog.text,
-    pageGrantCatalog.values,
+  const { rows: isolatedSchemas } = await owner.query<{ nspname: string; grantsSafe: boolean }>(
+    isolatedGrantCatalog.text,
+    isolatedGrantCatalog.values,
   );
-  if (pageSchema && !pageSchema.pageGrantsSafe)
+  const unsafeSchema = isolatedSchemas.find((schema) => !schema.grantsSafe);
+  if (unsafeSchema)
     throw new Error(
-      "The Pages database schema does not match its required tables and restricted grants",
+      unsafeSchema.nspname === "cogine_pages"
+        ? "The Pages database schema does not match its required tables and restricted grants"
+        : "The model sign-in schema does not match its required table and restricted grants",
     );
   const runtimeStatement = rolePrivileges(login, login);
   let {
@@ -437,11 +441,17 @@ async function provisionWith(
   if (!grantRole || unsafeRole(grantRole))
     throw new Error("The runtime grant role is not restricted");
   if (!role && login === groupRole) role = grantRole;
-  if (pageSchema)
+  if (isolatedSchemas.some((schema) => schema.nspname === "cogine_pages"))
     await owner.query(`
       GRANT USAGE ON SCHEMA cogine_pages TO ${groupName};
       GRANT SELECT, INSERT, UPDATE, DELETE
         ON TABLE cogine_pages.pages, cogine_pages.page_versions TO ${groupName};
+    `);
+  if (isolatedSchemas.some((schema) => schema.nspname === "cogine_model_auth"))
+    await owner.query(`
+      GRANT USAGE ON SCHEMA cogine_model_auth TO ${groupName};
+      GRANT SELECT, INSERT, UPDATE, DELETE
+        ON TABLE cogine_model_auth.model_oauth_sessions TO ${groupName};
     `);
   await owner.query(`
     GRANT USAGE ON SCHEMA public TO ${groupName};

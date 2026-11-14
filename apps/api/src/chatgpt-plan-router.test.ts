@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
 
+vi.mock("@rakazo/db", async (original) => ({
+  ...(await original<typeof import("@rakazo/db")>()),
+  runAsSystemInTransaction: (_tx: unknown, _reason: string, operation: () => Promise<unknown>) =>
+    operation(),
+}));
+
 const helper = vi.hoisted(() => ({
   login: vi.fn(),
   profiles: vi.fn(),
@@ -78,16 +84,18 @@ function fixture(options: { webOrigin?: string; billed?: boolean; provider?: str
     $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<void>) => fn(tx)),
   };
   const oauthLogins = {
-    begin: vi.fn(async (_input: unknown) => ({
+    begin: vi.fn(async (_input: unknown, _persist: unknown) => ({
       loginId: "login-one",
       provider,
       mode: "auth-url" as const,
       verificationUri: "https://auth.openai.com/api/accounts/authorize?state=fixture-state",
       expiresInSeconds: 600,
     })),
-    cancelProvider: vi.fn(async () => {
-      steps.push("cancel");
-    }),
+    sessions: {
+      cancelBeforeSave: vi.fn(async () => {
+        steps.push("cancel");
+      }),
+    },
   };
   const secrets = { put: vi.fn(), load: vi.fn() };
   const deps = {
@@ -179,16 +187,29 @@ describe("optional ChatGPT model provider router", () => {
         provider: "chatgpt-plan",
         callbackTransport: callbackTransport ?? "loopback",
       });
-      expect(helper.login).toHaveBeenCalledWith(f.deps, actor, expect.objectContaining(input));
       expect(f.oauthLogins.begin).toHaveBeenCalledWith(
         expect.objectContaining({
           userId: actor.userId,
           spaceId: actor.spaceId,
           provider: "chatgpt-plan",
           signal: f.signal,
-          login: helper.loginFunction,
+          login: expect.any(Function),
         }),
+        expect.any(Function),
       );
+      const { login } = f.oauthLogins.begin.mock.calls[0]![0] as {
+        login: (interaction: object, fence: object) => Promise<unknown>;
+      };
+      const fence = vi.fn();
+      const interaction = {};
+      await login(interaction, fence);
+      expect(helper.login).toHaveBeenCalledWith(
+        f.deps,
+        actor,
+        expect.objectContaining(input),
+        fence,
+      );
+      expect(helper.loginFunction).toHaveBeenCalledWith(interaction);
     },
   );
 
@@ -219,7 +240,7 @@ describe("optional ChatGPT model provider router", () => {
       ok: true,
       remoteRevocationConfirmed: false,
     });
-    expect(f.oauthLogins.cancelProvider).toHaveBeenCalledWith({
+    expect(f.oauthLogins.sessions.cancelBeforeSave).toHaveBeenCalledWith(f.tx, {
       userId: actor.userId,
       provider: "chatgpt-plan",
     });
@@ -253,7 +274,8 @@ describe("optional ChatGPT model provider router", () => {
         expectedRevision: 2,
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
-    expect(f.steps).toEqual(["cancel"]);
+    expect(f.steps).toEqual([]);
+    expect(f.oauthLogins.sessions.cancelBeforeSave).not.toHaveBeenCalled();
     expect(f.tx.userModelCredential.deleteMany).not.toHaveBeenCalled();
   });
 });

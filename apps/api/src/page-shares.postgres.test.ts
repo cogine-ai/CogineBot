@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { onError } from "@orpc/server";
+import { createRouterClient, onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { withSecretPersistence } from "@rakazo/adapters";
+import { ModelOAuthSessions, withSecretPersistence } from "@rakazo/adapters";
 import type { Actor, PageShareState } from "@rakazo/contracts";
 import { PageShareStateSchema, SHARED_PAGE_PATH_PREFIX } from "@rakazo/contracts";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@rakazo/db";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { ModelOAuth } from "./model-oauth.js";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
 import { mountSharedPages } from "./shared-pages.js";
@@ -151,6 +152,30 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       connectionEnforced: true,
     });
   }, 120_000);
+
+  it("requires model sign-in policies normally and tolerates only an absent candidate schema during rollback", async () => {
+    const prisma = runtime!.prisma;
+    await owner!.pool.query("ALTER SCHEMA cogine_model_auth RENAME TO fixture_model_auth_hidden");
+    try {
+      await expect(verifyRuntimeDatabase(prisma)).rejects.toThrow(/policies/);
+      await expect(
+        verifyRuntimeDatabase(prisma, { allowPreModelAuth: true }),
+      ).resolves.toMatchObject({ connectionEnforced: true });
+      await owner!.pool.query("CREATE SCHEMA cogine_model_auth");
+      try {
+        await expect(verifyRuntimeDatabase(prisma, { allowPreModelAuth: true })).rejects.toThrow(
+          /policies/,
+        );
+      } finally {
+        await owner!.pool.query("DROP SCHEMA cogine_model_auth");
+      }
+    } finally {
+      await owner!.pool.query("ALTER SCHEMA fixture_model_auth_hidden RENAME TO cogine_model_auth");
+    }
+    await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
+      connectionEnforced: true,
+    });
+  });
 
   afterAll(async () => {
     const failures: unknown[] = [];
@@ -299,6 +324,7 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       actor,
       guest,
       otherSpace,
+      bot,
       call,
       vault,
       readPublic: (token: string) =>
@@ -320,6 +346,55 @@ postgres("owner Page share RPC (isolated PostgreSQL)", () => {
       secrets: () => db.secret.findMany({ where: { userId, spaceId, kind: "page_share" } }),
     };
   }
+
+  it("refuses a subscription disconnect while a Bot in another Space uses it under RLS", async () => {
+    const f = await setup();
+    const db = admin();
+    const credential = await db.userModelCredential.create({
+      data: {
+        userId: f.actor.userId,
+        provider: "anthropic",
+        label: "Fixture",
+        secretId: randomUUID(),
+      },
+    });
+    await db.bot.update({
+      where: { id: f.bot.id },
+      data: {
+        modelProvider: "anthropic",
+        modelId: "claude-sonnet-4-6",
+        modelCredentialId: credential.id,
+      },
+    });
+    const prisma = runtime!.prisma;
+    const oauthLogins = new ModelOAuth(new ModelOAuthSessions(prisma), f.vault.store);
+    const deps = {
+      prisma,
+      oauthLogins,
+      secrets: f.vault.store,
+      env: { webOrigin: origin, sandboxProvider: "fake", agentRuntime: "scripted" },
+    } as unknown as RouterDeps;
+    const client = createRouterClient(createRouter(deps), {
+      context: { actor: f.otherSpace, signal: new AbortController().signal },
+    });
+    try {
+      await expect(
+        client.models.disconnect({
+          provider: "anthropic",
+          credentialId: credential.id,
+          expectedRevision: credential.connectionRevision,
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(
+        await db.userModelCredential.findUnique({ where: { id: credential.id } }),
+      ).not.toBeNull();
+      expect(await db.bot.findUnique({ where: { id: f.bot.id } })).toMatchObject({
+        modelCredentialId: credential.id,
+      });
+    } finally {
+      await oauthLogins.stop();
+    }
+  });
 
   it("keeps sharing dormant by default and only lets the active Page owner manage the link", async () => {
     const f = await setup();

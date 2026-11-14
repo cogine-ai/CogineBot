@@ -64,11 +64,11 @@ import {
   McpConnector,
   McpOAuthBroker,
   MessagingInstallations,
+  ModelOAuthSessions,
   messagingPlatformsFromEnv,
   NativeConnectorProvider,
   NativeRoutineEventService,
   PiAgentRuntime,
-  PiOAuthLogins,
   PipedreamConnector,
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
@@ -132,6 +132,7 @@ import { mountLocalSettings } from "./local-settings.js";
 import { createMessagingInboundHandler } from "./messaging-inbound.js";
 import { createMessagingReceipts } from "./messaging-receipts.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
+import { ModelOAuth } from "./model-oauth.js";
 import { registerNativeEnterpriseWebhooks } from "./native-enterprise-webhooks.js";
 import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
 import { mountPageRuntime } from "./page-runtime.js";
@@ -384,7 +385,7 @@ async function buildApp(
     env.mcpAllowPrivateEndpoint,
   );
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
-  const oauthLogins = new PiOAuthLogins();
+  const oauthLogins = new ModelOAuth(new ModelOAuthSessions(prisma), secrets);
   const home = new LocalAgentHomeStore(env.dataDir, prisma);
   await home.removeStaleStaging().catch((error) => {
     logger.warn("workspace staging cleanup", { error });
@@ -1178,6 +1179,7 @@ async function buildApp(
     ),
   );
 
+  oauthLogins.startCleanup();
   let stopPromise: Promise<void> | undefined;
   return {
     app,
@@ -1202,7 +1204,7 @@ async function buildApp(
         // Hand runs back while the database and realtime publisher are still open.
         const runsStopped = runs?.stop();
         await readiness?.close().catch(() => undefined);
-        oauthLogins.abortAll();
+        await oauthLogins.stop();
         messagingStopped = true;
         await slackMessaging.stop();
         messagingReceipts?.stop();
