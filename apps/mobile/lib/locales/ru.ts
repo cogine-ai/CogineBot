@@ -8,6 +8,7 @@ export const RU_MESSAGES: Record<string, string> = {
   Normal: "Обычный",
   Urgent: "Срочный",
   "No tickets yet": "Пока нет задач",
+  Status: "Статус",
   Priority: "Приоритет",
   Comments: "Комментарии",
   Comment: "Комментарий",

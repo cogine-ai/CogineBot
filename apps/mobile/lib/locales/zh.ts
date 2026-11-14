@@ -8,6 +8,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   Normal: "普通",
   Urgent: "紧急",
   "No tickets yet": "暂无任务",
+  Status: "状态",
   Priority: "优先级",
   Comments: "评论",
   Comment: "评论",

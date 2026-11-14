@@ -8,6 +8,7 @@ export const DE_MESSAGES: Record<string, string> = {
   Normal: "Normal",
   Urgent: "Dringend",
   "No tickets yet": "Noch keine Tickets",
+  Status: "Status",
   Priority: "Priorität",
   Comments: "Kommentare",
   Comment: "Kommentieren",
