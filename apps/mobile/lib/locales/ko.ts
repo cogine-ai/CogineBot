@@ -1,5 +1,6 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const KO_MESSAGES: Record<string, string> = {
+  'Delete "{name}"?': "“{name}”을(를) 삭제할까요?",
   "Filter by date": "날짜로 필터",
   "All time": "전체 기간",
   "This week": "이번 주",

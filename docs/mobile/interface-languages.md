@@ -45,8 +45,16 @@ Other intentional boundaries:
   messages to exist in all nine catalogs; fallback is not a substitute for them.
 - User content, bot/model output, names, provider metadata and raw diagnostic details
   retain their original text. Known application error summaries are localized.
-- OS-owned permission prompts, system pickers, browser/authorization pages and
-  remote computer contents follow their owning platform, service or document.
+- OS-owned permission prompts, browser/authorization pages and remote computer
+  contents follow their owning platform, service or document. The iOS one-shot
+  date/time picker receives the active interface locale, including changes while
+  open. The locked Expo UI Android picker has no locale override (its `locale`
+  property is iOS-only); Android native calendar text still follows platform
+  configuration. This limitation remains unproven/needs-owner, not a C3 exemption
+  or a claim that Android native presentation follows the interface language.
+- The application-owned recurring time menu formats its labels with the interface
+  locale. Its original AM/PM selection keys and cron conversion remain unchanged;
+  formatting does not convert the routine's time zone or execution instant.
 - Release identity dates stay ISO `YYYY-MM-DD`, as diagnostic identifiers. Calendar
   dates in conversations, files, routine history, bot settings history and transfer
   expiry use the active interface locale. Clock/time-zone semantics are unchanged.
@@ -69,7 +77,10 @@ Deterministic offline tests switch through all ten locales, assert main workflow
 labels and error/confirmation messages, persist into a SecureStore substitute,
 discard module state, and bootstrap again. They also verify native picker API
 reachability, date formatting, regional/unknown tags, all catalog interpolations,
-source-ID coverage and the explicit unchanged-entry list. These are **substitute
+TypeScript AST source-ID coverage (single/double quotes and static templates),
+artifact deletion confirmations and the explicit unchanged-entry list. Component
+substitutes also check recurring time labels/unchanged cron keys and the iOS picker
+locale prop without claiming to render native fonts or controls. These are **substitute
 evidence**, not screenshots or a real native process restart.
 
 Real iOS/Android App-entry screenshots, native storage across process termination,

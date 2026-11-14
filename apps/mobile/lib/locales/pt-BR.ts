@@ -1,5 +1,6 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const PT_BR_MESSAGES: Record<string, string> = {
+  'Delete "{name}"?': 'Excluir "{name}"?',
   "Filter by date": "Filtrar por data",
   "All time": "Todo o período",
   "This week": "Esta semana",

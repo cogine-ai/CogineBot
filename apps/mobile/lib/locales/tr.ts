@@ -1,5 +1,6 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const TR_MESSAGES: Record<string, string> = {
+  'Delete "{name}"?': "“{name}” silinsin mi?",
   "Filter by date": "Tarihe göre filtrele",
   "All time": "Tüm zamanlar",
   "This week": "Bu hafta",

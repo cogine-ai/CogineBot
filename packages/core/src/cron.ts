@@ -280,6 +280,16 @@ function parseClock(time: string): { hour: number; minute: number } {
   return { hour, minute };
 }
 
+/** Localize a preset's wall-clock label without changing its internal time key or zone. */
+export function formatCronTime(time: string, locale: string): string {
+  const { hour, minute } = parseClock(time);
+  return new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(2000, 0, 1, hour, minute)));
+}
+
 function formatClock(hour: number, minute: number): string {
   const period = hour >= 12 ? "PM" : "AM";
   const h12 = hour % 12 === 0 ? 12 : hour % 12;

@@ -37,6 +37,7 @@ export function RoutineRunTime({
         <DateTimePicker
           key={mode}
           mode={mode}
+          locale={Platform.OS === "ios" ? locale : undefined}
           value={draft}
           minimumDate={mode === "time" ? undefined : new Date()}
           onDismiss={() => setMode(null)}

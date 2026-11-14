@@ -1,5 +1,6 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const HI_MESSAGES: Record<string, string> = {
+  'Delete "{name}"?': "“{name}” मिटाएँ?",
   "Filter by date": "तारीख से छाँटें",
   "All time": "सभी समय",
   "This week": "इस सप्ताह",

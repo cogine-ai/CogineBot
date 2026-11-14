@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("expo-localization", () => ({
@@ -24,10 +25,68 @@ function collectSourceFiles(dir: string): string[] {
     if (entry.name === "node_modules" || entry.name === "dist") continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...collectSourceFiles(path));
-    else if (/\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith(".test.ts")) files.push(path);
+    else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) files.push(path);
   }
   return files;
 }
+
+/** Parse source syntax rather than depending on the quote style chosen by authors. */
+function literalTranslationIds(source: string): string[] {
+  const ids: string[] = [];
+  const tree = ts.createSourceFile(
+    "source.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const translates =
+        (ts.isIdentifier(callee) && callee.text === "t") ||
+        (ts.isPropertyAccessExpression(callee) && callee.name.text === "t");
+      const message = node.arguments[0];
+      if (translates && message && ts.isStringLiteralLike(message)) ids.push(message.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return ids;
+}
+
+it("extracts every literal syntax without treating comments or dynamic messages as IDs", () => {
+  const source = [
+    `t('Delete "{name}"?')`,
+    't("Double quoted")',
+    "t(`Template literal`)",
+    String.raw`t('Escaped \'quote\'')`,
+    'i18n.t("Property call")',
+    '// t("Comment")',
+    "t(dynamicMessage)",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: Parse dynamic source without evaluating it.
+    "t(`Dynamic ${name}`)",
+  ].join("\n");
+  expect(literalTranslationIds(source)).toEqual([
+    'Delete "{name}"?',
+    "Double quoted",
+    "Template literal",
+    "Escaped 'quote'",
+    "Property call",
+  ]);
+});
+
+it.each(["ko", "tr", "hi", "pt-BR", "es", "fr"] as const)(
+  "translates the artifact deletion confirmation in %s, including the quoted name",
+  async (locale) => {
+    const { resetI18nForTests, t } = await import("./i18n");
+    resetI18nForTests(locale);
+    const title = t('Delete "{name}"?', { name: "Synthetic" });
+    expect(title).not.toBe('Delete "Synthetic"?');
+    expect(title).toContain("Synthetic");
+    expect(title).not.toContain("{name}");
+  },
+);
 
 describe("mobile i18n", () => {
   beforeEach(async () => {
@@ -173,9 +232,7 @@ describe("mobile i18n", () => {
     ]);
     for (const file of collectSourceFiles(mobileRoot)) {
       const source = readFileSync(file, "utf8");
-      for (const match of source.matchAll(/\bt\(\s*"((?:\\.|[^"\\])*)"/g)) {
-        ids.add(JSON.parse(`"${match[1]}"`) as string);
-      }
+      for (const id of literalTranslationIds(source)) ids.add(id);
     }
     for (const messages of Object.values((await import("./i18n")).catalogs).filter(
       (catalog) => Object.keys(catalog).length > 0,
