@@ -1649,4 +1649,15 @@ export const DE_MESSAGES: Record<string, string> = {
   days: "Tage",
   Edit: "Bearbeiten",
   Resume: "Fortsetzen",
+  "Open work": "Offene Aufgaben",
+  "None yet": "Noch keine",
+  Complete: "Abschließen",
+  Park: "Zurückstellen",
+  Parked: "Zurückgestellt",
+  Reopen: "Wieder öffnen",
+  "New open-work item": "Neue offene Aufgabe",
+  "Add item": "Aufgabe hinzufügen",
+  "Could not load open work": "Offene Aufgaben konnten nicht geladen werden",
+  "Could not save. Refresh before trying again.":
+    "Speichern fehlgeschlagen. Vor dem erneuten Versuch aktualisieren.",
 };

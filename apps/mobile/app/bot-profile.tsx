@@ -345,6 +345,16 @@ function Profile({
               }}
             />
           ) : null}
+          {!readOnly ? (
+            <SettingsRow
+              accessibilityRole="button"
+              title={t("Open work")}
+              chevron="right"
+              onPress={() => {
+                if (current()) router.push({ pathname: "/open-work", params: { botId } });
+              }}
+            />
+          ) : null}
           <SettingsRow
             accessibilityRole="button"
             title={t("Artifacts")}
