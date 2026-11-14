@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import * as Plot from "@observablehq/plot";
 import { MAX_CHART_DATA_ROWS } from "@rakazo/contracts";
-import { autoType, csvParse, tsvParse } from "d3-dsv";
+import { autoType, csvParseRows, tsvParseRows } from "d3-dsv";
 
 /**
  * Declarative, JSON-only surface over Observable Plot for the render_plot
@@ -254,8 +254,16 @@ function buildMark(
 }
 
 export function parsePlotData(name: string, content: string): unknown[] {
-  if (/\.csv$/i.test(name)) return csvParse(content, autoType);
-  if (/\.tsv$/i.test(name)) return tsvParse(content, autoType);
+  if (/\.(csv|tsv)$/i.test(name)) {
+    // d3's object parser generates a Function for column access. Parse rows
+    // instead so live charts work under a CSP that forbids unsafe-eval.
+    const [columns = [], ...rows] = /\.csv$/i.test(name)
+      ? csvParseRows(content)
+      : tsvParseRows(content);
+    return rows.map((row) =>
+      autoType(Object.fromEntries(columns.map((column, index) => [column, row[index] ?? ""]))),
+    );
+  }
   const parsed = JSON.parse(content) as unknown;
   if (!Array.isArray(parsed))
     throw new Error("JSON data files must contain a top-level array of rows");
@@ -353,6 +361,26 @@ export function buildPlotParts(
     plotted as unknown as { scale?: (name: string) => Plot.Scale | undefined }
   ).scale?.("color");
   return { plotted, svg, title, swatches: categoricalSwatches(colorScale), width, height };
+}
+
+/** Live clients share tooltip defaults as well as the declarative rendering boundary. */
+export function buildInteractivePlotParts(
+  spec: PlotSpec,
+  data: unknown[] | undefined,
+  document: Document,
+  overrides: { width?: number; height?: number } = {},
+): PlotParts {
+  const marks = Array.isArray(spec.marks) ? spec.marks : [];
+  const hasTip = marks.some((mark) => mark.options && "tip" in mark.options);
+  const liveSpec = hasTip
+    ? spec
+    : {
+        ...spec,
+        marks: marks.map((mark, index) =>
+          index === 0 ? { ...mark, options: { ...(mark.options ?? {}), tip: true } } : mark,
+        ),
+      };
+  return buildPlotParts(liveSpec, data, document, overrides);
 }
 
 /** Render a spec to a standalone SVG string using the provided DOM document. */

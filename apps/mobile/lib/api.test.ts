@@ -1465,6 +1465,62 @@ describe("mobile API authentication", () => {
     expect(promptAiConsent).toHaveBeenLastCalledWith(recipient, "https://example.com/privacy");
   });
 
+  it.each(["routines/create", "routines/testRun"])(
+    "does not dispatch %s after its consent scope is revoked",
+    async (procedure) => {
+      let releaseConsent!: (allowed: boolean) => void;
+      let prompted!: () => void;
+      const shown = new Promise<void>((resolve) => {
+        prompted = resolve;
+      });
+      vi.mocked(promptAiConsent).mockImplementation(() => {
+        prompted();
+        return new Promise<boolean>((resolve) => {
+          releaseConsent = resolve;
+        });
+      });
+      const calls: string[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url) => {
+          const path = new URL(String(url)).pathname;
+          calls.push(path);
+          return jsonResponse({
+            json: path.endsWith("/status")
+              ? {
+                  scope: "account-space",
+                  version: "2026-09-14",
+                  recipients: [
+                    {
+                      key: "provider",
+                      name: "Example AI",
+                      use: "model",
+                      detail: "",
+                      allowed: false,
+                    },
+                  ],
+                  privacyUrl: "https://example.com/privacy",
+                }
+              : { ok: true },
+          });
+        }),
+      );
+      let current = true;
+      const context = { ...(await captureApiRequestContext()), isCurrent: () => current };
+      const pending = rpc(
+        procedure,
+        procedure === "routines/create" ? { botId: "bot-1" } : { routineId: "routine-1" },
+        { requestContext: context },
+      );
+      const rejected = expect(pending).rejects.toThrow("Request canceled");
+      await shown;
+      current = false;
+      releaseConsent(true);
+      await rejected;
+      expect(calls).toEqual(["/rpc/aiConsent/status"]);
+    },
+  );
+
   it("coalesces concurrent mobile consent checks before sending each request once", async () => {
     vi.mocked(promptAiConsent).mockClear();
     vi.mocked(promptAiConsent).mockResolvedValue(true);
@@ -5521,4 +5577,114 @@ it("announces the committed final message after the actual mobile reducer clears
   expect(current?.activeRuns).toEqual([]);
   expect(announcements.update("scope", true, current)).toEqual(["Committed native reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
+});
+
+it("pins a viewer subscription to its captured context and rejects an obsolete context before fetch", async () => {
+  const context = {
+    apiBase: currentApiBase(),
+    sessionGeneration: SessionModule.currentSessionGeneration(),
+    headers: { "x-rakazo-space-id": "verified-space", authorization: "Bearer synthetic-token" },
+    isCurrent: () => true,
+  };
+  const fetcher = vi.fn(
+    async () => new Response(new ReadableStream({ start: (controller) => controller.close() })),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  await subscribeThread(
+    { botId: "origin" },
+    3,
+    vi.fn(),
+    new AbortController().signal,
+    undefined,
+    context,
+  );
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher.mock.calls[0]).toEqual([
+    expect.any(String),
+    expect.objectContaining({ headers: expect.objectContaining(context.headers) }),
+  ]);
+  fetcher.mockClear();
+  await subscribeThread({ botId: "origin" }, 3, vi.fn(), new AbortController().signal, undefined, {
+    ...context,
+    isCurrent: () => false,
+  });
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("surfaces SSE RPC errors so a peer viewer can discard previously authorized bodies", async () => {
+  const stream = new ReadableStream({
+    start: (controller) => {
+      controller.enqueue(new TextEncoder().encode('data: {"error":{"message":"FORBIDDEN"}}\n\n'));
+      controller.close();
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(stream)),
+  );
+  await expect(
+    subscribeThread({ botId: "origin" }, 3, vi.fn(), new AbortController().signal),
+  ).rejects.toThrow("rpc threads/subscribe failed");
+});
+
+it("retains one structured chart through first load, completion, replay, and history reload", () => {
+  const blocks: MobileMessage["blocks"] = [
+    { kind: "text", text: "Synthetic results\n```mermaid\ngraph TD; A-->B\n```" },
+    {
+      kind: "chart",
+      name: "Sales",
+      spec: { title: "Sales", marks: [{ type: "dot" }] },
+      data: [1, 2],
+    },
+    { kind: "image", artifactId: "synthetic-image", name: "Image", mimeType: "image/png" },
+  ];
+  const committed = { id: "chart-final", role: "bot" as const, runId: "run-chart", seq: 4, blocks };
+  const first: MobileSnapshot = {
+    threadId: "thread-chart",
+    cursor: 4,
+    olderCursor: null,
+    messages: [committed],
+    run: null,
+  };
+  expect(mergeMobileSnapshot(null, first)?.messages[0]?.blocks).toEqual(blocks);
+  let live: MobileSnapshot | null = {
+    ...first,
+    cursor: 1,
+    messages: [],
+    run: { id: "run-chart", status: "running" },
+  };
+  live = applyMobileThreadEvent(live, {
+    type: "thread.progress",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 2,
+    payload: { text: "Preparing results" },
+  });
+  const event = {
+    type: "thread.message.created",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 4,
+    payload: { messageId: "chart-final", messageSeq: 4, role: "bot", blocks },
+  };
+  live = applyMobileThreadEvent(live, event);
+  live = applyMobileThreadEvent(live, {
+    type: "run.completed",
+    threadId: "thread-chart",
+    runId: "run-chart",
+    seq: 5,
+    payload: { messageId: "chart-final" },
+  });
+  live = applyMobileThreadEvent(live, event);
+  live = mergeMobileSnapshot(live, { ...first, cursor: 5 });
+  live = prependMobileMessagePage(live, {
+    threadId: "thread-chart",
+    olderCursor: null,
+    messages: [committed],
+  });
+  expect(live?.messages).toHaveLength(1);
+  expect(live?.messages[0]?.blocks).toEqual(blocks);
+  expect(
+    live?.messages.flatMap((message) => message.blocks).filter((block) => block.kind === "chart"),
+  ).toHaveLength(1);
 });

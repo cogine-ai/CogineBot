@@ -1067,11 +1067,13 @@ model AgentSkill {
   content     String
   /// user | builtin | plugin — only user skills are writable via API/tools.
   source      String   @default("user")
+  clientNonce String?
   installId   String?
   install     CapabilityInstall? @relation(fields: [installId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@unique([spaceId, userId, clientNonce])
   @@index([spaceId, userId])
   @@index([installId])
   // Case-insensitive unique index agent_skills_spaceId_userId_name_lower_key is created in SQL.
@@ -2249,4 +2251,17 @@ model PageVersion {
   @@unique([pageId, version])
   @@map("page_versions")
   @@schema("cogine_pages")
+}
+
+/// Committed save intents survive Routine deletion, preventing replay resurrection.
+model RoutineMutation {
+  id String @id
+  userId String
+  spaceId String
+  requestHash String
+  routineId String?
+  createdAt DateTime @default(now())
+  @@index([spaceId, userId])
+  @@map("routine_mutations")
+  @@schema("public")
 }

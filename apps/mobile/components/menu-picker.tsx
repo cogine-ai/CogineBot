@@ -13,12 +13,14 @@ export function MenuPickerMenu({
   value,
   onChange,
   children,
+  disabled = false,
 }: {
   label: string;
   choices: readonly MenuPickerChoice[];
   value: string;
   onChange: (key: string) => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   const colorScheme = useResolvedAppearance();
   return (
@@ -28,11 +30,12 @@ export function MenuPickerMenu({
         id: `choice:${choice.key}`,
         title: choice.label,
         state: choice.key === value ? "on" : "off",
+        attributes: { disabled },
       }))}
       colorScheme={colorScheme}
       onPressAction={(event) => {
         const id = event.nativeEvent.event;
-        if (id.startsWith("choice:")) onChange(id.slice("choice:".length));
+        if (!disabled && id.startsWith("choice:")) onChange(id.slice("choice:".length));
       }}
       title={label}
     >
@@ -48,20 +51,29 @@ export function MenuPicker({
   value,
   onChange,
   divider = false,
+  disabled = false,
 }: {
   label: string;
   choices: readonly MenuPickerChoice[];
   value: string;
   onChange: (key: string) => void;
   divider?: boolean;
+  disabled?: boolean;
 }) {
   const styles = useThemedStyles(createStyles);
   const current = choices.find((choice) => choice.key === value)?.label ?? choices[0]?.label ?? "";
   return (
-    <MenuPickerMenu choices={choices} label={label} onChange={onChange} value={value}>
+    <MenuPickerMenu
+      choices={choices}
+      label={label}
+      onChange={onChange}
+      value={value}
+      disabled={disabled}
+    >
       <View
         accessibilityLabel={label}
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
         accessibilityValue={{ text: current }}
         accessible
         style={[styles.row, divider && styles.divider]}

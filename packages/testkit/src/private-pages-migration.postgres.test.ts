@@ -12,6 +12,10 @@ import {
   scramSha256Verifier,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
+import {
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const ownerUrl = process.env.DATABASE_URL;
@@ -49,7 +53,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
   const pageDefinitions = ROW_SECURITY_POLICIES.filter(({ model }) =>
     ["Page", "PageVersion"].includes(model),
   );
-  const predecessorCount = ROW_SECURITY_POLICIES.length - pageDefinitions.length;
+  const predecessorCount = schemaPolicyTables.length - pageDefinitions.length;
   let owner: ReturnType<typeof createDb> | undefined;
   let runtime: ReturnType<typeof createDb> | undefined;
   let runtimeUrl: string;
@@ -94,6 +98,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
       "messaging_installations",
       "messaging_credential_cleanups",
       "mcp_create_requests",
+      "routine_mutations",
     ];
     const pool = owner!.pool;
     await pool.query(
@@ -186,6 +191,7 @@ postgres("private Pages migration (isolated PostgreSQL)", () => {
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const url = new URL(ownerUrl!);
     const database = url.pathname.slice(1);
     if (

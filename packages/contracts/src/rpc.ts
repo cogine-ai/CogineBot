@@ -1,3 +1,4 @@
+import type { InferContractRouterInputs, InferContractRouterOutputs } from "@orpc/contract";
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
 import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
@@ -114,6 +115,7 @@ import {
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
   ModelOAuthBeginSchema,
+  NativeRoutineTriggerBaselineSchema,
   REPLY_QUOTE_MAX_LENGTH,
   RemovedBotSectionSchema,
   ReorderBotsInput,
@@ -503,7 +505,7 @@ export const appContract = {
     recent: oc.output(z.array(BotPackageRecentReceiptSchema)),
     forBot: oc.input(z.object({ botId: Id })).output(BotPackageReceiptSchema.nullable()),
     resume: oc
-      .input(z.object({ clientNonce: BotPackageNonceSchema }))
+      .input(BotPackageImportInput.pick({ clientNonce: true, apiKey: true }))
       .output(BotPackageReceiptSchema),
     cancel: oc
       .input(z.object({ clientNonce: BotPackageNonceSchema }))
@@ -786,6 +788,8 @@ export const appContract = {
             modelCredentialId: Id.nullable().optional(),
             thinkingLevel: ThinkingLevelSchema.nullable().optional(),
             expectedRevision: z.number().int().positive().optional(),
+            mutationId: z.string().min(16).max(128).optional(),
+            nativeTriggerBaseline: NativeRoutineTriggerBaselineSchema.optional(),
             nativeTriggers: NativeRoutineTriggersInputSchema.optional(),
             name: z.string().optional(),
             prompt: z.string().optional(),
@@ -1158,12 +1162,21 @@ export const appContract = {
         .input(
           z.object({
             botId: Id,
+            returnTo: z.literal("mobile").optional(),
             reconnect: z
               .object({ id: Id, expectedRevision: z.number().int().positive() })
               .optional(),
           }),
         )
         .output(z.object({ url: z.url(), attemptId: Id, expiresAt: IsoDate })),
+      completeMobile: oc
+        .input(
+          z.object({
+            state: z.string().regex(/^m\.[A-Za-z0-9_-]{43}$/),
+            code: z.string().max(4096).optional(),
+          }),
+        )
+        .output(z.object({ ok: z.literal(true) })),
       attempt: oc
         .input(z.object({ attemptId: z.string().regex(/^[a-f0-9]{64}$/) }))
         .output(
@@ -1415,3 +1428,8 @@ export const appContract = {
 };
 
 export type AppContract = typeof appContract;
+
+export type SlackInstallationInputs =
+  InferContractRouterInputs<AppContract>["messaging"]["installations"];
+export type SlackInstallationOutputs =
+  InferContractRouterOutputs<AppContract>["messaging"]["installations"];

@@ -12,9 +12,20 @@ import { resetI18nForTests } from "./i18n";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  chartViews: [] as Array<{
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+    injectedJavaScript?: string;
+  }>,
+  subscribe: vi.fn(),
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn(), setParams: vi.fn() },
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
-  params: { botId: "bot-a", spaceId: "space-a", name: "Writer", readOnly: "1" },
+  params: {
+    botId: "bot-a",
+    spaceId: "space-a",
+    name: "Writer",
+    readOnly: "1",
+    groupId: undefined as string | undefined,
+  },
   approvals: [] as DelegatedApproval[],
   block: {
     kind: "bot_message_sent",
@@ -23,6 +34,16 @@ const state = vi.hoisted(() => ({
     text: "Private peer body",
     deliveryStatus: "policy_disabled",
   } as MessageBlock,
+}));
+
+vi.mock("react-native-webview", () => ({
+  WebView: (props: {
+    onMessage?: (event: { nativeEvent: { data: string } }) => void;
+    injectedJavaScript?: string;
+  }) => {
+    state.chartViews.push(props);
+    return <div data-chart-webview />;
+  },
 }));
 
 vi.mock("@rakazo/chat-ui/native", () => ({
@@ -43,10 +64,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     rpc: state.rpc,
-    subscribeThread: async (...[, , , signal]: Parameters<typeof Api.subscribeThread>) =>
-      new Promise<void>((resolve) =>
-        signal.addEventListener("abort", () => resolve(), { once: true }),
-      ),
+    subscribeThread: (...args: Parameters<typeof Api.subscribeThread>) => state.subscribe(...args),
     currentApiBase: () => "https://api.example.test",
     currentApiBaseGeneration: () => 0,
     currentSpaceSelectionGeneration: () => 0,
@@ -121,7 +139,6 @@ vi.mock("expo-document-picker", () => ({}));
 vi.mock("expo-image-picker", () => ({}));
 vi.mock("expo-sharing", () => ({}));
 vi.mock("react-native-svg", () => ({ default: () => null, G: () => null, Path: () => null }));
-vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("expo-application", () => ({ nativeApplicationVersion: "1.0.0" }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: {} } }));
 vi.mock("./call-sounds", () => ({
@@ -154,6 +171,7 @@ vi.mock("react-native-reanimated", () => ({
   },
 }));
 vi.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: ({ children }: { children: ReactNode }) => <div data-peer-sheet>{children}</div>,
   useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
 }));
 vi.mock("./native", () => ({
@@ -252,7 +270,9 @@ vi.mock("react-native", () => {
   };
 });
 // These controls need native hosts; their thread-level callbacks are not under test here.
-vi.mock("../components/thread-composer", () => ({ ThreadComposer: () => null }));
+vi.mock("../components/thread-composer", () => ({
+  ThreadComposer: () => <input aria-label="Draft" defaultValue="" />,
+}));
 vi.mock("../components/message-context-menu", () => ({
   MessageContextMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
@@ -266,7 +286,10 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
   state.params.readOnly = "1";
+  state.params.groupId = undefined;
+  state.params.botId = "bot-a";
   state.approvals = [];
+  state.chartViews.length = 0;
   state.router.push.mockReset();
   state.block = {
     kind: "bot_message_sent",
@@ -275,6 +298,14 @@ beforeEach(() => {
     text: "Private peer body",
     deliveryStatus: "policy_disabled",
   };
+  state.subscribe
+    .mockReset()
+    .mockImplementation(
+      (...[, , , signal]: Parameters<typeof Api.subscribeThread>) =>
+        new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        ),
+    );
   state.rpc.mockReset().mockImplementation(async (procedure: string) => {
     if (procedure === "threads/get")
       return {
@@ -506,6 +537,207 @@ it.each(["created", "archived", "deleted"] as const)(
       );
       expect(card?.textContent).not.toContain("Read sources");
       expect(state.router.push).not.toHaveBeenCalled();
+    }
+  },
+);
+
+it("opens the full read-only peer history from the actual receipt and keeps the composer mounted", async () => {
+  state.params.readOnly = "0";
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "threads/messages")
+      return {
+        messages: [
+          {
+            id: "historic",
+            threadId: "thread-a",
+            seq: 1,
+            role: "bot",
+            botId: "bot-a",
+            createdAt: "2026-01-01T00:00:00Z",
+            blocks: [
+              {
+                kind: "bot_message_received",
+                fromBotId: "bot-b",
+                fromBotName: "Research",
+                text: "Historical peer reply",
+              },
+            ],
+          },
+        ],
+        olderCursor: null,
+      };
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  const draft = container.querySelector<HTMLInputElement>('input[aria-label="Draft"]')!;
+  draft.value = "Unsent original draft";
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  const sheet = container.querySelector("[data-peer-sheet]")!;
+  expect(sheet.textContent).toContain("Historical peer reply");
+  expect(sheet.querySelector("input,textarea")).toBeNull();
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  await act(async () =>
+    sheet.querySelector<HTMLButtonElement>('button[aria-label="Close chat"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).toBeNull();
+  expect(container.querySelector('input[aria-label="Draft"]')).toBe(draft);
+  expect(draft.value).toBe("Unsent original draft");
+  expect(state.router.push).not.toHaveBeenCalled();
+});
+
+it("retries a failed history read from the sheet without exposing a peer composer", async () => {
+  let fail = true;
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "threads/messages") {
+      if (fail) throw new Error("offline");
+      return { messages: [], olderCursor: null };
+    }
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain(
+    "Could not load this chat.",
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).not.toContain(
+    "Private peer body",
+  );
+  fail = false;
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Retry now"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain("Private peer body");
+  expect(container.querySelector("[data-peer-sheet] input")).toBeNull();
+});
+
+it("closes the peer sheet on a Bot route change before retaining any previous body", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) =>
+    procedure === "threads/messages"
+      ? { messages: [], olderCursor: null }
+      : original(procedure, input),
+  );
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).not.toBeNull();
+  state.params.botId = "bot-b";
+  await act(async () => root.render(<ThreadRoute />));
+  expect(container.querySelector("[data-peer-sheet]")).toBeNull();
+});
+
+it("opens a group receipt using the message's originating Bot, not the group or peer as the direct target", async () => {
+  state.params.groupId = "group-a";
+  state.params.botId = "";
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: { groupId?: string } = {}) => {
+    if (procedure === "threads/get") {
+      const result = await original(procedure, input);
+      return input.groupId ? { ...result, groupId: "group-a", threadId: "group-thread" } : result;
+    }
+    if (procedure === "threads/messages") return { messages: [], olderCursor: null };
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).not.toBeNull();
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ groupId: "group-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  expect(
+    state.rpc.mock.calls.some(
+      ([proc, input]) => proc === "threads/messages" && input.botId === "bot-b",
+    ),
+  ).toBe(false);
+});
+
+it("keeps a receipt opened from the archived read-only route as history without subscribing", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) =>
+    procedure === "threads/messages"
+      ? { messages: [], olderCursor: null }
+      : original(procedure, input),
+  );
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain("Private peer body");
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a" }),
+    expect.anything(),
+  );
+  expect(state.subscribe).not.toHaveBeenCalled();
+  expect(container.querySelector("[data-peer-sheet] input")).toBeNull();
+});
+
+it.each([false, true])(
+  "renders one chart in the actual thread with attachments=%s and preserves adjacent content on failure",
+  async (attachments) => {
+    const original = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+      const result = await original(procedure, input);
+      if (procedure !== "threads/get") return result;
+      return {
+        ...result,
+        messages: [
+          {
+            ...result.messages[0],
+            blocks: [
+              { kind: "text", text: "Synthetic result\n```mermaid\ngraph TD; A-->B\n```" },
+              {
+                kind: "chart",
+                name: "Sales",
+                spec: { title: "Sales", marks: [{ type: "dot" }] },
+                data: [1, 2],
+              },
+              ...(attachments
+                ? [
+                    { kind: "image", name: "Synthetic picture" },
+                    { kind: "file", name: "Synthetic document" },
+                  ]
+                : []),
+            ],
+          },
+        ],
+      };
+    });
+    await act(async () => root.render(<ThreadRoute />));
+    expect(container.querySelectorAll("[data-chart-webview]")).toHaveLength(1);
+    expect(container.textContent).not.toContain("[chart:");
+    expect(container.textContent).toContain("Synthetic result");
+    expect(container.textContent).toContain("graph TD; A-->B");
+    const chart = state.chartViews.at(-1)!;
+    const requestId = /"requestId":"([^"]+)"/.exec(chart.injectedJavaScript!)![1];
+    act(() =>
+      chart.onMessage?.({ nativeEvent: { data: JSON.stringify({ requestId, type: "failed" }) } }),
+    );
+    expect(container.textContent).toContain("Chart unavailable");
+    expect(container.textContent).toContain("Synthetic result");
+    if (attachments) {
+      expect(container.textContent).toContain("Synthetic picture");
+      expect(container.textContent).toContain("Synthetic document");
     }
   },
 );

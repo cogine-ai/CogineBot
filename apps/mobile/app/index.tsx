@@ -106,6 +106,7 @@ import {
   subscribeSessionGeneration,
 } from "../lib/session";
 import { spaceRequestContext } from "../lib/space-request-context";
+import { useTicketBoardCapability } from "../lib/ticket-board";
 import { errorText } from "../lib/user-error";
 
 const FALLBACK_COLOR = botColors[3];
@@ -169,6 +170,7 @@ function Home() {
   const [loadFailure, setLoadFailure] = useState<LoadFailureKind | null>(null);
   const [ready, setReady] = useState(false);
   const [hasSession, setHasSession] = useState(false);
+  const board = useTicketBoardCapability(ready && hasSession);
   const [refreshing, setRefreshing] = useState(false);
   const [sectionPrompt, setSectionPrompt] = useState<SectionPrompt | null>(null);
   const [deletedSection, setDeletedSection] = useState<{
@@ -722,6 +724,16 @@ function Home() {
         },
       ],
       unstable_headerRightItems: () => [
+        ...(board.enabled === true
+          ? [
+              {
+                type: "button" as const,
+                accessibilityLabel: t("Board"),
+                icon: { type: "sfSymbol" as const, name: "rectangle.split.3x1" },
+                onPress: () => router.push("/board"),
+              },
+            ]
+          : []),
         {
           type: "button" as const,
           accessibilityLabel: t("Activity"),
@@ -773,6 +785,7 @@ function Home() {
     });
   }, [
     nativeHeader,
+    board.enabled,
     navigation,
     ready,
     hasSession,
@@ -1299,6 +1312,11 @@ function Home() {
             </HeaderButton>
           </View>
           <View style={styles.headerActions}>
+            {board.enabled === true ? (
+              <HeaderButton accessibilityLabel={t("Board")} onPress={() => router.push("/board")}>
+                <NativeSymbol ios="rectangle.split.3x1" android="grid-outline" size={17} />
+              </HeaderButton>
+            ) : null}
             <HeaderButton
               accessibilityLabel={t("Activity")}
               active={activityMode}

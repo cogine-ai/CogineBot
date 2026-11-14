@@ -342,7 +342,13 @@ postgres("custom archive recovery into a different cluster and database identity
     });
     expect(status.problems).toEqual([]);
     await targetWork(async (client) => {
-      await expectPhysicalPolicyTables((sql) => client.query(sql));
+      expectPhysicalPolicyTables(
+        (
+          await client.query(
+            "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+          )
+        ).rows,
+      );
       expectExactPolicyCatalog(
         (
           await client.query(
@@ -355,6 +361,7 @@ postgres("custom archive recovery into a different cluster and database identity
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const sourceIdentity = isolatedTarget(sourceUrl!);
     if (
       process.env.VERIFY_ROW_SECURITY_POLICIES !== "harness_isolated" ||
@@ -396,7 +403,13 @@ postgres("custom archive recovery into a different cluster and database identity
     }
     sourceOwner = createDb(source.url);
     expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
-    await expectPhysicalPolicyTables((sql) => sourceOwner.pool.query(sql));
+    expectPhysicalPolicyTables(
+      (
+        await sourceOwner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     const sourceOid = Number(
       (await sourceOwner.pool.query("SELECT oid FROM pg_database WHERE datname=current_database()"))
         .rows[0].oid,

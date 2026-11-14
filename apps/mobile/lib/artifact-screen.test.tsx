@@ -30,6 +30,7 @@ const state = vi.hoisted(() => ({
   ios26: true,
   focused: true,
   options: {} as {
+    headerSearchBarOptions?: { onChangeText: (event: { nativeEvent: { text: string } }) => void };
     headerRight?: () => ReactNode;
     unstable_headerRightItems?: () => Array<{ label: string; onPress: () => void }>;
   },
@@ -182,6 +183,27 @@ vi.mock("@rakazo/chat-ui/native", () => ({
   ChatMarkdown: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../components/native-symbol", () => ({ NativeSymbol: () => null }));
+vi.mock("../components/menu-picker", () => ({
+  MenuPicker: ({
+    label,
+    value,
+    choices,
+    onChange,
+  }: {
+    label: string;
+    value: string;
+    choices: { key: string; label: string }[];
+    onChange: (value: string) => void;
+  }) => (
+    <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+      {choices.map((choice) => (
+        <option key={choice.key} value={choice.key}>
+          {choice.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 vi.mock("../components/bot-avatar", () => ({ BotAvatar: () => null }));
 vi.mock("../components/sandboxed-html-preview", () => ({ SandboxedHtmlPreview: () => null }));
 
@@ -280,6 +302,7 @@ afterEach(async () => {
   });
   container.remove();
   header.remove();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -536,4 +559,140 @@ it("resets an abandoned pull spinner on refocus while preserving newer refresh o
     cursor: "current-cursor",
     limit: 30,
   });
+});
+
+async function chooseDate(value: string) {
+  await act(async () => {
+    const select = container.querySelector(
+      "select[aria-label='Filter by date']",
+    ) as HTMLSelectElement;
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+async function searchArtifacts(text: string) {
+  await act(async () =>
+    state.options.headerSearchBarOptions?.onChangeText({ nativeEvent: { text } }),
+  );
+}
+function freezeArtifactDate() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 10, 4, 12));
+}
+const datedArtifact = (id: string, day: number, name = id) => ({
+  ...artifact,
+  id,
+  name,
+  createdAt: new Date(2026, 10, day, 0).toISOString(),
+});
+
+it("combines all four calendar choices with keyword and Bot filtering on createdAt", async () => {
+  freezeArtifactDate();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p: string, input: unknown) =>
+    p === "artifacts/listSpace"
+      ? Promise.resolve({
+          items: [
+            datedArtifact("Report today", 4),
+            datedArtifact("Report Sunday", 1),
+            datedArtifact("Report October", 0),
+            datedArtifact("Other today", 4),
+          ],
+          nextCursor: null,
+        })
+      : normal(p, input),
+  );
+  await render();
+  expect(container.textContent).toContain("Report October");
+  await searchArtifacts("report");
+  for (const filter of ["week", "month"]) {
+    await chooseDate(filter);
+    expect(container.textContent).toContain("Report Sunday");
+    expect(container.textContent).not.toContain("Report October");
+    expect(container.textContent).not.toContain("Other today");
+  }
+  await chooseDate("today");
+  expect(container.textContent).toContain("Report today");
+  expect(container.textContent).not.toContain("Report Sunday");
+  await chooseDate("all");
+  expect(container.textContent).toContain("Report October");
+  expect(
+    state.rpc.mock.calls
+      .filter(([p]) => p === "artifacts/listSpace")
+      .every(([, input]) => input.botId === "bot-1"),
+  ).toBe(true);
+});
+
+it("continues across multiple nonmatching pages for a date filter with a keyword", async () => {
+  freezeArtifactDate();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p: string, input: { cursor?: string }) => {
+    if (p !== "artifacts/listSpace") return normal(p, input);
+    return Promise.resolve(
+      input.cursor === "second"
+        ? { items: [datedArtifact("Report found", 4)], nextCursor: null }
+        : {
+            items: [datedArtifact("Report older", 0)],
+            nextCursor: input.cursor ? "second" : "first",
+          },
+    );
+  });
+  await render();
+  await searchArtifacts("report");
+  await chooseDate("today");
+  expect(container.textContent).toContain("Report found");
+  expect(container.textContent).not.toContain("Report older");
+  expect(state.rpc.mock.calls.filter(([p]) => p === "artifacts/listSpace")).toHaveLength(3);
+});
+
+it("distinguishes a filtered page failure from empty results and retries", async () => {
+  freezeArtifactDate();
+  const normal = state.rpc.getMockImplementation()!;
+  let failed = false;
+  state.rpc.mockImplementation((p: string, input: { cursor?: string }) => {
+    if (p !== "artifacts/listSpace") return normal(p, input);
+    if (!input.cursor) return Promise.resolve({ items: [artifact], nextCursor: "older" });
+    if (!failed) {
+      failed = true;
+      return Promise.reject(new Error("Synthetic read failure"));
+    }
+    return Promise.resolve({ items: [], nextCursor: null });
+  });
+  await render();
+  await chooseDate("today");
+  expect(container.textContent).toContain("Could not load artifacts.");
+  expect(container.textContent).not.toContain("No matching artifacts");
+  await act(async () => button("Try again.").click());
+  expect(container.textContent).toContain("No matching artifacts");
+  expect(container.textContent).not.toContain("Could not load artifacts.");
+});
+
+it("applies the current date and keyword to a page requested before either changed", async () => {
+  freezeArtifactDate();
+  const pending = deferred<{ items: (typeof artifact)[]; nextCursor: string | null }>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((p: string, input: { cursor?: string }) =>
+    p === "artifacts/listSpace"
+      ? input.cursor
+        ? pending.promise
+        : Promise.resolve({ items: [artifact], nextCursor: "older" })
+      : normal(p, input),
+  );
+  await render();
+  await chooseDate("month");
+  await chooseDate("today");
+  await searchArtifacts("wanted");
+  await act(async () =>
+    pending.resolve({
+      items: [
+        datedArtifact("wanted Sunday", 1),
+        datedArtifact("unrelated today", 4),
+        datedArtifact("wanted today", 4),
+      ],
+      nextCursor: null,
+    }),
+  );
+  expect(container.textContent).toContain("wanted today");
+  expect(container.textContent).not.toContain("wanted Sunday");
+  expect(container.textContent).not.toContain("unrelated today");
 });

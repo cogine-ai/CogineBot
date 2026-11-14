@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import type { Route } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type {
   Bot,
@@ -355,21 +356,30 @@ test("agent backup folder previews only selected content and preserves the draft
   try {
     const root = join(fixture, "review-agent");
     const unrelated = join(fixture, "ordinary-project");
+    const otherBackup = join(fixture, "other-review-agent");
     await mkdir(join(root, "memories"), { recursive: true });
     await mkdir(join(unrelated, "workspace"), { recursive: true });
+    await mkdir(join(otherBackup, "memories"), { recursive: true });
     const instructions = "Summarize the folder's research notes.";
     const note = "Keep this note private unless selected.";
     const secret = "Local fixture credential value.";
     await Promise.all([
       writeFile(join(root, "HERMES.md"), instructions),
       writeFile(join(root, "memories", "MEMORY.md"), note),
-      writeFile(join(root, "auth.json"), secret),
+      writeFile(join(root, "auth.json"), JSON.stringify({ gateway_token: secret })),
       writeFile(
         join(root, "config.yaml"),
-        "model: { provider: openai, default: gpt-4.1, api_key: local-config-fixture }\n",
+        "model: { provider: anthropic, default: claude-sonnet-4-6, api_key: local-config-fixture }\n",
       ),
       writeFile(join(unrelated, "AGENTS.md"), "Ordinary project instructions."),
       writeFile(join(unrelated, "workspace", "README.md"), "Ordinary project workspace."),
+      writeFile(join(otherBackup, "HERMES.md"), instructions),
+      writeFile(join(otherBackup, "memories", "MEMORY.md"), note),
+      writeFile(join(otherBackup, "auth.json"), JSON.stringify({ gateway_token: secret })),
+      writeFile(
+        join(otherBackup, "config.yaml"),
+        "model: { provider: anthropic, default: claude-sonnet-4-6, api_key: another-config-fixture }\n",
+      ),
     ]);
 
     await page.setViewportSize({ width: 1280, height: 1100 });
@@ -422,27 +432,115 @@ test("agent backup folder previews only selected content and preserves the draft
     expect(previews[0]).not.toContain(note);
     expect(previews[0]).not.toContain(secret);
     expect(previews[0]).not.toContain("Ordinary project instructions.");
-    expect(previews[0]).not.toContain("gpt-4.1");
+    expect(previews[0]).not.toContain("claude-sonnet-4-6");
     await captureScreenshot(page, testInfo, "d021-package-folder");
     await panel.getByText("Choose backup content", { exact: true }).click();
-    const model = panel.getByRole("checkbox", { name: "Model · openai/gpt-4.1", exact: true });
+    const model = panel.getByRole("checkbox", {
+      name: "Model · anthropic/claude-sonnet-4-6",
+      exact: true,
+    });
     await expect(model).not.toBeChecked();
     await model.click();
     const instructionsChoice = panel.getByRole("checkbox", { name: "HERMES.md", exact: true });
     await instructionsChoice.click();
     await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await expect(
-      panel.getByTestId("bot-package-left-out").getByText("openai/gpt-4.1"),
+      panel.getByTestId("bot-package-left-out").getByText("anthropic/claude-sonnet-4-6"),
     ).toBeVisible();
     await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
       0,
     );
     await expect(panel.getByText("This import includes supported text only.")).toHaveCount(0);
     expect(previews).toHaveLength(2);
-    expect(previews[1]).toContain("gpt-4.1");
+    expect(previews[1]).toContain("claude-sonnet-4-6");
     expect(previews[1]).not.toContain("local-config-fixture");
     await captureScreenshot(page, testInfo, "d021-package-backup-model");
-    await instructionsChoice.click();
+    const key = panel.getByRole("checkbox", { name: "Also import this model’s API key" });
+    await expect(key).not.toBeChecked();
+    await key.click();
+    await panel.getByRole("button", { name: "Preview", exact: true }).click();
+    await expect(
+      panel.getByText("Import API key · anthropic/claude-sonnet-4-6", { exact: true }),
+    ).toBeVisible();
+    expect(previews).toHaveLength(3);
+    expect(previews[2]).not.toContain("local-config-fixture");
+    expect(JSON.parse(previews[2]!).json.importModelKey).toBe(true);
+    await captureScreenshot(page, testInfo, "d021-package-backup-model-key");
+    const writes: string[] = [];
+    let pendingNonce = "";
+    const capture = async (route: Route) => {
+      const body = route.request().postData() ?? "";
+      writes.push(body);
+      const { clientNonce } = JSON.parse(body).json;
+      pendingNonce = clientNonce;
+      // The offline provider emulator rejects this key after the import marker is accepted.
+      const response = await route.fetch({ maxRetries: 0 });
+      expect(response.status()).toBe(400);
+      await route.abort("failed");
+    };
+    await page.route("**/rpc/botPackages/import", capture);
+    await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Check status", exact: true })).toBeVisible();
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]!).json.apiKey).toBe("local-config-fixture");
+    expect(
+      await rpc<BotPackageReceipt>(page, "botPackages/status", { clientNonce: pendingNonce }),
+    ).toMatchObject({
+      status: "failed",
+      modelKey: { provider: "anthropic", modelId: "claude-sonnet-4-6" },
+    });
+    await page.unroute("**/rpc/botPackages/import", capture);
+    await panel.getByRole("button", { name: "Close", exact: true }).click();
+    await page
+      .getByTestId("create-bot-form")
+      .getByRole("button", { name: "Import bot", exact: true })
+      .click();
+    await panel.getByRole("button", { name: "Recent imports", exact: true }).click();
+    await panel
+      .getByTestId("bot-package-recent")
+      .getByRole("button", { name: "Review import", exact: true })
+      .first()
+      .click();
+    const resume = panel.getByRole("button", { name: "Resume import", exact: true });
+    await expect(resume).toBeDisabled();
+    await expect(
+      panel.getByText("Choose the backup again to resume importing the API key."),
+    ).toBeVisible();
+    const resumes: string[] = [];
+    await page.route("**/rpc/botPackages/resume", async (route) => {
+      const body = route.request().postData() ?? "";
+      if (JSON.parse(body).json.apiKey === "another-config-fixture") {
+        const response = await route.fetch({ maxRetries: 0 });
+        expect(response.status()).toBe(400);
+        const error = (await response.json()) as { json?: { message?: string } };
+        expect(error.json?.message).toBe(
+          "Select the original backup to resume this model connection.",
+        );
+        await route.fulfill({ response });
+        return;
+      }
+      resumes.push(body);
+      await route.abort("failed");
+    });
+    await choose(otherBackup);
+    await resume.click();
+    await expect(
+      panel.getByText("Select the original backup to resume this model connection."),
+    ).toBeVisible();
+    expect(resumes).toHaveLength(0);
+    await choose(root);
+    await resume.click();
+    await expect.poll(() => resumes.length).toBe(1);
+    expect(JSON.parse(resumes[0]!).json).toEqual({
+      clientNonce: JSON.parse(writes[0]!).json.clientNonce,
+      apiKey: "local-config-fixture",
+    });
+    await panel.getByRole("button", { name: "Cancel import", exact: true }).click();
+    await expect(panel.getByText("Import cancelled.", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Import another bot", exact: true }).click();
+    await choose(root);
+    await expect(panel.getByRole("status")).toHaveText("Agent backup selected");
+    await name.fill("Research folder Bot");
     await panel.getByRole("button", { name: "Preview", exact: true }).click();
     await panel.getByRole("button", { name: "Import as new bot", exact: true }).click();
     await expect(panel.getByText("Bot imported", { exact: true })).toBeVisible();

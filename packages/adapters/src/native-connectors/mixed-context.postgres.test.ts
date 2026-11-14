@@ -309,7 +309,16 @@ describePostgres("mixed database authority on a restricted single-connection poo
             proof: { ...item.proof, configRevision: item.proof.configRevision + 1 },
           }));
           await expect(
-            replaceNativeRoutineTriggersTx(tx, tenant, fixture.routine.id, stale),
+            replaceNativeRoutineTriggersTx(
+              tx,
+              tenant,
+              fixture.routine.id,
+              stale,
+              new Date(),
+              (
+                await tx.nativeRoutineTrigger.findMany({ where: { routineId: fixture.routine.id } })
+              ).map(({ id, version }) => ({ id, version })),
+            ),
           ).rejects.toThrow("authorization is no longer available");
           expect(await settings(tx)).toEqual(before);
           expect(currentDbContext()).toEqual({ kind: "tenant", ...tenant });

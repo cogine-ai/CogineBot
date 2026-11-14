@@ -81,7 +81,7 @@ export function BotSettingsCard({
 }) {
   const settings = block.botSettings!;
   const tokens = useMobileTokens();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const activeAnswer = useRef(false);
   const [sending, setSending] = useState(false);
   const [answerFailed, setAnswerFailed] = useState(false);
@@ -266,7 +266,7 @@ export function BotSettingsCard({
                   }}
                 >
                   <Text style={{ color: tokens.mutedForeground }}>
-                    {new Date(version.createdAt).toLocaleString()}
+                    {new Date(version.createdAt).toLocaleString(locale)}
                   </Text>
                   {version.changes.map((change) => (
                     <SettingsChange

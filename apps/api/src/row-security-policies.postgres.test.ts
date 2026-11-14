@@ -103,6 +103,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     ).rows;
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const url = new URL(databaseUrl!);
     const expectedDatabase = process.env.VERIFY_ROW_SECURITY_POLICIES_DATABASE;
     const databaseName = url.pathname.slice(1);
@@ -116,7 +117,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       throw new Error("Row-policy tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
     expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
-    await expectPhysicalPolicyTables((sql) => owner.pool.query(sql));
+    expectPhysicalPolicyTables(
+      (
+        await owner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     url.username = role;
     url.password = password;
     url.searchParams.delete("user");
@@ -570,6 +577,38 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       await owner.prisma.deploymentTransferSession.delete({ where: { id: transferId } });
     }
   }, 20_000);
+
+  it("isolates save receipts by both authenticated user and Space", async () => {
+    const rows = [
+      { id: id("receipt-own"), userId: userA, spaceId: spaceA },
+      { id: id("receipt-user"), userId: userB, spaceId: spaceA },
+      { id: id("receipt-space"), userId: userA, spaceId: spaceB },
+    ];
+    await owner.prisma.routineMutation.createMany({
+      data: rows.map((row) => ({ ...row, requestHash: "synthetic" })),
+    });
+    try {
+      expect(await runtime!.prisma.routineMutation.findMany()).toEqual([]);
+      const visible = await inA(() => runtime!.prisma.routineMutation.findMany());
+      expect(visible.map((row) => row.id)).toEqual([id("receipt-own")]);
+      await inA(() =>
+        rejectedByPolicy(
+          runtime!.prisma.routineMutation.create({
+            data: {
+              id: id("receipt-forged"),
+              userId: userB,
+              spaceId: spaceA,
+              requestHash: "synthetic",
+            },
+          }),
+        ),
+      );
+    } finally {
+      await owner.prisma.routineMutation.deleteMany({
+        where: { id: { in: rows.map((row) => row.id) } },
+      });
+    }
+  });
 
   it("installs the exact schema-wide policy set for a real restricted connection", async () => {
     expect(beforePolicies.policyInstalled).toBe(false);
@@ -1418,6 +1457,28 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     await owner.prisma.bot.create({
       data: { id: sharedForeignBot, spaceId: spaceA, userId: userB, name: "Foreign", color: "ink" },
     });
+    // Sharing the selected Space is not ownership. These rows must stay hidden
+    // even though the caller can manage their own identities in another Space.
+    const sharedForeignIdentity = id("rpc-shared-foreign-identity");
+    const sharedForeignConnection = id("rpc-shared-foreign-connection");
+    await owner.prisma.messagingIdentity.create({
+      data: {
+        id: sharedForeignIdentity,
+        provider: "fixture",
+        address: id("rpc-shared-foreign-address"),
+        userId: userB,
+        spaceId: spaceA,
+        botId: sharedForeignBot,
+      },
+    });
+    await owner.prisma.agentConnection.create({
+      data: {
+        id: sharedForeignConnection,
+        requesterBotId: peerBot,
+        targetBotId: sharedForeignBot,
+        status: "pending",
+      },
+    });
     const issued = await call("messaging/link/start", { botId: linkBots.a });
     expect(issued.status).toBe(200);
     const issuedBody = (await issued.json()).json as { code: string };
@@ -1449,6 +1510,27 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         select: { code: true },
       }),
     ).toEqual([{ code: issuedBody.code.replaceAll("-", "") }]);
+    const status = await call("messaging/status");
+    expect(status.status).toBe(200);
+    const identities = (await status.json()).json.identities as Array<{
+      id: string;
+      botId: string;
+    }>;
+    expect(identities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: myIdentity, botId: myBot }),
+        expect.objectContaining({ botId: linkBots.a }),
+      ]),
+    );
+    expect(identities.some(({ id }) => id === peerIdentity || id === sharedForeignIdentity)).toBe(
+      false,
+    );
+    for (const identityId of [peerIdentity, sharedForeignIdentity]) {
+      expect((await call("messaging/identities/unlink", { identityId })).status).toBe(404);
+      expect(
+        await owner.prisma.messagingIdentity.findUnique({ where: { id: identityId } }),
+      ).not.toBeNull();
+    }
     const channels = await call("messaging/channels/list");
     expect(channels.status).toBe(200);
     expect(await channels.json()).toMatchObject({
@@ -1495,12 +1577,21 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       requestVersion: 1,
     });
     expect(connections.some(({ id }) => id === unrelated)).toBe(false);
+    expect(connections.some(({ id }) => id === sharedForeignConnection)).toBe(false);
+    // Peer labels are the only permitted metadata, never underlying tenant IDs.
+    for (const connection of connections) {
+      for (const key of ["requesterBotId", "targetBotId", "userId", "spaceId", "identityId"]) {
+        expect(connection).not.toHaveProperty(key);
+      }
+    }
     const respond = (connectionId: string, requestVersion: number) =>
       call("messaging/connections/respond", { connectionId, requestVersion, accept: true });
     const revoke = (connectionId: string, requestVersion: number) =>
       call("messaging/connections/revoke", { connectionId, requestVersion });
     expect((await respond(unrelated, 1)).status).toBe(404);
     expect((await respond(outgoing, 1)).status).toBe(404);
+    expect((await respond(sharedForeignConnection, 1)).status).toBe(404);
+    expect((await revoke(sharedForeignConnection, 1)).status).toBe(404);
 
     // Reopen the same row after rendering v1 and before either RPC starts.
     await owner.prisma.agentConnection.update({
@@ -1564,6 +1655,12 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         })
       ).status,
     ).toBe(404);
+    expect((await call("messaging/identities/unlink", { identityId: myIdentity })).status).toBe(
+      200,
+    );
+    expect(
+      await owner.prisma.messagingIdentity.findUnique({ where: { id: myIdentity } }),
+    ).toBeNull();
     expect(await inA(() => runtime!.prisma.user.findMany({ select: { id: true } }))).toEqual([
       { id: userA },
     ]);

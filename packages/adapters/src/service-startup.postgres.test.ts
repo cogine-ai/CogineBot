@@ -87,6 +87,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
   };
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const target = new Client({ connectionString: databaseUrl! });
     if (
       !["127.0.0.1", "localhost", "::1"].includes(target.host) ||
@@ -383,7 +384,13 @@ postgres("restricted service startup against the prepared queue schema", () => {
         throw new Error("Service readiness tests require the isolated policy harness opt-in");
       await assertLegacyCatalog();
       expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
-      await expectPhysicalPolicyTables((sql) => owner!.pool.query(sql));
+      expectPhysicalPolicyTables(
+        (
+          await owner!.pool.query(
+            "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+          )
+        ).rows,
+      );
       const url = new URL(databaseUrl!);
       url.username = listenerLogin;
       url.password = randomBytes(24).toString("hex");

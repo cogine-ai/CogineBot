@@ -396,23 +396,9 @@ function ChartCanvas({
     // Plot loads lazily so threads without charts never pay for the library.
     void (async () => {
       try {
-        const { buildPlotParts } = await import("@rakazo/core/plot");
+        const { buildInteractivePlotParts } = await import("@rakazo/core/plot");
         if (cancelled || !ref.current) return;
-        // Hover inspection by default: give the first mark a tooltip unless
-        // the spec already asks for one somewhere.
-        const marks = Array.isArray((spec as { marks?: unknown[] }).marks)
-          ? ((spec as { marks: { options?: Record<string, unknown> }[] }).marks ?? [])
-          : [];
-        const hasTip = marks.some((mark) => mark.options && "tip" in mark.options);
-        const liveSpec = hasTip
-          ? spec
-          : {
-              ...spec,
-              marks: marks.map((mark, index) =>
-                index === 0 ? { ...mark, options: { ...(mark.options ?? {}), tip: true } } : mark,
-              ),
-            };
-        const parts = buildPlotParts(liveSpec as never, data, document, { width, height });
+        const parts = buildInteractivePlotParts(spec as never, data, document, { width, height });
         setMeta({ title: parts.title, swatches: parts.swatches });
         setError(null);
         ref.current.replaceChildren(parts.plotted);

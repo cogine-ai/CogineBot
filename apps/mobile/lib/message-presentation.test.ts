@@ -265,3 +265,16 @@ describe("truncateQuoteExcerpt", () => {
     expect(truncated).toBe("x".repeat(REPLY_QUOTE_MAX_LENGTH - 1));
   });
 });
+
+it("keeps charts visible as cards without duplicating their placeholder into text", () => {
+  const chart: MessageBlock = {
+    kind: "chart",
+    name: "Sales",
+    spec: { marks: [{ type: "dot" }] },
+    data: [1, 2],
+  };
+  expect(hasVisibleMessagePresentation([chart])).toBe(true);
+  expect(messagePresentationSegments([chart])).toEqual([]);
+  const text: MessageBlock = { kind: "text", text: "Results\n```mermaid\ngraph TD; A-->B\n```" };
+  expect(messagePresentationSegments([text, chart])).toEqual([{ kind: "content", blocks: [text] }]);
+});

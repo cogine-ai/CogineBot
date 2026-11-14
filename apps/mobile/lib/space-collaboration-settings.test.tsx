@@ -10,6 +10,7 @@ import { resetI18nForTests } from "./i18n";
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  push: vi.fn(),
   params: { spaceId: "space-b", name: "Research" },
   selectedSpace: "space-a",
   sessionGeneration: 0,
@@ -40,7 +41,7 @@ vi.mock("./session", () => ({
 }));
 vi.mock("expo-router", () => ({
   useLocalSearchParams: () => state.params,
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: state.push }),
 }));
 vi.mock("react-native", () => {
   const view = ({ children }: { children?: ReactNode }) => createElement("div", null, children);
@@ -397,4 +398,17 @@ it.each(["Space", "account"])("ignores a late save after the %s changes", async 
   expect(toggle().checked).toBe(true);
   expect(toggle().disabled).toBe(false);
   expect(container.textContent).not.toContain("Refresh");
+});
+
+it("opens approval settings for the displayed Space", async () => {
+  await render();
+  const entry = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Action confirmations",
+  );
+  expect(entry).toBeDefined();
+  await act(async () => entry?.click());
+  expect(state.push).toHaveBeenCalledWith({
+    pathname: "/approval-rules",
+    params: { spaceId: "space-b" },
+  });
 });

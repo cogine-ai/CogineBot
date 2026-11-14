@@ -21,6 +21,7 @@ const testFileUrl = import.meta.url;
 
 const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
+  pickAvatar: vi.fn(),
   back: vi.fn(),
   replace: vi.fn(),
   push: vi.fn(),
@@ -42,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
   speak: vi.fn(),
 }));
+vi.mock("./pick-bot-avatar", () => ({ pickBotAvatar: mocks.pickAvatar }));
 vi.mock("./bot-voices", () => ({
   voiceLabel: (voice: { language: string; name: string }) => `${voice.language} · ${voice.name}`,
   deviceVoices: mocks.deviceVoices,
@@ -149,7 +151,9 @@ vi.mock("./i18n", () => {
   const t = (text: string, values?: { name: string }) => text.replace("{name}", values?.name ?? "");
   return { t, useI18n: () => ({ t }) };
 });
-vi.mock("../components/bot-avatar", () => ({ BotAvatar: () => null }));
+vi.mock("../components/bot-avatar", () => ({
+  BotAvatar: ({ color }: { color: string }) => <span data-avatar={color} />,
+}));
 vi.mock("../components/computer-mode-picker", () => ({
   ComputerModePicker: ({ value, onChange }: { value: string; onChange: (value: string) => void }) =>
     createElement(
@@ -305,6 +309,7 @@ describe("native profile fields", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.botId = "bot-fixture";
+    mocks.pickAvatar.mockReset().mockResolvedValue(null);
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     mocks.scope = {
       apiBase: "https://api.example.test",
@@ -340,14 +345,134 @@ describe("native profile fields", () => {
         .click(),
     );
 
+  const avatar = () => container.querySelector("[data-avatar]")?.getAttribute("data-avatar");
+  const choose = async (menu: string, key: string) =>
+    act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(`[data-menu="${menu}"] [data-choice="choice:${key}"]`)!
+        .click();
+    });
+  const openAvatar = () => choose("Customize bot avatar", "edit");
+
+  it("persists shape and color using the existing scoped update contract", async () => {
+    await act(async () => root.render(<BotSettingsScreen />));
+    await openAvatar();
+    await choose("Shape", "4");
+    await choose("Color", "#62A8EC");
+    expect(avatar()).toBe("#62A8EC::shape_4");
+    await submit();
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "bots/update",
+      { botId: mocks.botId, color: "#62A8EC::shape_4" },
+      expect.objectContaining({
+        requestContext: expect.objectContaining({
+          headers: expect.objectContaining({ "x-rakazo-space-id": "space-1" }),
+        }),
+      }),
+    );
+  });
+
+  it.each(["cancel", "invalid", "denied"])(
+    "preserves the saved avatar after %s",
+    async (outcome) => {
+      await act(async () => root.render(<BotSettingsScreen />));
+      const original = avatar();
+      await openAvatar();
+      if (outcome === "invalid") mocks.pickAvatar.mockRejectedValueOnce(new Error("bad image"));
+      if (outcome === "denied")
+        mocks.pickAvatar.mockResolvedValueOnce("data:image/webp;base64,AQ==");
+      await submit("Choose image");
+      if (outcome === "denied") {
+        expect(avatar()).toBe("data:image/webp;base64,AQ==");
+        mocks.rpc.mockRejectedValueOnce(new Error("Forbidden"));
+        await submit();
+        expect(mocks.back).not.toHaveBeenCalled();
+      }
+      expect(avatar()).toBe(original);
+      if (outcome !== "denied")
+        expect(mocks.rpc.mock.calls.some(([proc]) => proc === "bots/update")).toBe(false);
+    },
+  );
+
+  it("saves an image as a data URL, never a device-local URI", async () => {
+    mocks.pickAvatar.mockResolvedValueOnce("data:image/webp;base64,AQ==");
+    await act(async () => root.render(<BotSettingsScreen />));
+    await openAvatar();
+    await submit("Choose image");
+    await submit();
+    expect(mocks.rpc.mock.calls.find(([proc]) => proc === "bots/update")?.[1]).toEqual({
+      botId: mocks.botId,
+      color: "data:image/webp;base64,AQ==",
+    });
+  });
+
+  it.each(["bot", "space", "session", "server"])(
+    "discards a pending photo after a %s change",
+    async (kind) => {
+      const photo = deferred<string>();
+      mocks.pickAvatar.mockReturnValueOnce(photo.promise);
+      await act(async () => root.render(<BotSettingsScreen />));
+      await openAvatar();
+      await submit("Choose image");
+      expect(
+        [...container.querySelectorAll("button")].find((button) => button.textContent === "Save")
+          ?.disabled,
+      ).toBe(true);
+      await act(async () => {
+        if (kind === "bot") mocks.botId = "other-bot";
+        if (kind === "space") mocks.scope.spaceGeneration++;
+        if (kind === "session") mocks.scope.sessionGeneration++;
+        if (kind === "server") mocks.scope.apiGeneration++;
+        for (const listener of mocks.listeners) listener();
+        root.render(<BotSettingsScreen />);
+      });
+      await act(async () => photo.resolve("data:image/webp;base64,AQ=="));
+      expect(avatar()).not.toBe("data:image/webp;base64,AQ==");
+      expect(mocks.rpc.mock.calls.some(([proc]) => proc === "bots/update")).toBe(false);
+      expect(mocks.back).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["space", "session", "server"])("ignores a late save across %s ABA", async (kind) => {
+    const saved = deferred<unknown>();
+    await act(async () => root.render(<BotSettingsScreen />));
+    await openAvatar();
+    await choose("Shape", "4");
+    mocks.rpc.mockImplementation((proc: string) => {
+      if (proc === "bots/update") return saved.promise;
+      if (proc === "bots/get") return Promise.resolve(acceptedBot);
+      if (proc === "me") return Promise.resolve({ userId: "user-1", spaceId: "space-1" });
+      return Promise.resolve([]);
+    });
+    await submit();
+    await act(async () => {
+      if (kind === "space") mocks.scope.spaceGeneration += 2;
+      if (kind === "session") mocks.scope.sessionGeneration += 2;
+      if (kind === "server") mocks.scope.apiGeneration += 2;
+      for (const listener of mocks.listeners) listener();
+    });
+    const original = avatar();
+    await act(async () => saved.resolve({ ...acceptedBot, color: "#62A8EC::shape_4" }));
+    expect(avatar()).toBe(original);
+    expect(mocks.back).not.toHaveBeenCalled();
+  });
+
   it("keeps public description edits independent from accepted execution rules", async () => {
     await act(async () => root.render(<BotSettingsScreen />));
     await change(field("What this bot is for"), "A new public role");
     await submit();
-    expect(mocks.rpc).toHaveBeenCalledWith("bots/update", {
-      botId: "bot-fixture",
-      description: "A new public role",
-    });
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "bots/update",
+      {
+        botId: "bot-fixture",
+        description: "A new public role",
+      },
+      expect.objectContaining({
+        requestContext: expect.objectContaining({
+          headers: expect.objectContaining({ "x-rakazo-space-id": "space-1" }),
+        }),
+      }),
+    );
   });
   it.each(["  New rules\n\nkeep whitespace.\n", ""])(
     "saves raw rules with the original accepted comparison: %j",
@@ -356,11 +481,15 @@ describe("native profile fields", () => {
       expect(field("Instructions")?.value).toBe(acceptedInstructions);
       await change(field("Instructions"), instructions);
       await submit();
-      expect(mocks.rpc).toHaveBeenCalledWith("bots/update", {
-        botId: "bot-fixture",
-        instructions,
-        expectedInstructions: acceptedInstructions,
-      });
+      expect(mocks.rpc).toHaveBeenCalledWith(
+        "bots/update",
+        {
+          botId: "bot-fixture",
+          instructions,
+          expectedInstructions: acceptedInstructions,
+        },
+        expect.any(Object),
+      );
     },
   );
 
@@ -439,7 +568,7 @@ describe("native profile fields", () => {
           });
         return { ...acceptedBot, ...input, instructions: "A concurrent writer's accepted rules" };
       }
-      if (procedure === "me") return {};
+      if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
       return [];
     });
     await act(async () => root.render(<BotSettingsScreen />));
@@ -502,7 +631,7 @@ describe("native profile fields", () => {
             rejectOld = reject;
           });
         if (procedure === "bots/update") return { ...acceptedBot, ...input };
-        if (procedure === "me") return {};
+        if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
         return [];
       });
       await act(async () => root.render(<BotSettingsScreen />));
@@ -528,11 +657,15 @@ describe("native profile fields", () => {
       expect(container.textContent).not.toContain("Old rules changed");
       await change(field("Instructions"), "Current route draft");
       await submit();
-      expect(mocks.rpc).toHaveBeenLastCalledWith("bots/update", {
-        botId: mocks.botId,
-        instructions: "Current route draft",
-        expectedInstructions: accepted,
-      });
+      expect(mocks.rpc).toHaveBeenLastCalledWith(
+        "bots/update",
+        {
+          botId: mocks.botId,
+          instructions: "Current route draft",
+          expectedInstructions: accepted,
+        },
+        expect.any(Object),
+      );
     },
   );
 
@@ -555,7 +688,7 @@ describe("native profile fields", () => {
         }
         return { ...acceptedBot, ...input, computerMode: serverMode };
       }
-      if (procedure === "me") return {};
+      if (procedure === "me") return { userId: "user-1", spaceId: "space-1" };
       return [];
     });
     await act(async () => root.render(<BotSettingsScreen />));

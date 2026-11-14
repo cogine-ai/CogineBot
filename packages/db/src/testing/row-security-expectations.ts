@@ -38,6 +38,11 @@ export function expectRegisteredPolicyTables(
     schema: "public",
     table: "mcp_create_requests",
   });
+  expect(schemaPolicyTables).toContainEqual({
+    model: "RoutineMutation",
+    schema: "public",
+    table: "routine_mutations",
+  });
   const normalized = registry.map(({ model, table, schema = "public" }) => ({
     model,
     table,
@@ -60,13 +65,27 @@ export function expectExactPolicyCatalog(
     expected,
   );
 }
-export async function expectPhysicalPolicyTables(
-  query: (sql: string) => Promise<{ rows: { schema: string; table: string }[] }>,
-) {
-  const actual = await query(
-    "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
-  );
-  expect(actual.rows.map(({ schema, table }) => `${schema}.${table}`).sort()).toEqual(
+export function expectPhysicalPolicyTables(rows: { schema: string; table: string }[]) {
+  expect(rows.map(({ schema, table }) => `${schema}.${table}`).sort()).toEqual(
     schemaPolicyTables.map(({ schema, table }) => `${schema}.${table}`).sort(),
   );
+}
+
+export function isolatedDatabaseUrl() {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) throw new Error("An isolated harness database is required");
+  const url = new URL(raw);
+  if (
+    // The isolated harness uses plain URLs. pg query options can override
+    // authority or select additional connection sources; reject them before
+    // a Client is constructed, including encoded and duplicate option keys.
+    [...url.searchParams].length !== 0 ||
+    !["postgres:", "postgresql:"].includes(url.protocol) ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+    Number(url.port) <= 1024 ||
+    !/^integration_(0|[1-9][0-9]*)$/.test(url.pathname.slice(1)) ||
+    url.pathname.slice(1) !== process.env.VERIFY_ISOLATED_DATABASE
+  )
+    throw new Error("An isolated harness database is required");
+  return raw;
 }

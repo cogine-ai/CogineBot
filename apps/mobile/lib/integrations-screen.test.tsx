@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { router } from "expo-router";
 import type { ReactNode } from "react";
 import { act, createElement, useEffect } from "react";
 import type { Root } from "react-dom/client";
@@ -592,7 +593,7 @@ it("paints persisted cached rows while identity is pending or offline", async ()
   expect(container.textContent).toContain("Retry");
 });
 
-it("retries the Slack management link in the verified Space", async () => {
+it("retries the Slack management entry and opens its native settings page", async () => {
   let reads = 0;
   state.rpc.mockImplementation(async (proc: string) => {
     if (proc !== "messaging/installations/list") return [];
@@ -605,11 +606,17 @@ it("retries the Slack management link in the verified Space", async () => {
   });
   await render();
   expect(container.textContent).toContain("Couldn't load messaging settings");
-  expect(container.textContent).not.toContain("Manage Slack messaging in browser");
+  expect(container.textContent).not.toContain("Slack workspaces");
   await press("Retry");
   expect(reads).toBe(2);
-  expect(container.textContent).toContain("Manage Slack messaging in browser");
+  expect(container.textContent).toContain("Slack workspaces");
   expect(container.textContent).not.toContain("Couldn't load messaging settings");
+  await press("Slack workspaces");
+  expect(router.push).toHaveBeenCalledWith("/slack-workspaces");
+  // The general messaging manager and Slack installation manager coexist.
+  expect(container.textContent).toContain("Messaging");
+  await press("Messaging");
+  expect(router.push).toHaveBeenLastCalledWith("/(settings)/messaging");
 });
 
 it("rebuilds a stale space and continues refreshing while the screen stays open", async () => {

@@ -63,7 +63,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
       - run: node scripts/check-repository.mjs
       - run: bash infra/compose/run-smokes.sh
       - run: bash scripts/lint-workflows.sh
@@ -94,7 +94,7 @@ jobs:
           run_install: false
       - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 24.16.0
+          node-version: 24.22.3
           cache: pnpm
       - name: Install locked dependencies without lifecycle scripts
         run: |
@@ -387,7 +387,7 @@ jobs:
 
       - name: Require Bot package acceptance views
         run: |
-          for view in d021-package-review d021-package-review-320 d021-package-skill-conflict d021-package-imported d021-package-export d021-package-unknown d021-package-recovered agent-backup-import d021-package-backup-mcp-review d021-package-backup-mcp-pending; do
+          for view in d021-package-review d021-package-review-320 d021-package-skill-conflict d021-package-imported d021-package-export d021-package-unknown d021-package-recovered agent-backup-import d021-package-backup-mcp-review d021-package-backup-mcp-pending d021-package-backup-model-key; do
             match="$(find apps/web/test-results -type f -path '*/bot-packages-*/*' -name "${view}.png" -print -quit)"
             if [ -z "$match" ]; then
               echo "Missing Bot package screenshot: $view" >&2

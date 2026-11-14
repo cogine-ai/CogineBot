@@ -356,6 +356,7 @@ describePostgres("protected database app composition", () => {
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const target = new Client({ connectionString: ownerUrl });
     if (
       !["127.0.0.1", "localhost", "::1"].includes(target.host) ||
@@ -371,7 +372,13 @@ describePostgres("protected database app composition", () => {
     await legacyCatalog();
     await adapters.migrateJobQueue(ownerUrl);
     expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
-    await expectPhysicalPolicyTables((sql) => owner!.pool.query(sql));
+    expectPhysicalPolicyTables(
+      (
+        await owner!.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     grantRole = (
       await owner.pool.query<{ role: string }>(
         "SELECT 'coginebot_app_' || oid::text AS role FROM pg_database WHERE datname=current_database()",

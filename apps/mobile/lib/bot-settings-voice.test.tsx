@@ -44,6 +44,23 @@ vi.mock("./device-voice", () => ({ loadDeviceVoiceEnabled: async () => true }));
 vi.mock("./voice", () => ({ stopVoicePlayback: mocks.stopVoicePlayback }));
 vi.mock("expo-speech", () => ({ stop: mocks.stop, speak: mocks.speak }));
 vi.mock("./api", () => ({ rpc: mocks.rpc }));
+vi.mock("./pick-bot-avatar", () => ({ pickBotAvatar: vi.fn() }));
+vi.mock("./mobile-scope", () => ({
+  captureMobileScope: () => ({ sessionGeneration: 1 }),
+  isMobileScopeCurrent: () => true,
+  mobileScopeKey: () => "scope",
+  subscribeMobileScope: () => () => {},
+}));
+vi.mock("./session", () => ({
+  currentReadySessionGeneration: () => 1,
+  subscribeSessionGeneration: () => () => {},
+}));
+vi.mock("./mobile-scoped-client", () => ({
+  mobileScopedClient: async (_scope: unknown, current: () => boolean) => ({
+    isCurrent: current,
+    request: mocks.rpc,
+  }),
+}));
 vi.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   useRouter: () => ({ back: vi.fn() }),
@@ -299,7 +316,7 @@ describe("bot settings device voice menu", () => {
       expect(label.parentElement!.lastElementChild!.getAttribute("data-style")).toContain(
         '"textAlign":"right"',
       );
-      expect(container.querySelector("i")).toBeNull();
+      expect(container.querySelector('i[data-ios="chevron.up.chevron.down"]')).toBeNull();
     },
   );
 
@@ -307,7 +324,7 @@ describe("bot settings device voice menu", () => {
     mocks.deviceVoices.mockRejectedValueOnce(new Error("Load failed"));
     await render();
     expect(menu()).toBeNull();
-    expect(container.querySelector("i")).toBeNull();
+    expect(container.querySelector('i[data-ios="chevron.up.chevron.down"]')).toBeNull();
     const retry = () =>
       [...container.querySelectorAll("button")].find((item) =>
         item.textContent?.includes("Could not load voices"),
@@ -373,6 +390,7 @@ describe("bot settings device voice menu", () => {
     await act(async () => choice.click());
     mocks.botId = "bot-b";
     await render();
+    await act(async () => namedButton("Advanced").click());
     const high = [
       ...container.querySelectorAll<HTMLButtonElement>('[data-menu="Thinking"] button'),
     ].find((entry) => entry.textContent === "High");

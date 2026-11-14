@@ -1,0 +1,693 @@
+[
+  {
+    "spec": {
+      "kind": "calendar.event_changed",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "calendar"
+      }
+    },
+    "expected": {
+      "kind": "calendar.event_changed",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "calendar"
+      }
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_changed",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "single",
+        "eventId": "chosen-event"
+      }
+    },
+    "expected": {
+      "kind": "calendar.event_changed",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "single",
+        "eventId": "new-eventId"
+      }
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_changed",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "series",
+        "eventId": "chosen-event"
+      }
+    },
+    "expected": {
+      "kind": "calendar.event_changed",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "series",
+        "eventId": "new-eventId"
+      }
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_changed",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "instance",
+        "eventId": "chosen-event"
+      }
+    },
+    "expected": {
+      "kind": "calendar.event_changed",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "instance",
+        "eventId": "new-eventId"
+      }
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_starting",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "calendar"
+      },
+      "leadMinutes": 12
+    },
+    "expected": {
+      "kind": "calendar.event_starting",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "calendar"
+      },
+      "leadMinutes": 23
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Minutes before": "23"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_starting",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "single",
+        "eventId": "chosen-event"
+      },
+      "leadMinutes": 12
+    },
+    "expected": {
+      "kind": "calendar.event_starting",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "single",
+        "eventId": "new-eventId"
+      },
+      "leadMinutes": 23
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId",
+      "Minutes before": "23"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_starting",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "series",
+        "eventId": "chosen-event"
+      },
+      "leadMinutes": 12
+    },
+    "expected": {
+      "kind": "calendar.event_starting",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "series",
+        "eventId": "new-eventId"
+      },
+      "leadMinutes": 23
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId",
+      "Minutes before": "23"
+    }
+  },
+  {
+    "spec": {
+      "kind": "calendar.event_starting",
+      "calendarId": "acceptance-calendar",
+      "target": {
+        "kind": "instance",
+        "eventId": "chosen-event"
+      },
+      "leadMinutes": 12
+    },
+    "expected": {
+      "kind": "calendar.event_starting",
+      "calendarId": "new-calendarId",
+      "target": {
+        "kind": "instance",
+        "eventId": "new-eventId"
+      },
+      "leadMinutes": 23
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId",
+      "Event ID": "new-eventId",
+      "Minutes before": "23"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.page_content_changed",
+      "target": {
+        "type": "page",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "expected": {
+      "kind": "notion.page_content_changed",
+      "target": {
+        "type": "page",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+      }
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "page",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "expected": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "page",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+      },
+      "propertyIds": ["ChangedStatus", "ChangedTitle"]
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Property IDs (optional, one per line)": "ChangedStatus\nChangedTitle"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "page",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      },
+      "propertyIds": ["Title"]
+    },
+    "expected": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "page",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+      },
+      "propertyIds": ["ChangedStatus", "ChangedTitle"]
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Property IDs (optional, one per line)": "ChangedStatus\nChangedTitle"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "data_source",
+        "dataSourceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      }
+    },
+    "expected": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "data_source",
+        "dataSourceId": "00000002-eeee-4eee-8eee-eeeeeeeeeeee"
+      },
+      "propertyIds": ["ChangedStatus", "ChangedTitle"]
+    },
+    "fields": {
+      "Data source ID": "00000002-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Property IDs (optional, one per line)": "ChangedStatus\nChangedTitle"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "data_source",
+        "dataSourceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      },
+      "propertyIds": ["Title"]
+    },
+    "expected": {
+      "kind": "notion.page_properties_or_data_source_changed",
+      "target": {
+        "type": "data_source",
+        "dataSourceId": "00000002-eeee-4eee-8eee-eeeeeeeeeeee"
+      },
+      "propertyIds": ["ChangedStatus", "ChangedTitle"]
+    },
+    "fields": {
+      "Data source ID": "00000002-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Property IDs (optional, one per line)": "ChangedStatus\nChangedTitle"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "page",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      }
+    },
+    "expected": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "page",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+      }
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "block",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "blockId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      }
+    },
+    "expected": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "block",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+        "blockId": "00000003-eeee-4eee-8eee-eeeeeeeeeeee"
+      }
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Block ID": "00000003-eeee-4eee-8eee-eeeeeeeeeeee"
+    }
+  },
+  {
+    "spec": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "discussion",
+        "pageId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "discussionId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "anchorBlockId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      }
+    },
+    "expected": {
+      "kind": "notion.comment_changed",
+      "target": {
+        "type": "discussion",
+        "pageId": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+        "discussionId": "00000004-eeee-4eee-8eee-eeeeeeeeeeee",
+        "anchorBlockId": "00000005-eeee-4eee-8eee-eeeeeeeeeeee"
+      }
+    },
+    "fields": {
+      "Page ID": "00000001-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Discussion ID": "00000004-eeee-4eee-8eee-eeeeeeeeeeee",
+      "Anchor block ID": "00000005-eeee-4eee-8eee-eeeeeeeeeeee"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.message_received",
+      "labelIds": ["INBOX"]
+    },
+    "expected": {
+      "kind": "gmail.message_received",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"],
+      "threadId": "new-threadId"
+    },
+    "fields": {
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA",
+      "Thread ID (optional)": "new-threadId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.message_received",
+      "threadId": "chosen-thread"
+    },
+    "expected": {
+      "kind": "gmail.message_received",
+      "threadId": "new-threadId",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"]
+    },
+    "fields": {
+      "Thread ID (optional)": "new-threadId",
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.message_received",
+      "labelIds": ["INBOX"],
+      "threadId": "chosen-thread"
+    },
+    "expected": {
+      "kind": "gmail.message_received",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"],
+      "threadId": "new-threadId"
+    },
+    "fields": {
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA",
+      "Thread ID (optional)": "new-threadId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.thread_or_label_changed",
+      "labelIds": ["INBOX"]
+    },
+    "expected": {
+      "kind": "gmail.thread_or_label_changed",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"],
+      "threadId": "new-threadId"
+    },
+    "fields": {
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA",
+      "Thread ID (optional)": "new-threadId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.thread_or_label_changed",
+      "threadId": "chosen-thread"
+    },
+    "expected": {
+      "kind": "gmail.thread_or_label_changed",
+      "threadId": "new-threadId",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"]
+    },
+    "fields": {
+      "Thread ID (optional)": "new-threadId",
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA"
+    }
+  },
+  {
+    "spec": {
+      "kind": "gmail.thread_or_label_changed",
+      "labelIds": ["INBOX"],
+      "threadId": "chosen-thread"
+    },
+    "expected": {
+      "kind": "gmail.thread_or_label_changed",
+      "labelIds": ["LABEL_ALPHA", "LABEL_BETA"],
+      "threadId": "new-threadId"
+    },
+    "fields": {
+      "Label IDs (any match, one per line)": "LABEL_ALPHA\nLABEL_BETA",
+      "Thread ID (optional)": "new-threadId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "drive.file_changed",
+      "fileId": "file-acceptance"
+    },
+    "expected": {
+      "kind": "drive.file_changed",
+      "fileId": "new-fileId"
+    },
+    "fields": {
+      "File ID": "new-fileId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "drive.file_trashed",
+      "fileId": "file-acceptance"
+    },
+    "expected": {
+      "kind": "drive.file_trashed",
+      "fileId": "new-fileId"
+    },
+    "fields": {
+      "File ID": "new-fileId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "slack.app_mention",
+      "channelId": "C_ACCEPTANCE"
+    },
+    "expected": {
+      "kind": "slack.app_mention",
+      "channelId": "C_NEW"
+    },
+    "fields": {
+      "Channel ID": "C_NEW"
+    }
+  },
+  {
+    "spec": {
+      "kind": "slack.app_dm",
+      "channelId": "C_ACCEPTANCE"
+    },
+    "expected": {
+      "kind": "slack.app_dm",
+      "channelId": "C_NEW"
+    },
+    "fields": {
+      "Channel ID": "C_NEW"
+    }
+  },
+  {
+    "spec": {
+      "kind": "slack.channel_message",
+      "channelId": "C_ACCEPTANCE"
+    },
+    "expected": {
+      "kind": "slack.channel_message",
+      "channelId": "C_NEW",
+      "threadTs": "1888888888.654321"
+    },
+    "fields": {
+      "Channel ID": "C_NEW",
+      "Thread timestamp (optional)": "1888888888.654321"
+    }
+  },
+  {
+    "spec": {
+      "kind": "slack.channel_message",
+      "channelId": "C_ACCEPTANCE",
+      "threadTs": "1777777777.123456"
+    },
+    "expected": {
+      "kind": "slack.channel_message",
+      "channelId": "C_NEW",
+      "threadTs": "1888888888.654321"
+    },
+    "fields": {
+      "Channel ID": "C_NEW",
+      "Thread timestamp (optional)": "1888888888.654321"
+    }
+  },
+  {
+    "spec": {
+      "kind": "sharepoint.list_item.changed",
+      "siteId": "site-a",
+      "listId": "list-a"
+    },
+    "expected": {
+      "kind": "sharepoint.list_item.changed",
+      "siteId": "new-siteId",
+      "listId": "new-listId"
+    },
+    "fields": {
+      "Site ID": "new-siteId",
+      "List ID": "new-listId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "excel.range.changed",
+      "driveId": "drive-a",
+      "itemId": "book-a",
+      "worksheetId": "sheet-a",
+      "address": "B2:D7"
+    },
+    "expected": {
+      "kind": "excel.range.changed",
+      "driveId": "new-driveId",
+      "itemId": "new-itemId",
+      "worksheetId": "new-worksheetId",
+      "address": "E10:F19"
+    },
+    "fields": {
+      "Drive ID": "new-driveId",
+      "Workbook item ID": "new-itemId",
+      "Worksheet ID": "new-worksheetId",
+      "Cell range (A1 notation)": "E10:F19"
+    }
+  },
+  {
+    "spec": {
+      "kind": "planner.task.changed",
+      "planId": "plan-a"
+    },
+    "expected": {
+      "kind": "planner.task.changed",
+      "planId": "new-planId"
+    },
+    "fields": {
+      "Plan ID": "new-planId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "teams.channel_message.created",
+      "teamId": "team-a",
+      "channelId": "channel-a"
+    },
+    "expected": {
+      "kind": "teams.channel_message.created",
+      "teamId": "new-teamId",
+      "channelId": "C_NEW"
+    },
+    "fields": {
+      "Team ID": "new-teamId",
+      "Channel ID": "C_NEW"
+    }
+  },
+  {
+    "spec": {
+      "kind": "feishu.calendar_event.changed",
+      "calendarId": "calendar-a"
+    },
+    "expected": {
+      "kind": "feishu.calendar_event.changed",
+      "calendarId": "new-calendarId"
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "dingtalk.calendar_event.changed",
+      "userId": "user-a",
+      "calendarId": "calendar-a",
+      "timeMin": "2026-11-01T00:00:00Z",
+      "timeMax": "2026-12-01T00:00:00Z"
+    },
+    "expected": {
+      "kind": "dingtalk.calendar_event.changed",
+      "userId": "new-userId",
+      "calendarId": "new-calendarId",
+      "timeMin": "2027-01-01T00:00:00Z",
+      "timeMax": "2027-02-01T00:00:00Z"
+    },
+    "fields": {
+      "User ID": "new-userId",
+      "Calendar ID": "new-calendarId",
+      "Start time (ISO 8601)": "2027-01-01T00:00:00Z",
+      "End time (ISO 8601)": "2027-02-01T00:00:00Z"
+    }
+  },
+  {
+    "spec": {
+      "kind": "wecom.schedule.changed",
+      "calendarId": "calendar-a"
+    },
+    "expected": {
+      "kind": "wecom.schedule.changed",
+      "calendarId": "new-calendarId"
+    },
+    "fields": {
+      "Calendar ID": "new-calendarId"
+    }
+  },
+  {
+    "spec": {
+      "kind": "telegram.pinned_message.changed",
+      "chatId": "-123456"
+    },
+    "expected": {
+      "kind": "telegram.pinned_message.changed",
+      "chatId": "-987654"
+    },
+    "fields": {
+      "Chat ID": "-987654"
+    }
+  },
+  {
+    "spec": {
+      "kind": "discord.channel_message.created",
+      "channelId": "123456"
+    },
+    "expected": {
+      "kind": "discord.channel_message.created",
+      "channelId": "7654321"
+    },
+    "fields": {
+      "Channel ID": "7654321"
+    }
+  },
+  {
+    "spec": {
+      "kind": "discord.command.invoked",
+      "guildId": "123456",
+      "channelId": "234567",
+      "commandId": "345678",
+      "commandName": "inspect"
+    },
+    "expected": {
+      "kind": "discord.command.invoked",
+      "guildId": "987654",
+      "channelId": "7654321",
+      "commandId": "876543",
+      "commandName": "changed"
+    },
+    "fields": {
+      "Server ID": "987654",
+      "Channel ID": "7654321",
+      "Command ID": "876543",
+      "Command name": "changed"
+    }
+  }
+]

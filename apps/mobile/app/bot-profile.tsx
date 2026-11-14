@@ -345,6 +345,16 @@ function Profile({
               }}
             />
           ) : null}
+          {!readOnly ? (
+            <SettingsRow
+              accessibilityRole="button"
+              title={t("Open work")}
+              chevron="right"
+              onPress={() => {
+                if (current()) router.push({ pathname: "/open-work", params: { botId } });
+              }}
+            />
+          ) : null}
           <SettingsRow
             accessibilityRole="button"
             title={t("Artifacts")}
@@ -366,6 +376,20 @@ function Profile({
         </SettingsGroup>
       ) : null}
       <SettingsGroup label={t("Routines")}>
+        {!readOnly && bot ? (
+          <SettingsRow
+            accessibilityRole="button"
+            title={t("Create routine")}
+            chevron="right"
+            onPress={() => {
+              if (current())
+                router.push({
+                  pathname: "/routine",
+                  params: { botId, botName: name, origin: "profile" },
+                });
+            }}
+          />
+        ) : null}
         {routinesError ? (
           <SettingsRow
             accessibilityRole="button"

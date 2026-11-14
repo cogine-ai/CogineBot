@@ -25,7 +25,8 @@
     "@rakazo/logging": "workspace:*",
     "@rakazo/page-kit": "workspace:*",
     "@rakazo/memory": "workspace:*",
-    "hono": "4.13.7",
+    "esbuild": "0.28.2",
+    "hono": "4.13.18",
     "mermaid": "11.17.2",
     "zod": "4.6.2"
   },

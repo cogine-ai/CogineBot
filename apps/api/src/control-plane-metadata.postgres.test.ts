@@ -172,6 +172,7 @@ postgres("control-plane metadata with complete row policies", () => {
   }
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const url = new URL(databaseUrl!);
     const database = url.pathname.slice(1);
     if (
@@ -184,7 +185,13 @@ postgres("control-plane metadata with complete row policies", () => {
       throw new Error("Metadata tests require the explicitly isolated harness database");
     owner = createDb(databaseUrl!);
     expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
-    await expectPhysicalPolicyTables((sql) => owner.pool.query(sql));
+    expectPhysicalPolicyTables(
+      (
+        await owner.pool.query(
+          "SELECT n.nspname AS schema,c.relname AS table FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public','cogine_pages') AND c.relkind IN ('r','p') AND c.relname <> '_prisma_migrations'",
+        )
+      ).rows,
+    );
     url.username = role;
     url.password = randomBytes(24).toString("hex");
     url.searchParams.delete("user");

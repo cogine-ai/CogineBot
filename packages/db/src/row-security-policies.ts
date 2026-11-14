@@ -240,6 +240,12 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
         scope: "tenant",
         tenantPredicate: all(local(), belongs("runs", "r", 'external_effects."runId"')),
       },
+      {
+        model: "RoutineMutation",
+        table: "routine_mutations",
+        scope: "tenant",
+        tenantPredicate: all(local(), own()),
+      },
       { model: "Routine", table: "routines", scope: "tenant", tenantPredicate: local() },
       {
         model: "ScratchpadItem",

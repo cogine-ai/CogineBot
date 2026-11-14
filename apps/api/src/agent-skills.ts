@@ -1,13 +1,13 @@
 import { ORPCError } from "@orpc/server";
 import { BUILTIN_AGENT_SKILLS } from "@rakazo/adapters";
 import type { Actor, AgentSkill, AgentSkillSource } from "@rakazo/contracts";
+import type { SkillSource } from "@rakazo/core";
 import {
   buildSkillMd,
   findSkillByName,
   isSkillReadOnly,
   mergeBuiltinSkills,
   parseSkillMd,
-  type SkillSource,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { activePluginSkillWhere, IsolationError } from "@rakazo/db";
@@ -179,8 +179,26 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
 
     async create(
       actor: Actor,
-      input: { content?: string; name?: string; description?: string; body?: string },
+      input: {
+        content?: string;
+        name?: string;
+        description?: string;
+        body?: string;
+        clientNonce?: string;
+      },
     ): Promise<AgentSkill> {
+      const recover = () =>
+        input.clientNonce
+          ? prisma.agentSkill.findFirst({
+              where: {
+                spaceId: actor.spaceId,
+                userId: actor.userId,
+                clientNonce: input.clientNonce,
+              },
+            })
+          : Promise.resolve(null);
+      const prior = await recover();
+      if (prior) return mapAgentSkill(prior);
       const resolved = resolveSkillContent(input);
       const clash = await prisma.agentSkill.findFirst({
         where: {
@@ -193,19 +211,34 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
         clash ||
         builtinCatalog().some((s) => s.name.toLowerCase() === resolved.name.toLowerCase())
       ) {
+        const committed = await recover();
+        if (committed) return mapAgentSkill(committed);
         throw new ORPCError("CONFLICT", { message: "A skill with that name already exists." });
       }
       try {
-        const row = await prisma.agentSkill.create({
-          data: {
-            spaceId: actor.spaceId,
-            userId: actor.userId,
-            name: resolved.name,
-            description: resolved.description,
-            content: resolved.content,
-            source: "user",
-          },
-        });
+        const data = {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          name: resolved.name,
+          description: resolved.description,
+          content: resolved.content,
+          source: "user",
+          ...(input.clientNonce ? { clientNonce: input.clientNonce } : {}),
+        };
+        const row = input.clientNonce
+          ? await prisma.agentSkill.upsert({
+              where: {
+                spaceId_userId_clientNonce: {
+                  spaceId: actor.spaceId,
+                  userId: actor.userId,
+                  clientNonce: input.clientNonce,
+                },
+              },
+              // The existing intent wins a concurrent replay; no draft content is replaced.
+              update: { clientNonce: input.clientNonce },
+              create: data,
+            })
+          : await prisma.agentSkill.create({ data });
         return mapAgentSkill(row);
       } catch (error) {
         if (

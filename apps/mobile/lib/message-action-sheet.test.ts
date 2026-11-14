@@ -86,3 +86,39 @@ it.each(["ios", "android"])(
     expect(actions.every((action) => action.onPress.mock.calls.length === 0)).toBe(true);
   },
 );
+
+it.each(["ios", "android"])(
+  "makes all ten language selections reachable on %s",
+  async (platform) => {
+    vi.clearAllMocks();
+    Platform.OS = platform as typeof Platform.OS;
+    const { ACCOUNT_UI_LOCALES, UI_LOCALE_LABELS } = await import("./ui-locale");
+    const actions = ACCOUNT_UI_LOCALES.map((locale) => ({
+      text: UI_LOCALE_LABELS[locale],
+      onPress: vi.fn(),
+    }));
+    presentMessageActionSheet({
+      actions,
+      title: "Language",
+      cancel: "Cancel",
+      more: "More",
+      colorScheme: "light",
+    });
+    if (platform === "ios") {
+      const [options, select] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.lastCall!;
+      expect(options.options).toEqual([...actions.map((action) => action.text), "Cancel"]);
+      for (let index = 0; index < actions.length; index++) select(index);
+      select(options.cancelButtonIndex!);
+    } else {
+      let nextPage = true;
+      while (nextPage) {
+        const [, , buttons, options] = vi.mocked(Alert.alert).mock.lastCall!;
+        expect(buttons!.length).toBeLessThanOrEqual(3);
+        expect(options?.cancelable).toBe(true);
+        nextPage = buttons!.some((button) => button.text === "More");
+        for (const button of buttons!) button.onPress?.();
+      }
+    }
+    for (const action of actions) expect(action.onPress).toHaveBeenCalledOnce();
+  },
+);
