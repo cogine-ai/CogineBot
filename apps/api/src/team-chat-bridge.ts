@@ -358,9 +358,8 @@ export class TeamChatBridge {
     const now = new Date();
     const deferredUntil = new Date(now.getTime() + DEFERRED_RESERVATION_MS);
     const deferredId = options?.queueAgent === false ? randomUUID() : undefined;
-    const externalMessage =
-      prior ??
-      (await this.deps.prisma.externalMessage.upsert({
+    const persist = (client: Pick<Prisma.TransactionClient, "externalMessage">) =>
+      client.externalMessage.upsert({
         where,
         create: {
           ...(deferredId && { id: deferredId }),
@@ -383,7 +382,20 @@ export class TeamChatBridge {
           nextAttemptAt: options?.queueAgent === false ? deferredUntil : null,
         },
         update: {},
-      }));
+      });
+    const externalMessage =
+      prior ??
+      (await (this.deps.installedSlack
+        ? this.deps.prisma.$transaction(async (tx) => {
+            // Keep the earlier receipt visible before assigning the next
+            // sequence in this conversation. Do not hold this over Slack I/O.
+            await tx.$queryRaw`
+              SELECT id FROM public.external_conversations WHERE id = ${conversation.id}
+              FOR NO KEY UPDATE
+            `;
+            return persist(tx);
+          })
+        : persist(this.deps.prisma)));
     await this.ensureTranscriptMessage(externalMessage, conversation);
     if (options?.queueAgent === false) {
       const deferred =
@@ -794,7 +806,9 @@ export class TeamChatBridge {
         externalConversation: { include: { thread: { select: { id: true } } } },
         threadMessage: { select: { threadId: true, blocks: true } },
       },
-      orderBy: { createdAt: "asc" },
+      orderBy: acceptAfter
+        ? [{ receiveSeq: { sort: "asc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }]
+        : { createdAt: "asc" },
       take: BATCH_SIZE,
     });
     for (const message of received)
@@ -813,7 +827,9 @@ export class TeamChatBridge {
         },
       },
       include: { run: true, externalConversation: true },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      orderBy: acceptAfter
+        ? [{ receiveSeq: { sort: "asc", nulls: "first" } }, { createdAt: "asc" }, { id: "asc" }]
+        : [{ createdAt: "asc" }, { id: "asc" }],
       take: BATCH_SIZE,
     });
     for (const message of running) {
@@ -847,9 +863,14 @@ export class TeamChatBridge {
             AND earlier."createdAt" > ${acceptAfter}
             AND (earlier.status IN (${Prisma.join(SLACK_PENDING_PREDECESSOR_STATUSES)}) OR
                  (earlier.status = 'running' AND earlier."runId" IS NOT NULL))
-            AND (earlier."createdAt", earlier.id) < (e."createdAt", e.id)
+            AND (
+              (earlier."receiveSeq" IS NULL AND e."receiveSeq" IS NOT NULL)
+              OR earlier."receiveSeq" < e."receiveSeq"
+              OR (earlier."receiveSeq" IS NULL AND e."receiveSeq" IS NULL
+                AND (earlier."createdAt", earlier.id) < (e."createdAt", e.id))
+            )
         )
-      ORDER BY e."createdAt", e.id
+      ORDER BY e."receiveSeq" ASC NULLS FIRST, e."createdAt", e.id
       LIMIT ${BATCH_SIZE}
     `;
     return rows.map(({ id }) => id);
@@ -1478,7 +1499,7 @@ export class TeamChatBridge {
     const candidate = installed
       ? await this.deps.prisma.externalMessage.findUnique({
           where: { id },
-          select: { createdAt: true },
+          select: { createdAt: true, receiveSeq: true },
         })
       : undefined;
     if (installed && !candidate) return;
@@ -1501,12 +1522,17 @@ export class TeamChatBridge {
                         { status: "running", runId: { not: null } },
                       ],
                     },
-                    {
-                      OR: [
-                        { createdAt: { lt: candidate.createdAt } },
-                        { createdAt: candidate.createdAt, id: { lt: id } },
-                      ],
-                    },
+                    candidate.receiveSeq === null
+                      ? {
+                          receiveSeq: null,
+                          OR: [
+                            { createdAt: { lt: candidate.createdAt } },
+                            { createdAt: candidate.createdAt, id: { lt: id } },
+                          ],
+                        }
+                      : {
+                          OR: [{ receiveSeq: null }, { receiveSeq: { lt: candidate.receiveSeq } }],
+                        },
                   ],
                 },
               },
