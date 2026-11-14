@@ -127,6 +127,10 @@ describe("row-security maintenance command", () => {
     await run("verify", "--computer-rollback");
     expect(process.exitCode).toBeUndefined();
     expect(mocks.queryRaw).toHaveBeenCalledOnce();
+    expect(mocks.verify).toHaveBeenCalledWith(prisma, {
+      allowPrePages: true,
+      allowPreModelAuth: true,
+    });
   });
 
   it("closes the runtime client and pool and redacts a failed inspection", async () => {

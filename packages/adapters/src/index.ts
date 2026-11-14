@@ -115,6 +115,7 @@ export * from "./messaging-platforms.js";
 export * from "./messaging-team-chat-emulator.js";
 export * from "./model-connect.js";
 export { modelConnectionErrorMessage } from "./model-connection-errors.js";
+export * from "./model-oauth-sessions.js";
 export * from "./model-selection.js";
 export * from "./model-vision.js";
 export { NativeActionError } from "./native-connectors/action.js";
@@ -134,6 +135,11 @@ export * from "./none-sandbox.js";
 export * from "./openai-compatible-url.js";
 export * from "./openai-voice.js";
 export * from "./page-browser-session.js";
+export {
+  anthropicAuthorizationUrl,
+  exchangeAnthropicAuthorizationCode,
+  parseAnthropicAuthorizationCode,
+} from "./pi-anthropic-oauth.js";
 export * from "./pi-catalog-availability.js";
 export * from "./pi-codex-catalog.js";
 export * from "./pi-credentials.js";

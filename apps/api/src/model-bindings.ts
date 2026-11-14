@@ -9,6 +9,7 @@ import {
   parseModelSecret,
   readChatGPTPlanCredential,
   readChatGPTPlanModels,
+  SUBSCRIPTION_SIGN_IN_PROVIDERS,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
@@ -85,14 +86,14 @@ export async function validateModelBinding(
   if (!binding.modelProvider || !binding.modelId || !binding.modelCredentialId) {
     throw new ORPCError("BAD_REQUEST", { message: "Choose a model connection." });
   }
-  if (binding.modelProvider === CHATGPT_PLAN_PROVIDER_ID) {
+  if (Object.hasOwn(SUBSCRIPTION_SIGN_IN_PROVIDERS, binding.modelProvider)) {
     // Disconnect takes FOR UPDATE before checking scalar pin references. Hold
     // the matching row through this transaction's pin write, so disconnect
     // either sees the committed pin or removes the connection before validation.
     const locked = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id FROM user_model_credentials
       WHERE id=${binding.modelCredentialId} AND "userId"=${actor.userId}
-        AND provider=${CHATGPT_PLAN_PROVIDER_ID} FOR SHARE
+        AND provider=${binding.modelProvider} FOR SHARE
     `);
     if (locked.length !== 1)
       throw new ORPCError("NOT_FOUND", { message: "Model connection not found." });

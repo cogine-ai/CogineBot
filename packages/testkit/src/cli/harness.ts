@@ -175,6 +175,7 @@ async function main() {
     "packages/adapters/src/messaging-installations.postgres.test.ts",
     "apps/api/src/slack-workspace-messaging.postgres.test.ts",
     "packages/testkit/src/history-fresh-check.postgres.test.ts",
+    "apps/api/src/model-oauth.postgres.test.ts",
   ];
   const selectedSuites = integration ? selectIntegrationSuites(suites, e2eSpec, shard) : [];
   const mode = integration ? "integration" : "e2e";
