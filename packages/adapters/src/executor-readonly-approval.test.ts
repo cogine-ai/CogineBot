@@ -5897,6 +5897,7 @@ describe("connector read-only metadata and approval enforcement", () => {
     "sequential tail checkpoint",
     "unavailable different tool checkpoint",
     "interrupted provider write checkpoint",
+    "denied checkpoint",
   ] as const)(
     "settles a disconnected approved memory write (%s) without exposing the tool",
     async (mode) => {
@@ -5941,6 +5942,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         effect.result = { ok: true };
       }
       if (mode === "interrupted provider write checkpoint") effect.status = "executing";
+      if (mode === "denied checkpoint") effect.status = "denied";
       if (mode === "disabled checkpoint") disabledBuiltinTools.push("save_memory");
       else connected = false;
       const pendingToolCallId = "memory-call";
@@ -6026,11 +6028,15 @@ describe("connector read-only metadata and approval enforcement", () => {
           ? { ok: true }
           : mode === "interrupted provider write checkpoint"
             ? { uncertain: true, error: expect.stringContaining("outcome is unknown") }
-            : { unchanged: true, error: expect.stringContaining(error) };
+            : mode === "denied checkpoint"
+              ? { error: expect.stringMatching(/denied|declined|approved/i) }
+              : { unchanged: true, error: expect.stringContaining(error) };
       expect(effect).toMatchObject({
         ...(mode === "interrupted provider write checkpoint"
           ? { status: "executing" }
-          : { status: "completed", result: expected }),
+          : mode === "denied checkpoint"
+            ? { status: "denied" }
+            : { status: "completed", result: expected }),
       });
       if (mode === "unavailable different tool checkpoint") return;
       const request = f.runtimeRun.mock.lastCall?.[0];

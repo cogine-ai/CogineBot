@@ -5281,7 +5281,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   runId,
                   spaceId: run.spaceId,
                   kind: "save_memory",
-                  status: { in: ["completed", "executing", "uncertain"] },
+                  status: { in: ["completed", "denied", "executing", "uncertain"] },
                 },
                 select: { idempotencyKey: true, status: true, result: true },
               })
@@ -5292,10 +5292,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const recoveredMemoryApprovals = new Map<string, { value: unknown; isError: boolean }>();
         for (const effect of completedMemoryApprovals) {
           if (!memorySaveUnavailable && effect.status !== "completed") continue;
+          const gate = resolveDuplicateEffectGate(effect, "save_memory");
           const value =
-            effect.status === "completed"
-              ? effect.result
-              : (effect.result ?? uncertainEffectResult("save_memory"));
+            gate.action === "return" ? gate.result : uncertainEffectResult("save_memory");
           if (value === null || value === undefined) continue;
           const failed =
             isFailedToolResult(value) ||
