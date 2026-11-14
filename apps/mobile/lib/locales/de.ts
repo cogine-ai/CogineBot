@@ -1,4 +1,8 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Filter by date": "Nach Datum filtern",
+  "All time": "Gesamter Zeitraum",
+  "This week": "Diese Woche",
+  "This month": "Dieser Monat",
   Circle: "Kreis",
   Square: "Quadrat",
   Triangle: "Dreieck",

@@ -1,4 +1,8 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Filter by date": "Фильтр по дате",
+  "All time": "За всё время",
+  "This week": "На этой неделе",
+  "This month": "В этом месяце",
   Circle: "Круг",
   Square: "Квадрат",
   Triangle: "Треугольник",

@@ -1,4 +1,8 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Filter by date": "按日期筛选",
+  "All time": "全部时间",
+  "This week": "本周",
+  "This month": "本月",
   Circle: "圆形",
   Square: "正方形",
   Triangle: "三角形",
