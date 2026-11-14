@@ -414,3 +414,39 @@ it("renders saved bot rows without a title or notification setting", () => {
     vi.unstubAllGlobals();
   }
 });
+
+it.each([false, true])("gates the native home Board action (%s)", (enabled) => {
+  const push = vi.fn();
+  const setOptions = vi.fn();
+  const dependencies = {
+    useLayoutEffect: (effect: () => void) => effect(),
+    nativeHeader: true,
+    navigation: { setOptions },
+    board: { enabled },
+    ready: true,
+    hasSession: true,
+    initials: "QA",
+    t: (text: string) => text,
+    activityMode: false,
+    toggleActivityMode: vi.fn(),
+    runCreateAction: vi.fn(),
+    router: { push },
+    locale: "en",
+  };
+  const start = source.indexOf("  useLayoutEffect(() => {\n    if (!nativeHeader) return;");
+  const compiled = ts.transpileModule(
+    source.slice(start, source.indexOf("  const openBot", start)),
+    {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    },
+  ).outputText;
+  new Function(...Object.keys(dependencies), compiled)(...Object.values(dependencies));
+  const action = setOptions.mock.calls[0]![0].unstable_headerRightItems().find(
+    (item: { accessibilityLabel: string }) => item.accessibilityLabel === "Board",
+  );
+  expect(Boolean(action)).toBe(enabled);
+  if (action) {
+    action.onPress();
+    expect(push).toHaveBeenCalledWith("/board");
+  }
+});
