@@ -1,4 +1,9 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Close chat": "Закрыть чат",
+  "Could not load this chat.": "Не удалось загрузить этот чат.",
+  "Retry now": "Повторить",
+  "No messages with {peerBotName} yet.": "Пока нет сообщений с {peerBotName}.",
+
   "Restore the previous save and retry.":
     "Восстановите предыдущие сохраняемые данные и повторите попытку.",
   "Connect an account": "Подключить аккаунт",

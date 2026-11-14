@@ -1,4 +1,9 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Close chat": "关闭聊天",
+  "Could not load this chat.": "无法加载此聊天。",
+  "Retry now": "重试",
+  "No messages with {peerBotName} yet.": "还没有与 {peerBotName} 的消息。",
+
   "Restore the previous save and retry.": "恢复上次保存的内容后重试。",
   "Connect an account": "连接账户",
   "Add application event": "添加应用事件",

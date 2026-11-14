@@ -14,7 +14,13 @@ const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   router: { push: vi.fn(), replace: vi.fn(), back: vi.fn(), setParams: vi.fn() },
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
-  params: { botId: "bot-a", spaceId: "space-a", name: "Writer", readOnly: "1" },
+  params: {
+    botId: "bot-a",
+    spaceId: "space-a",
+    name: "Writer",
+    readOnly: "1",
+    groupId: undefined as string | undefined,
+  },
   approvals: [] as DelegatedApproval[],
   block: {
     kind: "bot_message_sent",
@@ -154,6 +160,7 @@ vi.mock("react-native-reanimated", () => ({
   },
 }));
 vi.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: ({ children }: { children: ReactNode }) => <div data-peer-sheet>{children}</div>,
   useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
 }));
 vi.mock("./native", () => ({
@@ -252,7 +259,9 @@ vi.mock("react-native", () => {
   };
 });
 // These controls need native hosts; their thread-level callbacks are not under test here.
-vi.mock("../components/thread-composer", () => ({ ThreadComposer: () => null }));
+vi.mock("../components/thread-composer", () => ({
+  ThreadComposer: () => <input aria-label="Draft" defaultValue="" />,
+}));
 vi.mock("../components/message-context-menu", () => ({
   MessageContextMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
@@ -266,6 +275,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
   state.params.readOnly = "1";
+  state.params.groupId = undefined;
+  state.params.botId = "bot-a";
   state.approvals = [];
   state.router.push.mockReset();
   state.block = {
@@ -509,3 +520,133 @@ it.each(["created", "archived", "deleted"] as const)(
     }
   },
 );
+
+it("opens the full read-only peer history from the actual receipt and keeps the composer mounted", async () => {
+  state.params.readOnly = "0";
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "threads/messages")
+      return {
+        messages: [
+          {
+            id: "historic",
+            threadId: "thread-a",
+            seq: 1,
+            role: "bot",
+            botId: "bot-a",
+            createdAt: "2026-01-01T00:00:00Z",
+            blocks: [
+              {
+                kind: "bot_message_received",
+                fromBotId: "bot-b",
+                fromBotName: "Research",
+                text: "Historical peer reply",
+              },
+            ],
+          },
+        ],
+        olderCursor: null,
+      };
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  const draft = container.querySelector<HTMLInputElement>('input[aria-label="Draft"]')!;
+  draft.value = "Unsent original draft";
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  const sheet = container.querySelector("[data-peer-sheet]")!;
+  expect(sheet.textContent).toContain("Historical peer reply");
+  expect(sheet.querySelector("input,textarea")).toBeNull();
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  await act(async () =>
+    sheet.querySelector<HTMLButtonElement>('button[aria-label="Close chat"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).toBeNull();
+  expect(container.querySelector('input[aria-label="Draft"]')).toBe(draft);
+  expect(draft.value).toBe("Unsent original draft");
+  expect(state.router.push).not.toHaveBeenCalled();
+});
+
+it("retries a failed history read from the sheet without exposing a peer composer", async () => {
+  let fail = true;
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "threads/messages") {
+      if (fail) throw new Error("offline");
+      return { messages: [], olderCursor: null };
+    }
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain(
+    "Could not load this chat.",
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).not.toContain(
+    "Private peer body",
+  );
+  fail = false;
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Retry now"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")?.textContent).toContain("Private peer body");
+  expect(container.querySelector("[data-peer-sheet] input")).toBeNull();
+});
+
+it("closes the peer sheet on a Bot route change before retaining any previous body", async () => {
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) =>
+    procedure === "threads/messages"
+      ? { messages: [], olderCursor: null }
+      : original(procedure, input),
+  );
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).not.toBeNull();
+  state.params.botId = "bot-b";
+  await act(async () => root.render(<ThreadRoute />));
+  expect(container.querySelector("[data-peer-sheet]")).toBeNull();
+});
+
+it("opens a group receipt using the message's originating Bot, not the group or peer as the direct target", async () => {
+  state.params.groupId = "group-a";
+  state.params.botId = "";
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: { groupId?: string } = {}) => {
+    if (procedure === "threads/get") {
+      const result = await original(procedure, input);
+      return input.groupId ? { ...result, groupId: "group-a", threadId: "group-thread" } : result;
+    }
+    if (procedure === "threads/messages") return { messages: [], olderCursor: null };
+    return original(procedure, input);
+  });
+  await act(async () => root.render(<ThreadRoute />));
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Messaged Research"]')!.click(),
+  );
+  expect(container.querySelector("[data-peer-sheet]")).not.toBeNull();
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ botId: "bot-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  expect(state.rpc).toHaveBeenCalledWith(
+    "threads/messages",
+    expect.objectContaining({ groupId: "group-a", includePeerRuns: true }),
+    expect.anything(),
+  );
+  expect(
+    state.rpc.mock.calls.some(
+      ([proc, input]) => proc === "threads/messages" && input.botId === "bot-b",
+    ),
+  ).toBe(false);
+});

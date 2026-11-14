@@ -57,6 +57,8 @@ export * from "./model-probe.js";
 export * from "./model-providers.js";
 export * from "./openapi-import-review.js";
 export * from "./page-links.js";
+export * from "./peer-history.js";
+export * from "./peer-messages.js";
 export * from "./plugin-discovery.js";
 export * from "./plugin-install-review.js";
 export * from "./plugin-server-setup.js";

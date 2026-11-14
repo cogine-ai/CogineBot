@@ -1592,10 +1592,12 @@ export async function subscribeThread(
   onEvent: (event: ThreadEvent) => void,
   signal: AbortSignal,
   onHeartbeat?: () => void,
+  requestContext?: ApiRequestContext,
 ) {
   const selectionGeneration = currentSpaceSelectionGeneration();
-  const context = await captureApiRequestContext();
+  const context = requestContext ?? (await captureApiRequestContext());
   const current = () =>
+    context.isCurrent?.() !== false &&
     context.apiBase === currentApiBase() &&
     context.sessionGeneration === currentSessionGeneration() &&
     selectionGeneration === currentSpaceSelectionGeneration();
@@ -1649,14 +1651,21 @@ export async function subscribeThread(
         .map((line) => line.slice(5).trim())
         .join("");
       if (!data || data === "[DONE]") continue;
+      let parsed: { json?: ThreadEvent; error?: { message?: string } };
       try {
-        const parsed = JSON.parse(data) as { json?: ThreadEvent; error?: { message?: string } };
-        // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
-        if (parsed.json?.type === "heartbeat") onHeartbeat?.();
-        else if (parsed.json?.type) onEvent(parsed.json);
+        parsed = JSON.parse(data);
       } catch {
-        // ignore keepalives and partial frames
+        // Ignore keepalives and partial frames, but never swallow an RPC error.
+        continue;
       }
+      if (!parsed || typeof parsed !== "object") continue;
+      if (parsed.error) {
+        void reader.cancel().catch(() => undefined);
+        throw new Error("rpc threads/subscribe failed");
+      }
+      // Heartbeats prove liveness only; forwarding one would advance the caller's cursor.
+      if (parsed.json?.type === "heartbeat") onHeartbeat?.();
+      else if (parsed.json?.type) onEvent(parsed.json);
     }
   }
 }
