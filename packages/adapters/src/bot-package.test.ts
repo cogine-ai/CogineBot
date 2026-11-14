@@ -5,6 +5,12 @@ import {
   BotPackageDocumentSchema,
 } from "@rakazo/contracts";
 import { buildSkillMd } from "@rakazo/core";
+import {
+  agentBackupPreview,
+  encodeAgentBackup,
+  encodeAgentBackupFolder,
+} from "@rakazo/core/agent-backup";
+import { strToU8, zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalBotPackageJson,
@@ -613,3 +619,36 @@ it("rejects unsupported paths sent directly to the preview endpoint", () => {
     "unsupported files",
   );
 });
+
+it.each(["openclaw", "hermes"])(
+  "produces identical server documents and warnings for synthetic %s folder and archive projections",
+  async (agent) => {
+    const files = {
+      [`.${agent}/SOUL.md`]: strToU8("Review synthetic reports."),
+      [`.${agent}/${agent === "hermes" ? "memories/" : ""}MEMORY.md`]: strToU8("A synthetic note."),
+      [`.${agent}/skills/report/SKILL.md`]: strToU8(
+        "---\nname: report\ndescription: Read reports.\n---\nReview the rows.",
+      ),
+      [`.${agent}/skills/report/.dependency`]: strToU8("A hidden dependency."),
+    };
+    const folder = await encodeAgentBackupFolder(
+      Object.entries(files).map(([path, bytes]) => ({
+        path,
+        size: bytes.length,
+        read: async () => bytes,
+      })),
+      () => true,
+    );
+    const archive = encodeAgentBackup(zipSync(files));
+    for (const includeMemory of [false, true]) {
+      const parseProjection = (source: string) => {
+        const projection = agentBackupPreview(source, includeMemory);
+        return parseBotPackageSource(projection.source, {
+          includeMemory,
+          backupOmissions: projection.backupOmissions,
+        });
+      };
+      expect(parseProjection(folder)).toEqual(parseProjection(archive));
+    }
+  },
+);

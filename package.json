@@ -41,6 +41,7 @@
     "@biomejs/biome": "2.5.13",
     "@types/node": "24.13.3",
     "cross-env": "10.1.0",
+    "fflate": "0.8.3",
     "tsx": "4.23.13",
     "turbo": "2.10.12",
     "typescript": "7.0.2",

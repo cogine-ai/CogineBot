@@ -1,4 +1,7 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Выбрать папку резервной копии",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "Не удалось прочитать папку полностью. Выберите архив резервной копии.",
   "Cancel creation": "Отменить создание",
   "Created server is no longer available. Review the draft.":
     "Созданный сервер больше недоступен. Проверьте черновик.",

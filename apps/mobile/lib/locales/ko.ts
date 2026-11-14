@@ -1,5 +1,8 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const KO_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "백업 폴더 선택",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "폴더 전체를 읽을 수 없습니다. 대신 백업 압축 파일을 선택하세요.",
   "Cancel creation": "생성 취소",
   "Created server is no longer available. Review the draft.":
     "생성된 서버를 더 이상 사용할 수 없습니다. 초안을 검토하세요.",

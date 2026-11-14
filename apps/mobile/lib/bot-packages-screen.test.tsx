@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   request: vi.fn(),
   pick: vi.fn(),
+  pickFolder: vi.fn(),
   share: vi.fn(),
   current: true,
   generation: 1,
@@ -24,6 +25,7 @@ vi.mock("./bot-package-client", () => ({
     };
   },
 }));
+vi.mock("./bot-backup-folder", () => ({ pickBotBackupFolder: api.pickFolder }));
 vi.mock("./bot-package-file", () => ({
   pickBotPackageFile: api.pick,
   shareBotPackageFile: api.share,
@@ -215,6 +217,7 @@ beforeEach(() => {
   api.focusCleanup = undefined;
   receipt = structuredClone(baseReceipt);
   api.pick.mockResolvedValue(null);
+  api.pickFolder.mockResolvedValue(null);
   api.share.mockResolvedValue(undefined);
   api.request.mockImplementation(async (procedure, input) => {
     if (procedure === "botPackages/preview")
@@ -616,3 +619,72 @@ it("reviews native export omissions before OS handoff and invalidates choices be
   expect(api.request.mock.calls.filter(([name]) => name === "botPackages/export")).toHaveLength(2);
   expect(button("Share package")).toBeUndefined();
 });
+
+it("imports a selected folder only after preview and confirmation, then releases access", async () => {
+  const dispose = vi.fn();
+  const source = JSON.stringify({
+    format: "agent-backup/v1",
+    source: "openclaw",
+    files: [{ path: "SOUL.md", content: "Synthetic folder instructions." }],
+  });
+  api.pickFolder.mockResolvedValue({ source, readKey: vi.fn(), dispose });
+  await mountImport();
+  await click("Choose backup folder");
+  expect(imports()).toHaveLength(0);
+  await click("Preview");
+  expect(imports()).toHaveLength(0);
+  expect(
+    api.request.mock.calls.find(([name]) => name === "botPackages/preview")![1].source,
+  ).toContain("Synthetic folder instructions.");
+  await click("Import as new bot");
+  expect(imports()).toHaveLength(1);
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it.each([
+  "cancel",
+  "permission",
+  "incomplete",
+  "unreadable",
+  "limit",
+  "folder_inventory_unverifiable",
+])("preserves the original draft on folder %s and allows archive recovery", async (failure) => {
+  if (failure !== "cancel") api.pickFolder.mockRejectedValueOnce(new Error(failure));
+  await mountImport();
+  await fill("Bot package or Grok JSON", "original draft");
+  await click("Choose backup folder");
+  expect(field("Bot package or Grok JSON").value).toBe("original draft");
+  expect(imports()).toHaveLength(0);
+  expect(
+    node.textContent?.includes(
+      "Could not read the complete folder. Choose a backup archive instead.",
+    ),
+  ).toBe(failure !== "cancel");
+  api.pick.mockResolvedValueOnce("archive recovery");
+  await click("Choose package file");
+  expect(field("Bot package or Grok JSON").value).toBe("archive recovery");
+});
+
+it.each(["edit", "space", "blur"])(
+  "discards and releases a late folder after %s",
+  async (change) => {
+    let finish!: (value: unknown) => void;
+    api.pickFolder.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const dispose = vi.fn();
+    await mountImport();
+    await click("Choose backup folder");
+    if (change === "edit") await fill("Bot package or Grok JSON", "new draft");
+    if (change === "space") api.generation++;
+    if (change === "blur") await act(async () => api.focusCleanup?.());
+    await act(async () => finish({ source: "late folder", readKey: vi.fn(), dispose }));
+    expect(node.textContent).not.toContain("late folder");
+    if (change === "edit") expect(field("Bot package or Grok JSON").value).toBe("new draft");
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(imports()).toHaveLength(0);
+  },
+);

@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["RakazoBackupFolderModule"] },
+  "android": { "modules": ["com.rakazo.backupfolder.RakazoBackupFolderModule"] }
+}

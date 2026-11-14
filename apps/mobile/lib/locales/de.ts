@@ -1,4 +1,7 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "Backup-Ordner auswählen",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "Der Ordner konnte nicht vollständig gelesen werden. Wähle stattdessen ein Backup-Archiv.",
   "Cancel creation": "Erstellung abbrechen",
   "Created server is no longer available. Review the draft.":
     "Der erstellte Server ist nicht mehr verfügbar. Entwurf prüfen.",

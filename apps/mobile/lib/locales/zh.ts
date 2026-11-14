@@ -1,4 +1,7 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Choose backup folder": "选择备份文件夹",
+  "Could not read the complete folder. Choose a backup archive instead.":
+    "无法完整读取文件夹。请改为选择备份归档。",
   "Cancel creation": "取消创建",
   "Created server is no longer available. Review the draft.": "已创建的服务已不存在，请检查草稿。",
   "Disconnect OAuth before authorizing from another app.": "从其他应用授权前，请先断开 OAuth。",

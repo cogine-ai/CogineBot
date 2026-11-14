@@ -699,7 +699,7 @@ export async function readAgentBackupFolderModelKey(
 
 export { parseOpenClawIdentity } from "./identity.js";
 export { isHermesDefault, isOpenClawDefault } from "./stock.js";
-export { AgentImportArchiveError };
+export { AGENT_IMPORT_ARCHIVE_LIMITS, AgentImportArchiveError };
 
 /** Rewrite only the name in a colliding Skill, retaining the original Markdown. */
 export function renameBackupSkill(content: string, name: string): string {
