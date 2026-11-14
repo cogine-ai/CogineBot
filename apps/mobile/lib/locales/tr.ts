@@ -1,5 +1,23 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const TR_MESSAGES: Record<string, string> = {
+  "Allow writing": "Yazmaya izin ver",
+  "Base URL": "Temel URL",
+  "Brain label": "Beyin etiketi",
+  Cloud: "Bulut",
+  Configured: "Yapılandırıldı",
+  "Connecting…": "Bağlanıyor…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "Bellek ayarları güncellenemedi. Geçerli durumu kontrol etmek için yeniden yükleyin.",
+  "Default scope": "Varsayılan kapsam",
+  "Inherit default": "Varsayılanı devral",
+  "Instance API key": "Örnek API anahtarı",
+  Isolated: "Yalıtılmış",
+  Local: "Yerel",
+  "MCP endpoint": "MCP uç noktası",
+  "Memory scope": "Bellek kapsamı",
+  "Organization API key": "Kuruluş API anahtarı",
+  Provider: "Sağlayıcı",
+
   "Left channel": "Kanaldan ayrıldı",
   "Agent connections": "Ajan bağlantıları",
   "Always act": "Her zaman harekete geç",

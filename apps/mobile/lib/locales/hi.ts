@@ -1,5 +1,23 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const HI_MESSAGES: Record<string, string> = {
+  "Allow writing": "लिखने की अनुमति दें",
+  "Base URL": "आधार URL",
+  "Brain label": "ब्रेन लेबल",
+  Cloud: "क्लाउड",
+  Configured: "कॉन्फ़िगर किया गया",
+  "Connecting…": "कनेक्ट हो रहा है…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "मेमोरी सेटिंग अपडेट नहीं हो सकीं। वर्तमान स्थिति देखने के लिए फिर से लोड करें।",
+  "Default scope": "डिफ़ॉल्ट दायरा",
+  "Inherit default": "डिफ़ॉल्ट अपनाएँ",
+  "Instance API key": "इंस्टेंस API कुंजी",
+  Isolated: "अलग",
+  Local: "स्थानीय",
+  "MCP endpoint": "MCP एंडपॉइंट",
+  "Memory scope": "मेमोरी का दायरा",
+  "Organization API key": "संगठन की API कुंजी",
+  Provider: "प्रदाता",
+
   "Left channel": "चैनल छोड़ दिया",
   "Agent connections": "एजेंट कनेक्शन",
   "Always act": "हमेशा कार्रवाई करें",

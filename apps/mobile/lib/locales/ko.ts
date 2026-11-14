@@ -1,5 +1,23 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const KO_MESSAGES: Record<string, string> = {
+  "Allow writing": "쓰기 허용",
+  "Base URL": "기본 URL",
+  "Brain label": "브레인 이름",
+  Cloud: "클라우드",
+  Configured: "구성됨",
+  "Connecting…": "연결 중…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "메모리 설정을 업데이트하지 못했습니다. 현재 상태를 확인하려면 새로 고침하세요.",
+  "Default scope": "기본 범위",
+  "Inherit default": "기본값 상속",
+  "Instance API key": "인스턴스 API 키",
+  Isolated: "격리",
+  Local: "로컬",
+  "MCP endpoint": "MCP 엔드포인트",
+  "Memory scope": "메모리 범위",
+  "Organization API key": "조직 API 키",
+  Provider: "제공업체",
+
   "Left channel": "채널에서 나감",
   "Always act": "항상 실행",
   "Automated senders": "자동 발신자",

@@ -1,4 +1,22 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Allow writing": "允许写入",
+  "Base URL": "基础 URL",
+  "Brain label": "记忆库标签",
+  Cloud: "云端",
+  Configured: "已配置",
+  "Connecting…": "正在连接…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "无法更新记忆设置。请重新加载以查看当前状态。",
+  "Default scope": "默认范围",
+  "Inherit default": "继承默认值",
+  "Instance API key": "实例 API 密钥",
+  Isolated: "隔离",
+  Local: "本地",
+  "MCP endpoint": "MCP 端点",
+  "Memory scope": "记忆范围",
+  "Organization API key": "组织 API 密钥",
+  Provider: "提供方",
+
   "Left channel": "已退出频道",
   "Always act": "总是行动",
   "Automated senders": "自动发送者",

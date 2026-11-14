@@ -1,4 +1,22 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Allow writing": "Разрешить запись",
+  "Base URL": "Базовый URL",
+  "Brain label": "Название хранилища",
+  Cloud: "Облако",
+  Configured: "Настроено",
+  "Connecting…": "Подключение…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "Не удалось обновить настройки памяти. Перезагрузите, чтобы проверить текущее состояние.",
+  "Default scope": "Область по умолчанию",
+  "Inherit default": "Наследовать настройку",
+  "Instance API key": "API-ключ экземпляра",
+  Isolated: "Изолированная",
+  Local: "Локально",
+  "MCP endpoint": "Конечная точка MCP",
+  "Memory scope": "Область памяти",
+  "Organization API key": "API-ключ организации",
+  Provider: "Провайдер",
+
   "Left channel": "Канал покинут",
   "Choose…": "Выберите…",
   Declined: "Отклонено",

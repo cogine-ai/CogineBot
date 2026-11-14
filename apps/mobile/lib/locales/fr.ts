@@ -1,5 +1,23 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const FR_MESSAGES: Record<string, string> = {
+  "Allow writing": "Autoriser l’écriture",
+  "Base URL": "URL de base",
+  "Brain label": "Libellé du cerveau",
+  Cloud: "Nuage",
+  Configured: "Configuré",
+  "Connecting…": "Connexion…",
+  "Couldn't update memory settings. Reload to check the current state.":
+    "Impossible de mettre à jour les paramètres de mémoire. Rechargez pour vérifier leur état actuel.",
+  "Default scope": "Portée par défaut",
+  "Inherit default": "Hériter du défaut",
+  "Instance API key": "Clé API de l’instance",
+  Isolated: "Isolée",
+  Local: "Locale",
+  "MCP endpoint": "Point de terminaison MCP",
+  "Memory scope": "Portée de la mémoire",
+  "Organization API key": "Clé API de l’organisation",
+  Provider: "Fournisseur",
+
   "Left channel": "Canal quitté",
   "Choose…": "Choisir…",
   Declined: "Refusé",
