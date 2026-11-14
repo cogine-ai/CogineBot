@@ -11,6 +11,7 @@ const settingsScreens = new Set([
   "change-password",
   "integration-setup",
   "integrations",
+  "messaging",
   "models",
   "plugins",
   "space-credentials",

@@ -7550,7 +7550,7 @@ export function createRouter(deps: RouterDeps) {
           "list the authenticated user messaging identities",
           () =>
             deps.prisma.messagingIdentity.findMany({
-              where: { userId: context.actor.userId },
+              where: { userId: context.actor.userId, spaceId: context.actor.spaceId },
               orderBy: { createdAt: "asc" },
             }),
         );
@@ -7646,7 +7646,11 @@ export function createRouter(deps: RouterDeps) {
         unlink: authed.messaging.identities.unlink.handler(async ({ context, input }) => {
           const { count } = await runAsSystem("unlink an owned messaging identity", () =>
             deps.prisma.messagingIdentity.deleteMany({
-              where: { id: input.identityId, userId: context.actor.userId },
+              where: {
+                id: input.identityId,
+                userId: context.actor.userId,
+                spaceId: context.actor.spaceId,
+              },
             }),
           );
           if (count === 0) throw new ORPCError("NOT_FOUND");
@@ -7655,7 +7659,11 @@ export function createRouter(deps: RouterDeps) {
       },
       channels: {
         list: authed.messaging.channels.list.handler(async ({ context }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           if (identities.length === 0) return [];
           const memberships = await runAsSystem(
             "list channels for owned messaging identities",
@@ -7669,7 +7677,11 @@ export function createRouter(deps: RouterDeps) {
           return memberships.map((membership) => messagingChannelDto(membership));
         }),
         respond: authed.messaging.channels.respond.handler(async ({ context, input }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           const membership = identities.length
             ? await runAsSystem("respond to a verified messaging channel invitation", () =>
                 deps.prisma.messagingChannelMember.findFirst({
@@ -7708,7 +7720,11 @@ export function createRouter(deps: RouterDeps) {
           return messagingChannelDto(updated);
         }),
         leave: authed.messaging.channels.leave.handler(async ({ context, input }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           const membership = identities.length
             ? await runAsSystem("leave a verified messaging channel membership", () =>
                 deps.prisma.messagingChannelMember.findFirst({
@@ -7731,7 +7747,11 @@ export function createRouter(deps: RouterDeps) {
       },
       connections: {
         list: authed.messaging.connections.list.handler(async ({ context }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           if (identities.length === 0) return [];
           const botIds = identities.map((identity) => identity.botId);
           const connections = await runAsSystem("list connections for owned messaging bots", () =>
@@ -7750,7 +7770,11 @@ export function createRouter(deps: RouterDeps) {
           );
         }),
         respond: authed.messaging.connections.respond.handler(async ({ context, input }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           const myBotIds = new Set(identities.map((identity) => identity.botId));
           const connection = identities.length
             ? await runAsSystem("respond atomically to an authorized messaging connection", () =>
@@ -7823,7 +7847,11 @@ export function createRouter(deps: RouterDeps) {
           return messagingConnectionDto(deps.prisma, myBotIds, updated);
         }),
         revoke: authed.messaging.connections.revoke.handler(async ({ context, input }) => {
-          const identities = await messagingIdentitiesFor(deps.prisma, context.actor.userId);
+          const identities = await messagingIdentitiesFor(
+            deps.prisma,
+            context.actor.userId,
+            context.actor.spaceId,
+          );
           const botIds = identities.map((identity) => identity.botId);
           const connection = identities.length
             ? await runAsSystem(
@@ -9603,14 +9631,15 @@ type MessagingIdentityRecord = {
   botId: string;
 };
 
-/** Every linked chat app counts: channels and connections span identities. */
+/** Channels and connections span the caller’s identities in the selected Space. */
 async function messagingIdentitiesFor(
   prisma: PrismaClient,
   userId: string,
+  spaceId: string,
 ): Promise<MessagingIdentityRecord[]> {
   return runAsSystem("resolve the authenticated user messaging identity IDs", () =>
     prisma.messagingIdentity.findMany({
-      where: { userId },
+      where: { userId, spaceId },
       orderBy: { createdAt: "asc" },
       select: { id: true, botId: true },
     }),
