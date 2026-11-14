@@ -6,7 +6,6 @@ import {
   BOT_TITLE_MAX_LENGTH,
   isBotInstructionsConflict,
   normalizeCreateBotProfile,
-  parseBotAvatarValue,
 } from "@rakazo/contracts";
 import {
   connectedModelChoices,
@@ -27,9 +26,18 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { BotAvatar } from "../components/bot-avatar";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { BotAvatarEditor } from "../components/bot-avatar-editor";
 import { ComputerModePicker } from "../components/computer-mode-picker";
 import { glassHeaderOptions } from "../components/glass-title";
 import type { MenuPickerChoice } from "../components/menu-picker";
@@ -44,8 +52,18 @@ import { deviceVoices, setVoiceForBot, voiceForBot, voiceLabel } from "../lib/bo
 import { COMPUTER_LIFECYCLE_TIMEOUT_MS } from "../lib/computer";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { useI18n } from "../lib/i18n";
+import type { MobileScope } from "../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../lib/mobile-scope";
+import type { MobileScopedClient } from "../lib/mobile-scoped-client";
+import { mobileScopedClient } from "../lib/mobile-scoped-client";
 import { thinkingLevelLabel } from "../lib/model-catalog";
 import { native, useMobileTokens } from "../lib/native";
+import { currentReadySessionGeneration, subscribeSessionGeneration } from "../lib/session";
 import { errorText } from "../lib/user-error";
 import { stopVoicePlayback } from "../lib/voice";
 
@@ -72,6 +90,22 @@ type BotSettingsRecord = MobileBot & {
 };
 
 export default function BotSettingsScreen() {
+  const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
+  const { botId } = useLocalSearchParams<{ botId: string }>();
+  const scope = useMemo(captureMobileScope, [scopeKey]);
+  const ready = useSyncExternalStore(
+    subscribeSessionGeneration,
+    currentReadySessionGeneration,
+    currentReadySessionGeneration,
+  );
+  return ready === scope.sessionGeneration ? (
+    <BotSettingsEditor key={`${scopeKey}:${botId}`} scope={scope} />
+  ) : (
+    <ActivityIndicator />
+  );
+}
+
+function BotSettingsEditor({ scope }: { scope: MobileScope }) {
   const tokens = useMobileTokens();
   const { t } = useI18n();
   const router = useRouter();
@@ -82,7 +116,9 @@ export default function BotSettingsScreen() {
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
   const [color, setColor] = useState<string>(GAZE_BOT_COLORS[0]);
-  const parsedColor = parseBotAvatarValue(color);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const client = useRef<MobileScopedClient | null>(null);
+  const saving = useRef(false);
   const [computerMode, setComputerMode] = useState<ComputerMode>("team");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [packageOpen, setPackageOpen] = useState(false);
@@ -121,9 +157,14 @@ export default function BotSettingsScreen() {
     setPending(false);
     setError(null);
     setInstructionsConflict(false);
-    void rpc<BotSettingsRecord>("bots/get", { botId })
+    client.current = null;
+    void mobileScopedClient(scope, () => !cancelled)
+      .then(async (scoped) => {
+        client.current = scoped;
+        return scoped.request<BotSettingsRecord>("bots/get", { botId });
+      })
       .then((next) => {
-        if (cancelled) return;
+        if (cancelled || !isMobileScopeCurrent(scope) || next.id !== botId) return;
         setBot(next);
         setModelRevision(undefined);
         setName(next.name);
@@ -142,7 +183,8 @@ export default function BotSettingsScreen() {
         setAutoSpeak(next.autoSpeak);
       })
       .catch((err) => {
-        if (!cancelled) setError(errorText(err, t("Could not load bot")));
+        if (!cancelled && isMobileScopeCurrent(scope))
+          setError(errorText(err, t("Could not load bot")));
       });
     return () => {
       cancelled = true;
@@ -335,7 +377,16 @@ export default function BotSettingsScreen() {
   }
 
   async function save() {
-    if (!botId || !bot || bot.id !== botId || pending) return;
+    if (
+      !botId ||
+      !bot ||
+      bot.id !== botId ||
+      pending ||
+      avatarBusy ||
+      saving.current ||
+      !client.current?.isCurrent()
+    )
+      return;
     if (!instructionsConflict && instructions.length > BOT_INSTRUCTIONS_MAX_LENGTH) {
       setError(
         t("Instructions must be at most {count} characters", {
@@ -345,7 +396,8 @@ export default function BotSettingsScreen() {
       return;
     }
     const lifetime = botLifetime.current;
-    const current = () => lifetime === botLifetime.current;
+    const current = () => lifetime === botLifetime.current && isMobileScopeCurrent(scope);
+    saving.current = true;
     setPending(true);
     setError(null);
     try {
@@ -394,10 +446,11 @@ export default function BotSettingsScreen() {
       }
       if (autoSpeak !== bot.autoSpeak) input.autoSpeak = autoSpeak;
       if (computerMode !== bot.computerMode) {
-        await rpc(
+        await client.current.request(
           "bots/setComputer",
           { botId, mode: computerMode },
-          { timeoutMs: COMPUTER_LIFECYCLE_TIMEOUT_MS },
+          undefined,
+          COMPUTER_LIFECYCLE_TIMEOUT_MS,
         );
         if (!current()) return;
         setBot((accepted) =>
@@ -406,7 +459,7 @@ export default function BotSettingsScreen() {
       }
       // Use key presence so clearing title/description to "" still persists.
       if (Object.keys(input).length > 1) {
-        const saved = await rpc<BotSettingsRecord>("bots/update", input);
+        const saved = await client.current.request<BotSettingsRecord>("bots/update", input);
         if (!current()) return;
         if (instructionsConflict && saved?.id === botId) {
           setBot((current) =>
@@ -420,10 +473,14 @@ export default function BotSettingsScreen() {
       if (current() && !instructionsConflict) router.back();
     } catch (err) {
       if (!current()) return;
+      setColor(bot.color);
       setError(errorText(err, t("Could not save bot")));
       if (isBotInstructionsConflict(err)) setInstructionsConflict(true);
     } finally {
-      if (current()) setPending(false);
+      if (current()) {
+        saving.current = false;
+        setPending(false);
+      }
     }
   }
 
@@ -484,9 +541,14 @@ export default function BotSettingsScreen() {
         keyboardDismissMode="on-drag"
       >
         {bot ? (
-          <View style={{ alignItems: "center", marginBottom: 24 }}>
-            <BotAvatar color={color} identity={bot.id} size={64} status={bot.status} />
-          </View>
+          <BotAvatarEditor
+            value={color}
+            identity={bot.id}
+            status={bot.status}
+            disabled={pending}
+            onChange={setColor}
+            onBusyChange={setAvatarBusy}
+          />
         ) : null}
         <Text style={{ color: tokens.mutedForeground, fontSize: 14 }}>{t("Name")}</Text>
         <TextInput
@@ -559,47 +621,6 @@ export default function BotSettingsScreen() {
             textAlignVertical: "top",
           }}
         />
-        <Text style={{ color: tokens.mutedForeground, marginTop: 16, fontSize: 14 }}>
-          {t("Color")}
-        </Text>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 10, marginTop: 8 }}
-          accessibilityRole="radiogroup"
-        >
-          {GAZE_BOT_COLORS.map((option, index) => (
-            <Pressable
-              key={option}
-              accessibilityRole="radio"
-              accessibilityLabel={t("Color {number}", { number: index + 1 })}
-              accessibilityState={{
-                checked:
-                  (parsedColor.kind === "color" || parsedColor.kind === "shape") &&
-                  parsedColor.color.toUpperCase() === option,
-              }}
-              onPress={() =>
-                setColor(
-                  parsedColor.kind === "shape"
-                    ? `${option}::shape_${parsedColor.shapeIndex}`
-                    : option,
-                )
-              }
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 18,
-                backgroundColor: option,
-                borderWidth: 3,
-                borderColor:
-                  (parsedColor.kind === "color" || parsedColor.kind === "shape") &&
-                  parsedColor.color.toUpperCase() === option
-                    ? tokens.foreground
-                    : "transparent",
-              }}
-            />
-          ))}
-        </ScrollView>
         <ComputerModePicker value={computerMode} onChange={setComputerMode} />
         <View style={[styles.row, { marginTop: 20 }]}>
           <Text style={[styles.rowLabel, { color: tokens.mutedForeground }]}>
@@ -692,7 +713,7 @@ export default function BotSettingsScreen() {
         ) : null}
         {error ? <Text style={{ color: tokens.destructive, marginTop: 16 }}>{error}</Text> : null}
         <NativeActionButton
-          disabled={!name.trim() || pending || !bot}
+          disabled={!name.trim() || pending || avatarBusy || !bot}
           label={
             pending ? t("Saving…") : instructionsConflict ? t("Save other settings") : t("Save")
           }
