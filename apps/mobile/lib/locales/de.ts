@@ -1,4 +1,21 @@
 export const DE_MESSAGES: Record<string, string> = {
+  Circle: "Kreis",
+  Square: "Quadrat",
+  Triangle: "Dreieck",
+  Pentagon: "Fünfeck",
+  Hexagon: "Sechseck",
+  Octagon: "Achteck",
+  Diamond: "Raute",
+  Pill: "Kapsel",
+  Column: "Säule",
+  Egg: "Ei",
+  Arch: "Bogen",
+
+  "Customize bot avatar": "Bot-Avatar anpassen",
+  Shape: "Form",
+  "Choose image": "Bild auswählen",
+  "Could not open image. Try again.": "Bild konnte nicht geöffnet werden. Versuche es erneut.",
+
   Board: "Board",
   "New ticket": "Neues Ticket",
   "To do": "Zu erledigen",

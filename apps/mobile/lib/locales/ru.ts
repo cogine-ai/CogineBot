@@ -1,4 +1,21 @@
 export const RU_MESSAGES: Record<string, string> = {
+  Circle: "Круг",
+  Square: "Квадрат",
+  Triangle: "Треугольник",
+  Pentagon: "Пятиугольник",
+  Hexagon: "Шестиугольник",
+  Octagon: "Восьмиугольник",
+  Diamond: "Ромб",
+  Pill: "Капсула",
+  Column: "Колонна",
+  Egg: "Яйцо",
+  Arch: "Арка",
+
+  "Customize bot avatar": "Настроить аватар бота",
+  Shape: "Форма",
+  "Choose image": "Выбрать изображение",
+  "Could not open image. Try again.": "Не удалось открыть изображение. Повторите попытку.",
+
   Board: "Доска",
   "New ticket": "Новая задача",
   "To do": "К выполнению",

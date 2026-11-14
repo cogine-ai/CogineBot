@@ -36,13 +36,19 @@ export async function mobileScopedClient(scope: MobileScope, isMounted: () => bo
   };
   return {
     isCurrent,
-    async request<T>(procedure: string, input: unknown, signal?: AbortSignal): Promise<T> {
+    async request<T>(
+      procedure: string,
+      input: unknown,
+      signal?: AbortSignal,
+      timeoutMs?: number,
+    ): Promise<T> {
       assertCurrent();
       signal?.throwIfAborted();
       const value = await rpc<T>(procedure, input, {
         requestContext,
         skipSpaceAuthRecovery: true,
         signal,
+        timeoutMs,
       });
       assertCurrent();
       signal?.throwIfAborted();

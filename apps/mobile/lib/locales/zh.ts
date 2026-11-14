@@ -1,4 +1,21 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  Circle: "圆形",
+  Square: "正方形",
+  Triangle: "三角形",
+  Pentagon: "五边形",
+  Hexagon: "六边形",
+  Octagon: "八边形",
+  Diamond: "菱形",
+  Pill: "胶囊形",
+  Column: "柱形",
+  Egg: "蛋形",
+  Arch: "拱形",
+
+  "Customize bot avatar": "自定义 Bot 头像",
+  Shape: "造型",
+  "Choose image": "选择图片",
+  "Could not open image. Try again.": "无法打开图片。请重试。",
+
   Board: "看板",
   "New ticket": "新建任务",
   "To do": "待办",
