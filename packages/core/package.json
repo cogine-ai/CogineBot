@@ -75,6 +75,10 @@
     "./routine-save": {
       "types": "./src/routine-save.ts",
       "default": "./src/routine-save.ts"
+    },
+    "./ui-locale": {
+      "types": "./src/ui-locale.ts",
+      "default": "./src/ui-locale.ts"
     }
   },
   "scripts": {

@@ -78,10 +78,9 @@ describe("mobile i18n", () => {
   });
 
   it("preserves interpolations in every non-English catalog", async () => {
-    const { ZH_MESSAGES } = await import("./locales/zh");
-    const { RU_MESSAGES } = await import("./locales/ru");
-    const { DE_MESSAGES } = await import("./locales/de");
-    for (const messages of [ZH_MESSAGES, RU_MESSAGES, DE_MESSAGES]) {
+    for (const messages of Object.values((await import("./i18n")).catalogs).filter(
+      (catalog) => Object.keys(catalog).length > 0,
+    )) {
       const empty = Object.entries(messages).filter(([, value]) => !value.trim());
       const interpolationMismatches = Object.entries(messages).filter(([id, value]) => {
         const tokens = (message: string) =>
@@ -93,7 +92,7 @@ describe("mobile i18n", () => {
     }
   });
 
-  it.each(["zh-CN", "ru", "de"] as const)(
+  it.each(["zh-CN", "ru", "de", "ko", "tr", "hi", "pt-BR", "es", "fr"] as const)(
     "localizes model policy recovery in %s",
     async (locale) => {
       const { normalizeRunError } = await import("@rakazo/core");
@@ -107,7 +106,7 @@ describe("mobile i18n", () => {
     },
   );
 
-  it.each(["zh-CN", "ru", "de"] as const)(
+  it.each(["zh-CN", "ru", "de", "ko", "tr", "hi", "pt-BR", "es", "fr"] as const)(
     "localizes capacity failures in %s without adding a recovery action",
     async (locale) => {
       const {
@@ -129,16 +128,15 @@ describe("mobile i18n", () => {
   it("localizes shared provider recovery advice without exposing its diagnostics", async () => {
     const { normalizeRunError, RUN_ERROR_LIMIT_MESSAGES } = await import("@rakazo/core");
     const { resetI18nForTests, t } = await import("./i18n");
-    const { ZH_MESSAGES } = await import("./locales/zh");
-    const { RU_MESSAGES } = await import("./locales/ru");
-    const { DE_MESSAGES } = await import("./locales/de");
-    for (const messages of [ZH_MESSAGES, RU_MESSAGES, DE_MESSAGES]) {
+    for (const messages of Object.values((await import("./i18n")).catalogs).filter(
+      (catalog) => Object.keys(catalog).length > 0,
+    )) {
       for (const periods of Object.values(RUN_ERROR_LIMIT_MESSAGES)) {
         for (const message of Object.values(periods))
           expect(messages[message]?.trim()).toBeTruthy();
       }
     }
-    for (const locale of ["zh-CN", "ru", "de"] as const) {
+    for (const locale of ["zh-CN", "ru", "de", "ko", "tr", "hi", "pt-BR", "es", "fr"] as const) {
       resetI18nForTests(locale);
       const raw =
         '429: {"error":{"message":"OpenAI key reached its daily limit; resets at 2026-01-02T00:00:00Z","metadata":{"token":"synthetic-private-token"}}}';
@@ -151,9 +149,6 @@ describe("mobile i18n", () => {
   });
 
   it("translates every mobile chrome t() id in every non-English catalog", async () => {
-    const { ZH_MESSAGES } = await import("./locales/zh");
-    const { RU_MESSAGES } = await import("./locales/ru");
-    const { DE_MESSAGES } = await import("./locales/de");
     const { EMPTY_PLUGIN_CATALOG_MESSAGE, SLASH_ACTIONS } = await import("@rakazo/core");
     const { AI_DATA_DISCLOSURES, OPENAI_COMPATIBLE_BASE_URL_HINT } = await import(
       "@rakazo/contracts"
@@ -182,7 +177,9 @@ describe("mobile i18n", () => {
         ids.add(JSON.parse(`"${match[1]}"`) as string);
       }
     }
-    for (const messages of [ZH_MESSAGES, RU_MESSAGES, DE_MESSAGES]) {
+    for (const messages of Object.values((await import("./i18n")).catalogs).filter(
+      (catalog) => Object.keys(catalog).length > 0,
+    )) {
       const missing = [...ids].filter((id) => !messages[id]?.trim()).sort();
       expect(missing).toEqual([]);
     }
@@ -257,4 +254,106 @@ describe("mobile i18n", () => {
     expect(setItemAsync).toHaveBeenLastCalledWith("rakazo.uiLocale", "zh-CN");
     expect(applyMobileUiDirection).toHaveBeenLastCalledWith("zh-CN");
   });
+});
+
+describe("ten-language mobile parity", () => {
+  const locales = ["en", "de", "ko", "tr", "hi", "pt-BR", "zh-CN", "es", "ru", "fr"] as const;
+
+  it.each(locales)(
+    "switches to %s, notifies subscribers, and restores after a fresh bootstrap",
+    async (locale) => {
+      vi.resetModules();
+      vi.stubEnv("EXPO_PUBLIC_DEFAULT_UI_LOCALE", "en");
+      const store = new Map<string, string>();
+      const secureStore = await import("expo-secure-store");
+      vi.mocked(secureStore.getItemAsync).mockImplementation(async (key) => store.get(key) ?? null);
+      vi.mocked(secureStore.setItemAsync).mockImplementation(async (key, value) => {
+        store.set(key, value);
+      });
+      const device = await import("expo-localization");
+      vi.mocked(device.getLocales).mockReturnValue([
+        { languageTag: "zh-Hant-TW" },
+      ] as unknown as ReturnType<typeof device.getLocales>);
+      const runtime = await import("./i18n");
+      const changed = vi.fn();
+      const unsubscribe = runtime.subscribeI18n(changed);
+      await runtime.setUiLocale(locale);
+      expect(changed).toHaveBeenCalled();
+      expect(runtime.getActiveUiLocale()).toBe(locale);
+      expect(store.get("rakazo.uiLocale")).toBe(locale);
+      const messages = [
+        "No messages yet",
+        "New bot",
+        "Create routine",
+        "No files",
+        "Language",
+        "Delete your account?",
+        "Could not change language",
+        "Could not load routines",
+      ];
+      const labels = messages.map((message) => runtime.t(message));
+      if (locale !== "en")
+        for (const [index, label] of labels.entries()) expect(label).not.toBe(messages[index]);
+      expect(runtime.t("Delete {name}?", { name: "Synthetic Bot" })).toContain("Synthetic Bot");
+      expect(runtime.t("Uncatalogued error {code}", { code: 503 })).toBe("Uncatalogued error 503");
+      unsubscribe();
+
+      // Discard module state as a process restart would; retain only the native-storage substitute.
+      vi.resetModules();
+      const restarted = await import("./i18n");
+      await expect(restarted.bootstrapI18n()).resolves.toBe(locale);
+      expect(restarted.getUiLocalePreference()).toBe(locale);
+      expect(messages.map((message) => restarted.t(message))).toEqual(labels);
+      const { formatThreadTime } = await import("./inbox");
+      const date = new Date(2026, 10, 3, 12);
+      const now = new Date(2026, 10, 14, 12);
+      const expectedLocale = locale === "en" ? "en-US" : locale;
+      expect(restarted.dateLocaleForUi()).toBe(expectedLocale);
+      expect(formatThreadTime(date.toISOString(), now)).toBe(
+        date.toLocaleDateString(expectedLocale, { month: "short", day: "numeric" }),
+      );
+      vi.unstubAllEnvs();
+      vi.mocked(device.getLocales).mockReturnValue([
+        { languageTag: "en-US" },
+      ] as unknown as ReturnType<typeof device.getLocales>);
+    },
+  );
+
+  it("enumerates every intentionally unchanged message, with no hidden English catalog entries", async () => {
+    const { catalogs } = await import("./i18n");
+    const unchanged = JSON.parse(
+      readFileSync(new URL("./locales/unchanged-messages.json", import.meta.url), "utf8"),
+    ) as Record<string, string[]>;
+    expect(Object.keys(catalogs).sort()).toEqual([...locales].sort());
+    for (const locale of locales.filter((value) => value !== "en")) {
+      expect(
+        Object.entries(catalogs[locale])
+          .filter(([key, value]) => key === value)
+          .map(([key]) => key)
+          .sort(),
+      ).toEqual(unchanged[locale]);
+    }
+  });
+
+  it.each(["zh-TW", "zh-HK", "zh-Hant-TW", "ja-JP", "unknown"])(
+    "boots device %s in English without inventing a language preference",
+    async (tag) => {
+      vi.resetModules();
+      vi.stubEnv("EXPO_PUBLIC_DEFAULT_UI_LOCALE", "");
+      const secureStore = await import("expo-secure-store");
+      vi.mocked(secureStore.getItemAsync).mockResolvedValue(null);
+      const device = await import("expo-localization");
+      vi.mocked(device.getLocales).mockReturnValue([{ languageTag: tag }] as unknown as ReturnType<
+        typeof device.getLocales
+      >);
+      const runtime = await import("./i18n");
+      await expect(runtime.bootstrapI18n()).resolves.toBe("en");
+      expect(runtime.getUiLocalePreference()).toBeUndefined();
+      expect(runtime.getDeviceSpeechLocale()).toBe(tag);
+      vi.unstubAllEnvs();
+      vi.mocked(device.getLocales).mockReturnValue([
+        { languageTag: "en-US" },
+      ] as unknown as ReturnType<typeof device.getLocales>);
+    },
+  );
 });

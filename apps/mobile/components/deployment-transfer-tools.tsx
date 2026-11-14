@@ -13,7 +13,7 @@ import { native } from "../lib/native";
 import { NativeActionButton } from "./native-action-button";
 
 function TransferEditor({ botId, scope }: { botId: string; scope: MobileScope }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [sourceOrigin, setSourceOrigin] = useState("");
   const [state, setState] = useState<DeploymentTransferState>(initialDeploymentTransferState);
@@ -196,7 +196,7 @@ function TransferEditor({ botId, scope }: { botId: string; scope: MobileScope })
                   </View>
                 ))}
               <Text style={styles.text}>
-                {t("Expires")} {new Date(snapshot.expiresAt).toLocaleString()}
+                {t("Expires")} {new Date(snapshot.expiresAt).toLocaleString(locale)}
               </Text>
 
               <Text style={styles.text}>
