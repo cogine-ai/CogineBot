@@ -183,6 +183,94 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     ).resolves.toMatchObject({ provider: "github-copilot", authKind: "oauth" });
   });
 
+  it("keeps a desktop callback on the original process and shares the committed result", async () => {
+    const actor = await member();
+    const first = process(a, actor);
+    const second = process(b, actor);
+    const callback = "http://127.0.0.1:1455/auth/callback?code=fixture&state=fixture";
+    const credential = {
+      id: randomUUID(),
+      provider: "chatgpt-plan",
+      label: "Desktop fixture",
+      hasKey: true,
+      isDefault: false,
+    };
+    const exchanged = vi.fn();
+    const save = gate<void>();
+    const persist = vi.fn<Parameters<ModelOAuth["begin"]>[1]>(async (_result, lease) => {
+      await save.promise;
+      await a.prisma.$transaction(async (tx) => {
+        await first.oauth.sessions.assertSaving(tx, lease);
+        await first.oauth.sessions.recordConnected(tx, lease, credential);
+      });
+      return credential;
+    });
+    const started = await first.oauth.begin(
+      {
+        ...actor,
+        provider: "chatgpt-plan",
+        login: async (interaction) => {
+          interaction.notify({
+            type: "auth_url",
+            url: "https://sign-in.example.test/authorize?state=fixture",
+          });
+          exchanged(
+            await interaction.prompt({
+              type: "manual_code",
+              message: "Callback",
+            }),
+          );
+          return token;
+        },
+      },
+      persist,
+    );
+    const { loginId } = started;
+    try {
+      await expect(
+        second.client.models.submitOAuthCode({ loginId, code: callback }),
+      ).rejects.toMatchObject({
+        code: "CONFLICT",
+        message: "Finish sign-in on the local installation where it started.",
+      });
+      await expect(
+        second.client.models.submitOAuthCode({
+          loginId: randomUUID(),
+          code: callback,
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(second.client.models.completeOAuth({ loginId })).resolves.toEqual({
+        status: "pending",
+      });
+      expect(exchanged).not.toHaveBeenCalled();
+      expect(persist).not.toHaveBeenCalled();
+      expect(
+        (await first.oauth.sessions.read({ ...actor, id: loginId }))?.handoffCiphertext,
+      ).toBeNull();
+
+      await expect(
+        first.client.models.submitOAuthCode({ loginId, code: callback }),
+      ).resolves.toEqual({ ok: true });
+      await vi.waitFor(() => expect(persist).toHaveBeenCalledOnce());
+      await expect(
+        second.client.models.submitOAuthCode({ loginId, code: callback }),
+      ).resolves.toEqual({ ok: true });
+    } finally {
+      save.resolve(undefined);
+    }
+    await vi.waitFor(async () =>
+      expect(await second.client.models.completeOAuth({ loginId })).toEqual({
+        status: "ready",
+      }),
+    );
+    await expect(
+      second.client.models.submitOAuthCode({ loginId, code: callback }),
+    ).resolves.toEqual({ ok: true });
+    await expect(second.client.models.finishOAuth({ loginId })).resolves.toMatchObject(credential);
+    expect(exchanged).toHaveBeenCalledExactlyOnceWith(callback);
+    expect(persist).toHaveBeenCalledOnce();
+  });
+
   it("does not save a pending first login after another process disconnects", async () => {
     const actor = await member();
     const first = process(a, actor);

@@ -4,6 +4,7 @@ import type { SecretStore } from "@rakazo/adapter-kit";
 import {
   ANTHROPIC_OAUTH_PROVIDER,
   anthropicAuthorizationUrl,
+  CHATGPT_PLAN_PROVIDER_ID,
   exchangeAnthropicAuthorizationCode,
   MODEL_OAUTH_INTERRUPTED,
   MODEL_OAUTH_LEASE_RENEW_MS,
@@ -187,7 +188,21 @@ export class ModelOAuth {
   private async submitCode(ref: ModelOAuthRef, code: string, persist: SaveSubscription) {
     this.assertRunning();
     const row = await this.sessions.read(ref);
-    if (!row || row.status === "failed")
+    if (!row) throw new ORPCError("NOT_FOUND", { message: MODEL_OAUTH_NOT_FOUND });
+    if (row.provider === CHATGPT_PLAN_PROVIDER_ID) {
+      if (row.status === "failed" || (row.leaseExpiresAt?.getTime() ?? Infinity) <= Date.now())
+        throw new ORPCError("NOT_FOUND", {
+          message: row.error ?? MODEL_OAUTH_INTERRUPTED,
+        });
+      if (row.status === "connected" || row.status === "saving") return { ok: true as const };
+      // Desktop posts to its local API; the loopback variant calls its own listener.
+      // Do not send this callback, or its authorization material, to another process.
+      if (this.running.get(ref.id)?.lease.leaseOwner !== row.leaseOwner)
+        throw new ORPCError("CONFLICT", {
+          message: "Finish sign-in on the local installation where it started.",
+        });
+    }
+    if (row.status === "failed")
       throw new ORPCError("NOT_FOUND", { message: MODEL_OAUTH_NOT_FOUND });
     if (row.provider !== ANTHROPIC_OAUTH_PROVIDER) return this.local.submit(ref.id, ref, code);
     if (
