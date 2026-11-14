@@ -1,5 +1,19 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const KO_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Slack 워크스페이스",
+  "Slack installation is unavailable.": "Slack 설치를 사용할 수 없습니다.",
+  "Slack request unconfirmed": "Slack 요청 결과가 확인되지 않았습니다",
+  "Slack authorization expired. Try again.": "Slack 인증이 만료되었습니다. 다시 시도하세요.",
+  "Slack authorization cancelled. Try again.": "Slack 인증이 취소되었습니다. 다시 시도하세요.",
+  "Disconnect Slack?": "Slack 연결을 해제할까요?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "봇이 이 워크스페이스에서 메시지 수신과 전송을 중단합니다. 대화 기록은 CogineBot에 유지됩니다.",
+  "Bot unavailable": "봇을 사용할 수 없음",
+  Unavailable: "사용할 수 없음",
+  "Reconnect required": "다시 연결 필요",
+  "Bot for Slack": "Slack용 봇",
+  "Connect Slack": "Slack 연결",
+  "Waiting for Slack authorization": "Slack 인증 대기 중",
   "Allow writing": "쓰기 허용",
   "Base URL": "기본 URL",
   "Brain label": "브레인 이름",

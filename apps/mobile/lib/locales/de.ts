@@ -1,4 +1,20 @@
 export const DE_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Slack-Arbeitsbereiche",
+  "Slack installation is unavailable.": "Die Slack-Installation ist nicht verfügbar.",
+  "Slack request unconfirmed": "Slack-Anfrage unbestätigt",
+  "Slack authorization expired. Try again.":
+    "Die Slack-Autorisierung ist abgelaufen. Versuche es erneut.",
+  "Slack authorization cancelled. Try again.":
+    "Die Slack-Autorisierung wurde abgebrochen. Versuche es erneut.",
+  "Disconnect Slack?": "Slack trennen?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "Der Bot empfängt und sendet in diesem Arbeitsbereich keine Nachrichten mehr. Der Gesprächsverlauf bleibt in CogineBot erhalten.",
+  "Bot unavailable": "Bot nicht verfügbar",
+  Unavailable: "Nicht verfügbar",
+  "Reconnect required": "Erneute Verbindung erforderlich",
+  "Bot for Slack": "Bot für Slack",
+  "Connect Slack": "Slack verbinden",
+  "Waiting for Slack authorization": "Warten auf Slack-Autorisierung",
   "Allow writing": "Schreiben erlauben",
   "Base URL": "Basis-URL",
   "Brain label": "Brain-Bezeichnung",

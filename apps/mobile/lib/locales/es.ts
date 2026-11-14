@@ -1,5 +1,21 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const ES_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Espacios de trabajo de Slack",
+  "Slack installation is unavailable.": "La instalación de Slack no está disponible.",
+  "Slack request unconfirmed": "Solicitud a Slack sin confirmar",
+  "Slack authorization expired. Try again.":
+    "La autorización de Slack ha caducado. Inténtalo de nuevo.",
+  "Slack authorization cancelled. Try again.":
+    "La autorización de Slack se ha cancelado. Inténtalo de nuevo.",
+  "Disconnect Slack?": "¿Desconectar Slack?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "El bot dejará de recibir y enviar mensajes en este espacio de trabajo. El historial de conversaciones se conserva en CogineBot.",
+  "Bot unavailable": "Bot no disponible",
+  Unavailable: "No disponible",
+  "Reconnect required": "Es necesario volver a conectar",
+  "Bot for Slack": "Bot para Slack",
+  "Connect Slack": "Conectar Slack",
+  "Waiting for Slack authorization": "Esperando la autorización de Slack",
   "Allow writing": "Permitir escritura",
   "Base URL": "URL base",
   "Brain label": "Etiqueta del cerebro",

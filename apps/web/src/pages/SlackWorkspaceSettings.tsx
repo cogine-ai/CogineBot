@@ -16,7 +16,10 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { createSpaceRpc } from "../lib/rpc";
 
-type Api = ReturnType<typeof createSpaceRpc>["messaging"]["installations"];
+type Api = Pick<
+  ReturnType<typeof createSpaceRpc>["messaging"]["installations"],
+  "list" | "start" | "attempt" | "cancel" | "pause" | "remove"
+>;
 type List = Awaited<ReturnType<Api["list"]>>;
 type Workspace = List["workspaces"][number];
 type Attempt = Awaited<ReturnType<Api["start"]>>;

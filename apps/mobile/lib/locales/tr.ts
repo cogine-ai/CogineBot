@@ -1,5 +1,21 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const TR_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Slack çalışma alanları",
+  "Slack installation is unavailable.": "Slack kurulumu kullanılamıyor.",
+  "Slack request unconfirmed": "Slack isteği doğrulanmadı",
+  "Slack authorization expired. Try again.":
+    "Slack yetkilendirmesinin süresi doldu. Tekrar deneyin.",
+  "Slack authorization cancelled. Try again.":
+    "Slack yetkilendirmesi iptal edildi. Tekrar deneyin.",
+  "Disconnect Slack?": "Slack bağlantısı kesilsin mi?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "Bot bu çalışma alanında mesaj almayı ve göndermeyi durduracak. Sohbet geçmişi CogineBot’ta kalır.",
+  "Bot unavailable": "Bot kullanılamıyor",
+  Unavailable: "Kullanılamıyor",
+  "Reconnect required": "Yeniden bağlantı gerekli",
+  "Bot for Slack": "Slack için bot",
+  "Connect Slack": "Slack’i bağla",
+  "Waiting for Slack authorization": "Slack yetkilendirmesi bekleniyor",
   "Allow writing": "Yazmaya izin ver",
   "Base URL": "Temel URL",
   "Brain label": "Beyin etiketi",

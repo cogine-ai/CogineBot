@@ -74,6 +74,7 @@ export default function SettingsLayout() {
       <Stack.Screen name="models" options={glassHeaderOptions(t("Models"))} />
       <Stack.Screen name="approval-rules" options={glassHeaderOptions(t("Action confirmations"))} />
       <Stack.Screen name="voice" options={glassHeaderOptions(t("Voice"))} />
+      <Stack.Screen name="slack-workspaces" options={glassHeaderOptions(t("Slack workspaces"))} />
       <Stack.Screen name="memory" options={glassHeaderOptions(t("Memory"))} />
       <Stack.Screen name="messaging" options={glassHeaderOptions(t("Messaging"))} />
       <Stack.Screen name="integrations" options={glassHeaderOptions(t("Integrations"))} />

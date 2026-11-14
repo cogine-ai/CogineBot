@@ -1,5 +1,19 @@
 // Seeded from the current Web catalog; mobile-specific messages are translated here.
 export const HI_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Slack कार्यस्थान",
+  "Slack installation is unavailable.": "Slack इंस्टॉलेशन उपलब्ध नहीं है।",
+  "Slack request unconfirmed": "Slack अनुरोध की पुष्टि नहीं हुई",
+  "Slack authorization expired. Try again.": "Slack प्राधिकरण की अवधि समाप्त हो गई। फिर से प्रयास करें।",
+  "Slack authorization cancelled. Try again.": "Slack प्राधिकरण रद्द कर दिया गया। फिर से प्रयास करें।",
+  "Disconnect Slack?": "Slack का कनेक्शन हटाएँ?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "बॉट इस कार्यस्थान में संदेश प्राप्त करना और भेजना बंद कर देगा। बातचीत का इतिहास CogineBot में बना रहेगा।",
+  "Bot unavailable": "बॉट उपलब्ध नहीं है",
+  Unavailable: "उपलब्ध नहीं है",
+  "Reconnect required": "फिर से कनेक्ट करना आवश्यक है",
+  "Bot for Slack": "Slack के लिए बॉट",
+  "Connect Slack": "Slack कनेक्ट करें",
+  "Waiting for Slack authorization": "Slack प्राधिकरण की प्रतीक्षा है",
   "Allow writing": "लिखने की अनुमति दें",
   "Base URL": "आधार URL",
   "Brain label": "ब्रेन लेबल",

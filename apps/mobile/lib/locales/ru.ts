@@ -1,4 +1,18 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Slack workspaces": "Рабочие пространства Slack",
+  "Slack installation is unavailable.": "Установка Slack недоступна.",
+  "Slack request unconfirmed": "Результат запроса Slack не подтверждён",
+  "Slack authorization expired. Try again.": "Срок авторизации Slack истёк. Попробуйте снова.",
+  "Slack authorization cancelled. Try again.": "Авторизация Slack отменена. Попробуйте снова.",
+  "Disconnect Slack?": "Отключить Slack?",
+  "The bot will stop receiving and sending messages in this workspace. Conversation history stays in CogineBot.":
+    "Бот перестанет получать и отправлять сообщения в этом рабочем пространстве. История переписки останется в CogineBot.",
+  "Bot unavailable": "Бот недоступен",
+  Unavailable: "Недоступно",
+  "Reconnect required": "Требуется переподключение",
+  "Bot for Slack": "Бот для Slack",
+  "Connect Slack": "Подключить Slack",
+  "Waiting for Slack authorization": "Ожидание авторизации Slack",
   "Allow writing": "Разрешить запись",
   "Base URL": "Базовый URL",
   "Brain label": "Название хранилища",

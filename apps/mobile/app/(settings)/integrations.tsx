@@ -114,10 +114,9 @@ export default function Integrations() {
   const [query, setQuery] = useState("");
   const [catalogFilter, setCatalogFilter] = useState<"all" | "connected">("all");
   const [notice, setNotice] = useState<string | null>(null);
-  const [messagingLink, setMessagingLink] = useState<{
-    url: string;
-    scope: ReturnType<typeof captureMobileScope>;
-  } | null>(null);
+  const [messagingScope, setMessagingScope] = useState<ReturnType<
+    typeof captureMobileScope
+  > | null>(null);
   const [messagingLinkError, setMessagingLinkError] = useState(false);
   const messagingRequest = useRef<AbortController | null>(null);
   const [unconfirmedRemovalId, setUnconfirmedRemovalId] = useState<string | null>(null);
@@ -179,7 +178,7 @@ export default function Integrations() {
       subscribeMobileScope(() => {
         invalidateSourceReview();
         messagingRequest.current?.abort();
-        setMessagingLink(null);
+        setMessagingScope(null);
         setMessagingLinkError(false);
         setCredential("");
         setSourceKind(null);
@@ -307,19 +306,16 @@ export default function Integrations() {
       isIntegrationsScopeCurrent(owner);
     setMessagingLinkError(false);
     try {
-      const { available, managementUrl, workspaces } = await rpc<{
+      const { available, workspaces } = await rpc<{
         available: boolean;
-        managementUrl?: string;
         workspaces: unknown[];
       }>("messaging/installations/list", {}, { signal: controller.signal });
       if (current()) {
-        setMessagingLink(
-          managementUrl && (available || workspaces?.length) ? { url: managementUrl, scope } : null,
-        );
+        setMessagingScope(available || workspaces?.length ? scope : null);
       }
     } catch {
       if (current()) {
-        setMessagingLink(null);
+        setMessagingScope(null);
         setMessagingLinkError(true);
       }
     }
@@ -1363,14 +1359,13 @@ export default function Integrations() {
           />
         ) : null}
 
-        {!detailItem && messagingLink && isMobileScopeCurrent(messagingLink.scope) ? (
+        {!detailItem && messagingScope && isMobileScopeCurrent(messagingScope) ? (
           <NativeActionButton
-            label={t("Manage Slack messaging in browser")}
+            label={t("Slack workspaces")}
             fill={false}
             prominence="secondary"
             onPress={() => {
-              if (isMobileScopeCurrent(messagingLink.scope))
-                void Linking.openURL(messagingLink.url);
+              if (isMobileScopeCurrent(messagingScope)) router.push("/slack-workspaces");
             }}
           />
         ) : null}
