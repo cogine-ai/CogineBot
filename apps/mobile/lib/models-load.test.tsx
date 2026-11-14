@@ -2912,13 +2912,17 @@ it("receipt-only recovery keeps activation current and failed reads keep the dra
 });
 
 it.each([
-  ["create", false],
-  ["update", false],
-  ["create", true],
-  ["update", true],
+  ["create", "metadata"],
+  ["update", "metadata"],
+  ["create", "rejected"],
+  ["update", "rejected"],
+  ["create", "concurrent"],
+  ["update", "concurrent"],
 ] as const)(
-  "%s retains added trigger identities through lost writes (rejected follow-up=%s)",
-  async (operation, rejectFollowUp) => {
+  "%s retains added trigger identities through lost writes (transition=%s)",
+  async (operation, transition) => {
+    const rejectFollowUp = transition === "rejected";
+    const concurrent = transition === "concurrent";
     if (operation === "create") state.params = { botId: "bot-1" };
     const normal = state.rpc.getMockImplementation()!;
     triggerSettings({
@@ -2967,7 +2971,7 @@ it.each([
               : 1,
           })) ?? saved.nativeTriggers,
       };
-      if (writes.length <= 2) throw new Error("Lost committed response");
+      if (writes.length <= (concurrent ? 3 : 2)) throw new Error("Lost committed response");
       return saved;
     });
     await act(async () => root.render(<RoutineDetail />));
@@ -3004,11 +3008,33 @@ it.each([
       );
     await save();
     if (!rejectFollowUp) expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    if (concurrent) {
+      saved.nativeTriggers[1] = {
+        ...saved.nativeTriggers[1],
+        version: 2,
+        spec: { ...saved.nativeTriggers[1].spec, calendarId: "b-concurrent" },
+        state: { cursor: "keep" },
+        leaseId: "keep-lease",
+      };
+      await edit(routineInput("Name"), "Third metadata");
+      await save();
+      expect(writes[2]).not.toHaveProperty("nativeTriggers");
+    }
+    const beforeEdit = structuredClone(saved.nativeTriggers);
     await edit(
       container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
       "a-edited",
     );
     await save();
+    if (concurrent) {
+      expect(container.textContent).toContain("This native trigger changed");
+      expect(writes).toHaveLength(3);
+      expect(saved.nativeTriggers).toEqual(beforeEdit);
+      expect(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!.value,
+      ).toBe("a-edited");
+      return;
+    }
     if (rejectFollowUp) {
       expect(container.textContent).toContain("Synthetic first-dispatch refusal");
       expect(

@@ -268,14 +268,40 @@ it("does not restore cancelled trigger edits when a new edit changes only the na
       input: {
         mutationId: "first",
         name: "First",
-        nativeTriggers: [{ connectionId: "connection", spec: { kind: "calendar.event_changed" } }],
+        nativeTriggers: [
+          {
+            connectionId: "connection",
+            spec: {
+              kind: "calendar.event_changed",
+              calendarId: "calendar",
+              target: { kind: "calendar" },
+            },
+          },
+        ],
       },
     },
   };
-  const send = vi.fn(async (_request: Parameters<typeof saveRoutineDraft>[1]) => ({
-    ...baseline,
-    name: "First",
-  }));
+  const send = vi.fn(
+    async (_request: Parameters<typeof saveRoutineDraft>[1]) =>
+      ({
+        ...baseline,
+        name: "First",
+        nativeTriggers: [
+          {
+            id: "committed-trigger",
+            version: 1,
+            routineId: baseline.id,
+            connectionId: "connection",
+            spec: {
+              kind: "calendar.event_changed",
+              calendarId: "calendar",
+              target: { kind: "calendar" },
+            },
+            armedAt: "2020-01-01T00:00:00Z",
+          },
+        ],
+      }) as Routine,
+  );
   await saveRoutineDraft(
     state,
     { operation: "update", input: { routineId: baseline.id, name: "New edit" } },
@@ -453,5 +479,78 @@ it.each(["BAD_REQUEST", "FORBIDDEN", "CONFLICT", "NOT_FOUND"])(
     expect(receipts.size).toBe(5);
     expect(state.pending).toBeUndefined();
     expect(state.recovered).toBeUndefined();
+  },
+);
+
+it.each(["none", "change", "add", "remove"])(
+  "does not adopt external trigger preconditions through metadata-only retries: %s",
+  async (concurrent) => {
+    const original = {
+      ...baseline,
+      nativeTriggers: ["a", "b"].map((id) => ({
+        id,
+        version: 1,
+        routineId: baseline.id,
+        connectionId: "connection",
+        armedAt: "2020-01-01T00:00:00Z",
+        spec: { kind: "calendar.event_changed", calendarId: id, target: { kind: "calendar" } },
+      })),
+    } as Routine;
+    const state: RoutineSaveState = {};
+    let saved = structuredClone(original);
+    const receipts = new Set<string>();
+    const send = vi.fn(async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+      if (receipts.has(request.input.mutationId!)) return structuredClone(saved);
+      receipts.add(request.input.mutationId!);
+      saved = { ...saved, ...request.input } as Routine;
+      if (receipts.size <= 2) throw new Error("Lost committed response");
+      return saved;
+    });
+    const metadata = (name: string) => ({
+      operation: "update" as const,
+      input: { routineId: original.id, name },
+    });
+    await expect(
+      saveRoutineDraft(state, metadata("First"), original, send, () => true),
+    ).rejects.toThrow("Lost committed response");
+    if (concurrent === "change")
+      saved.nativeTriggers![1] = {
+        ...saved.nativeTriggers![1]!,
+        version: 2,
+        spec: { ...saved.nativeTriggers![1]!.spec, calendarId: "concurrent" },
+      } as NonNullable<Routine["nativeTriggers"]>[number];
+    if (concurrent === "remove") saved.nativeTriggers!.pop();
+    if (concurrent === "add") saved.nativeTriggers!.push({ ...saved.nativeTriggers![1]!, id: "c" });
+    await expect(
+      saveRoutineDraft(state, metadata("Second"), original, send, () => true),
+    ).rejects.toThrow("Lost committed response");
+    expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+    const before = structuredClone(saved);
+    const edit = {
+      operation: "update" as const,
+      input: {
+        routineId: original.id,
+        name: "Second",
+        nativeTriggers: original.nativeTriggers!.map((t) => ({
+          id: t.id,
+          expectedVersion: t.version,
+          connectionId: t.connectionId,
+          spec: t.id === "a" ? { ...t.spec, calendarId: "a2" } : t.spec,
+        })),
+      },
+    };
+    if (concurrent === "none") {
+      await expect(
+        saveRoutineDraft(state, edit, original, send, () => true),
+      ).resolves.toMatchObject({ id: original.id });
+      expect(receipts.size).toBe(3);
+    } else {
+      await expect(saveRoutineDraft(state, edit, original, send, () => true)).rejects.toThrow(
+        "This native trigger changed",
+      );
+      expect(saved).toEqual(before);
+      expect(receipts.size).toBe(2);
+      expect(send).toHaveBeenCalledTimes(4);
+    }
   },
 );

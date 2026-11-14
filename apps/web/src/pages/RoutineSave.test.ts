@@ -172,9 +172,11 @@ it.each(["create", "update"])(
   },
 );
 
-it.each([false, true])(
-  "Web preserves trigger identities across lost writes (rejected follow-up=%s)",
-  async (rejectFollowUp) => {
+it.each(["metadata", "rejected", "concurrent"])(
+  "Web preserves trigger identities across lost writes (transition=%s)",
+  async (transition) => {
+    const rejectFollowUp = transition === "rejected";
+    const concurrent = transition === "concurrent";
     const h = fixture("create");
     h.scope.routineDraft.nativeTriggers = ["a", "b", "c"].map((calendarId, index) => ({
       ...draftFromNativeRoutineTrigger({
@@ -218,7 +220,7 @@ it.each([false, true])(
               : 1,
           })) ?? saved.nativeTriggers,
       };
-      if (writes.length <= 2) throw Error("Lost committed response");
+      if (writes.length <= (concurrent ? 3 : 2)) throw Error("Lost committed response");
       return saved;
     };
     h.scope.rpc.routines = { create: send, update: send };
@@ -227,9 +229,31 @@ it.each([false, true])(
     if (rejectFollowUp) h.scope.routineDraft.nativeTriggers[0].calendarId = "a2";
     await h.run();
     if (!rejectFollowUp) expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    if (concurrent) {
+      saved.nativeTriggers[1] = {
+        ...saved.nativeTriggers[1],
+        version: 2,
+        spec: { ...saved.nativeTriggers[1].spec, calendarId: "b-concurrent" },
+        state: { cursor: "keep" },
+        leaseId: "keep-lease",
+      };
+      h.scope.routineDraft.name = "Third metadata";
+      await h.run();
+      expect(writes[2]).not.toHaveProperty("nativeTriggers");
+    }
+    const beforeEdit = structuredClone(saved.nativeTriggers);
     const [a, b, c] = h.scope.routineDraft.nativeTriggers;
     h.scope.routineDraft.nativeTriggers = [b, c, { ...a, calendarId: "a-edited" }];
     await h.run();
+    if (concurrent) {
+      expect(h.scope.setRoutineError).toHaveBeenLastCalledWith(
+        "This native trigger changed. Read it again before saving.",
+      );
+      expect(writes).toHaveLength(3);
+      expect(saved.nativeTriggers).toEqual(beforeEdit);
+      expect(h.scope.routineDraft.nativeTriggers[2].calendarId).toBe("a-edited");
+      return;
+    }
     if (rejectFollowUp) {
       expect(h.scope.setRoutineError).toHaveBeenLastCalledWith("Synthetic first-dispatch refusal");
       expect(h.scope.routineDraft.nativeTriggers[2].calendarId).toBe("a-edited");

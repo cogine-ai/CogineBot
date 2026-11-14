@@ -614,6 +614,140 @@ describePostgres("routine save transaction regressions", () => {
     },
   );
 
+  it.each(
+    ["none", "change", "add", "remove"].flatMap((concurrent) =>
+      ["lost", "first rejection", "recovery refusal"].map((transition) => ({
+        concurrent,
+        transition,
+      })),
+    ),
+  )(
+    "keeps the editor trigger baseline across metadata replay: $concurrent / $transition",
+    async ({ concurrent, transition }) => {
+      const o = await fixture(),
+        make = await connected(o),
+        state: RoutineSaveState = {};
+      const calls: Array<Parameters<typeof saveRoutineDraft>[1]> = [];
+      const receipts = new Set<string>();
+      let first: Routine | undefined;
+      const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+        calls.push(structuredClone(request));
+        const response = await raw(o.cookie, `routines/${request.operation}`, request.input);
+        const body = await response.json();
+        if (!response.ok) throw { code: body.json?.code ?? body.code, status: response.status };
+        const saved = body.json as Routine;
+        first ??= saved;
+        if (!receipts.has(String(request.input.mutationId))) {
+          receipts.add(String(request.input.mutationId));
+          throw new Error("Lost committed response");
+        }
+        return saved;
+      };
+      const draft = (name: string, a = "a1", invalid = false) => ({
+        operation: "create" as const,
+        triggerKeys: ["a", "b", "c"],
+        input: {
+          botId: o.bot.id,
+          name,
+          prompt: "Synthetic",
+          crons: [invalid ? "" : "0 9 * * *"],
+          nativeTriggers: [make(a), make("b-original"), make("c")],
+        },
+      });
+      const attempt = (name: string, a = "a1", invalid = false) =>
+        saveRoutineDraft(state, draft(name, a, invalid), null, send, () => true);
+      await expect(attempt("First")).rejects.toThrow("Lost committed response");
+      await expect(attempt("Metadata one")).rejects.toThrow("Lost committed response");
+      expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+      const [a, b, c] = first!.nativeTriggers!;
+      if (concurrent !== "none") {
+        const inputs = first!.nativeTriggers!.map(inputOf);
+        if (concurrent === "change")
+          inputs[1] = { ...inputOf(b!), spec: make("b-concurrent").spec };
+        if (concurrent === "remove") inputs.splice(1, 1);
+        await rpc(o.cookie, "routines/update", {
+          routineId: first!.id,
+          nativeTriggerBaseline: first!.nativeTriggers!.map(({ id, version }) => ({ id, version })),
+          nativeTriggers: concurrent === "add" ? [...inputs, make("d-concurrent")] : inputs,
+        });
+      }
+      for (const row of concurrent === "remove" ? [c!] : [b!, c!])
+        await database.prisma.nativeRoutineTrigger.update({
+          where: { id: row.id },
+          data: {
+            state: { cursor: row.id },
+            leaseId: `lease-${row.id}`,
+            leaseUntil: new Date("2030-01-01"),
+          },
+        });
+      const rows = () =>
+        database.prisma.nativeRoutineTrigger.findMany({
+          where: { routineId: first!.id },
+          orderBy: { id: "asc" },
+        });
+      const before = await rows();
+      if (transition === "recovery refusal") {
+        const membership = await database.prisma.spaceMember.findUniqueOrThrow({
+          where: { spaceId_userId: { spaceId: o.actor.spaceId, userId: o.actor.userId } },
+        });
+        const pending = structuredClone(state);
+        await database.prisma.spaceMember.delete({ where: { id: membership.id } });
+        try {
+          await expect(attempt("Metadata two")).rejects.toMatchObject({
+            code: "FORBIDDEN",
+            status: 403,
+          });
+        } finally {
+          await database.prisma.spaceMember.create({ data: membership });
+        }
+        expect(state).toEqual(pending);
+      }
+      if (transition === "first rejection") {
+        await expect(attempt("Metadata two", "a1", true)).rejects.toMatchObject({
+          code: "BAD_REQUEST",
+          status: 400,
+        });
+      }
+      // Metadata is allowed to save despite concurrent trigger changes. It must
+      // not upgrade the stale trigger draft's write preconditions as a side effect.
+      await expect(attempt("Metadata two")).rejects.toThrow("Lost committed response");
+      expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+      if (transition !== "lost") {
+        await expect(attempt("Metadata three")).rejects.toThrow("Lost committed response");
+        expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+      }
+      expect(await rows()).toEqual(before);
+      const count = calls.length;
+      if (concurrent !== "none") {
+        await expect.soft(attempt("Edit A", "a2")).rejects.toThrow("This native trigger changed");
+        expect.soft(calls).toHaveLength(count + 1); // Receipt read only; no follow-up write.
+        expect.soft(await rows()).toEqual(before);
+        expect
+          .soft(
+            (await database.prisma.routine.findUniqueOrThrow({ where: { id: first!.id } })).name,
+          )
+          .toBe(transition === "lost" ? "Metadata two" : "Metadata three");
+      } else {
+        await expect(attempt("Edit A", "a2")).rejects.toThrow("Lost committed response");
+        await expect(attempt("Metadata four", "a2")).rejects.toThrow("Lost committed response");
+        await expect(attempt("Edit A again", "a3")).rejects.toThrow("Lost committed response");
+        const saved = await attempt("Edit A again", "a3");
+        expect(saved!.id).toBe(first!.id);
+        expect((await rows()).find((row) => row.id === a!.id)).toMatchObject({
+          version: 3,
+          spec: make("a3").spec,
+        });
+        expect((await rows()).filter((row) => row.id !== a!.id)).toEqual(
+          before.filter((row) => row.id !== a!.id),
+        );
+      }
+      expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(2);
+      expect((await rows()).length).toBe(
+        concurrent === "add" ? 4 : concurrent === "remove" ? 2 : 3,
+      );
+    },
+  );
+
   it("receipt-only update replay returns current activation after pause and resume", async () => {
     const o = await fixture();
     await update(o, { active: true });

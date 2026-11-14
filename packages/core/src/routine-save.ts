@@ -81,15 +81,13 @@ export async function saveRoutineDraft(
         oldTriggers ?? inputs(state.draftBaseline ?? state.baseline),
         nextTriggers ?? inputs(baseline),
       );
+    // A receipt reads current server state, not the original committed response.
+    // Metadata-only writes do not authorize adoption of those trigger versions.
+    let confirmedTriggers = state.baseline?.nativeTriggers ?? [];
     // Resolve the immutable submission even for a metadata-only follow-up. Its
     // draft keys and input order are the only association we may establish; later
     // receipt reads may return rows in a completely different order.
-    if (
-      triggersChanged ||
-      (!state.discarded &&
-        previous.triggerKeys?.length &&
-        previous.input.nativeTriggers !== undefined)
-    ) {
+    if (triggersChanged || previous.input.nativeTriggers !== undefined) {
       // Do not adopt concurrent versions blindly. Only our acknowledged configuration
       // may supply identities for formerly unsaved triggers.
       const original = state.baseline?.nativeTriggers ?? [];
@@ -134,6 +132,7 @@ export async function saveRoutineDraft(
         }
       }
       state.triggerIds = triggerIds;
+      confirmedTriggers = rows;
       if (triggersChanged) {
         patch.nativeTriggers = (nextTriggers ?? inputs(baseline)).map((item, index) => {
           const key = desired.triggerKeys?.[index];
@@ -164,7 +163,9 @@ export async function saveRoutineDraft(
     }
     desired.operation = "update";
     desired.input = { ...patch, routineId: saved.id, mutationId: newRoutineMutationId() };
-    state.baseline = saved;
+    // Ordinary fields may use the current read. Trigger preconditions stay paired
+    // with the editor's confirmed configuration until explicitly verified above.
+    state.baseline = { ...saved, nativeTriggers: confirmedTriggers };
   } else state.baseline = baseline;
   if (!current()) return;
   state.pending = copy({
