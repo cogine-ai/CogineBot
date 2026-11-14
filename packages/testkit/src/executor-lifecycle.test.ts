@@ -9,12 +9,13 @@ import type {
 import type { MessageBlock } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { blocksToAgentHistoryText, pageReplyTaskPrompt, withPageReplyContext } from "@rakazo/core";
-import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
+import { approvalEffectKey, toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import {
   createThreadEvents,
   createThreadMessage,
   loadRunHistoryMessages,
   Prisma,
+  runAsTenant,
   searchHistory,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -150,6 +151,203 @@ describeIntegration("run executor lifecycle", () => {
       }),
     ).toBe(1);
   });
+
+  it.each(["remember", "save_shared_memory"] as const)(
+    "recovers a %s commit after the original worker loses its effect result",
+    async (name) => {
+      const seeded = await seedRun(`memory-receipt-${name}`, "Save the synthetic preference");
+      const args = { path: "fixture-memory.md", content: "Original preference" };
+      const store = new MarkdownMemoryStore(handles.prisma);
+      const results: unknown[] = [];
+      const recoveredKey = toolEffectIdempotencyKey(seeded.run.id, name, args);
+      // The first executor can commit the memory revision but cannot acknowledge
+      // this one effect. All other lifecycle writes still go to PostgreSQL.
+      const unacknowledged = handles.prisma.$extends({
+        query: {
+          externalEffect: {
+            async updateMany({ args: update, query }) {
+              if (update.data.status === "completed" && typeof update.where?.id === "string") {
+                const effect = await handles.prisma.externalEffect.findUnique({
+                  where: { id: update.where.id },
+                });
+                if (effect?.idempotencyKey === recoveredKey) return { count: 0 };
+              }
+              return query(update);
+            },
+          },
+        },
+      }) as typeof handles.prisma;
+      const executor = (prisma: typeof handles.prisma, executionId: string) =>
+        createRunExecutor({
+          prisma,
+          events: createThreadEvents(prisma),
+          runtime: {
+            describe: () => {
+              const descriptor = handles.runtime.describe();
+              return {
+                ...descriptor,
+                capabilities: { ...descriptor.capabilities, scripted: false },
+              };
+            },
+            async *run(request) {
+              results.push(await request.executeTool!(name, args, executionId));
+              yield { type: "done", text: "Saved preference" };
+            },
+          },
+          sandbox: handles.sandbox,
+          memory: store,
+          memoryProviders: { resolve: async () => null },
+          home: new LocalAgentHomeStore(dataDir),
+          connector: handles.connector,
+          secrets: [],
+          secretStore: new EncryptedSecretStore("synthetic-memory-recovery-key"),
+          jobs: handles.jobs,
+          deploymentModelConfigured: true,
+        });
+
+      vi.stubEnv("PI_DEFAULT_PROVIDER", "local");
+      vi.stubEnv("PI_DEFAULT_MODEL", "fixture-model");
+      try {
+        await runAsTenant(seeded.me, () =>
+          executor(unacknowledged, "initial-tool-call").continueRun(seeded.run.id, "first-worker"),
+        );
+        expect(results).toEqual([expect.objectContaining({ uncertain: true })]);
+        const effect = await handles.prisma.externalEffect.findUniqueOrThrow({
+          where: { idempotencyKey: recoveredKey },
+        });
+        expect(effect).toMatchObject({ status: "executing", result: null });
+        const document = await handles.prisma.memoryDocument.findFirstOrThrow({
+          where: { spaceId: seeded.me.spaceId, path: args.path },
+        });
+        await store.commit(
+          {
+            scope: name === "remember" ? "bot" : "user",
+            botId: name === "remember" ? seeded.bot.id : undefined,
+            path: args.path,
+            content: "Later edit",
+            expectedRevision: 1,
+          },
+          {
+            ...seeded.me,
+            operationId: "later-edit",
+            traceId: "later-edit",
+            signal: new AbortController().signal,
+          },
+        );
+        // Restore the state a different worker observes after an expired lease.
+        await handles.prisma.run.update({
+          where: { id: seeded.run.id },
+          data: { status: "running", leaseOwner: "first-worker", leaseExpiresAt: new Date(0) },
+        });
+        await runAsTenant(seeded.me, () =>
+          executor(handles.prisma, "replacement-tool-call").continueRun(
+            seeded.run.id,
+            "recovery-worker",
+          ),
+        );
+
+        const result =
+          name === "remember" ? { ok: true } : { ok: true, path: args.path, revision: 1 };
+        expect(results.at(-1)).toEqual(result);
+        await expect(
+          handles.prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+        ).resolves.toMatchObject({
+          status: "completed",
+          result,
+        });
+        await expect(
+          handles.prisma.memoryDocument.findUniqueOrThrow({
+            where: { id: document.id },
+            include: { revisions: { orderBy: { revision: "asc" } } },
+          }),
+        ).resolves.toMatchObject({
+          content: "Later edit",
+          revision: 2,
+          revisions: [
+            { revision: 1, sourceRunId: seeded.run.id },
+            { revision: 2, content: "Later edit" },
+          ],
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "does not write after a remote Stop wins before the transaction (after conflict: %s)",
+    async (afterConflict) => {
+      const seeded = await seedRun(
+        `memory-stop-${afterConflict}`,
+        "Save the synthetic preference",
+        {
+          status: "running",
+          leaseOwner: "fixture-worker",
+          leaseFence: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      );
+      const path = "fixture-memory-stop.md";
+      const request = {
+        scope: "user" as const,
+        path,
+        content: "Synthetic preference",
+        sourceRunId: seeded.run.id,
+        sourceThreadId: seeded.thread.id,
+        idempotencyKey: "fixture-memory-stop",
+        runLease: { owner: "fixture-worker", fence: 1 },
+      };
+      const context = {
+        ...seeded.me,
+        operationId: "fixture-stop",
+        traceId: "fixture-stop",
+        signal: new AbortController().signal,
+      };
+      const stop = () =>
+        handles.prisma.run.update({
+          where: { id: seeded.run.id },
+          data: { status: "cancelled", leaseOwner: null, leaseExpiresAt: null },
+        });
+      let attempts = 0;
+      const stoppedPrisma = {
+        async $transaction<T>(
+          run: (tx: Prisma.TransactionClient) => Promise<T>,
+          options: { isolationLevel: Prisma.TransactionIsolationLevel },
+        ) {
+          attempts += 1;
+          if (attempts === 1 && afterConflict) {
+            try {
+              return await handles.prisma.$transaction(async (tx) => {
+                await run(tx);
+                throw Object.assign(new Error("synthetic serialization failure"), {
+                  code: "P2034",
+                });
+              }, options);
+            } finally {
+              // The first attempt is rolled back before Stop acquires the Run row.
+              await stop();
+            }
+          }
+          return handles.prisma.$transaction(run, options);
+        },
+      } as typeof handles.prisma;
+      if (!afterConflict) await stop();
+      const store = new MarkdownMemoryStore(stoppedPrisma);
+      await expect(
+        runAsTenant(seeded.me, () => store.commit(request, context)),
+      ).rejects.toMatchObject({
+        name: "RunHistoryWriteError",
+      });
+      expect(context.signal.aborted).toBe(false);
+      expect(attempts).toBe(afterConflict ? 2 : 1);
+      expect(
+        await handles.prisma.memoryDocument.count({ where: { spaceId: seeded.me.spaceId, path } }),
+      ).toBe(0);
+      expect(
+        await handles.prisma.memoryRevision.count({ where: { sourceRunId: seeded.run.id } }),
+      ).toBe(0);
+    },
+  );
 
   it("recreates the approval pause when an intended effect was interrupted before the card", async () => {
     const prompt = "write this to the destination crm as a note";
@@ -3307,6 +3505,52 @@ describeIntegration("run executor lifecycle", () => {
         await cleanupHeldRuns(seeded.bot.id, () => {
           list.mockRestore();
           runtime.mockRestore();
+          held.restore();
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "does not persist deferred memory after remote Stop (steering: %s)",
+    async (steering) => {
+      const prompt = "remember the synthetic deferred memory preference";
+      const fixture = steering
+        ? await seedSteeringContinuation("deferred-stop-steering", prompt)
+        : null;
+      const seeded = fixture?.seeded ?? (await seedRun("deferred-stop-direct", prompt));
+      const runId = fixture?.continuationRunId ?? seeded.run.id;
+      const held = holdContinuationJobs(seeded.bot.id);
+      const commit = MarkdownMemoryStore.prototype.commit;
+      let locallyAbortedAtWrite: boolean | undefined;
+      const memory = vi
+        .spyOn(MarkdownMemoryStore.prototype, "commit")
+        .mockImplementation(async function (this: MarkdownMemoryStore, request, context) {
+          if (request.sourceRunId === runId) {
+            // Stop wins in the database after the worker has entered the commit call.
+            await handles.prisma.run.update({
+              where: { id: runId },
+              data: { status: "cancelled", leaseOwner: null, leaseExpiresAt: null },
+            });
+            locallyAbortedAtWrite = context.signal.aborted;
+          }
+          return commit.call(this, request, context);
+        });
+      try {
+        await handles.executor.continueRun(runId, "deferred-memory-stop-worker");
+        expect(locallyAbortedAtWrite).toBe(false);
+        await expect(
+          handles.prisma.run.findUniqueOrThrow({ where: { id: runId } }),
+        ).resolves.toMatchObject({ status: "cancelled" });
+        expect(await handles.prisma.memoryRevision.count({ where: { sourceRunId: runId } })).toBe(
+          0,
+        );
+        expect(await handles.prisma.event.count({ where: { runId, type: "memory.revised" } })).toBe(
+          0,
+        );
+      } finally {
+        await cleanupHeldRuns(seeded.bot.id, () => {
+          memory.mockRestore();
           held.restore();
         });
       }

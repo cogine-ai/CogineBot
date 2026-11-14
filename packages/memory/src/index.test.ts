@@ -108,6 +108,27 @@ describe("memory commit retry receipts", () => {
     expect(findUnique).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])(
+    "checks for a receipt after the final serialization conflict (committed: %s)",
+    async (committed) => {
+      const conflict = Object.assign(new Error("serialization conflict"), { code: "P2034" });
+      const transaction = vi.fn().mockRejectedValue(conflict);
+      const findUnique = vi.fn().mockResolvedValue(committed ? receipt() : null);
+      const store = new MarkdownMemoryStore({
+        $transaction: transaction,
+        memoryRevision: { findUnique },
+      } as never);
+      const result = store.commit(request, context);
+      if (committed) {
+        await expect(result).resolves.toMatchObject({ revision: 2, content: request.content });
+      } else {
+        await expect(result).rejects.toBe(conflict);
+      }
+      expect(transaction).toHaveBeenCalledTimes(3);
+      expect(findUnique).toHaveBeenCalledOnce();
+    },
+  );
+
   it("does not reinterpret a non-unique database failure as a successful retry", async () => {
     const fault = new Error("database unavailable");
     const findUnique = vi.fn();

@@ -44,6 +44,7 @@ import type {
   ConnectorTool,
   JobPublisher,
   ManagedConnectorProvider,
+  MemoryCommitReceiptRequest,
   MemoryStore,
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
@@ -646,6 +647,14 @@ import {
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
 import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
+
+const MEMORY_MUTATION_TOOLS = new Set([
+  "remember",
+  "save_shared_memory",
+  "save_memory",
+  "forget_memory",
+]);
+const MEMORY_MUTATION_EFFECT_PREFIX = "memory-write:";
 
 const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
@@ -7020,6 +7029,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (usesApprovalKey && occurrence === 0
               ? approvalEffectKey(runId, replayEffectToolName, effectArgs)
               : toolEffectIdempotencyKey(runId, replayEffectToolName, effectArgs, occurrence));
+          const memoryMutation = MEMORY_MUTATION_TOOLS.has(name) && !viaConnector;
+          const legacyMemoryIntent = (effect: { id: string; status: string }) =>
+            memoryMutation &&
+            // Forget was always approval-gated and claimed before provider dispatch.
+            name !== "forget_memory" &&
+            effect.status === "intended" &&
+            !effect.id.startsWith(MEMORY_MUTATION_EFFECT_PREFIX);
           // Connector read-only hints must not bypass approval, review, or replay decisions.
           const prepareEffectRequest =
             pageMode === "write"
@@ -7060,6 +7076,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   consumedEffectIds,
                 ));
               if (!prior) return policyBlock;
+              if (legacyMemoryIntent(prior)) return uncertainEffectResult(name);
               if (prior.status === "approved" || prior.status === "intended")
                 return settlePolicyBlock(prior, prior.status);
               applied = { duplicate: true, effect: prior };
@@ -7092,7 +7109,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                               data,
                               lockRun: (tx) => renewRunLease(deps, runId, workerId, fence, tx),
                             })
-                        : undefined,
+                        : memoryMutation
+                          ? (data) =>
+                              deps.prisma.externalEffect.create({
+                                data: {
+                                  ...data,
+                                  id: `${MEMORY_MUTATION_EFFECT_PREFIX}${randomUUID()}`,
+                                },
+                              })
+                          : undefined,
                     );
             }
           } catch (error) {
@@ -7456,6 +7481,61 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const result = await readCompletedPageToolResult(pageToolContext(), args);
             return result === undefined ? undefined : replayPageResult(result);
           };
+          const markdownMemoryWrite = name === "remember" || name === "save_shared_memory";
+          const memoryReceiptRequest = (effect: { id: string }): MemoryCommitReceiptRequest => {
+            const path = String(args.path ?? "").trim();
+            return {
+              ...(name === "remember"
+                ? { scope: "bot", botId: bot.id, path: path || "MEMORY.md" }
+                : { scope: "user", path }),
+              sourceRunId: runId,
+              sourceThreadId: thread.id,
+              idempotencyKey: `memory-effect:${effect.id}`,
+            };
+          };
+          const recoverMemoryWrite = async (effect: {
+            id: string;
+            kind: string;
+            status: string;
+            request: unknown;
+          }) => {
+            const status = effect.status;
+            if (
+              !markdownMemoryWrite ||
+              (status !== "executing" && status !== "uncertain") ||
+              effect.kind !== name ||
+              stableJsonValue(effect.request) !== stableJsonValue(args)
+            )
+              return undefined;
+            const request = memoryReceiptRequest(effect);
+            const saved = await deps.memory.readCommitReceipt(request, context);
+            if (name === "save_shared_memory" && saved?.content !== String(args.content ?? ""))
+              return undefined;
+            if (!saved) return undefined;
+            const result =
+              name === "remember"
+                ? { ok: true }
+                : { ok: true, path: saved.path, revision: saved.revision };
+            const settled = await deps.prisma.$transaction(async (tx) => {
+              if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+              return completeExternalEffect(
+                tx,
+                effect.id,
+                status,
+                result,
+                run.origin === "bot_peer" && applied?.effect.requiresPeerApprovalRecheck
+                  ? approvedActionReceipt(result, "result")
+                  : undefined,
+              );
+            });
+            if (settled) return result;
+            const current = await deps.prisma.externalEffect.findUnique({
+              where: { id: effect.id },
+            });
+            return current?.status === "completed"
+              ? (current.result ?? result)
+              : uncertainEffectResult(name);
+          };
           const recoverPageWrite = async (effect: { id: string; status: string }) => {
             if (pageMode !== "write" || effect.status !== "executing") return undefined;
             const result = await recoverSavedPageFromTool(pageToolContext(), args);
@@ -7520,10 +7600,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
             if (current) {
               const retryGate = resolveDuplicateEffectGate(current, name);
-              if (retryGate.action === "return") return replayPageResult(retryGate.result);
+              if (retryGate.action === "return") {
+                return (await recoverMemoryWrite(current)) ?? replayPageResult(retryGate.result);
+              }
               if (retryGate.action === "uncertain") {
                 const recovered =
-                  (await recoverSubmittedLogin(current)) ?? (await recoverPageWrite(current));
+                  (await recoverSubmittedLogin(current)) ??
+                  (await recoverPageWrite(current)) ??
+                  (await recoverMemoryWrite(current));
                 if (recovered !== undefined) return recovered;
                 return settleUncertainEffect(
                   deps.prisma,
@@ -7719,8 +7803,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
 
           if (applied?.duplicate) {
+            // Older workers could write while the effect remained intended.
+            if (legacyMemoryIntent(applied.effect)) return uncertainEffectResult(name);
             const gate = resolveDuplicateEffectGate(applied.effect, name);
             if (gate.action === "return") {
+              const recovered = await recoverMemoryWrite(applied.effect);
+              if (recovered !== undefined) return recovered;
               if (secretDestination && !secretDestination.destination) {
                 const replacementSecret = await deps.prisma.secret.findFirst({
                   where: {
@@ -7780,7 +7868,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else if (gate.action === "uncertain") {
               const recovered =
                 (await recoverSubmittedLogin(applied.effect)) ??
-                (await recoverPageWrite(applied.effect));
+                (await recoverPageWrite(applied.effect)) ??
+                (await recoverMemoryWrite(applied.effect));
               if (recovered !== undefined) return recovered;
               const recovery = nativeCheckpointRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
@@ -7821,6 +7910,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : Promise.resolve(true);
           const finish = async (result: unknown, outcome?: "result" | "error") =>
             (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
+          const claimMemoryWrite = async () => {
+            context.signal.throwIfAborted();
+            const claimed = await deps.prisma.$transaction(async (tx) => {
+              if (!(await renewRunLease(deps, runId, workerId, fence, tx))) return false;
+              context.signal.throwIfAborted();
+              return claimedEffect || !applied || claimIntendedEffect(tx, applied.effect.id);
+            });
+            if (!claimed) return uncertainEffectResult(name);
+            if (applied) claimedEffect = true;
+            return undefined;
+          };
           const finishPolicyBlock = async () => {
             const result = await finish(policyBlock, "error");
             trust.invalidateDestinationTrust();
@@ -8423,25 +8523,25 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // Re-read after a revision conflict so facts from competing runs survive.
             for (let attempt = 1; ; attempt += 1) {
               context.signal.throwIfAborted();
-              const snapshot = await deps.memory.read(
-                { scope: "bot", botId: bot.id, path },
-                context,
-              );
+              const request = { scope: "bot" as const, botId: bot.id, path };
+              const snapshot = await deps.memory.read(request, context);
               context.signal.throwIfAborted();
               const existing = snapshot.documents[0];
               const content = appendMemoryFact(existing?.content ?? "", String(args.content ?? ""));
               if (content === (existing?.content ?? "")) return finish({ ok: true });
               try {
+                const early = await claimMemoryWrite();
+                if (early !== undefined) return early;
                 context.signal.throwIfAborted();
                 await deps.memory.commit(
                   {
-                    scope: "bot",
-                    botId: bot.id,
-                    path,
+                    ...request,
                     content,
                     expectedRevision: existing?.revision ?? 0,
-                    sourceRunId: runId,
-                    sourceThreadId: thread.id,
+                    runLease: { owner: workerId, fence },
+                    ...(applied
+                      ? memoryReceiptRequest(applied.effect)
+                      : { sourceRunId: runId, sourceThreadId: thread.id }),
                   },
                   context,
                 );
@@ -8461,14 +8561,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const snapshot = await deps.memory.read({ scope: "user", path }, context);
             const expectedRevision = snapshot.documents[0]?.revision ?? 0;
             try {
+              const early = await claimMemoryWrite();
+              if (early !== undefined) return early;
+              context.signal.throwIfAborted();
               const saved = await deps.memory.commit(
                 {
                   scope: "user",
                   path,
                   content: String(args.content ?? ""),
                   expectedRevision,
-                  sourceRunId: runId,
-                  sourceThreadId: thread.id,
+                  runLease: { owner: workerId, fence },
+                  ...(applied
+                    ? memoryReceiptRequest(applied.effect)
+                    : { sourceRunId: runId, sourceThreadId: thread.id }),
                 },
                 context,
               );
@@ -9175,6 +9280,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(redacted);
           }
           if (name === "save_memory") {
+            const early = await claimMemoryWrite();
+            if (early !== undefined) return early;
+            context.signal.throwIfAborted();
             return finish(
               await semanticMemory!.save(
                 {
@@ -9193,6 +9301,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 error: "This memory provider does not support forgetting individual facts.",
               });
             }
+            const early = await claimMemoryWrite();
+            if (early !== undefined) return early;
+            context.signal.throwIfAborted();
             return finish(
               await semanticMemory.forget(
                 {
@@ -11425,6 +11536,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   content: mem.content,
                   sourceRunId: runId,
                   sourceThreadId: thread.id,
+                  runLease: { owner: workerId, fence },
                   ...(isSteeringContinuation
                     ? { idempotencyKey: `scripted-memory:${runId}:${turnIndex}:${memoryIndex}` }
                     : {}),

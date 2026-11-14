@@ -557,7 +557,7 @@ export async function completeExternalEffect(
     };
   },
   effectId: string,
-  expectedStatus: "intended" | "approved" | "executing",
+  expectedStatus: "intended" | "approved" | "executing" | "uncertain",
   result: unknown,
   approvalReceipt?: ApprovalReceipt,
 ): Promise<boolean> {

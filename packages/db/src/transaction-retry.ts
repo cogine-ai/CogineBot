@@ -1,7 +1,7 @@
 const MAX_TRANSACTION_ATTEMPTS = 3;
 const RETRYABLE_DATABASE_CODES = new Set(["40001", "40P01"]);
 
-function isRetryableTransactionConflict(error: unknown): boolean {
+export function isRetryableTransactionConflict(error: unknown): boolean {
   if (!error || typeof error !== "object" || !("code" in error)) return false;
   const prismaError = error as {
     code?: unknown;

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type {
   AdapterContext,
+  MemoryCommitReceiptRequest,
   MemoryCommitRequest,
+  MemoryCommitTarget,
   MemoryExportRequest,
   MemoryReadRequest,
   MemoryRevision,
@@ -13,7 +15,13 @@ import type {
 } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR, MemoryCommitIdentityError } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
-import { Prisma, withTransactionRetry } from "@rakazo/db";
+import {
+  assertRunCanWriteHistory,
+  isRetryableTransactionConflict,
+  Prisma,
+  RunHistoryWriteError,
+  withTransactionRetry,
+} from "@rakazo/db";
 
 export class MarkdownMemoryStore implements MemoryStore {
   constructor(private readonly prisma: PrismaClient) {}
@@ -72,15 +80,10 @@ export class MarkdownMemoryStore implements MemoryStore {
   }
 
   async commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision> {
-    if (request.idempotencyKey === "") {
-      throw new MemoryCommitIdentityError("empty");
-    }
     const receiptId =
       request.idempotencyKey === undefined
         ? undefined
-        : `memory-commit:${createHash("sha256")
-            .update(JSON.stringify([context.spaceId, context.userId, request.idempotencyKey]))
-            .digest("hex")}`;
+        : memoryCommitReceiptId(request.idempotencyKey, context);
     // A save replaces the current content and appends its history atomically.
     // Conflicts retry the whole transaction so revision numbers use fresh state.
     try {
@@ -88,8 +91,27 @@ export class MarkdownMemoryStore implements MemoryStore {
         this.prisma.$transaction(
           async (tx) => {
             if (receiptId) {
-              const committed = await committedMemory(tx, receiptId, request, context);
+              const committed = await committedMemory(
+                tx,
+                receiptId,
+                request,
+                context,
+                request.content,
+              );
               if (committed) return committed;
+            }
+            if (request.runLease) {
+              context.signal.throwIfAborted();
+              const run = await assertRunCanWriteHistory(tx, request.sourceRunId, {
+                lease: request.runLease,
+              });
+              if (
+                run?.status !== "running" ||
+                run.leaseOwner !== request.runLease.owner ||
+                run.userId !== context.userId
+              )
+                throw new RunHistoryWriteError();
+              context.signal.throwIfAborted();
             }
             const existing = await tx.memoryDocument.findFirst({
               where: {
@@ -141,15 +163,33 @@ export class MarkdownMemoryStore implements MemoryStore {
         error &&
         typeof error === "object" &&
         "code" in error &&
-        error.code === "P2002"
+        (error.code === "P2002" || isRetryableTransactionConflict(error))
       ) {
         // A concurrent winner may have saved this receipt. The failed transaction
         // has rolled back; return only a verified result for this exact request.
-        const committed = await committedMemory(this.prisma, receiptId, request, context);
+        const committed = await committedMemory(
+          this.prisma,
+          receiptId,
+          request,
+          context,
+          request.content,
+        );
         if (committed) return committed;
       }
       throw error;
     }
+  }
+
+  async readCommitReceipt(
+    request: MemoryCommitReceiptRequest,
+    context: AdapterContext,
+  ): Promise<MemoryRevision | undefined> {
+    return committedMemory(
+      this.prisma,
+      memoryCommitReceiptId(request.idempotencyKey, context),
+      request,
+      context,
+    );
   }
 
   async *exportMarkdown(
@@ -185,11 +225,19 @@ export class MarkdownMemoryStore implements MemoryStore {
   }
 }
 
+function memoryCommitReceiptId(key: string, context: AdapterContext): string {
+  if (!key) throw new MemoryCommitIdentityError("empty");
+  return `memory-commit:${createHash("sha256")
+    .update(JSON.stringify([context.spaceId, context.userId, key]))
+    .digest("hex")}`;
+}
+
 async function committedMemory(
   prisma: Pick<PrismaClient, "memoryRevision">,
   receiptId: string,
-  request: MemoryCommitRequest,
+  request: MemoryCommitTarget,
   context: AdapterContext,
+  content?: string,
 ): Promise<MemoryRevision | undefined> {
   const saved = await prisma.memoryRevision.findUnique({
     where: { id: receiptId },
@@ -212,7 +260,7 @@ async function committedMemory(
     doc.scope !== request.scope ||
     doc.botId !== (request.botId ?? null) ||
     doc.path !== request.path ||
-    saved.content !== request.content ||
+    (content !== undefined && saved.content !== content) ||
     saved.sourceRunId !== (request.sourceRunId ?? null) ||
     saved.sourceThreadId !== (request.sourceThreadId ?? null)
   ) {

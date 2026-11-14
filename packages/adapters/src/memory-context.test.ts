@@ -272,6 +272,7 @@ function storeWith(read: MemoryStore["read"]): MemoryStore {
     read,
     search: vi.fn<MemoryStore["search"]>(),
     commit: vi.fn<MemoryStore["commit"]>(),
+    readCommitReceipt: vi.fn<MemoryStore["readCommitReceipt"]>(),
     exportMarkdown: vi.fn<MemoryStore["exportMarkdown"]>(),
     importMarkdown: vi.fn<MemoryStore["importMarkdown"]>(),
   };
