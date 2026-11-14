@@ -22,7 +22,7 @@ const postgres = process.env.VERIFY_DATABASE === "1" && databaseUrl ? describe :
 
 postgres("installed Slack through the durable TeamChat bridge", () => {
   it("routes verified DMs, recovers their replies, and orders each conversation independently", async () => {
-    const db = createDb(databaseUrl!);
+    const db = createDb(databaseUrl!, { applicationName: "slack-first-delivery" });
     const org = randomUUID();
     const spaceId = randomUUID();
     const userId = randomUUID();
@@ -380,11 +380,42 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       };
       const maintenance = () => (runtime as unknown as { maintain(): Promise<void> }).maintain();
 
-      const duplicates = await Promise.all([
-        runtime.webhook(request("DROUTINE", at + 200)),
-        runtime.webhook(request("DROUTINE", at + 200)),
-      ]);
+      // Make both first deliveries reach the INSERT before either can commit.
+      const blocker = await db.pool.connect();
+      let deliveries: Promise<PromiseSettledResult<Response>[]> | undefined;
+      let completed: PromiseSettledResult<Response>[] | undefined;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query("LOCK TABLE external_conversations IN SHARE MODE");
+        deliveries = Promise.allSettled([
+          runtime.webhook(request("DROUTINE", at + 200)),
+          runtime.webhook(request("DROUTINE", at + 200)),
+        ]);
+        await vi.waitFor(
+          async () => {
+            const waiting = await db.pool.query<{ waiting: number }>(`
+            SELECT count(*)::int AS waiting FROM pg_stat_activity
+            WHERE application_name = 'slack-first-delivery'
+              AND wait_event_type = 'Lock' AND query LIKE '%INSERT%external_conversations%'
+          `);
+            expect(waiting.rows[0]?.waiting).toBe(2);
+          },
+          { timeout: 5_000 },
+        );
+      } finally {
+        blocker.release(true);
+        completed = await deliveries;
+      }
+      const duplicates = completed!.map((result) => {
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      });
       expect(duplicates.map(({ status }) => status)).toEqual([200, 200]);
+      expect(
+        await db.prisma.externalConversation.count({
+          where: { workspaceId, externalKey: "DROUTINE" },
+        }),
+      ).toBe(1);
       const woke = await expectRoutine("DROUTINE");
 
       // A stale queue owner can encounter a rearmed queueing row after a
