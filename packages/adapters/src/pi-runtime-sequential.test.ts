@@ -214,6 +214,25 @@ describe("real Pi tool batch ordering", () => {
     ).toHaveLength(4);
   });
 
+  it("passes exact correction arguments through real Pi argument validation", async () => {
+    const args = {
+      path: "Preferences.md",
+      content: "  new first line\r\nsecond line ",
+      correction: { original: "old line\r\nsecond line", expectedRevision: 3 },
+    };
+    providerState.stream
+      .mockImplementationOnce(() => response([call("correction", "remember", args)]))
+      .mockImplementation(() => response());
+    const dispatch = vi.fn<NonNullable<AgentRunRequest["executeTool"]>>(async () => ({
+      ok: true,
+      path: args.path,
+      revision: 4,
+    }));
+    await run(["remember"], dispatch);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.mock.calls[0]?.slice(0, 2)).toEqual(["remember", args]);
+  });
+
   it("lists the completed create and cancel in the same schedule batch", async () => {
     providerState.stream
       .mockImplementationOnce(() =>

@@ -554,12 +554,18 @@ describeJourneys("required product journeys", () => {
       bot.id,
       "write a file in your home called notes/result.txt that says kept-after-clear",
     );
-    const memories = await rpc<Array<{ id: string }>>(app, cookie, "memory/list", {
-      botId: bot.id,
-    });
+    const memories = await rpc<Array<{ id: string; revision: number }>>(
+      app,
+      cookie,
+      "memory/list",
+      {
+        botId: bot.id,
+      },
+    );
     await rpc(app, cookie, "memory/update", {
       documentId: memories[0]!.id,
       content: "# Keeper\n\nRemember this after clearing.",
+      expectedRevision: memories[0]!.revision,
     });
     const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
       botId: bot.id,
