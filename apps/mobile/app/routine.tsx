@@ -1,9 +1,16 @@
-import type { ModelCatalogEntry, ModelCredential, Routine, ThinkingLevel } from "@rakazo/contracts";
+import type {
+  ModelCatalogEntry,
+  ModelCredential,
+  Routine,
+  TaughtSkill,
+  ThinkingLevel,
+} from "@rakazo/contracts";
 import {
   connectedModelChoices,
   credentialForModel,
   modelOptionKey,
   parseModelOptionKey,
+  taughtSkillRoutineSeed,
 } from "@rakazo/core";
 import { nativeRoutineTriggerInputs } from "@rakazo/core/routine-native-events";
 import type { RoutineSaveState } from "@rakazo/core/routine-save";
@@ -57,19 +64,21 @@ export default function RoutineDetail() {
     botId,
     botName,
     routineId,
+    skillId,
     origin,
     readOnly: readOnlyParam,
   } = useLocalSearchParams<{
     botId?: string;
     botName?: string;
     routineId?: string;
+    skillId?: string;
     origin?: string;
     readOnly?: string;
   }>();
   const creating = !routineId;
   const readOnly = readOnlyParam === "1";
   const scopeKey = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
-  const routeKey = JSON.stringify([botId, routineId, readOnly, scopeKey]);
+  const routeKey = JSON.stringify([botId, routineId, skillId, readOnly, scopeKey]);
   const routeOwner = useRef<RoutineOwner>({ key: routeKey });
   if (routeOwner.current.key !== routeKey) routeOwner.current = { key: routeKey };
   const router = useRouter();
@@ -81,6 +90,7 @@ export default function RoutineDetail() {
   const loadedOwner = useRef<RoutineOwner | null>(null);
   // A dispatched save must settle before another route can write.
   const saveInFlight = useRef(false);
+  const [skillSeed, setSkillSeed] = useState<{ name: string; prompt: string }>();
   const [routine, setRoutine] = useState<Routine | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +192,13 @@ export default function RoutineDetail() {
       if (!eligible()) return;
       scope.verifiedSpaceId = requestContext.headers["x-rakazo-space-id"];
       if (creating) {
+        if (skillId) {
+          const skill = await rpc<TaughtSkill>("skills/get", { skillId }, { requestContext });
+          if (!eligible()) return;
+          const seed = taughtSkillRoutineSeed(skill, botId!);
+          if (!seed) throw new Error(t("Could not load skill"));
+          setSkillSeed(seed);
+        }
         const me = await rpc<{ timezone: string | null }>("me", {}, { requestContext });
         if (eligible()) {
           setTimezone(me.timezone ?? deviceTimeZone() ?? "UTC");
@@ -227,6 +244,7 @@ export default function RoutineDetail() {
       if (!sameOwner) {
         modelDirty.current = false;
         setRoutine(null);
+        setSkillSeed(undefined);
         setEditing(false);
         setCreateReady(false);
         setRunAt("");
@@ -250,7 +268,7 @@ export default function RoutineDetail() {
       return () => {
         if (scopeRef.current === scope) scopeRef.current = null;
       };
-    }, [botId, routineId, readOnly, scopeKey, loadRevision]),
+    }, [botId, routineId, skillId, readOnly, scopeKey, loadRevision]),
   );
 
   const shownScope = scopeRef.current;
@@ -466,6 +484,7 @@ export default function RoutineDetail() {
         <RoutineFields
           key={routeKey}
           routine={null}
+          seed={skillSeed}
           access={
             shownScope?.verifiedSpaceId && botId
               ? {

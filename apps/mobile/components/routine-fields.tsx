@@ -18,6 +18,7 @@ import { RoutineTriggers } from "./routine-triggers";
 
 export function RoutineFields({
   routine,
+  seed,
   timezone,
   disabled: saving,
   access,
@@ -25,6 +26,7 @@ export function RoutineFields({
   onCancel,
 }: {
   routine: Routine | null;
+  seed?: { name: string; prompt: string };
   timezone: string;
   disabled: boolean;
   access: RoutineTriggerAccess | null;
@@ -48,8 +50,8 @@ export function RoutineFields({
   const [triggersOpen, setTriggersOpen] = useState(false);
   const [triggerBusy, setTriggerBusy] = useState(false);
   const disabled = saving || triggerBusy;
-  const [name, setName] = useState(routine?.name ?? "");
-  const [prompt, setPrompt] = useState(routine?.prompt ?? "");
+  const [name, setName] = useState(routine?.name ?? seed?.name ?? "");
+  const [prompt, setPrompt] = useState(routine?.prompt ?? seed?.prompt ?? "");
   const [schedules, setSchedules] = useState(() =>
     (routine ? routine.crons : [cronFromPreset(defaultCronPreset())]).map((cron, id) => ({
       id,
