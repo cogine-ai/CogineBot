@@ -1,0 +1,147 @@
+import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import { saveRoutineDraft } from "@rakazo/core/routine-save";
+import { expect, it, vi } from "vitest";
+
+const source = readFileSync(new URL("./Shell.tsx", import.meta.url), "utf8");
+const start =
+  source.indexOf("onSave={async () => {", source.indexOf("<RoutineEditor")) + "onSave={".length;
+const callback = stripTypeScriptTypes(
+  source.slice(start, source.indexOf("onTestRun={", start)).trim().slice(0, -1),
+);
+function fixture(operation: string) {
+  const calls: any[] = [];
+  let original: any;
+  let blockResolve: any;
+  const scope: any = {
+    saveRoutineDraft,
+    panelStorageKey: "scope-a",
+    panelStorageKeyRef: { current: "scope-a" },
+    routineSaveState: { current: { key: "", state: {} } },
+    routineSavePending: { current: false },
+    routineSaveRequest: { current: 0 },
+    activeBotId: { current: "bot-a" },
+    active: { id: "bot-a", webhookConfigured: true },
+    editingRoutine:
+      operation === "update" ? { id: "routine-a", botId: "bot-a", nativeTriggers: [] } : null,
+    routineDraft: {
+      mutationId: "intent-a",
+      name: "First",
+      prompt: "First prompt",
+      schedules: [],
+      webhookEnabled: true,
+      githubEnabled: false,
+      messageProvider: null,
+      nativeTriggers: [],
+      nativeTriggersDirty: false,
+      modelKey: "",
+      modelDirty: false,
+      thinkingLevel: "",
+      active: true,
+    },
+    routineWebhookSecret: null,
+    bootstrapMe: { timezone: "UTC" },
+    setRoutineError: vi.fn(),
+    setSavingRoutine: vi.fn(),
+    setEditingRoutine: vi.fn(),
+    setRoutineDraft: vi.fn(),
+    draftFromRoutine: (x: any) => x,
+    cronFromPreset: (x: any) => x,
+    localTimezone: () => "UTC",
+    routineNeedsOneShotArm: () => false,
+    errorText: (e: Error) => e.message,
+    t: (x: any) => x[0],
+    refreshThread: vi.fn(async () => {}),
+    rpc: { routines: {} },
+  };
+  const receipts = new Map();
+  for (const method of ["create", "update"])
+    scope.rpc.routines[method] = async (input: any) => {
+      calls.push(structuredClone(input));
+      if (blockResolve)
+        return await new Promise((resolve) => {
+          blockResolve = resolve;
+        });
+      const prior = receipts.get(input.mutationId);
+      if (prior) {
+        if (JSON.stringify(input) !== JSON.stringify(prior.input)) throw Error("CONFLICT");
+        return prior.result;
+      }
+      const result = { ...input, id: "saved" };
+      receipts.set(input.mutationId, { input: structuredClone(input), result });
+      if (!original) {
+        original = structuredClone(input);
+        throw Error("Lost response");
+      }
+      return result;
+    };
+  return {
+    scope,
+    calls,
+    run: () =>
+      new Function(...Object.keys(scope), `return (${callback})`)(...Object.values(scope))(),
+    block: () => {
+      blockResolve = true;
+    },
+    resolve: () => blockResolve({ id: "old-result" }),
+  };
+}
+it.each(["create", "update"])(
+  "Web %s recovers the immutable request before saving later edits",
+  async (op) => {
+    const h = fixture(op);
+    await h.run();
+    h.scope.routineDraft = { ...h.scope.routineDraft, name: "Later draft", prompt: "Later prompt" };
+    await h.run();
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls[1]).toEqual(h.calls[0]);
+    expect(h.calls[2]).toMatchObject({
+      routineId: "saved",
+      name: "Later draft",
+      prompt: "Later prompt",
+    });
+    expect(h.calls[2].mutationId).not.toBe(h.calls[0].mutationId);
+    expect(h.calls[2]).not.toHaveProperty("nativeTriggers");
+    expect(h.scope.setEditingRoutine).toHaveBeenCalledOnce();
+  },
+);
+it.each(["create", "update"])("independent Web %s unchanged recovery succeeds", async (op) => {
+  const h = fixture(op);
+  await h.run();
+  await h.run();
+  expect(h.calls[0]).toEqual(h.calls[1]);
+  expect(h.scope.setEditingRoutine).toHaveBeenCalledOnce();
+});
+it.each(["create", "update"])(
+  "independent Web %s late old-bot result does not overwrite new draft",
+  async (op) => {
+    const h = fixture(op);
+    h.block();
+    const pending = h.run();
+    h.scope.activeBotId.current = "bot-b";
+    h.scope.routineSaveRequest.current++;
+    h.scope.routineDraft = { ...h.scope.routineDraft, mutationId: "intent-b", name: "Other scope" };
+    h.resolve();
+    await pending;
+    expect(h.scope.setRoutineDraft).not.toHaveBeenCalled();
+    expect(h.scope.setEditingRoutine).not.toHaveBeenCalled();
+    expect(h.scope.routineDraft.name).toBe("Other scope");
+  },
+);
+
+it.each(["create", "update"])(
+  "Web %s does not resume a later draft across panel scope",
+  async (operation) => {
+    const h = fixture(operation);
+    await h.run();
+    h.scope.routineDraft = { ...h.scope.routineDraft, name: "Later draft" };
+    h.block();
+    const recovery = h.run();
+    h.scope.panelStorageKeyRef.current = "scope-b";
+    h.resolve();
+    await recovery;
+    expect(h.calls).toHaveLength(2);
+    expect(h.scope.setRoutineDraft).not.toHaveBeenCalled();
+    expect(h.scope.setEditingRoutine).not.toHaveBeenCalled();
+  },
+);

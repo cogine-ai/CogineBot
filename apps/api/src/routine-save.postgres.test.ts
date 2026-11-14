@@ -5,8 +5,11 @@ import { join } from "node:path";
 import type { Actor, Bot, NativeRoutineTrigger, Routine } from "@rakazo/contracts";
 import { nativeEventApp, nativeEventResource } from "@rakazo/contracts";
 import { draftFromNativeRoutineTrigger } from "@rakazo/core/routine-native-events";
+import type { RoutineSaveState } from "@rakazo/core/routine-save";
+import { saveRoutineDraft } from "@rakazo/core/routine-save";
 import { routineTriggerDraft, routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
 import { createDb } from "@rakazo/db";
+import { isolatedDatabaseUrl } from "@rakazo/db/testing/row-security-expectations";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { NativeEventResourceVerifier } from "../../../packages/adapters/src/native-connectors/events/resource-verifier.js";
 import { discardBotIntroFromCreate } from "../../../packages/testkit/src/discard-bot-intro.js";
@@ -27,7 +30,10 @@ describePostgres("routine save transaction regressions", () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "routine-history-acceptance-"));
-    database = createDb(process.env.DATABASE_URL!);
+    database = createDb(isolatedDatabaseUrl());
+    expect((await database.pool.query("SELECT current_database() AS name")).rows[0].name).toBe(
+      process.env.VERIFY_ISOLATED_DATABASE,
+    );
     handles = await createApp({
       prisma: database.prisma,
       databaseUrl: process.env.DATABASE_URL!,
@@ -183,6 +189,59 @@ describePostgres("routine save transaction regressions", () => {
   async function update(o: Awaited<ReturnType<typeof fixture>>, input: Record<string, unknown>) {
     return rpc<Routine>(o.cookie, "routines/update", { routineId: o.routine.id, ...input });
   }
+  it.each(["create", "update"] as const)(
+    "recovers %s then saves changed drafts without resetting event state",
+    async (operation) => {
+      const o = await fixture(),
+        make = await connected(o);
+      const state: RoutineSaveState = {};
+      const input = {
+        mutationId: randomUUID(),
+        name: "First",
+        prompt: "First prompt",
+        nativeTriggers: [make("recovery-calendar")],
+        ...(operation === "create"
+          ? { botId: o.bot.id, crons: ["0 9 * * *"], timezone: "UTC", active: false, notify: true }
+          : { routineId: o.routine.id, nativeTriggerBaseline: [] }),
+      };
+      let committed: Routine | undefined;
+      const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+        const saved = await rpc<Routine>(o.cookie, `routines/${request.operation}`, request.input);
+        if (!committed) {
+          committed = saved;
+          throw new Error("Response lost after commit");
+        }
+        return saved;
+      };
+      const baseline = operation === "create" ? null : o.routine;
+      await expect(
+        saveRoutineDraft(state, { operation, input }, baseline, send, () => true),
+      ).rejects.toThrow("Response lost");
+      const triggerId = committed!.nativeTriggers![0]!.id;
+      await database.prisma.nativeRoutineTrigger.update({
+        where: { id: triggerId },
+        data: { state: { cursor: "keep-cursor" }, leaseId: "synthetic-lease" },
+      });
+      const before = await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({
+        where: { id: triggerId },
+      });
+      const saved = await saveRoutineDraft(
+        state,
+        { operation, input: { ...input, name: "Later", prompt: "Later prompt" } },
+        baseline,
+        send,
+        () => true,
+      );
+      expect(saved).toMatchObject({ id: committed!.id, name: "Later", prompt: "Later prompt" });
+      expect(
+        await database.prisma.nativeRoutineTrigger.findUniqueOrThrow({ where: { id: triggerId } }),
+      ).toEqual(before);
+      expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(
+        operation === "create" ? 2 : 1,
+      );
+    },
+  );
+
   it("sparse update preserves concurrent schedule, model, pause and external flags", async () => {
     const o = await fixture();
     await database.prisma.routine.update({

@@ -15,6 +15,10 @@ import {
   verifyRealtimeDatabase,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
+import {
+  expectRegisteredPolicyTables,
+  schemaPolicyTables,
+} from "@rakazo/db/testing/row-security-expectations";
 import { Client, escapeIdentifier } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { GraphileJobPublisher, GraphileJobWorkerHost, migrateJobQueue } from "./wakeup.js";
@@ -81,6 +85,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
   };
 
   beforeAll(async () => {
+    expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
     const target = new Client({ connectionString: databaseUrl! });
     if (
       !["127.0.0.1", "localhost", "::1"].includes(target.host) ||
@@ -376,7 +381,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       )
         throw new Error("Service readiness tests require the isolated policy harness opt-in");
       await assertLegacyCatalog();
-      expect(ROW_SECURITY_POLICIES).toHaveLength(89);
+      expectRegisteredPolicyTables(ROW_SECURITY_POLICIES);
       const url = new URL(databaseUrl!);
       url.username = listenerLogin;
       url.password = randomBytes(24).toString("hex");
@@ -390,7 +395,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       await provisionRuntimeRole(databaseUrl!, listenerUrl);
       policiesOwned = true;
       expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
       });
     }, 120_000);
@@ -412,7 +417,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
 
     it("accepts the protected runtime and an independently authenticated realtime listener", async () => {
       expect(await verifyRuntimeDatabase(activeRuntime().prisma)).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: true,
         problems: [],
       });
@@ -443,7 +448,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
     it("permits the unprotected legacy owner while refusing a listener that requires protection", async () => {
       await removeManagedPolicies();
       expect(await verifyRuntimeDatabase(owner!.prisma)).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: false,
         guardValid: true,
         legacyPolicyCount: 0,
@@ -456,7 +461,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       await removeManagedPolicies();
       const main = await verifyRuntimeDatabase(activeRuntime().prisma);
       expect(main).toMatchObject({
-        expectedTables: 89,
+        expectedTables: schemaPolicyTables.length,
         connectionEnforced: false,
         guardValid: true,
       });
@@ -501,7 +506,7 @@ postgres("restricted service startup against the prepared queue schema", () => {
       beforeAll(async () => {
         policiesOwned = true;
         expect(await applyRowSecurityPolicies(databaseUrl!, runtimeUrl)).toMatchObject({
-          expectedTables: 89,
+          expectedTables: schemaPolicyTables.length,
           connectionEnforced: true,
         });
       }, 120_000);

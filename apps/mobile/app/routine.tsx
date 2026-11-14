@@ -6,6 +6,8 @@ import {
   parseModelOptionKey,
 } from "@rakazo/core";
 import { nativeRoutineTriggerInputs } from "@rakazo/core/routine-native-events";
+import type { RoutineSaveState } from "@rakazo/core/routine-save";
+import { saveRoutineDraft } from "@rakazo/core/routine-save";
 import type { RoutineTriggerDraft } from "@rakazo/core/routine-trigger-patch";
 import { newRoutineMutationId, routineTriggerPatch } from "@rakazo/core/routine-trigger-patch";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -39,7 +41,7 @@ type RoutineOwner = {
   key: string;
   mutationError?: string;
   createdRoutineId?: string;
-  saveMutationId?: string;
+  saveState?: RoutineSaveState;
 };
 
 type RoutineScope = MobileScope & {
@@ -372,25 +374,31 @@ export default function RoutineDetail() {
         if (!current(scope)) return;
       }
       if (!scope || !current(scope)) return;
-      scope.owner.saveMutationId ??= newRoutineMutationId();
-      const mutationId = scope.owner.saveMutationId;
-      const saved = await rpc<Routine>(
-        routine ? "routines/update" : "routines/create",
-        routine
-          ? { routineId: routine.id, ...fields, ...triggerFields, mutationId }
-          : {
-              botId,
-              ...fields,
-              ...triggerFields,
-              timezone,
-              active: true,
-              notify: true,
-              mutationId,
-            },
-        { requestContext },
+      scope.owner.saveState ??= {};
+      const mutationId = newRoutineMutationId();
+      const saved = await saveRoutineDraft(
+        scope.owner.saveState,
+        {
+          operation: routine ? "update" : "create",
+          input: routine
+            ? { routineId: routine.id, ...fields, ...triggerFields, mutationId }
+            : {
+                botId,
+                ...fields,
+                ...triggerFields,
+                timezone,
+                active: true,
+                notify: true,
+                mutationId,
+              },
+          triggerKeys: triggers.nativeTriggers.map((t) => t.key),
+        },
+        original,
+        ({ operation, input }) => rpc<Routine>(`routines/${operation}`, input, { requestContext }),
+        () => scope.owner === routeOwner.current && isMobileScopeCurrent(scope),
       );
-      if (!scope || scope.owner !== routeOwner.current || !isMobileScopeCurrent(scope)) return;
-      delete scope.owner.saveMutationId;
+      if (!saved || !scope || scope.owner !== routeOwner.current || !isMobileScopeCurrent(scope))
+        return;
       if (!routine) {
         // An acknowledged create belongs to the intent, not the focus that sent it.
         // Retain its identity until navigation replaces this owner; never replay it.
@@ -528,7 +536,10 @@ export default function RoutineDetail() {
                   timezone={routine.timezone}
                   disabled={saving}
                   onSave={saveFields}
-                  onCancel={() => setEditing(false)}
+                  onCancel={() => {
+                    if (routeOwner.current.saveState) routeOwner.current.saveState.discarded = true;
+                    setEditing(false);
+                  }}
                 />
               ) : (
                 <NativeActionButton

@@ -2767,3 +2767,54 @@ it.each(["account", "space", "server"])(
     expect(new Set(attempts).size).toBe(2);
   },
 );
+
+it.each(["create", "update", "cancel"])(
+  "recovers submitted %s before saving a later draft",
+  async (mode) => {
+    if (mode === "create") state.params = { botId: "bot-1" };
+    const normal = state.rpc.getMockImplementation()!;
+    const receipts = new Map<string, { input: string; result: Record<string, unknown> }>();
+    const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
+    let lost = false;
+    state.rpc.mockImplementation(async (path, input, options) => {
+      if (path !== "routines/create" && path !== "routines/update")
+        return normal(path, input, options);
+      calls.push({ path, input: JSON.parse(JSON.stringify(input)) });
+      const prior = receipts.get(input.mutationId);
+      if (prior) {
+        if (prior.input !== JSON.stringify(input)) throw new Error("CONFLICT");
+        return prior.result;
+      }
+      const result = { ...(await normal("routines/list"))[0], ...input, id: "routine-1" };
+      receipts.set(input.mutationId, { input: JSON.stringify(input), result });
+      if (!lost) {
+        lost = true;
+        throw new Error("Response lost after commit");
+      }
+      return result;
+    });
+    await act(async () => root.render(<RoutineDetail />));
+    if (mode !== "create") await act(async () => button("Edit").click());
+    await edit(routineInput("Name"), "First save");
+    await edit(routineInput("Prompt"), "First prompt");
+    await act(async () => button(mode === "create" ? "Create" : "Save").click());
+    if (mode === "cancel") {
+      await act(async () => button("Cancel").click());
+      await act(async () => button("Edit").click());
+    }
+    await edit(routineInput("Name"), "Later draft");
+    await edit(routineInput("Prompt"), "Later prompt");
+    await act(async () => button(mode === "create" ? "Create" : "Save").click());
+    expect(calls).toHaveLength(3);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[2]!.path).toBe("routines/update");
+    expect(calls[2]!.input).toMatchObject({
+      routineId: "routine-1",
+      name: "Later draft",
+      prompt: "Later prompt",
+    });
+    expect(calls[2]!.input.mutationId).not.toBe(calls[0]!.input.mutationId);
+    expect(receipts.size).toBe(2);
+    expect(container.textContent).not.toContain("CONFLICT");
+  },
+);

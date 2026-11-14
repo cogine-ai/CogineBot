@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { isolatedDatabaseUrl } from "@rakazo/db/testing/row-security-expectations";
 import { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ROW_SECURITY_POLICIES } from "./row-security-policies.js";
@@ -15,8 +16,11 @@ const migration = readFileSync(
   let role: string;
   let sql: string;
   beforeEach(async () => {
-    db = new Client({ connectionString: process.env.DATABASE_URL });
+    db = new Client({ connectionString: isolatedDatabaseUrl() });
     await db.connect();
+    expect((await db.query("SELECT current_database() AS name")).rows[0].name).toBe(
+      process.env.VERIFY_ISOLATED_DATABASE,
+    );
     const suffix = randomUUID().replaceAll("-", "");
     schema = `routine_upgrade_${suffix}`;
     role = `routine_runtime_${suffix}`;
@@ -28,7 +32,8 @@ const migration = readFileSync(
   afterEach(async () => {
     if (!db) return;
     await db.query("ROLLBACK; RESET ROLE");
-    await db.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE; DROP ROLE IF EXISTS "${role}"`);
+    if (schema && role)
+      await db.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE; DROP ROLE IF EXISTS "${role}"`);
     await db.end();
   });
   it("installs exact user/Space policies atomically even with default runtime grants", async () => {

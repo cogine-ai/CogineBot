@@ -70,6 +70,10 @@
     "./routine-trigger-patch": {
       "types": "./src/routine-trigger-patch.ts",
       "default": "./src/routine-trigger-patch.ts"
+    },
+    "./routine-save": {
+      "types": "./src/routine-save.ts",
+      "default": "./src/routine-save.ts"
     }
   },
   "scripts": {
