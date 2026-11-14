@@ -18,6 +18,10 @@ export interface ModelEmulatorRequest {
 export type ModelEmulatorResponse =
   | { type: "text"; text: string; finishReason?: "content_filter" }
   | {
+      type: "tool-batch";
+      calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+    }
+  | {
       type: "tool";
       id: string;
       name: string;
@@ -134,6 +138,16 @@ export async function startModelEmulator(options: {
         for (const fragment of reply.argumentChunks ?? [JSON.stringify(reply.arguments)]) {
           emit({ tool_calls: [{ index: 0, function: { arguments: fragment } }] });
         }
+        emit({}, "tool_calls");
+      } else if (reply.type === "tool-batch") {
+        emit({
+          tool_calls: reply.calls.map((call, index) => ({
+            index,
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+          })),
+        });
         emit({}, "tool_calls");
       } else {
         if (reply.text) emit({ content: reply.text });
