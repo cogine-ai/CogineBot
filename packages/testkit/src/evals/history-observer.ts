@@ -1,4 +1,5 @@
 import type { AdapterContext, AgentRunRequest, AgentRuntime } from "@rakazo/adapter-kit";
+import { FRESH_CHECK_CONSTRAINT } from "./cases.js";
 import { redact } from "./report.js";
 
 export type DiagnosticToolObservation = {
@@ -26,6 +27,75 @@ export type HistoryDiagnostic = {
   resultCount: number | null;
   failed: boolean;
 };
+
+/** Grade the observed tool result without retaining history text in the trial or report. */
+export function observeFreshHistoryCheck(
+  runtime: AgentRuntime,
+  constraintReads: Set<string>,
+): AgentRuntime {
+  return {
+    describe: () => runtime.describe(),
+    abort: (id) => runtime.abort(id),
+    async *run(request, context) {
+      const execute = request.executeTool;
+      if (!execute) {
+        yield* runtime.run(request, context);
+        return;
+      }
+      const matchedHistoryCalls = new Set<string>();
+      const historyResponses = new Map<string, number>();
+      let firstFileResponse: number | undefined;
+      for await (const event of runtime.run(
+        {
+          ...request,
+          executeTool: async (name, args, id, route, observer) => {
+            const result = await execute(name, args, id, route, observer);
+            if (name === "read_history" && !route && containsFreshCheckConstraint(result))
+              matchedHistoryCalls.add(id);
+            return result;
+          },
+        },
+        context,
+      )) {
+        if (event.type === "tool" && event.response !== undefined) {
+          if (event.name === "read_history")
+            historyResponses.set(event.executionId, event.response);
+          if (event.name === "read_file") firstFileResponse ??= event.response;
+        }
+        yield event;
+      }
+      if (firstFileResponse === undefined) return;
+      for (const id of matchedHistoryCalls) {
+        const response = historyResponses.get(id);
+        if (response !== undefined && response < firstFileResponse) {
+          constraintReads.add(request.runId);
+          return;
+        }
+      }
+    },
+  };
+}
+
+function containsFreshCheckConstraint(result: unknown): boolean {
+  if (
+    !result ||
+    typeof result !== "object" ||
+    "error" in result ||
+    !("messages" in result) ||
+    !Array.isArray(result.messages)
+  )
+    return false;
+  return result.messages.some((message: unknown) => {
+    if (!message || typeof message !== "object") return false;
+    const row = message as Record<string, unknown>;
+    return (
+      row.seq === FRESH_CHECK_CONSTRAINT.seq &&
+      row.role === FRESH_CHECK_CONSTRAINT.role &&
+      row.text === FRESH_CHECK_CONSTRAINT.text
+    );
+  });
+}
+
 /** Eval-only observation of synthetic history. Never retain arguments, IDs or result text. */
 export function observeSyntheticHistory(
   runtime: AgentRuntime,

@@ -143,9 +143,11 @@ failures diagnosable; it does not establish the cause of an earlier failed run.
 The fresh-check fixture puts the previous report and its read-only constraint
 outside the recent context, with tool steps in later turns. The scripted endpoint
 reads the old source, follows its file path through the real executor, and answers
-from the current fake-sandbox file. The grader requires both a Run tool event and
-a successful read of that file before grading readback, and checks that its
-contents remain unchanged. A separate cross-chat fixture follows the prior
+from the current fake-sandbox file. The grader requires the original constraint
+in a history tool result and the successful file read in a later model response.
+An unrelated history read or choosing both calls in the same response fails
+even with the right answer. The grader's own readback checks the file stayed
+unchanged. A separate cross-chat fixture follows the prior
 constraint to a current directory entry. Both keep the configured context and
 output budget and record input estimates and call counts. Linked history
 distinguishes completed, failed and cancelled work, and a deleted original
