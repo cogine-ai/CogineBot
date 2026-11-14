@@ -501,6 +501,9 @@ describePostgres("routine save transaction regressions", () => {
       make = await connected(o),
       mutationId = randomUUID();
     const before = await database.prisma.routine.count({ where: { botId: o.bot.id } });
+    const receiptsBefore = await database.prisma.routineMutation.count({
+      where: { userId: o.actor.userId, spaceId: o.actor.spaceId },
+    });
     const response = await raw(o.cookie, "routines/create", {
       botId: o.bot.id,
       name: "Duplicate",
@@ -510,8 +513,106 @@ describePostgres("routine save transaction regressions", () => {
     });
     expect(response.status).toBe(400);
     expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(before);
-    expect(await database.prisma.routineMutation.count({ where: { id: mutationId } })).toBe(0);
+    expect(
+      await database.prisma.routineMutation.count({
+        where: { userId: o.actor.userId, spaceId: o.actor.spaceId },
+      }),
+    ).toBe(receiptsBefore);
   });
+
+  it.each([false, true])(
+    "advances confirmed trigger recovery before a rejected follow-up (metadata=%s)",
+    async (metadata) => {
+      const o = await fixture(),
+        make = await connected(o),
+        state: RoutineSaveState = {};
+      const calls: Array<Parameters<typeof saveRoutineDraft>[1]> = [];
+      const receipts = new Set<string>();
+      let first: Routine | undefined;
+      const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+        calls.push(structuredClone(request));
+        const response = await raw(o.cookie, `routines/${request.operation}`, request.input);
+        const body = await response.json();
+        if (!response.ok) throw { code: body.json?.code ?? body.code, status: response.status };
+        const saved = body.json as Routine;
+        first ??= saved;
+        if (!receipts.has(String(request.input.mutationId))) {
+          receipts.add(String(request.input.mutationId));
+          throw new Error("Lost committed response");
+        }
+        return saved;
+      };
+      const draft = (a: string, name: string, invalid = false) => ({
+        operation: "create" as const,
+        input: {
+          botId: o.bot.id,
+          name,
+          prompt: "Synthetic",
+          crons: [invalid ? "" : "0 9 * * *"],
+          nativeTriggers: [make("b"), make(a), make("c")],
+        },
+        triggerKeys: ["b", "a", "c"],
+      });
+      await expect(
+        saveRoutineDraft(state, draft("a1", "First"), null, send, () => true),
+      ).rejects.toThrow("Lost committed response");
+      const [b, a, c] = first!.nativeTriggers!;
+      for (const row of [b!, c!])
+        await database.prisma.nativeRoutineTrigger.update({
+          where: { id: row.id },
+          data: {
+            state: { cursor: row.id },
+            leaseId: `lease-${row.id}`,
+            leaseUntil: new Date("2030-01-01"),
+          },
+        });
+      const untouched = await database.prisma.nativeRoutineTrigger.findMany({
+        where: { id: { in: [b!.id, c!.id] } },
+        orderBy: { id: "asc" },
+      });
+      await expect(
+        saveRoutineDraft(state, draft("a2", "Second"), null, send, () => true),
+      ).rejects.toThrow("Lost committed response");
+      if (metadata) {
+        await expect(
+          saveRoutineDraft(state, draft("a2", "Metadata"), null, send, () => true),
+        ).rejects.toThrow("Lost committed response");
+        expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+      }
+      const confirmedRequest = structuredClone(state.pending);
+      await expect(
+        saveRoutineDraft(state, draft("a3", "Third", true), null, send, () => true),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+      // Correcting the first rejected intent must replay the latest acknowledged
+      // submission, not create/A1. Lose the corrected write too, then recover it.
+      await expect(
+        saveRoutineDraft(state, draft("a3", "Third"), null, send, () => true),
+      ).rejects.toThrow("Lost committed response");
+      expect(calls.at(-2)).toEqual(confirmedRequest);
+      const saved = await saveRoutineDraft(state, draft("a3", "Third"), null, send, () => true);
+      expect(saved!.id).toBe(first!.id);
+      expect(saved!.nativeTriggers!.find((t) => t.id === a!.id)).toMatchObject({
+        version: 3,
+        spec: make("a3").spec,
+      });
+      expect(
+        await database.prisma.nativeRoutineTrigger.findMany({
+          where: { id: { in: [b!.id, c!.id] } },
+          orderBy: { id: "asc" },
+        }),
+      ).toEqual(untouched);
+      expect(
+        await database.prisma.nativeRoutineTrigger.count({ where: { routineId: first!.id } }),
+      ).toBe(3);
+      expect(await database.prisma.routine.count({ where: { botId: o.bot.id } })).toBe(2);
+      expect(
+        await database.prisma.routineMutation.count({
+          where: { userId: o.actor.userId, spaceId: o.actor.spaceId },
+        }),
+      ).toBe(metadata ? 4 : 3);
+      expect(state.pending).toBeUndefined();
+    },
+  );
 
   it("receipt-only update replay returns current activation after pause and resume", async () => {
     const o = await fixture();

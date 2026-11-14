@@ -370,3 +370,88 @@ it("refuses ambiguous legacy creation results rather than guessing duplicate con
   expect(state.pending).toEqual(request);
   expect(state.triggerIds).toBeUndefined();
 });
+
+it.each(["BAD_REQUEST", "FORBIDDEN", "CONFLICT", "NOT_FOUND"])(
+  "advances confirmed snapshots through alternating trigger/metadata writes and first %s refusals",
+  async (code) => {
+    const state: RoutineSaveState = {};
+    let saved = { ...baseline, nativeTriggers: [] } as Routine;
+    const receipts = new Set<string>();
+    let failure = "lost",
+      version = 0,
+      calendar = "a1";
+    const draft = (step: number) => ({
+      operation: "create" as const,
+      triggerKeys: ["key-a"],
+      input: {
+        name: `Step ${step}`,
+        nativeTriggers: [
+          {
+            connectionId: "connection",
+            spec: {
+              kind: "calendar.event_changed",
+              calendarId: calendar,
+              target: { kind: "calendar" },
+            },
+          },
+        ],
+      },
+    });
+    const send = async (request: Parameters<typeof saveRoutineDraft>[1]) => {
+      if (failure === "recovery refusal") throw { code: "FORBIDDEN" };
+      if (receipts.has(request.input.mutationId!)) return structuredClone(saved);
+      if (failure === "first refusal") throw { code };
+      const input = request.input.nativeTriggers as
+        | Array<{ id?: string; expectedVersion?: number; connectionId: string; spec: any }>
+        | undefined;
+      if (input) {
+        if (input[0]!.id) expect(input[0]!.expectedVersion).toBe(version);
+        if (JSON.stringify(input[0]!.spec) !== JSON.stringify(saved.nativeTriggers?.[0]?.spec))
+          version++;
+        saved = {
+          ...saved,
+          nativeTriggers: [{ ...input[0], id: "trigger-a", version }],
+        } as Routine;
+      }
+      saved = { ...saved, name: String(request.input.name) };
+      receipts.add(request.input.mutationId!);
+      throw new Error("Lost committed response");
+    };
+    await expect(saveRoutineDraft(state, draft(1), null, send, () => true)).rejects.toThrow(
+      "Lost committed response",
+    );
+    for (let step = 2; step <= 5; step++) {
+      if (step % 2 === 0) calendar = `a${step}`;
+      const previous = structuredClone(state.pending);
+      const beforeRefusal = structuredClone(state);
+      failure = "recovery refusal";
+      await expect(saveRoutineDraft(state, draft(step), null, send, () => true)).rejects.toEqual({
+        code: "FORBIDDEN",
+      });
+      expect(state).toEqual(beforeRefusal);
+      failure = "first refusal";
+      await expect(saveRoutineDraft(state, draft(step), null, send, () => true)).rejects.toEqual({
+        code,
+      });
+      expect(state.pending).toEqual(previous);
+      expect(state.triggerIds).toEqual({ "key-a": "trigger-a" });
+      expect(state.recovered?.triggerIds).toEqual(state.triggerIds);
+      failure = "lost";
+      await expect(saveRoutineDraft(state, draft(step), null, send, () => true)).rejects.toThrow(
+        "Lost committed response",
+      );
+      if (step % 2 !== 0) expect(state.pending!.input).not.toHaveProperty("nativeTriggers");
+    }
+    const beforeScopeChange = structuredClone(state);
+    expect(await saveRoutineDraft(state, draft(5), null, send, () => false)).toBeUndefined();
+    expect(state).toEqual(beforeScopeChange);
+    expect(await saveRoutineDraft(state, draft(5), null, send, () => true)).toMatchObject({
+      id: baseline.id,
+      name: "Step 5",
+      nativeTriggers: [{ id: "trigger-a", version: 3, spec: { calendarId: "a4" } }],
+    });
+    expect(receipts.size).toBe(5);
+    expect(state.pending).toBeUndefined();
+    expect(state.recovered).toBeUndefined();
+  },
+);

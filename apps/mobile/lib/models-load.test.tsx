@@ -2911,9 +2911,14 @@ it("receipt-only recovery keeps activation current and failed reads keep the dra
   expect(saved.active).toBe(false);
 });
 
-it.each(["create", "update"])(
-  "%s retains added trigger identities through a lost metadata-only follow-up",
-  async (operation) => {
+it.each([
+  ["create", false],
+  ["update", false],
+  ["create", true],
+  ["update", true],
+] as const)(
+  "%s retains added trigger identities through lost writes (rejected follow-up=%s)",
+  async (operation, rejectFollowUp) => {
     if (operation === "create") state.params = { botId: "bot-1" };
     const normal = state.rpc.getMockImplementation()!;
     triggerSettings({
@@ -2931,6 +2936,7 @@ it.each(["create", "update"])(
     let saved = { ...(await normal("routines/list"))[0], nativeTriggers: [] as any[] };
     const receipts = new Set<string>();
     const writes: any[] = [];
+    let refused = false;
     state.rpc.mockImplementation(async (path, input, options) => {
       if (path !== "routines/create" && path !== "routines/update")
         return connected(path, input, options);
@@ -2939,6 +2945,10 @@ it.each(["create", "update"])(
           ...saved,
           nativeTriggers: [...saved.nativeTriggers].sort((a, b) => b.id.localeCompare(a.id)),
         };
+      if (rejectFollowUp && writes.length === 2 && !refused) {
+        refused = true;
+        throw Object.assign(new Error("Synthetic first-dispatch refusal"), { code: "BAD_REQUEST" });
+      }
       writes.push(structuredClone(input));
       receipts.add(input.mutationId);
       saved = {
@@ -2949,7 +2959,11 @@ it.each(["create", "update"])(
             ...t,
             id: t.id ?? `saved-${i}`,
             version: t.expectedVersion
-              ? t.expectedVersion + (t.spec.calendarId === "a-edited" ? 1 : 0)
+              ? t.expectedVersion +
+                (t.spec.calendarId !==
+                saved.nativeTriggers.find((old: any) => old.id === t.id)?.spec.calendarId
+                  ? 1
+                  : 0)
               : 1,
           })) ?? saved.nativeTriggers,
       };
@@ -2983,13 +2997,26 @@ it.each(["create", "update"])(
     const save = () => act(async () => button(operation === "create" ? "Create" : "Save").click());
     await save();
     await edit(routineInput("Name"), "Second");
+    if (rejectFollowUp)
+      await edit(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
+        "a2",
+      );
     await save();
-    expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    if (!rejectFollowUp) expect(writes[1]).not.toHaveProperty("nativeTriggers");
     await edit(
       container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!,
       "a-edited",
     );
     await save();
+    if (rejectFollowUp) {
+      expect(container.textContent).toContain("Synthetic first-dispatch refusal");
+      expect(
+        container.querySelectorAll<HTMLInputElement>('input[aria-label="Calendar ID"]')[0]!.value,
+      ).toBe("a-edited");
+      await save();
+    }
+    expect(writes).toHaveLength(3);
     expect(writes[2].nativeTriggers).toMatchObject([
       { id: "saved-0", spec: { calendarId: "a-edited" } },
       { id: "saved-1", spec: { calendarId: "b" } },

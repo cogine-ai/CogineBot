@@ -172,53 +172,74 @@ it.each(["create", "update"])(
   },
 );
 
-it("Web preserves trigger key identities across omitted patches and reordered drafts", async () => {
-  const h = fixture("create");
-  h.scope.routineDraft.nativeTriggers = ["a", "b", "c"].map((calendarId, index) => ({
-    ...draftFromNativeRoutineTrigger({
-      id: `key-${index}`,
-      version: 1,
-      routineId: "saved",
-      connectionId: "connection",
-      armedAt: "2020-01-01T00:00:00Z",
-      spec: { kind: "calendar.event_changed", calendarId, target: { kind: "calendar" } },
-    }),
-    id: undefined,
-    expectedVersion: undefined,
-  }));
-  h.scope.routineDraft.nativeTriggersDirty = true;
-  let saved: any = { id: "saved", nativeTriggers: [] };
-  const receipts = new Set();
-  const writes: any[] = [];
-  const send = async (input: any) => {
-    if (receipts.has(input.mutationId))
-      return { ...saved, nativeTriggers: [...saved.nativeTriggers].reverse() };
-    receipts.add(input.mutationId);
-    writes.push(structuredClone(input));
-    saved = {
-      ...saved,
-      ...input,
-      nativeTriggers:
-        input.nativeTriggers?.map((t: any, i: number) => ({
-          ...t,
-          id: t.id ?? `saved-${i}`,
-          version: 1,
-        })) ?? saved.nativeTriggers,
+it.each([false, true])(
+  "Web preserves trigger identities across lost writes (rejected follow-up=%s)",
+  async (rejectFollowUp) => {
+    const h = fixture("create");
+    h.scope.routineDraft.nativeTriggers = ["a", "b", "c"].map((calendarId, index) => ({
+      ...draftFromNativeRoutineTrigger({
+        id: `key-${index}`,
+        version: 1,
+        routineId: "saved",
+        connectionId: "connection",
+        armedAt: "2020-01-01T00:00:00Z",
+        spec: { kind: "calendar.event_changed", calendarId, target: { kind: "calendar" } },
+      }),
+      id: undefined,
+      expectedVersion: undefined,
+    }));
+    h.scope.routineDraft.nativeTriggersDirty = true;
+    let saved: any = { id: "saved", nativeTriggers: [] };
+    const receipts = new Set();
+    const writes: any[] = [];
+    let refused = false;
+    const send = async (input: any) => {
+      if (receipts.has(input.mutationId))
+        return { ...saved, nativeTriggers: [...saved.nativeTriggers].reverse() };
+      if (rejectFollowUp && writes.length === 2 && !refused) {
+        refused = true;
+        throw Object.assign(new Error("Synthetic first-dispatch refusal"), { code: "BAD_REQUEST" });
+      }
+      receipts.add(input.mutationId);
+      writes.push(structuredClone(input));
+      saved = {
+        ...saved,
+        ...input,
+        nativeTriggers:
+          input.nativeTriggers?.map((t: any, i: number) => ({
+            ...t,
+            id: t.id ?? `saved-${i}`,
+            version: t.id
+              ? saved.nativeTriggers.find((old: any) => old.id === t.id).version +
+                (JSON.stringify(t.spec) !==
+                JSON.stringify(saved.nativeTriggers.find((old: any) => old.id === t.id).spec)
+                  ? 1
+                  : 0)
+              : 1,
+          })) ?? saved.nativeTriggers,
+      };
+      if (writes.length <= 2) throw Error("Lost committed response");
+      return saved;
     };
-    if (writes.length <= 2) throw Error("Lost committed response");
-    return saved;
-  };
-  h.scope.rpc.routines = { create: send, update: send };
-  await h.run();
-  h.scope.routineDraft.name = "Second";
-  await h.run();
-  expect(writes[1]).not.toHaveProperty("nativeTriggers");
-  const [a, b, c] = h.scope.routineDraft.nativeTriggers;
-  h.scope.routineDraft.nativeTriggers = [b, c, { ...a, calendarId: "a-edited" }];
-  await h.run();
-  expect(writes[2].nativeTriggers).toMatchObject([
-    { id: "saved-1", spec: { calendarId: "b" } },
-    { id: "saved-2", spec: { calendarId: "c" } },
-    { id: "saved-0", spec: { calendarId: "a-edited" } },
-  ]);
-});
+    h.scope.rpc.routines = { create: send, update: send };
+    await h.run();
+    h.scope.routineDraft.name = "Second";
+    if (rejectFollowUp) h.scope.routineDraft.nativeTriggers[0].calendarId = "a2";
+    await h.run();
+    if (!rejectFollowUp) expect(writes[1]).not.toHaveProperty("nativeTriggers");
+    const [a, b, c] = h.scope.routineDraft.nativeTriggers;
+    h.scope.routineDraft.nativeTriggers = [b, c, { ...a, calendarId: "a-edited" }];
+    await h.run();
+    if (rejectFollowUp) {
+      expect(h.scope.setRoutineError).toHaveBeenLastCalledWith("Synthetic first-dispatch refusal");
+      expect(h.scope.routineDraft.nativeTriggers[2].calendarId).toBe("a-edited");
+      await h.run();
+    }
+    expect(writes).toHaveLength(3);
+    expect(writes[2].nativeTriggers).toMatchObject([
+      { id: "saved-1", spec: { calendarId: "b" } },
+      { id: "saved-2", spec: { calendarId: "c" } },
+      { id: "saved-0", spec: { calendarId: "a-edited" } },
+    ]);
+  },
+);

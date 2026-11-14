@@ -4,13 +4,19 @@ import { newRoutineMutationId } from "./routine-trigger-patch.js";
 type Input = Record<string, unknown> & { mutationId?: string };
 type Request = { operation: "create" | "update"; input: Input; triggerKeys?: string[] };
 type Submission = {
+  // Immutable unknown request, or confirmed replay anchor after a rejected follow-up.
   pending?: Request;
+  // Persisted state before this request; needed to verify its version transition.
   baseline?: Routine | null;
   draft?: Request;
   draftBaseline?: Routine | null;
   triggerIds?: Record<string, string>;
 };
-export type RoutineSaveState = Submission & { recovered?: Submission; discarded?: boolean };
+export type RoutineSaveState = Submission & {
+  // Latest confirmed submission, retained only while a follow-up can fail.
+  recovered?: Submission;
+  discarded?: boolean;
+};
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -30,13 +36,6 @@ export async function saveRoutineDraft(
     // (including an uncertain follow-up), even when the response is a 4xx.
     const saved = await send(copy(previous));
     if (!current()) return;
-    state.recovered ??= copy({
-      pending: previous,
-      baseline: state.baseline,
-      draft: state.draft,
-      draftBaseline: state.draftBaseline,
-      triggerIds: state.triggerIds,
-    });
     // Keep recovery information until the follow-up request has been constructed.
     const patch: Input = {};
     const previousDraft = state.draft ?? previous;
@@ -148,6 +147,16 @@ export async function saveRoutineDraft(
         patch.nativeTriggerBaseline = resolved.map(({ id, version }) => ({ id, version }));
       }
     }
+    // Advance only after replay succeeds in the current scope and its trigger
+    // identities/versions are verified. Preserve the pre-submit baseline with
+    // this request, plus its now-resolved key map, for a subsequent retry.
+    state.recovered = copy({
+      pending: previous,
+      baseline: state.baseline,
+      draft: state.draft,
+      draftBaseline: state.draftBaseline,
+      triggerIds: state.triggerIds,
+    });
     if (!Object.keys(patch).length) {
       delete state.pending;
       delete state.recovered;
@@ -173,8 +182,8 @@ export async function saveRoutineDraft(
     return saved;
   } catch (error) {
     // This is the first dispatch of this new intent, not recovery of an uncertain
-    // submission. A definitive rejection can release it; an already recovered
-    // create identity must still survive a rejected follow-up.
+    // submission. A definitive rejection releases only this attempt. Restore
+    // the latest confirmed submission, never an older create or an unknown write.
     if (
       error &&
       typeof error === "object" &&
@@ -182,12 +191,12 @@ export async function saveRoutineDraft(
       ["BAD_REQUEST", "FORBIDDEN", "NOT_FOUND", "CONFLICT"].includes(String(error.code))
     ) {
       if (state.recovered) {
-        const root = copy(state.recovered);
-        state.pending = root.pending;
-        state.baseline = root.baseline;
-        state.draft = root.draft;
-        state.draftBaseline = root.draftBaseline;
-        state.triggerIds = root.triggerIds;
+        const confirmed = copy(state.recovered);
+        state.pending = confirmed.pending;
+        state.baseline = confirmed.baseline;
+        state.draft = confirmed.draft;
+        state.draftBaseline = confirmed.draftBaseline;
+        state.triggerIds = confirmed.triggerIds;
       } else delete state.pending;
     }
     throw error;
