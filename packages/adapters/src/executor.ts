@@ -3017,6 +3017,8 @@ export interface ExecutorDeps {
   codexCatalog?: CodexLiveCatalog;
   /** Aborted when createApp stop() begins so in-flight continueRun boot waits exit promptly. */
   shutdownSignal?: AbortSignal;
+  /** Stops new claims immediately while an opted-in worker drains its active turns. */
+  stoppingSignal?: AbortSignal;
 }
 
 function isAuditableToolResult(value: unknown): value is {
@@ -3903,7 +3905,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       quotaWaitRevision?: number,
     ) {
       let deps = baseDeps;
-      if (deps.shutdownSignal?.aborted) return;
+      if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return;
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       const quotaWait =
@@ -4008,6 +4010,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
       };
 
+      if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return;
       const fence = nextFence(run.leaseFence);
       const now = new Date();
       const claimAndStart = async (db: Pick<PrismaClient, "run">): Promise<boolean> => {

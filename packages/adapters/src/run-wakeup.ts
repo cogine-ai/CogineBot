@@ -17,6 +17,28 @@ import { findRunRecoveryBlockers } from "./run-recovery.js";
 const RUN_READY_TOPIC = "runs:ready";
 const INTERACTIVE_QUEUE_WARNING_MS = 30_000;
 
+/** The longest a stopping worker lets its active turns finish before handing them back. */
+export const RUN_DRAIN_MS = 5 * 60_000;
+
+/** Stop admission now, but interrupt active turns only at the deadline or on a fatal exit. */
+export function drainRuns(
+  stopping: AbortSignal,
+  limitMs = RUN_DRAIN_MS,
+): { signal: AbortSignal; end: () => void } {
+  const interrupt = new AbortController();
+  const end = () => interrupt.abort(stopping.reason);
+  const begin = () => {
+    if (interrupt.signal.aborted) return;
+    if (limitMs <= 0) return end();
+    const deadline = setTimeout(end, limitMs);
+    deadline.unref?.();
+    interrupt.signal.addEventListener("abort", () => clearTimeout(deadline), { once: true });
+  };
+  if (stopping.aborted) begin();
+  else stopping.addEventListener("abort", begin, { once: true });
+  return { signal: interrupt.signal, end };
+}
+
 /**
  * Starts runs in this process the moment they become due, each as its own task, so no
  * run waits behind another. A process that cannot take a run hands it to the others.
@@ -428,7 +450,11 @@ export class RunWorkerHost implements JobWorkerHost {
 }
 
 /** Start direct execution even if the background scheduler is temporarily unavailable. */
-export function withRunWorker(runs: RunWorkerHost, background: JobWorkerHost): JobWorkerHost {
+export function withRunWorker(
+  runs: RunWorkerHost,
+  background: JobWorkerHost,
+  onFatalStart?: () => void,
+): JobWorkerHost {
   let stopping = false;
   let starting: Promise<void> | undefined;
   return {
@@ -441,6 +467,7 @@ export function withRunWorker(runs: RunWorkerHost, background: JobWorkerHost): J
           if (!stopping) await background.start(handlers);
         } catch (error) {
           if (!isTooManyDatabaseConnections(error)) {
+            onFatalStart?.();
             await Promise.allSettled([runs.stop(), background.stop()]);
           }
           throw error;
