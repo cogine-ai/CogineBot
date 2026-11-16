@@ -115,13 +115,12 @@ describe("MCP transport seam", () => {
       const opening = new AbortController();
       const realTimeout = AbortSignal.timeout.bind(AbortSignal);
       const budget = 12_345;
-      const deadline = vi
-        .spyOn(AbortSignal, "timeout")
-        .mockImplementation((ms) =>
-          edge === "setup deadline" && ms === budget
-            ? AbortSignal.any([opening.signal, realTimeout(2_500)])
-            : realTimeout(ms),
-        );
+      const deadline =
+        edge === "setup deadline"
+          ? vi
+              .spyOn(AbortSignal, "timeout")
+              .mockImplementation((ms) => (ms === budget ? opening.signal : realTimeout(ms)))
+          : undefined;
       const stream = new TransformStream<Uint8Array, Uint8Array>();
       const writer = stream.writable.getWriter();
       const encode = (frame: string) => new TextEncoder().encode(frame);
@@ -166,22 +165,19 @@ describe("MCP transport seam", () => {
           url: "https://mcp.example.test/sse",
           transport: "sse",
           timeoutMs: budget,
-          signal:
-            edge === "caller cancellation"
-              ? AbortSignal.any([opening.signal, realTimeout(2_500)])
-              : undefined,
+          signal: edge === "caller cancellation" ? opening.signal : undefined,
           network: { ...TEST_NETWORK, fetch },
         });
         opening.abort(new Error("Original setup has expired"));
         expect(streamSignal?.aborted).toBe(false);
-        await expect(session.listTools({ signal: realTimeout(2_500) })).resolves.toMatchObject({
+        await expect(session.listTools()).resolves.toMatchObject({
           tools: [{ name: "current" }],
         });
         expect(opens).toBe(1);
         await session.close();
         expect(streamSignal?.aborted).toBe(true);
       } finally {
-        deadline.mockRestore();
+        deadline?.mockRestore();
         await session.close();
         await writer
           .abort(new DOMException("Fixture stream closed", "AbortError"))

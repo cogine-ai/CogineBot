@@ -127,7 +127,7 @@ describe("remote MCP tool sessions", () => {
       if (ms !== MCP_TIMEOUT_MS) return realTimeout(ms);
       const deadline = new AbortController();
       setupDeadlines.push(deadline);
-      return AbortSignal.any([deadline.signal, realTimeout(2_500)]);
+      return deadline.signal;
     });
     const streamSignals: AbortSignal[] = [];
     const fake = server({
