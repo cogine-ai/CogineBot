@@ -3095,7 +3095,7 @@ describeJourneys("required product journeys", () => {
       const readEffect = () =>
         prisma.externalEffect.findUniqueOrThrow({ where: { id: approval.id } });
       let settled: Awaited<ReturnType<typeof readEffect>>;
-      if (action === "stop" || ownerAnswer.status === 409) {
+      if (action === "stop") {
         expect(ownerAnswer.status).toBe(409);
         settled = await readEffect();
       } else {
@@ -3104,30 +3104,29 @@ describeJourneys("required product journeys", () => {
           const run = await readOldRun();
           return ["completed", "failed", "cancelled"].includes(run.status);
         });
-        expectedState = (await readOldRun()).status;
+        expect((await readOldRun()).status).toBe("completed");
+        expectedState = "completed";
         settled = await readEffect();
-        expect(connector.records.length - baseline).toBeLessThanOrEqual(1);
-        if (connector.records.length > baseline) {
-          const approvedArgs =
-            connectorApprovalFromEffect(approval.request)?.args ?? approval.request;
-          expect(approvedArgs).toMatchObject({
-            collection: expect.any(String),
-            title: expect.any(String),
-            body: expect.any(String),
-          });
-          expect(connector.records[baseline]).toMatchObject(
-            approvedArgs as Record<string, unknown>,
-          );
-        }
+        expect(connector.records).toHaveLength(baseline + 1);
+        const approvedArgs =
+          connectorApprovalFromEffect(approval.request)?.args ?? approval.request;
+        expect(approvedArgs).toMatchObject({
+          collection: expect.any(String),
+          title: expect.any(String),
+          body: expect.any(String),
+        });
+        expect(connector.records[baseline]).toMatchObject(
+          approvedArgs as Record<string, unknown>,
+        );
+        expect(settled.status).toBe("completed");
       }
       const writes = connector.records.length;
-      if (action === "stop" || ownerAnswer.status === 409) expect(writes).toBe(baseline);
+      if (action === "stop") expect(writes).toBe(baseline);
       expect((await raw(app, cookie, "threads/answer", decision)).status).toBe(409);
       await executor.continueRun(old.runId, "stale-routine-worker");
       expect(connector.records).toHaveLength(writes);
       expect((await readOldRun()).status).toBe(expectedState);
       expect(settled.request).toEqual(approval.request);
-      if (writes > baseline) expect(settled.status).toBe("completed");
       expect(await readEffect()).toMatchObject({
         status: settled.status,
         result: settled.result,
