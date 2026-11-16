@@ -55,35 +55,42 @@ function activityRow(page: Page, botName: string) {
   });
 }
 
-test("a retired Slack grant leaves a readable resend instruction", async ({ page }, testInfo) => {
-  await signup(
-    page,
-    `slack-retired-${Date.now()}@example.test`,
-    "password12",
-    "Messaging Recovery",
-  );
-  await completeOnboarding(page);
-  await page.goto("/app");
-  await page.waitForURL(/\/app\/[^/]+$/);
-  const text = "Slack authorization changed. Send a new message to continue.";
-  // Rendering fixture only; PostgreSQL tests exercise the actual retirement.
-  const inject = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
-    const response = await route.fetch();
-    const body = (await response.json()) as { json?: ThreadCarrier };
-    injectExpiredStatus(body, text);
-    await route.fulfill({
-      status: response.status(),
-      headers: response.headers(),
-      body: JSON.stringify(body),
-    });
-  };
-  await page.route("**/rpc/bootstrap", inject);
-  await page.route("**/rpc/threads/get", inject);
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole("combobox", { name: /^Message/ })).toBeEnabled();
-  await captureScreenshot(page, testInfo, "slack-retired-grant-status");
-});
+for (const [kind, text] of [
+  ["retired", "Slack authorization changed. Send a new message to continue."],
+  [
+    "unconfirmed",
+    "Slack reply delivery could not be confirmed. Check the channel before sending a new message.",
+  ],
+] as const) {
+  test(`a ${kind} Slack grant leaves a readable resend instruction`, async ({ page }, testInfo) => {
+    await signup(
+      page,
+      `slack-retired-${Date.now()}@example.test`,
+      "password12",
+      "Messaging Recovery",
+    );
+    await completeOnboarding(page);
+    await page.goto("/app");
+    await page.waitForURL(/\/app\/[^/]+$/);
+    // Rendering fixture only; PostgreSQL tests exercise the actual retirement.
+    const inject = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as { json?: ThreadCarrier };
+      injectExpiredStatus(body, text);
+      await route.fulfill({
+        status: response.status(),
+        headers: response.headers(),
+        body: JSON.stringify(body),
+      });
+    };
+    await page.route("**/rpc/bootstrap", inject);
+    await page.route("**/rpc/threads/get", inject);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("combobox", { name: /^Message/ })).toBeEnabled();
+    await captureScreenshot(page, testInfo, `slack-${kind}-grant-status`);
+  });
+}
 
 async function captureActivitySidebar(
   page: Page,

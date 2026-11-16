@@ -1475,6 +1475,59 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
     }
   });
 
+  it.each([null, "stored-confirmation"])(
+    "settles a lone retired send and displays only unknown confirmation (%s)",
+    async (handle) => {
+      const fixture = slackGrantFixture();
+      try {
+        const scope = await fixture.createScope(fixture.fixtures[0]!);
+        await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+        const [old] = await fixture.messages(scope);
+        await fixture.finish(old!.run!, "Completed before the authorization change");
+        await fixture.db.prisma.externalMessage.update({
+          where: { id: old!.id },
+          data: { status: "delivering", providerReplyHandle: handle, nextAttemptAt: new Date(0) },
+        });
+        await fixture.installs.pause(scope.actor, {
+          id: scope.installed.id,
+          expectedRevision: scope.installed.revision,
+          paused: true,
+        });
+        await fixture.maintainOffline();
+        await fixture.maintainOffline();
+        expect(await fixture.messages(scope)).toMatchObject([
+          {
+            id: old!.id,
+            status: "delivered",
+            providerReplyHandle: handle ?? "unconfirmed",
+            run: { id: old!.runId, status: "completed" },
+          },
+        ]);
+        const notices = await fixture.db.prisma.message.findMany({
+          where: {
+            threadId: old!.run!.threadId,
+            role: "system",
+            clientNonce: { startsWith: "slack-grant-retired:" },
+          },
+        });
+        if (handle) expect(notices).toHaveLength(0);
+        else {
+          expect(notices).toHaveLength(1);
+          expect(notices[0]!.blocks).toEqual([
+            {
+              kind: "meta",
+              text: "Slack reply delivery could not be confirmed. Check the channel before sending a new message.",
+            },
+          ]);
+        }
+        expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(1);
+        expect(fixture.send).not.toHaveBeenCalled();
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
   it("settles old send receipts without retrying requests that may already have posted", async () => {
     const fixture = slackGrantFixture();
     try {

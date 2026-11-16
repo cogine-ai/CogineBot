@@ -13,6 +13,8 @@ import { inboundDeliveryClientNonce, messagingWakeIdempotencyKey } from "./webho
 
 const BATCH_SIZE = 20;
 const RETIRED = "Slack authorization changed. Send a new message to continue.";
+const UNCONFIRMED =
+  "Slack reply delivery could not be confirmed. Check the channel before sending a new message.";
 
 // A persisted grant change is irreversible for this receipt. Provider outages
 // and missing process configuration do not establish revocation.
@@ -83,6 +85,11 @@ export async function retireSlackMessages(
         FOR UPDATE OF e
       `);
       if (!row) return null;
+      // Admission locks receipt before Thread. Keep that order when cancelling
+      // its exact Run, and never stop unrelated work in the same conversation.
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${row.threadId} FOR UPDATE`;
+      let teardownKeys: GroupRunTeardownKey[] = [];
+      let eventSeq: number | null = null;
       if (row.status === "delivering") {
         await tx.externalMessage.update({
           where: { id },
@@ -96,72 +103,69 @@ export async function retireSlackMessages(
               : "Delivery confirmation lost; skipped retry to avoid duplicates",
           },
         });
-        return null;
-      }
-      // Admission locks receipt before Thread. Keep that order when cancelling
-      // its exact Run, and never stop unrelated work in the same conversation.
-      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${row.threadId} FOR UPDATE`;
-      const run = await tx.run.findFirst({
-        where: {
-          spaceId: row.spaceId,
-          userId: row.userId,
-          botId: row.botId,
-          threadId: row.threadId,
-          OR: [
-            {
-              trigger: "messaging",
-              sourceMessage: {
-                clientNonce: teamChatMessageClientNonce(row.provider, row.providerEventId),
-              },
-            },
-            {
-              trigger: "webhook",
-              sourceMessage: {
-                clientNonce: inboundDeliveryClientNonce(
-                  "messaging",
-                  row.botId,
-                  messagingWakeIdempotencyKey(row.provider, row.providerEventId),
-                ),
-              },
-            },
-          ],
-        },
-        select: { id: true, taskId: true, botId: true },
-      });
-      let teardownKeys: GroupRunTeardownKey[] = [];
-      let eventSeq: number | null = null;
-      if (run) {
-        const cancelled = await cancelRunsInTransaction(tx, [run], now);
-        const pending = await recordGroupRunTeardowns(
-          tx,
-          { spaceId: row.spaceId, userId: row.userId },
-          cancelled,
-          [],
-        );
-        teardownKeys = pending.keys;
-        for (const winner of cancelled) {
-          await tx.run.update({ where: { id: winner.id }, data: { error: RETIRED } });
-          const event = await appendEventInTransaction(tx, {
+        if (row.providerReplyHandle) return null;
+      } else {
+        const run = await tx.run.findFirst({
+          where: {
             spaceId: row.spaceId,
-            threadId: row.threadId,
+            userId: row.userId,
             botId: row.botId,
-            runId: winner.id,
-            type: "run.cancelled",
-            payload: {},
-          });
-          eventSeq = event.seq;
+            threadId: row.threadId,
+            OR: [
+              {
+                trigger: "messaging",
+                sourceMessage: {
+                  clientNonce: teamChatMessageClientNonce(row.provider, row.providerEventId),
+                },
+              },
+              {
+                trigger: "webhook",
+                sourceMessage: {
+                  clientNonce: inboundDeliveryClientNonce(
+                    "messaging",
+                    row.botId,
+                    messagingWakeIdempotencyKey(row.provider, row.providerEventId),
+                  ),
+                },
+              },
+            ],
+          },
+          select: { id: true, taskId: true, botId: true },
+        });
+        if (run) {
+          const cancelled = await cancelRunsInTransaction(tx, [run], now);
+          const pending = await recordGroupRunTeardowns(
+            tx,
+            { spaceId: row.spaceId, userId: row.userId },
+            cancelled,
+            [],
+          );
+          teardownKeys = pending.keys;
+          for (const winner of cancelled) {
+            await tx.run.update({ where: { id: winner.id }, data: { error: RETIRED } });
+            const event = await appendEventInTransaction(tx, {
+              spaceId: row.spaceId,
+              threadId: row.threadId,
+              botId: row.botId,
+              runId: winner.id,
+              type: "run.cancelled",
+              payload: {},
+            });
+            eventSeq = event.seq;
+          }
         }
+        await tx.externalMessage.update({
+          where: { id },
+          data: {
+            status: "failed",
+            runId: run?.id ?? null,
+            nextAttemptAt: null,
+            lastError: RETIRED,
+          },
+        });
       }
-      await tx.externalMessage.update({
-        where: { id },
-        data: {
-          status: "failed",
-          runId: run?.id ?? null,
-          nextAttemptAt: null,
-          lastError: RETIRED,
-        },
-      });
-      const nonce = `slack-grant-retired:${row.conversationId}:${row.slackGrantRevision ?? "legacy"}`;
+      const unknownDelivery = row.status === "delivering";
+      const nonce = `slack-grant-retired:${row.conversationId}:${row.slackGrantRevision ?? "legacy"}${unknownDelivery ? ":unconfirmed" : ""}`;
       if (
         await tx.message.findUnique({
           where: { threadId_clientNonce: { threadId: row.threadId, clientNonce: nonce } },
@@ -169,7 +173,7 @@ export async function retireSlackMessages(
         })
       )
         return { teardownKeys, threadId: row.threadId, eventSeq };
-      const blocks = [{ kind: "meta" as const, text: RETIRED }];
+      const blocks = [{ kind: "meta" as const, text: unknownDelivery ? UNCONFIRMED : RETIRED }];
       const message = await createThreadMessageInTransaction(tx, {
         threadId: row.threadId,
         botId: row.botId,
