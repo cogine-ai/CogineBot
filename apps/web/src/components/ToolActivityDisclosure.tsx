@@ -54,7 +54,9 @@ export function ToolSteps({
               style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
             >
               <span aria-hidden>{presentation.glyph}</span>
-              <span className="sr-only">{presentation.label}</span>
+              <span role="status" className="sr-only">
+                {presentation.label}
+              </span>
             </span>
             <span
               className={`min-w-0 flex-1 truncate text-[13px] ${

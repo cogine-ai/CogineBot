@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { MessagingInboundMessage } from "@rakazo/adapter-kit";
 import { routineWakeupJob } from "@rakazo/adapter-kit";
 import { ComposioEmulator, LocalArtifactStore, toTeamChatInbound } from "@rakazo/adapters";
-import type { Actor, ModelCredential } from "@rakazo/contracts";
+import type { Actor, MessageBlock, ModelCredential } from "@rakazo/contracts";
 import { callClientNonce } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -930,6 +930,15 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
             }),
           ]),
         );
+        const finalMessages = await db.message.findMany({ where: { runId, role: "bot" } });
+        const steps = finalMessages.flatMap((message) =>
+          (message.blocks as MessageBlock[]).flatMap((block) =>
+            block.kind === "steps" ? block.steps : [],
+          ),
+        );
+        expect(steps.reduce((count, step) => count + step.count, 0)).toBe(3);
+        expect(steps.reduce((count, step) => count + (step.outcomes?.succeeded ?? 0), 0)).toBe(3);
+        expect(steps.every((step) => step.outcomes?.succeeded === step.count)).toBe(true);
       } finally {
         held.mockRestore();
       }
