@@ -12,6 +12,7 @@ import type { ModelCredential } from "@rakazo/contracts";
 import { claimSteering, createThreadMessageInTransaction } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
+import { EvalSandboxProvider } from "./evals/sandbox.js";
 import { sessionCookieHeader } from "./index.js";
 import type { ModelEmulatorRequest, ModelEmulatorStep } from "./model-emulator.js";
 import { startModelEmulator } from "./model-emulator.js";
@@ -40,21 +41,13 @@ describe.skipIf(!enabled)("history retrieval through executor", () => {
     const answer = freshCheck
       ? `The original plan uses 37 units. Inspect only ${reportsDir} when rechecking it.`
       : "The original plan uses 37 units.";
-    const sandbox = new FakeSandboxProvider();
+    const sandbox = freshCheck
+      ? new EvalSandboxProvider({
+          [currentFile]: "Synthetic report",
+          "shared/archive/yesterday.txt": "Synthetic report",
+        })
+      : new FakeSandboxProvider();
     const list = vi.spyOn(sandbox, "listFiles");
-    if (freshCheck) {
-      const provision = sandbox.provision.bind(sandbox);
-      vi.spyOn(sandbox, "provision").mockImplementation(async (request, context) => {
-        const computer = await provision(request, context);
-        for (const file of [currentFile, "shared/archive/yesterday.txt"])
-          await sandbox.writeFile(
-            computer,
-            { path: file, content: new TextEncoder().encode("Synthetic report") },
-            context,
-          );
-        return computer;
-      });
-    }
     const approvalTool =
       mode === "send requires approval"
         ? {

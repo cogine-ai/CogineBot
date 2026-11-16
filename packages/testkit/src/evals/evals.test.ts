@@ -167,6 +167,8 @@ describe("independent outcome graders", () => {
     e.fileReads = [current];
     expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
     e.toolNames.unshift("read_history");
+    expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);
+    e.readConstraintBeforeFile = true;
     expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(true);
     e.toolNames.push("read_file");
     expect(scenario.grade(e).every((criterion) => criterion.pass)).toBe(false);

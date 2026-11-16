@@ -1742,6 +1742,8 @@ function toAgentTool(
         };
       }
       if (tool.name === "remember") {
+        // Preserve exact correction arguments for validation and approval binding.
+        if (Object.hasOwn(raw, "correction")) return raw;
         return {
           content: String(raw.content ?? ""),
           path: String(raw.path ?? "MEMORY.md"),
@@ -2664,9 +2666,6 @@ function builtinParameters(tool: ConnectorTool) {
         uniqueItems: true,
       }),
     });
-  }
-  if (tool.name === "remember") {
-    return Type.Object({ content: Type.String(), path: Type.String() });
   }
   if (tool.name === "shell") {
     return Type.Object({

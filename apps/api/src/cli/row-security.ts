@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     if (command === "verify") {
       // Recovery uses the candidate image to check the database before it
       // restarts the prior image. The Pages migration may have rolled back.
-      const options = { allowPrePages: true };
+      const options = { allowPrePages: true, allowPreModelAuth: rollback };
       const status = await verifyRuntimeDatabase(prisma, options);
       if (status.problems.includes("runtime-not-prepared"))
         throw new Error("Runtime role preparation failed");
