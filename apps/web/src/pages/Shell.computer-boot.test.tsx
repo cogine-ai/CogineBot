@@ -862,6 +862,29 @@ function installComputerStatusStream() {
   return { first, second, event };
 }
 
+it("keeps a failed control release visible when an earlier screen read finishes", async () => {
+  const stream = installComputerStatusStream();
+  await showRunningComputer();
+  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+  const screen = deferred<{ url: string | null }>();
+  const fallback = boundary.call.getMockImplementation()!;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.screenUrl") return screen.promise;
+    if (path === "computer.release") return Promise.reject(new Error("release unavailable"));
+    return fallback(path, input, options);
+  });
+  const reads = callsTo("computer.screenUrl").length;
+  await act(async () => stream.first.resolve(stream.event(11)));
+  expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
+  await click(button("I’m done"));
+  expect(document.body.textContent).toContain("Could not continue");
+  await act(async () => screen.resolve({ url: "http://localhost/screen" }));
+  expect(document.body.textContent).toContain("Could not continue");
+  expect(button("Close computer")).toBeTruthy();
+  expect(button("I’m done")).toBeTruthy();
+});
+
 it.each(["stopped", "suspended", "booting"] as const)(
   "refreshes a visible %s computer immediately after an accepted running event",
   async (initialState) => {
