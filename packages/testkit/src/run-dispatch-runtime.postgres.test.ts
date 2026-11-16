@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -1472,19 +1472,34 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       expect(writes).toHaveLength(1);
       expect(writes[0]?.[1]).toMatchObject({ path: filePath });
       expect(new TextDecoder().decode(writes[0]?.[1].content)).toBe(fileText);
-      // Fake is deliberately not the Docker/local-home checkpoint fast path.
-      expect(exports).toEqual([{ runId: targetRunId, aborted: false }]);
-      expect(
-        await fixture.handles.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
-      ).toMatchObject({ status: "completed", error: null, leaseFence: 1, leaseOwner: null });
-      expect(
-        await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
-      ).toEqual([
-        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
-      ]);
+      const run = await fixture.handles.prisma.run.findUniqueOrThrow({
+        where: { id: targetRunId },
+        select: { status: true, error: true, leaseFence: true, leaseOwner: true },
+      });
+      const attempts = await fixture.handles.prisma.attempt.findMany({
+        where: { runId: targetRunId },
+      });
       const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
         where: { bots: { some: { id: seeded.botId } } },
       });
+      const disk = await statfs(fixture.dataDir).catch(() => null);
+      const checkpointState = JSON.stringify({
+        run,
+        attempts,
+        workspaceSaveFailure: computer.workspaceSaveFailure,
+        availableBytes: disk ? Number(disk.bavail) * Number(disk.bsize) : null,
+      });
+      // Fake is deliberately not the Docker/local-home checkpoint fast path.
+      expect(exports, checkpointState).toEqual([{ runId: targetRunId, aborted: false }]);
+      expect(run, checkpointState).toMatchObject({
+        status: "completed",
+        error: null,
+        leaseFence: 1,
+        leaseOwner: null,
+      });
+      expect(attempts).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
       expect(computer).toMatchObject({ kind: "fake", homeRevision: expect.any(String) });
       expect(
         await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
