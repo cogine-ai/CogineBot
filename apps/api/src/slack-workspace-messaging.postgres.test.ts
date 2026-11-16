@@ -6,8 +6,8 @@ import type {
   SandboxProvider,
 } from "@rakazo/adapter-kit";
 import {
-  EncryptedSecretStore,
   createGroupRunTeardownRecovery,
+  EncryptedSecretStore,
   MessagingInstallations,
   SLACK_INSTALL_SCOPES,
   SlackInstallProvider,
