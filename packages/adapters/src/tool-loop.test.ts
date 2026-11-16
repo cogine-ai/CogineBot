@@ -40,16 +40,25 @@ type Call = { name: string; args: unknown; result: string };
 function stopsAtResponse(respond: (response: number) => Call[], responses = 60) {
   let streak: LoopGuardStreak = { key: undefined, count: 0 };
   const results = new Map<string, string>();
+  let previousResponseResults: string[] = [];
   for (let response = 1; response <= responses; response += 1) {
     const calls = respond(response);
     for (const [index, call] of calls.entries()) {
       const previous = streak.executionId ? results.get(streak.executionId) : undefined;
-      const guard = advanceToolCallLoopGuard(streak, call.name, call.args, previous, response);
+      const guard = advanceToolCallLoopGuard(
+        streak,
+        call.name,
+        call.args,
+        previous,
+        response,
+        index === 0 ? previousResponseResults : undefined,
+      );
       if (guard.streak !== streak)
         streak = { ...guard.streak, executionId: `${response}-${index}` };
       if (guard.stuck) return { response, streak };
     }
     for (const [index, call] of calls.entries()) results.set(`${response}-${index}`, call.result);
+    previousResponseResults = calls.map((call) => call.result);
   }
   return { response: undefined, streak };
 }
@@ -557,6 +566,57 @@ describe("advanceToolCallLoopGuard", () => {
     }
     expect(main.count).toBeLessThan(helper.count);
     expect(helper.count).toBe(6);
+  });
+
+  it.each([false, true])(
+    "keeps productive same-tool batches running, fixed-first=%s",
+    (fixedFirst) => {
+      expect(
+        stopsAtResponse((response) => {
+          const calls = [
+            {
+              name: "read_file",
+              args: { path: `notes/${"new-".repeat(response)}document.md` },
+              result: answer(`document ${response}`),
+            },
+            {
+              name: "read_file",
+              args: { path: "notes/reference.md" },
+              result: answer("unchanged reference"),
+            },
+          ];
+          return fixedFirst ? calls.reverse() : calls;
+        }, 40).response,
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not count duplicate results or reordered calls as new batch progress", () => {
+    expect(
+      stopsAtResponse((response) =>
+        Array.from({ length: response % 2 ? 1 : 3 }, () => ({
+          name: "message_user",
+          args: { message: word(response) },
+          result: answer("same acknowledgement"),
+        })),
+      ).response,
+    ).toBe(25);
+  });
+
+  it("does not infer a repeated completed response while a batch result is still unknown", () => {
+    let streak: LoopGuardStreak = { key: undefined, count: 0 };
+    for (let response = 1; response <= 40; response += 1) {
+      const next = advanceToolCallLoopGuard(
+        streak,
+        "read_file",
+        { path: word(response) },
+        answer("unchanged reference"),
+        response,
+        [answer("unchanged reference"), undefined],
+      );
+      expect(next.stuck).toBe(false);
+      streak = next.streak;
+    }
   });
 
   it("fingerprints screen results by frame, not capture time", () => {
