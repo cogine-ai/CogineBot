@@ -885,8 +885,8 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       );
       expect(await fixture.messages(scope)).toMatchObject([
         { id: receipted.id, status: "delivered", providerReplyHandle: "saved-receipt" },
-        { id: old.id, runId: old.run!.id, providerReplyHandle: null },
-        { id: unclaimed.id, runId: null, providerReplyHandle: null },
+        { id: old.id, status: "failed", runId: old.run!.id, providerReplyHandle: null },
+        { id: unclaimed.id, status: "received", runId: null, providerReplyHandle: null },
         { id: fresh.id, status: "delivered", providerReplyHandle: "receipt-fixture-North-2" },
       ]);
       expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(3);
@@ -1030,6 +1030,136 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       } finally {
         await fixture.cleanup();
       }
+    }
+  });
+  it("never transfers a persisted reply even if its provider timestamp exceeds the replacement cutoff", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      const at = Date.now() + 3_000;
+      await fixture.deliver(scope, at);
+      const [old] = await fixture.messages(scope);
+      expect(old?.run).not.toBeNull();
+      await fixture.installs.pause(scope.actor, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+        paused: true,
+      });
+      const [paused] = await fixture.installs.list(scope.actor);
+      const grant = await fixture.connect(scope, scope.bot.id, 2, {
+        id: paused!.id,
+        expectedRevision: paused!.revision,
+      });
+      expect(grant.acceptAfter.getTime()).toBeLessThan(at);
+      await fixture.finish(old!.run!, "Old receipt with clock skew");
+      await fixture.restart();
+      await fixture.maintain();
+      expect(fixture.send).not.toHaveBeenCalled();
+      expect((await fixture.messages(scope))[0]).toMatchObject({
+        id: old!.id,
+        slackGrantRevision: scope.installed.revision,
+        status: "failed",
+        providerReplyHandle: null,
+        lastError: expect.stringContaining("send a new message"),
+      });
+      await fixture.deliver(scope, at);
+      expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(1);
+      const staleBridge = new TeamChatBridge({
+        prisma: fixture.db.prisma,
+        events: createThreadEvents(fixture.db.prisma),
+        jobs: { enqueue: vi.fn(async () => undefined) },
+        botId: scope.bot.id,
+        providerId: `slack~${scope.installed.id}`,
+        installedSlack: {
+          acceptAfter: scope.installed.acceptAfter,
+          isAvailable: async () => false,
+          grant: scope.installed,
+        },
+        send: vi.fn(),
+      }) as unknown as {
+        markSilentDelivery(id: string, handle: "silent"): Promise<void>;
+        retry(row: { id: string; status: string; attempts: number }, error: Error): Promise<void>;
+      };
+      await staleBridge.markSilentDelivery(old!.id, "silent");
+      await staleBridge.retry(old!, new Error("Late worker retry"));
+      expect((await fixture.messages(scope))[0]).toMatchObject({
+        status: "failed",
+        providerReplyHandle: null,
+        lastError: expect.stringContaining("send a new message"),
+        nextAttemptAt: null,
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("settles old send receipts without retrying requests that may already have posted", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      const at = scope.installed.acceptAfter.getTime() + 20;
+      await fixture.deliver(scope, at);
+      const [source] = await fixture.messages(scope);
+      const future = new Date(Date.now() + 30_000);
+      const [accepted, unknown, inFlight] = await Promise.all(
+        [
+          { providerReplyHandle: "stored-receipt", nextAttemptAt: future },
+          { providerReplyHandle: null, nextAttemptAt: new Date(0) },
+          { providerReplyHandle: null, nextAttemptAt: future },
+        ].map((delivery, index) =>
+          fixture.db.prisma.externalMessage.create({
+            data: {
+              externalConversationId: source!.externalConversationId,
+              providerEventId: `fixture-outstanding-${index}`,
+              senderId: scope.installerId,
+              senderName: "Fixture Installer",
+              content: "Previous send",
+              status: "delivering",
+              createdAt: new Date(at + index + 1),
+              slackGrantRevision: scope.installed.revision,
+              ...delivery,
+            },
+          }),
+        ),
+      );
+      const replacement = await fixture.connect(scope, scope.bot.id, 2, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+      });
+      await fixture.restart();
+      await fixture.maintain();
+      expect(await fixture.messages(scope)).toMatchObject([
+        { id: source!.id, status: "failed" },
+        { id: accepted!.id, status: "delivered", providerReplyHandle: "stored-receipt" },
+        { id: unknown!.id, status: "delivered", providerReplyHandle: "unconfirmed" },
+        {
+          id: inFlight!.id,
+          status: "delivering",
+          providerReplyHandle: null,
+          nextAttemptAt: future,
+        },
+      ]);
+      expect(fixture.send).not.toHaveBeenCalled();
+      const atNew = replacement.acceptAfter.getTime() + 20;
+      await fixture.deliver(scope, atNew);
+      const fresh = (await fixture.messages(scope)).find(
+        (row) => row.providerEventId === fixture.eventId(atNew),
+      );
+      expect(fresh?.run).not.toBeNull();
+      await fixture.finish(fresh!.run!, "New result waits for old confirmation");
+      await fixture.maintain();
+      expect(fixture.send).not.toHaveBeenCalled();
+      await fixture.db.prisma.externalMessage.update({
+        where: { id: inFlight!.id },
+        data: { nextAttemptAt: new Date(0) },
+      });
+      await fixture.maintain();
+      expect(fixture.send).toHaveBeenCalledExactlyOnceWith(
+        "fixture-North-2",
+        expect.objectContaining({ body: "New result waits for old confirmation" }),
+      );
+    } finally {
+      await fixture.cleanup();
     }
   });
 });

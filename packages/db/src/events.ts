@@ -652,6 +652,7 @@ async function lockTeamChatClaim(
     installation && grant
       ? Prisma.sql`AND ec.provider = ${installedSlackProviderId(installation.id)}
         AND ec."workspaceId" = ${installation.workspaceId} AND em."senderId" = ${installation.installerId}
+        AND coalesce(em."slackGrantRevision", 1) = ${installation.revision}
         AND em."createdAt" > ${grant.acceptAfter}`
       : Prisma.empty;
   const [message] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
