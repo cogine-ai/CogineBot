@@ -1923,6 +1923,7 @@ model ExternalMessage {
   lastError              String?
   providerReplyHandle    String?
   deliveredAt            DateTime?
+  receiveSeq             BigInt?               @default(dbgenerated("nextval('external_message_receive_seq'::regclass)"))
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
 
