@@ -36,6 +36,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadEvents } from "@rakazo/db";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
+import { ComputerBusyError } from "../../adapters/src/computer-lifecycle.js";
 import { formatCurrentTimeInstruction } from "../../adapters/src/current-time.js";
 import { createJobReconciler } from "../../adapters/src/job-reconciler.js";
 import { mirrorMessagingOutbound } from "../../adapters/src/messaging-delivery.js";
@@ -106,6 +107,7 @@ async function openApp(
     contextStrategy?: "current";
     wakeupDriver?: "memory";
     realtime?: InMemoryRealtimeFanout;
+    prisma?: PrismaClient;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "run-dispatch-fixture-"));
@@ -944,6 +946,599 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       network.mockRestore();
     }
   }, 30_000);
+
+  it.each(["ordinary", "busy", "database", "provider-network"] as const)(
+    "keeps the claimed setup failure budget for %s",
+    async (kind) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let failures = 0;
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-budget-fixture" });
+      const controlled = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId) {
+                failures += 1;
+                if (kind === "busy") throw new ComputerBusyError();
+                if (kind === "database")
+                  throw Object.assign(new Error("synthetic database unreachable"), {
+                    code: "P1001",
+                  });
+                if (kind === "provider-network")
+                  throw Object.assign(new Error("synthetic service connection failed"), {
+                    code: "ECONNRESET",
+                  });
+                throw new Error("synthetic repeated setup failure");
+              }
+              return query(args);
+            },
+          },
+        },
+      });
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(new ScriptedAgentRuntime(), {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, kind, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        for (let fence = 1; fence <= 8; fence += 1) {
+          await db.prisma.run.update({
+            where: { id: targetRunId },
+            data: { wakeAt: new Date(Date.now() - 1) },
+          });
+          await fixture.handles.executor
+            .continueRun(targetRunId, "setup-budget-worker")
+            .catch(() => undefined);
+          const run = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+          const waiting = kind === "busy" || kind === "database";
+          expect(run).toMatchObject({
+            status: !waiting && fence === 8 ? "failed" : "queued",
+            leaseOwner: null,
+            leaseFence: fence,
+          });
+          const attempt = await db.prisma.attempt.findFirstOrThrow({
+            where: { runId: targetRunId, fence },
+          });
+          expect(attempt.status).toBe(!waiting && fence === 8 ? "failed" : "setup_failed");
+          if (waiting) expect(attempt.error).toBeNull();
+          else expect(attempt.error).toContain("synthetic");
+        }
+        expect(failures).toBe(8);
+        expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(8);
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
+
+  it("does not settle a successor that claims while early setup is still failing", async () => {
+    let targetRunId: string | undefined;
+    let targetBotId: string | undefined;
+    let entered!: () => void;
+    const setupEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let releaseOld!: () => void;
+    const oldReleased = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    let releaseNew!: () => void;
+    const newReleased = new Promise<void>((resolve) => {
+      releaseNew = resolve;
+    });
+    let enteredNew!: () => void;
+    const newEntered = new Promise<void>((resolve) => {
+      enteredNew = resolve;
+    });
+    let injected = false;
+    const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-fence-fixture" });
+    const controlled = db.prisma.$extends({
+      query: {
+        bot: {
+          async findUniqueOrThrow({ args, query }) {
+            if (targetBotId === args.where.id && args.select?.computerId && !injected) {
+              injected = true;
+              entered();
+              await oldReleased;
+              throw new Error("synthetic old claim failure");
+            }
+            return query(args);
+          },
+        },
+      },
+    });
+    const scripted = new ScriptedAgentRuntime();
+    const runtime: AgentRuntime = {
+      describe: () => scripted.describe(),
+      async *run(request, context) {
+        if (request.runId === targetRunId) {
+          enteredNew();
+          await newReleased;
+        }
+        yield* scripted.run(request, context);
+      },
+      abort: (runId) => scripted.abort(runId),
+    };
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    let oldWork: Promise<void> | undefined;
+    let newWork: Promise<void> | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        prisma: controlled as unknown as PrismaClient,
+        wakeupDriver: "memory",
+      });
+      const seeded = await seed(fixture.handles, "setup fence", undefined, async () => {
+        await fixture!.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      targetBotId = seeded.botId;
+      oldWork = fixture.handles.executor.continueRun(targetRunId, "old-setup-worker");
+      void oldWork.catch(() => undefined);
+      await setupEntered;
+      await db.prisma.run.update({
+        where: { id: targetRunId },
+        data: { leaseExpiresAt: new Date(0) },
+      });
+      newWork = fixture.handles.executor.continueRun(targetRunId, "new-setup-worker");
+      void newWork.catch(() => undefined);
+      await newEntered;
+      releaseOld();
+      await oldWork;
+      expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        status: "running",
+        leaseOwner: "new-setup-worker",
+        leaseFence: 2,
+      });
+      expect(
+        await db.prisma.attempt.findFirstOrThrow({ where: { runId: targetRunId, fence: 2 } }),
+      ).toMatchObject({ status: "running", finishedAt: null });
+      const lease = await db.prisma.computerExecutionLease.findFirstOrThrow({
+        where: { runId: targetRunId },
+      });
+      expect(lease.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      releaseNew();
+      await newWork;
+      expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        status: "completed",
+        leaseFence: 2,
+      });
+      expect(
+        await db.prisma.attempt.findMany({
+          where: { runId: targetRunId },
+          orderBy: { fence: "asc" },
+        }),
+      ).toEqual([
+        expect.objectContaining({ fence: 1, status: "interrupted" }),
+        expect.objectContaining({ fence: 2, status: "completed" }),
+      ]);
+    } finally {
+      releaseOld();
+      releaseNew();
+      await Promise.allSettled([oldWork, newWork].filter((work) => work !== undefined));
+      await fixture?.close();
+      await db.prisma.$disconnect();
+      await db.pool.end();
+    }
+  });
+
+  it.each(["requeue", "attempt", "transaction"] as const)(
+    "retains one ordinary setup failure when its %s write loses acknowledgement",
+    async (stage) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let injected = false;
+      let requeued = false;
+      const unavailable = Object.assign(new Error("synthetic setup write acknowledgement lost"), {
+        code: "P1001",
+      });
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-write-receipt" });
+      const queried = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId)
+                throw new Error("synthetic actual setup failure");
+              return query(args);
+            },
+          },
+          run: {
+            async updateMany({ args, query }) {
+              const result = await query(args);
+              if (
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                result.count === 1
+              )
+                requeued = true;
+              if (
+                stage === "requeue" &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                result.count === 1 &&
+                !injected
+              ) {
+                injected = true;
+                throw unavailable;
+              }
+              return result;
+            },
+          },
+          attempt: {
+            async update({ args, query }) {
+              const result = await query(args);
+              if (
+                stage === "attempt" &&
+                result.runId === targetRunId &&
+                args.data.status === "setup_failed" &&
+                !injected
+              ) {
+                injected = true;
+                throw unavailable;
+              }
+              return result;
+            },
+          },
+        },
+      });
+      const controlled = queried.$extends({
+        client: {
+          async $transaction(...args: unknown[]) {
+            const result = await Reflect.apply(queried.$transaction, queried, args);
+            if (stage === "transaction" && requeued && !injected) {
+              injected = true;
+              throw unavailable;
+            }
+            return result;
+          },
+        },
+      });
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(new ScriptedAgentRuntime(), {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, `setup ${stage} write`, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        await fixture.handles.executor
+          .continueRun(targetRunId, "setup-write-worker")
+          .catch(() => undefined);
+        expect(injected).toBe(true);
+        expect(await db.prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
+          expect.objectContaining({
+            status: "setup_failed",
+            error: "synthetic actual setup failure",
+            fence: 1,
+          }),
+        ]);
+        expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject(
+          {
+            status: "queued",
+            leaseOwner: null,
+            leaseFence: 1,
+            wakeAt: expect.any(Date),
+          },
+        );
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
+
+  it.each(["stop", "shutdown"] as const)(
+    "does not turn %s during claimed setup into an ordinary failure or revive the Run",
+    async (action) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let entered!: () => void;
+      const setupEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-stop-worker" });
+      const observer = createDb(process.env.DATABASE_URL!, {
+        applicationName: "setup-stop-observer",
+      });
+      let injected = false;
+      const controlled = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId && !injected) {
+                injected = true;
+                entered();
+                await released;
+                throw new Error("synthetic setup interrupted by owner");
+              }
+              return query(args);
+            },
+          },
+        },
+      });
+      let runtimeCalls = 0;
+      const scripted = new ScriptedAgentRuntime();
+      const runtime: AgentRuntime = {
+        describe: () => scripted.describe(),
+        async *run(request, context) {
+          if (request.runId === targetRunId) runtimeCalls += 1;
+          yield* scripted.run(request, context);
+        },
+        abort: (runId) => scripted.abort(runId),
+      };
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      let stopping: Promise<void> | undefined;
+      try {
+        // Use the application's owned dispatcher so shutdown drains this execution
+        // before disconnecting its database client.
+        fixture = await openApp(runtime, {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, `setup ${action}`);
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        await fixture.handles.jobs.enqueue(runContinueJob(targetRunId));
+        await setupEntered;
+        if (action === "stop") {
+          await rpc(fixture.handles, seeded.cookie, "threads/stop", { botId: seeded.botId });
+        } else {
+          stopping = fixture.handles.stop();
+        }
+        release();
+        if (stopping) await stopping;
+        await wait(async () => {
+          const run = await observer.prisma.run.findUniqueOrThrow({
+            where: { id: targetRunId },
+          });
+          expect(run).toMatchObject({
+            status: action === "stop" ? "cancelled" : "queued",
+            leaseFence: 1,
+          });
+          if (action === "shutdown") expect(run.leaseOwner).toBeNull();
+          const attempts = await observer.prisma.attempt.findMany({
+            where: { runId: targetRunId },
+          });
+          expect(attempts).toEqual([
+            expect.objectContaining({ status: "interrupted", fence: 1, error: null }),
+          ]);
+        });
+        expect(runtimeCalls).toBe(0);
+        expect(await observer.prisma.externalEffect.count({ where: { runId: targetRunId } })).toBe(
+          0,
+        );
+        expect(
+          await observer.prisma.computerExecutionLease.count({ where: { runId: targetRunId } }),
+        ).toBe(0);
+        if (action === "stop") {
+          await fixture.handles.executor.continueRun(targetRunId, "stale-after-stop");
+          expect(
+            await observer.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+          ).toMatchObject({ status: "cancelled", leaseFence: 1 });
+          expect(runtimeCalls).toBe(0);
+        }
+      } finally {
+        release();
+        await stopping;
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+        await observer.prisma.$disconnect();
+        await observer.pool.end();
+      }
+    },
+  );
+
+  it("observes a discovery rejection when history assembly fails before joining it", async () => {
+    const fixture = await openApp(new ScriptedAgentRuntime(), { wakeupDriver: "memory" });
+    let targetRunId: string | undefined;
+    const originalDiscovery = fixture.handles.connectors.discoverTools.bind(
+      fixture.handles.connectors,
+    );
+    let discoveries = 0;
+    const discovery = vi
+      .spyOn(fixture.handles.connectors, "discoverTools")
+      .mockImplementation((context) => {
+        if (context.runId !== targetRunId) return originalDiscovery(context);
+        discoveries += 1;
+        return Promise.reject(new Error("synthetic connector discovery rejection"));
+      });
+    try {
+      const seeded = await seed(fixture.handles, "rejected discovery", undefined, async () => {
+        await fixture.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      await fixture.handles.prisma.message.create({
+        data: {
+          botId: seeded.botId,
+          threadId: seeded.threadId,
+          role: "bot",
+          blocks: [null],
+          seq: 999,
+        },
+      });
+      await expect(
+        fixture.handles.executor.continueRun(targetRunId, "discovery-setup-worker"),
+      ).rejects.toThrow("Run setup failed; retrying");
+      expect(discoveries).toBe(1);
+      const attempts = await fixture.handles.prisma.attempt.findMany({
+        where: { runId: targetRunId },
+      });
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          status: "setup_failed",
+          error: expect.stringContaining("kind"),
+        }),
+      ]);
+      expect(attempts[0]!.error).not.toContain("synthetic connector discovery rejection");
+      expect(
+        await fixture.handles.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+      ).toMatchObject({ status: "queued", leaseOwner: null, leaseFence: 1 });
+    } finally {
+      discovery.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it.each([
+    "bot-query",
+    "computer-query",
+    "computer-lease",
+    "attempt-rollback",
+    "attempt-ack-lost",
+    "late-record",
+  ] as const)(
+    "recovers claimed setup work after %s without duplicating its attempt",
+    async (stage) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let targetComputerId: string | undefined;
+      let injected = false;
+      const failure = () => {
+        injected = true;
+        return new Error(
+          `synthetic ${stage} failure Bearer synthetic-private-value ${"detail ".repeat(500)}`,
+        );
+      };
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "claimed-setup-fixture" });
+      const controlled = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (
+                targetBotId === args.where.id &&
+                !injected &&
+                ((stage === "bot-query" && args.select?.computerId) ||
+                  (stage === "late-record" && args.include?.computer))
+              )
+                throw failure();
+              return query(args);
+            },
+          },
+          computer: {
+            async findUniqueOrThrow({ args, query }) {
+              if (stage === "computer-query" && targetComputerId === args.where.id && !injected)
+                throw failure();
+              return query(args);
+            },
+          },
+          computerExecutionLease: {
+            async create({ args, query }) {
+              if (stage === "computer-lease" && targetRunId === args.data.runId && !injected)
+                throw failure();
+              return query(args);
+            },
+          },
+          attempt: {
+            async create({ args, query }) {
+              if (targetRunId === args.data.runId && !injected && stage === "attempt-rollback")
+                throw failure();
+              const result = await query(args);
+              if (targetRunId === args.data.runId && !injected && stage === "attempt-ack-lost")
+                throw failure();
+              return result;
+            },
+          },
+        },
+      });
+      let runtimeCalls = 0;
+      const scripted = new ScriptedAgentRuntime();
+      const runtime: AgentRuntime = {
+        describe: () => scripted.describe(),
+        run(request, context) {
+          if (request.runId === targetRunId) runtimeCalls += 1;
+          return scripted.run(request, context);
+        },
+        abort: (runId) => scripted.abort(runId),
+      };
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(runtime, {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, stage, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        targetComputerId = (await db.prisma.bot.findUniqueOrThrow({ where: { id: targetBotId } }))
+          .computerId!;
+        await fixture.handles.executor
+          .continueRun(targetRunId, "first-setup-worker")
+          .catch(() => undefined);
+        expect(injected).toBe(true);
+        expect(runtimeCalls).toBe(0);
+        const parked = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        expect(parked).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 1,
+          wakeAt: expect.any(Date),
+        });
+        const attempts = await db.prisma.attempt.findMany({ where: { runId: targetRunId } });
+        expect(attempts).toEqual([
+          expect.objectContaining({
+            status: "setup_failed",
+            fence: 1,
+            finishedAt: expect.any(Date),
+          }),
+        ]);
+        expect(attempts[0]!.error).toContain(`synthetic ${stage} failure`);
+        expect(attempts[0]!.error).not.toContain("synthetic-private-value");
+        expect(attempts[0]!.error!.length).toBeLessThanOrEqual(2_000);
+        expect(
+          await db.prisma.computerExecutionLease.count({
+            where: { runId: targetRunId, expiresAt: { gt: new Date() } },
+          }),
+        ).toBe(0);
+        // A stale delivery must respect a durable future wake, without timing a 250ms backoff.
+        await db.prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() + 60_000) },
+        });
+        await fixture.handles.executor.continueRun(targetRunId, "too-early-setup-worker");
+        expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(1);
+        await db.prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() - 1) },
+        });
+        await fixture.handles.executor.continueRun(targetRunId, "second-setup-worker");
+        expect(runtimeCalls).toBe(1);
+        expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject(
+          { status: "completed", leaseOwner: null, leaseFence: 2 },
+        );
+        expect(
+          await db.prisma.attempt.findMany({
+            where: { runId: targetRunId },
+            orderBy: { fence: "asc" },
+          }),
+        ).toEqual([
+          expect.objectContaining({ id: attempts[0]!.id, status: "setup_failed", fence: 1 }),
+          expect.objectContaining({ status: "completed", fence: 2 }),
+        ]);
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
 
   it.each([
     "repeated-results",
