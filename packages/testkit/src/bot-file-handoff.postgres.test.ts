@@ -11,7 +11,7 @@ import {
 } from "@rakazo/adapters";
 import type { MessageBlock, ThreadSnapshot } from "@rakazo/contracts";
 import { attachmentExtensionForMimeType } from "@rakazo/core";
-import { runAsTenant } from "@rakazo/db";
+import { runAsTenant, settleCollaborationDelivery } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.js";
 import { resolveBotWorkspacePath, toComputerRef } from "../../adapters/src/computer-support.js";
@@ -39,6 +39,7 @@ describe.skipIf(!enabled)("Bot file delivery through the actual executor (Postgr
     { mode: "dedicated", route: "peer" },
     { mode: "dedicated", route: "group-outside" },
     { mode: "dedicated", route: "group-inside" },
+    { mode: "dedicated", route: "group-outside-disabled" },
   ] as const)(
     "delivers selected files through $route on $mode computers",
     async ({ mode, route }) => {
@@ -240,6 +241,44 @@ describe.skipIf(!enabled)("Bot file delivery through the actual executor (Postgr
             role: "bot",
             blocks: source.blocks,
           });
+          if (route === "group-outside-disabled") {
+            const policy = await rpc<{ collaborationRevision: number }>(
+              handles,
+              cookie,
+              "spaces/update",
+              {
+                spaceId: owner.spaceId,
+                allowBotCollaboration: false,
+                expectedCollaborationRevision: 0,
+              },
+            );
+            expect(
+              await handles.prisma.run.findUniqueOrThrow({ where: { id: incoming.id } }),
+            ).toMatchObject({
+              status: "cancelled",
+              collaborationStatus: "policy_disabled",
+              startedAt: null,
+            });
+            const stopped = await handles.prisma.message.findUniqueOrThrow({
+              where: { id: source.id },
+            });
+            expect(
+              (stopped.blocks as MessageBlock[]).find((block) => block.kind === "handoff"),
+            ).toMatchObject({ deliveryStatus: "policy_disabled" });
+            expect(
+              (stopped.blocks as MessageBlock[]).filter((block) => block.kind === "file"),
+            ).toEqual(files);
+            await rpc(handles, cookie, "spaces/update", {
+              spaceId: owner.spaceId,
+              allowBotCollaboration: true,
+              expectedCollaborationRevision: policy.collaborationRevision,
+            });
+            await settleCollaborationDelivery(handles.prisma, incoming.id, "completed");
+            expect(
+              (await handles.prisma.message.findUniqueOrThrow({ where: { id: source.id } })).blocks,
+            ).toEqual(stopped.blocks);
+            return;
+          }
           const paths = files.map(
             (file) =>
               `attachments/${file.artifactId}${attachmentExtensionForMimeType(file.mimeType)}`,
@@ -259,6 +298,21 @@ describe.skipIf(!enabled)("Bot file delivery through the actual executor (Postgr
             { toolCalls: [{ name: "attach_file", args: { path: "notes/report.txt" } }] },
             { assistant: "Selected group review is complete.", complete: true },
           ]);
+          const settled = await handles.prisma.message.findUniqueOrThrow({
+            where: { id: source.id },
+          });
+          expect(
+            (settled.blocks as MessageBlock[]).find((block) => block.kind === "handoff"),
+          ).toMatchObject({ deliveryStatus: "completed" });
+          const update = await handles.prisma.event.findFirstOrThrow({
+            where: {
+              threadId: group.threadId,
+              type: "thread.message.updated",
+              payload: { path: ["messageId"], equals: source.id },
+            },
+            orderBy: { seq: "desc" },
+          });
+          expect((update.payload as { blocks: MessageBlock[] }).blocks).toEqual(settled.blocks);
           const target = bots.find((bot) => bot.id === b.id)!;
           const targetComputer = await handles.prisma.computer.findUniqueOrThrow({
             where: { id: target.computerId! },

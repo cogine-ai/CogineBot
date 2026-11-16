@@ -460,24 +460,79 @@ it("keeps the stopped sender chip non-expanding and its accessible status explic
   expect(state.router.push).not.toHaveBeenCalled();
 });
 
-it("keeps handoff details progressively expandable when collaboration has stopped", async () => {
-  state.block = {
-    kind: "handoff",
-    fromBotId: "bot-a",
-    toBotId: "bot-b",
-    text: "Private peer body",
-    deliveryStatus: "policy_disabled",
-  };
-  await act(async () => root.render(<ThreadRoute />));
-  const chip = container.querySelector<HTMLButtonElement>(
-    '[aria-label="Show Writer messaged Research · Automatic collaboration stopped"]',
+it.each([false, true])(
+  "keeps stopped handoff details expandable with files=%s",
+  async (withFiles) => {
+    state.block = {
+      kind: "handoff",
+      fromBotId: "bot-a",
+      toBotId: "bot-b",
+      text: "Private peer body",
+      deliveryStatus: "policy_disabled",
+    };
+    state.files = withFiles
+      ? [
+          {
+            kind: "file",
+            artifactId: "report-file",
+            name: "report.txt",
+            mimeType: "text/plain",
+            size: 12,
+          },
+        ]
+      : [];
+    await act(async () => root.render(<ThreadRoute />));
+    const chip = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Show Writer messaged Research · Automatic collaboration stopped"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(container.textContent).not.toContain("Private peer body");
+    await act(async () => chip?.click());
+    expect(container.textContent).toContain("Private peer body");
+    expect(state.router.push).not.toHaveBeenCalled();
+  },
+);
+
+for (const kind of ["handoff", "bot_message_sent"] as const) {
+  it.each([
+    ["waiting_peer", "Waiting…"],
+    ["completed", "Done"],
+    ["policy_disabled", "Automatic collaboration stopped"],
+  ] as const)(
+    `keeps the ${kind} receipt status alongside its selected file: %s`,
+    async (deliveryStatus, label) => {
+      state.block =
+        kind === "handoff"
+          ? {
+              kind,
+              fromBotId: "bot-a",
+              toBotId: "bot-b",
+              text: "Selected task details",
+              deliveryStatus,
+            }
+          : {
+              kind,
+              toBotId: "bot-b",
+              toBotName: "Research",
+              text: "Private peer body",
+              deliveryStatus,
+            };
+      state.files = [
+        {
+          kind: "file",
+          artifactId: "report-file",
+          name: "report.txt",
+          mimeType: "text/plain",
+          size: 12,
+        },
+      ];
+      await act(async () => root.render(<ThreadRoute />));
+      expect(container.textContent).toContain(label);
+      expect(container.textContent).toContain("report.txt");
+      expect(container.textContent).not.toContain("Private peer body");
+    },
   );
-  expect(chip).not.toBeNull();
-  expect(container.textContent).not.toContain("Private peer body");
-  await act(async () => chip?.click());
-  expect(container.textContent).toContain("Private peer body");
-  expect(state.router.push).not.toHaveBeenCalled();
-});
+}
 
 it.each(["created", "archived", "deleted"] as const)(
   "preserves %s child card navigation and lifecycle copy",

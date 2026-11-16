@@ -217,7 +217,18 @@ async function settleRows(
     });
     if (!run.collaborationMessageId || !run.parentRunId) continue;
     const message = await tx.message.findFirst({
-      where: { id: run.collaborationMessageId, runId: run.parentRunId },
+      where: {
+        id: run.collaborationMessageId,
+        OR: [
+          { runId: run.parentRunId },
+          {
+            runId: null,
+            sourceRuns: {
+              some: { id: run.id, origin: "group_handoff", parentRunId: run.parentRunId },
+            },
+          },
+        ],
+      },
       include: { thread: { select: { spaceId: true } } },
     });
     if (!message?.botId) continue;
@@ -245,7 +256,7 @@ async function settleRows(
       threadId: message.threadId,
       botId: message.botId,
       type: "thread.message.updated",
-      runId: run.parentRunId,
+      runId: message.runId ?? undefined,
       allowCancelledRun: true,
       payload: { messageId: message.id, messageSeq: message.seq, role: message.role, blocks },
     });
