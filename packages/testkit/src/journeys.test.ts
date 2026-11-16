@@ -3118,9 +3118,7 @@ describeJourneys("required product journeys", () => {
           title: expect.any(String),
           body: expect.any(String),
         });
-        expect(connector.records[baseline]).toMatchObject(
-          approvedArgs as Record<string, unknown>,
-        );
+        expect(connector.records[baseline]).toMatchObject(approvedArgs as Record<string, unknown>);
         expect(settled.status).toBe("completed");
       }
       const writes = connector.records.length;
