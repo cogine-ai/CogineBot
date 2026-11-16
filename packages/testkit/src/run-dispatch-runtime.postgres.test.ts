@@ -953,6 +953,9 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     "running-shell-stopped",
     "running-shell-succeeded",
     "running-shell-failed",
+    "productive-batch",
+    "productive-batch-fixed-first",
+    "repeated-batch",
   ] as const)("settles result-aware Pi work: %s", async (scenario) => {
     const fixtureKey = "synthetic-result-aware-key";
     const model: Model<"openai-completions"> = {
@@ -1042,6 +1045,38 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           ]);
         }
         expect(requests).toBeLessThanOrEqual(31);
+        if (scenario.startsWith("productive-batch")) {
+          if (requests === 31)
+            return piResponse(activeModel, [{ type: "text", text: "Read all thirty documents." }]);
+          const calls: ToolCall[] = [
+            {
+              type: "toolCall",
+              id: `document-${requests}`,
+              name: "read_file",
+              arguments: { path: files[requests - 1] },
+            },
+            {
+              type: "toolCall",
+              id: `reference-${requests}`,
+              name: "read_file",
+              arguments: { path: "notes/reference.md" },
+            },
+          ];
+          return piResponse(
+            activeModel,
+            scenario.endsWith("fixed-first") ? calls.reverse() : calls,
+          );
+        }
+        if (scenario === "repeated-batch")
+          return piResponse(
+            activeModel,
+            ["first", "second"].map((label) => ({
+              type: "toolCall" as const,
+              id: `${label}-${requests}`,
+              name: "message_user",
+              arguments: { message: `${label} checking ${"again ".repeat(requests)}for a result.` },
+            })),
+          );
         if (runningShell) {
           if (requests === 1)
             return piResponse(activeModel, [
@@ -1140,6 +1175,18 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       abort: (runId) => pi.abort(runId),
     };
     const sandbox = new FakeSandboxProvider();
+    const originalRead = sandbox.readFile.bind(sandbox);
+    const read = vi
+      .spyOn(sandbox, "readFile")
+      .mockImplementation(async (computer, filePath, context, options) => {
+        if (scenario.startsWith("productive-batch") && context.runId === targetRunId)
+          return new TextEncoder().encode(
+            filePath.endsWith("reference.md")
+              ? "unchanged reference"
+              : `new document at ${filePath}`,
+          );
+        return originalRead(computer, filePath, context, options);
+      });
     const originalExecute = sandbox.execute.bind(sandbox);
     const command = vi
       .spyOn(sandbox, "execute")
@@ -1208,7 +1255,13 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         ([message, fields]) =>
           message === "run.loop_guard_stopped" && fields?.["run.id"] === targetRunId,
       );
-      if (runningShell && scenario !== "running-shell-stopped") {
+      if (scenario.startsWith("productive-batch")) {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(60);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Read all thirty documents.");
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(60);
+      } else if (runningShell && scenario !== "running-shell-stopped") {
         expect(requests).toBe(3);
         expect(stops).toEqual([]);
         expect(steps.filter((step) => step.label === "Shell")).toEqual([
@@ -1221,13 +1274,14 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       } else if (
         scenario === "repeated-results" ||
         scenario === "helper-results" ||
-        scenario === "running-shell-stopped"
+        scenario === "running-shell-stopped" ||
+        scenario === "repeated-batch"
       ) {
         // The first published update and the later budget response are distinct results.
         expect(requests).toBeGreaterThanOrEqual(25);
         if (scenario === "helper-results" || scenario === "running-shell-stopped")
           expect(parentRequests).toBe(1);
-        else expect(requests).toBeLessThanOrEqual(28);
+        else expect(requests).toBeLessThanOrEqual(scenario === "repeated-batch" ? 29 : 28);
         if (runningShell)
           expect(steps.find((step) => step.label === "Shell")).toMatchObject({
             outcomes: { stopped: 1 },
@@ -1306,6 +1360,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       if (targetRunId) pi.abort(targetRunId);
       await fixture?.close();
       command.mockRestore();
+      read.mockRestore();
       audit?.mockRestore();
       if (previousProvider) models.setProvider(previousProvider);
       else models.deleteProvider(model.provider);

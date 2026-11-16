@@ -115,6 +115,7 @@ export function advanceToolCallLoopGuard(
   args: unknown,
   previousResult?: string,
   response?: number,
+  previousResponseResults?: readonly (string | undefined)[],
 ): { streak: LoopGuardStreak; stuck: boolean } {
   // Preserve JSON's optional-field handling, then compare objects independently of field order.
   const serialized = JSON.stringify(args);
@@ -137,9 +138,16 @@ export function advanceToolCallLoopGuard(
       ? (restart ? 0 : (streak.failures ?? 0)) + 1
       : 0;
   const sameStep = response !== undefined && response === streak.response && name === streak.name;
+  const responseResult =
+    previousResponseResults === undefined
+      ? previousResult
+      : previousResponseResults.length > 0 &&
+          previousResponseResults.every((result) => result !== undefined)
+        ? toolResultFingerprint([...new Set(previousResponseResults)].sort())
+        : undefined;
   const sameResult = sameStep
     ? { sameResult: streak.sameResult, sameResultCount: streak.sameResultCount }
-    : sameResultRun(streak, name, previousResult, response);
+    : sameResultRun(streak, name, responseResult, response);
   return {
     streak: { ...next, name, response, ...(same ? { results, failures } : {}), ...sameResult },
     // The first call has no answer yet, so six identical failing calls have five failures.

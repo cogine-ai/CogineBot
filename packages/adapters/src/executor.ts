@@ -5504,6 +5504,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let toolCallStreak: LoopGuardStreak = { key: undefined, count: 0 };
         const helperToolCallStreaks = new Map<string, LoopGuardStreak>();
         const toolResults = new Map<string, string>();
+        const toolResponseCalls = new Map<string, { response: number; executionIds: string[] }>();
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
         let terminalCheckpointComplete = false;
@@ -11694,18 +11695,34 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const previousResult = streak.executionId
                 ? toolResults.get(streak.executionId)
                 : undefined;
+              let responseCalls = toolResponseCalls.get(namespace);
+              const previousResponseResults =
+                event.response !== undefined && responseCalls?.response !== event.response
+                  ? (responseCalls?.executionIds.map((id) => toolResults.get(id)) ?? [])
+                  : undefined;
               const loopGuard = advanceToolCallLoopGuard(
                 streak,
                 event.name,
                 event.args,
                 previousResult,
                 event.response,
+                previousResponseResults,
               );
               if (loopGuard.streak !== streak) {
-                if (streak.executionId) toolResults.delete(streak.executionId);
+                if (streak.executionId && event.response === undefined)
+                  toolResults.delete(streak.executionId);
                 const next = { ...loopGuard.streak, executionId: event.executionId };
                 if (namespace === "main") toolCallStreak = next;
                 else helperToolCallStreaks.set(namespace, next);
+              }
+              if (event.response !== undefined) {
+                if (responseCalls?.response !== event.response) {
+                  // Keep every result until the next response compares the whole batch.
+                  for (const id of responseCalls?.executionIds ?? []) toolResults.delete(id);
+                  responseCalls = { response: event.response, executionIds: [] };
+                  toolResponseCalls.set(namespace, responseCalls);
+                }
+                responseCalls.executionIds.push(event.executionId);
               }
               if (loopGuard.stuck) {
                 const stoppedStreak =
