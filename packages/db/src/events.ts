@@ -839,6 +839,14 @@ export async function sendUserMessage(
               : {}),
           },
         });
+        if (input.teamChatClaim?.installation) {
+          // Commit the admitted Run and its installed-channel receipt together.
+          // The caller may stop before its routing/status update is persisted.
+          await tx.externalMessage.update({
+            where: { id: input.teamChatClaim.id },
+            data: { runId: run.id },
+          });
+        }
         if (input.linkMessageToRun) {
           await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
         }

@@ -803,7 +803,6 @@ export class TeamChatBridge {
     const now = new Date();
     const due = { OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] };
     const currentDue = installed ? { AND: [slackGrantWindow(installed), due] } : due;
-    if (installed) await this.settleExpiredSlackGrant(target, installed, now);
     await this.recoverExpiredDeferredMessages(target, now);
     await this.deps.prisma.externalMessage.updateMany({
       where: {
@@ -838,9 +837,7 @@ export class TeamChatBridge {
     for (const message of received)
       await this.queue(message).catch((error) => this.retry(message, error));
 
-    const heads = installed
-      ? await this.dueSlackReplies(target.id, installed.acceptAfter, now)
-      : undefined;
+    const heads = installed ? await this.dueSlackReplies(target.id, installed, now) : undefined;
     const running = await this.deps.prisma.externalMessage.findMany({
       where: {
         ...(heads && { id: { in: heads } }),
@@ -869,75 +866,15 @@ export class TeamChatBridge {
     if (!this.deps.installedSlack?.acceptAfter) await this.deliverDelegatedReplies(target);
   }
 
-  private async settleExpiredSlackGrant(
-    target: TargetBot,
+  private async dueSlackReplies(
+    botId: string,
     installed: NonNullable<TeamChatBridgeDeps["installedSlack"]>,
     now: Date,
   ) {
-    const expired: Prisma.ExternalMessageWhereInput = {
-      externalConversation: { provider: this.deps.providerId, botId: target.id },
-      OR: [
-        { slackGrantRevision: { lt: installed.grant.revision } },
-        { slackGrantRevision: installed.grant.revision, createdAt: { lte: installed.acceptAfter } },
-        ...(installed.grant.revision > 1 ? [{ slackGrantRevision: null }] : []),
-        ...(installed.grant.revision === 1
-          ? [{ slackGrantRevision: null, createdAt: { lte: installed.acceptAfter } }]
-          : []),
-      ],
-    };
-    const pending = await this.deps.prisma.externalMessage.findMany({
-      where: {
-        ...expired,
-        AND: [
-          {
-            OR: [
-              {
-                status: "running",
-                runId: { not: null },
-                providerReplyHandle: null,
-              },
-              {
-                status: "delivering",
-                OR: [
-                  { providerReplyHandle: { not: null } },
-                  { nextAttemptAt: null },
-                  { nextAttemptAt: { lte: now } },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-      select: { id: true, status: true },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: BATCH_SIZE,
-    });
-    for (const row of pending) {
-      if (row.status === "delivering") {
-        // A previous worker may already have sent it. Resolve only an
-        // existing handle or an expired delivery lease, without posting.
-        await this.recoverDelivery(row.id, now);
-      } else {
-        await this.deps.prisma.externalMessage.updateMany({
-          where: {
-            ...expired,
-            id: row.id,
-            status: "running",
-            runId: { not: null },
-            providerReplyHandle: null,
-          },
-          data: {
-            status: "failed",
-            lastError: "Slack authorization changed; send a new message to continue",
-            nextAttemptAt: null,
-          },
-        });
-      }
-    }
-  }
-
-  private async dueSlackReplies(botId: string, acceptAfter: Date, now: Date) {
-    const revision = this.deps.installedSlack!.grant.revision;
+    const {
+      acceptAfter,
+      grant: { revision },
+    } = installed;
     // Apply the batch limit to due lane heads so one rate-limited conversation
     // cannot fill it with replies that are waiting behind its head.
     const rows = await this.deps.prisma.$queryRaw<Array<{ id: string }>>`

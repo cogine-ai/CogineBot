@@ -407,11 +407,13 @@ async function buildApp(
         })
       : undefined;
   const messagingInstallations = new MessagingInstallations(prisma, secrets, slackProvider);
+  const groupRunTeardowns = createGroupRunTeardownRecovery({ prisma, sandbox });
   const slackMessaging = new SlackWorkspaceMessaging(messagingInstallations, slackProvider, {
     prisma,
     artifacts,
     events,
     jobs,
+    settleComputerTeardown: groupRunTeardowns.settle,
   });
   const memory = new MarkdownMemoryStore(prisma);
   const mcp = new McpConnector(
@@ -655,7 +657,7 @@ async function buildApp(
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
         reconcileComputerActiveLimits: createComputerActiveLimitRecovery({ prisma, sandbox, jobs }),
-        reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
+        reconcileGroupRunTeardowns: groupRunTeardowns.reconcile,
         reconcileNativeEvents: () => nativeEvents.reconcile(),
       })
     : undefined;

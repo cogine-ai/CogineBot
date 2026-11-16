@@ -8,9 +8,10 @@ import {
   type SlackInstallProvider,
   toTeamChatInbound,
 } from "@rakazo/adapters";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { GroupRunTeardownKey, PrismaClient, ThreadEvents } from "@rakazo/db";
 import { installedSlackProviderId, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { retireSlackMessages } from "./slack-message-retirement.js";
 import { TeamChatBridge } from "./team-chat-bridge.js";
 import { routeTeamChatMessage } from "./team-chat-inbound.js";
 import { settleWithTimeout, TEAM_CHAT_STARTUP_SHUTDOWN_MS } from "./team-chat-startup.js";
@@ -34,6 +35,7 @@ type Dependencies = {
   artifacts: ArtifactStore;
   events: ThreadEvents;
   jobs: Pick<JobPublisher, "enqueue">;
+  settleComputerTeardown: (key: GroupRunTeardownKey) => Promise<unknown>;
 };
 
 export class SlackWorkspaceMessaging {
@@ -111,6 +113,7 @@ export class SlackWorkspaceMessaging {
 
   private async maintain() {
     await this.installations.cleanup();
+    await retireSlackMessages(this.deps.prisma, this.deps.events, this.deps.settleComputerTeardown);
     if (!this.provider) return;
     const targets = await this.installations.activeTargets();
     const active = new Set(targets.map(({ id }) => id));

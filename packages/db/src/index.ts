@@ -33,6 +33,7 @@ export {
   finishPendingGroupRunTeardown,
   listPendingGroupRunTeardowns,
   loadPendingGroupRunTeardown,
+  recordGroupRunTeardowns,
 } from "./group-run-teardowns.js";
 export * from "./groups.js";
 export * from "./history-retrieval.js";
