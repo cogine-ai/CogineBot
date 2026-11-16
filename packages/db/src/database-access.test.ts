@@ -61,10 +61,12 @@ vi.mock("pg", async (importActual) => {
       }
       async query(sql: string, values?: unknown[]) {
         state.sent.push({ sql, values });
-        if (sql.startsWith("SELECT n.oid,") && sql.includes('AS "pageGrantsSafe"'))
+        if (sql.startsWith("SELECT n.oid,") && sql.includes('AS "grantsSafe"'))
           return {
             rows:
-              state.pageGrantsSafe === undefined ? [] : [{ pageGrantsSafe: state.pageGrantsSafe }],
+              state.pageGrantsSafe === undefined
+                ? []
+                : [{ nspname: "cogine_pages", grantsSafe: state.pageGrantsSafe }],
           };
         if (sql.includes('AS "grantRole"'))
           return {

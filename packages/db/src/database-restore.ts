@@ -285,7 +285,7 @@ export async function verifyDatabaseRestore(
     }>(`SELECT count(*)::int AS count
       FROM pg_catalog.pg_policy p JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname IN ('public', 'cogine_pages')`);
+      WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth')`);
     for (const url of new Set(runtimeUrls)) {
       const { prisma, pool } = createDb(url, { poolMax: 1, rowSecurity: true });
       try {

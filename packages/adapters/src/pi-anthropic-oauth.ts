@@ -18,28 +18,15 @@ type ManualAnthropicOAuthOptions = {
 };
 
 export function createManualAnthropicOAuthLogin(options: ManualAnthropicOAuthOptions = {}) {
-  const request = options.fetch ?? fetch;
   const createVerifier = options.createVerifier ?? (() => randomBytes(32).toString("base64url"));
 
   return async (interaction: AuthInteraction): Promise<OAuthCredential> => {
     const signal = interaction.signal ?? new AbortController().signal;
     const verifier = createVerifier();
-    const challenge = createHash("sha256").update(verifier).digest("base64url");
-    const authorizeUrl = new URL(AUTHORIZE_URL);
-    authorizeUrl.search = new URLSearchParams({
-      code: "true",
-      client_id: CLIENT_ID,
-      response_type: "code",
-      redirect_uri: REDIRECT_URI,
-      scope: SCOPES,
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      state: verifier,
-    }).toString();
 
     interaction.notify({
       type: "auth_url",
-      url: authorizeUrl.toString(),
+      url: anthropicAuthorizationUrl(verifier),
       instructions: "Complete login in your browser, then paste the final redirect URL or code.",
     });
     const input = await interaction.prompt({
@@ -48,57 +35,85 @@ export function createManualAnthropicOAuthLogin(options: ManualAnthropicOAuthOpt
       placeholder: REDIRECT_URI,
       signal,
     });
-    const authorization = parseAuthorizationInput(input);
-    if (!authorization.code) throw new Error("Missing authorization code.");
-    if (authorization.state && authorization.state !== verifier) {
-      throw new Error("OAuth state mismatch.");
-    }
+    return exchangeAnthropicAuthorizationCode(verifier, input, signal, options.fetch);
+  };
+}
 
-    const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
-    const response = await request(TOKEN_URL, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        grant_type: "authorization_code",
-        client_id: CLIENT_ID,
-        code: authorization.code,
-        state: authorization.state ?? verifier,
-        redirect_uri: REDIRECT_URI,
-        code_verifier: verifier,
-      }),
-      signal: requestSignal,
-    });
-    if (!response.ok) {
-      throw new Error(`Anthropic token exchange failed (${response.status}). Start sign-in again.`);
-    }
+export function anthropicAuthorizationUrl(verifier: string): string {
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  const authorizeUrl = new URL(AUTHORIZE_URL);
+  authorizeUrl.search = new URLSearchParams({
+    code: "true",
+    client_id: CLIENT_ID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    scope: SCOPES,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state: verifier,
+  }).toString();
+  return authorizeUrl.toString();
+}
 
-    const body = await readTokenResponse(response, requestSignal);
-    if (!body || typeof body !== "object") {
-      throw new Error("Anthropic token exchange returned an invalid credential.");
-    }
-    const credential = body as {
-      access_token?: unknown;
-      refresh_token?: unknown;
-      expires_in?: unknown;
-    };
-    if (
-      typeof credential.access_token !== "string" ||
-      typeof credential.refresh_token !== "string" ||
-      typeof credential.expires_in !== "number" ||
-      !Number.isFinite(credential.expires_in) ||
-      credential.expires_in <= 0
-    ) {
-      throw new Error("Anthropic token exchange returned an invalid credential.");
-    }
-    return {
-      type: "oauth",
-      access: credential.access_token,
-      refresh: credential.refresh_token,
-      expires: Date.now() + credential.expires_in * 1000 - 5 * 60 * 1000,
-    };
+export function parseAnthropicAuthorizationCode(verifier: string, input: string): string {
+  const authorization = parseAuthorizationInput(input);
+  if (!authorization.code) throw new Error("Missing authorization code.");
+  if (authorization.state && authorization.state !== verifier)
+    throw new Error("OAuth state mismatch.");
+  return authorization.code;
+}
+
+export async function exchangeAnthropicAuthorizationCode(
+  verifier: string,
+  input: string,
+  signal: AbortSignal,
+  request = fetch,
+): Promise<OAuthCredential> {
+  const code = parseAnthropicAuthorizationCode(verifier, input);
+  const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  const response = await request(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      client_id: CLIENT_ID,
+      code,
+      state: verifier,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier,
+    }),
+    signal: requestSignal,
+  });
+  if (!response.ok) {
+    throw new Error(`Anthropic token exchange failed (${response.status}). Start sign-in again.`);
+  }
+
+  const body = await readTokenResponse(response, requestSignal);
+  if (!body || typeof body !== "object") {
+    throw new Error("Anthropic token exchange returned an invalid credential.");
+  }
+  const credential = body as {
+    access_token?: unknown;
+    refresh_token?: unknown;
+    expires_in?: unknown;
+  };
+  if (
+    typeof credential.access_token !== "string" ||
+    typeof credential.refresh_token !== "string" ||
+    typeof credential.expires_in !== "number" ||
+    !Number.isFinite(credential.expires_in) ||
+    credential.expires_in <= 0
+  ) {
+    throw new Error("Anthropic token exchange returned an invalid credential.");
+  }
+  return {
+    type: "oauth",
+    access: credential.access_token,
+    refresh: credential.refresh_token,
+    expires: Date.now() + credential.expires_in * 1000 - 5 * 60 * 1000,
   };
 }
 
