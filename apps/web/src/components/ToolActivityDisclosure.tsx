@@ -45,7 +45,9 @@ export function ToolSteps({
             : outcomes?.succeeded === step.count
               ? "succeeded"
               : "unknown";
-        const isCurrent = index === currentIndex && outcome === "unknown";
+        const settled =
+          (outcomes?.succeeded ?? 0) + (outcomes?.failed ?? 0) + (outcomes?.stopped ?? 0);
+        const isCurrent = index === currentIndex && (outcome === "unknown" || settled < step.count);
         const presentation = presentations[isCurrent ? "working" : outcome];
         return (
           <div key={index} className="flex min-w-0 items-center gap-2 leading-5">

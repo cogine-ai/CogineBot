@@ -134,6 +134,26 @@ describe("ToolActivityDisclosure", () => {
 });
 
 describe("ToolSteps", () => {
+  it.each([{ failed: 1 }, { stopped: 1 }, { succeeded: 1 }])(
+    "keeps a grouped live call working until the remaining call settles: %j",
+    (outcomes) => {
+      const step = { label: "Grouped calls", count: 2, outcomes };
+      const steps = [step];
+      const live = renderToStaticMarkup(<ToolSteps steps={steps} currentIndex={0} />);
+      expect(live).toContain("Working…");
+      expect(live).toContain("◷");
+      const settled = renderToStaticMarkup(
+        <ToolSteps
+          steps={[{ ...step, outcomes: { ...outcomes, succeeded: (outcomes.succeeded ?? 0) + 1 } }]}
+          currentIndex={0}
+        />,
+      );
+      expect(settled).not.toContain("Working…");
+      const stoppedRun = renderToStaticMarkup(<ToolSteps steps={steps} />);
+      expect(stoppedRun).not.toContain("Working…");
+    },
+  );
+
   it("credits only confirmed success and distinguishes failed, stopped and unknown calls", () => {
     const html = renderToStaticMarkup(
       <ToolSteps

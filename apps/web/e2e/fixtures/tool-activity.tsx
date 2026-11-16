@@ -21,7 +21,8 @@ import "../../src/styles.css";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") === "settings" ? "settings" : "thread";
-const live = params.get("phase") === "live";
+const groupedLive = params.get("phase") === "grouped-live";
+const live = params.get("phase") === "live" || groupedLive;
 const stopped = params.get("phase") === "stopped";
 
 const USER_TEXT = "Find a free slot on Tuesday.";
@@ -42,16 +43,18 @@ const stepsBlock: MessageBlock = {
   steps: STEP_LABELS.map((label, index) => ({
     label,
     count: 1,
-    ...(live || (stopped && index === 7)
-      ? {}
-      : {
-          outcomes:
-            stopped && index === 5
-              ? { failed: 1 }
-              : stopped && index === 6
-                ? { stopped: 1 }
-                : { succeeded: 1 },
-        }),
+    ...(groupedLive && index === 7
+      ? { count: 2, outcomes: { failed: 1 } }
+      : live || (stopped && index === 7)
+        ? {}
+        : {
+            outcomes:
+              stopped && index === 5
+                ? { failed: 1 }
+                : stopped && index === 6
+                  ? { stopped: 1 }
+                  : { succeeded: 1 },
+          }),
   })),
   ...(live ? {} : { durationMs: 12_400 }),
 };
