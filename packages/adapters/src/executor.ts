@@ -7601,7 +7601,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           } else if (applied?.duplicate && plan === "ask") {
             gateDecision = "ask";
           }
-          if (context.signal.aborted) return pauseForApproval();
+          if (context.signal.aborted) {
+            if (toolLoopStopText !== undefined) context.signal.throwIfAborted();
+            return pauseForApproval();
+          }
 
           if (
             siteGate === "new" &&

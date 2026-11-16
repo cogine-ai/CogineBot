@@ -19,7 +19,7 @@ type ThreadCarrier = {
 };
 
 /** Render fixture only. expireStuckRun reads the saved thread line back in its unit test. */
-function injectExpiredStatus(body: { json?: ThreadCarrier }) {
+function injectExpiredStatus(body: { json?: ThreadCarrier }, text = EXPIRED_TAKEOVER) {
   const targets = [body.json, body.json?.thread].filter((target): target is ThreadCarrier =>
     Boolean(target?.threadId && Array.isArray(target.messages)),
   );
@@ -43,7 +43,7 @@ function injectExpiredStatus(body: { json?: ThreadCarrier }) {
       threadId: target.threadId,
       seq,
       role: "system",
-      blocks: [{ kind: "meta", text: EXPIRED_TAKEOVER }],
+      blocks: [{ kind: "meta", text }],
       createdAt: new Date().toISOString(),
     });
   }
@@ -52,6 +52,47 @@ function injectExpiredStatus(body: { json?: ThreadCarrier }) {
 function activityRow(page: Page, botName: string) {
   return page.locator("aside").getByRole("button", {
     name: new RegExp(`^${botName}, `),
+  });
+}
+
+for (const [kind, text] of [
+  ["retired", "Slack authorization changed. Send a new message to continue."],
+  [
+    "unconfirmed",
+    "Slack reply delivery could not be confirmed. Check the channel before sending a new message.",
+  ],
+] as const) {
+  test(`${kind === "retired" ? "a retired" : "an unconfirmed"} Slack reply leaves a readable instruction`, async ({
+    page,
+  }, testInfo) => {
+    await signup(
+      page,
+      `slack-retired-${Date.now()}@example.test`,
+      "password12",
+      "Messaging Recovery",
+    );
+    await completeOnboarding(page);
+    await page.goto("/app");
+    await page.waitForURL(/\/app\/[^/]+$/);
+    // Rendering fixture only; PostgreSQL tests exercise the actual retirement.
+    const inject = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as { json?: ThreadCarrier };
+      injectExpiredStatus(body, text);
+      await route.fulfill({
+        status: response.status(),
+        headers: response.headers(),
+        body: JSON.stringify(body),
+      });
+    };
+    await page.route("**/rpc/bootstrap", inject);
+    await page.route("**/rpc/threads/get", inject);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("combobox", { name: /^Message/ })).toBeEnabled();
+    // An empty thread becomes ready after its first server heartbeat.
+    await expect(page.getByTestId("connection-status")).not.toBeVisible({ timeout: 30_000 });
+    await captureScreenshot(page, testInfo, `slack-${kind}-grant-status`);
   });
 }
 

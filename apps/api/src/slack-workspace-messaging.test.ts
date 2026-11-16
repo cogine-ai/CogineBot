@@ -85,7 +85,9 @@ function harness() {
   const runtime = new SlackWorkspaceMessaging(
     store as unknown as MessagingInstallations,
     provider as unknown as SlackInstallProvider,
-    {} as ConstructorParameters<typeof SlackWorkspaceMessaging>[2],
+    { prisma: { $queryRaw: vi.fn(async () => []) } } as unknown as ConstructorParameters<
+      typeof SlackWorkspaceMessaging
+    >[2],
   );
   return {
     runtime,

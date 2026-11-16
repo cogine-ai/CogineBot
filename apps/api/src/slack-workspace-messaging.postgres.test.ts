@@ -1,6 +1,12 @@
 import { createHmac, randomUUID } from "node:crypto";
-import type { ArtifactStore, MessagingInboundEvent, MessagingSurface } from "@rakazo/adapter-kit";
+import type {
+  ArtifactStore,
+  MessagingInboundEvent,
+  MessagingSurface,
+  SandboxProvider,
+} from "@rakazo/adapter-kit";
 import {
+  createGroupRunTeardownRecovery,
   EncryptedSecretStore,
   MessagingInstallations,
   SLACK_INSTALL_SCOPES,
@@ -98,6 +104,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       artifacts: {} as ArtifactStore,
       events: createThreadEvents(db.prisma),
       jobs: { enqueue: vi.fn(async () => undefined) },
+      settleComputerTeardown: vi.fn(async () => true),
     };
     let runtime = new SlackWorkspaceMessaging(installs, provider, deps);
     try {
@@ -216,7 +223,11 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         },
       });
       const reserve = bridge as unknown as {
-        dueSlackReplies(botId: string, acceptAfter: Date, now: Date): Promise<string[]>;
+        dueSlackReplies(
+          botId: string,
+          installed: { acceptAfter: Date; grant: typeof installed },
+          now: Date,
+        ): Promise<string[]>;
         reserveDelivery(id: string): Promise<Date | undefined>;
       };
       await db.prisma.externalMessage.update({
@@ -263,7 +274,12 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         where: { id: newer.id },
         data: { runId: run.id },
       });
-      const dueReplies = () => reserve.dueSlackReplies(bot.id, installed.acceptAfter, new Date());
+      const dueReplies = () =>
+        reserve.dueSlackReplies(
+          bot.id,
+          { acceptAfter: installed.acceptAfter, grant: installed },
+          new Date(),
+        );
       // Select B before a predecessor enters the pending lane. The reservation
       // must recheck the predecessor instead of trusting this stale selection.
       expect(await dueReplies()).toContain(newer.id);
@@ -365,7 +381,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         expect(row).toMatchObject({
           status: "ignored",
           engagementReason: "message_routine_wake",
-          runId: null,
+          runId: runs[0]!.id,
         });
         expect(runs).toHaveLength(1);
         expect(runs[0]?.trigger).toBe("webhook");
@@ -886,7 +902,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       expect(await fixture.messages(scope)).toMatchObject([
         { id: receipted.id, status: "delivered", providerReplyHandle: "saved-receipt" },
         { id: old.id, status: "failed", runId: old.run!.id, providerReplyHandle: null },
-        { id: unclaimed.id, status: "received", runId: null, providerReplyHandle: null },
+        { id: unclaimed.id, status: "failed", runId: null, providerReplyHandle: null },
         { id: fresh.id, status: "delivered", providerReplyHandle: "receipt-fixture-North-2" },
       ]);
       expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(3);
@@ -972,7 +988,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         "Later backlog",
         "New reply",
       ]);
-      expect((await fixture.messages(scope))[0]).toMatchObject({ status: "received", runId: null });
+      expect((await fixture.messages(scope))[0]).toMatchObject({ status: "failed", runId: null });
       expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(3);
     } finally {
       await fixture.cleanup();
@@ -1032,6 +1048,372 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       }
     }
   });
+  it.each(["pause", "revoke", "reinstall"] as const)(
+    "retires old tasks after %s without needing an active provider",
+    async (action) => {
+      const fixture = slackGrantFixture();
+      try {
+        const scope = await fixture.createScope(fixture.fixtures[0]!);
+        const other = await fixture.createScope(fixture.fixtures[1]!);
+        await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+        await fixture.deliver(other, other.installed.acceptAfter.getTime() + 20);
+        const [old] = await fixture.messages(scope);
+        const [unrelated] = await fixture.messages(other);
+        expect(old?.run?.status).toBe("queued");
+        if (action === "pause") {
+          await fixture.installs.pause(scope.actor, {
+            id: scope.installed.id,
+            expectedRevision: scope.installed.revision,
+            paused: true,
+          });
+        } else if (action === "revoke") {
+          await fixture.deliver(scope, Date.now() + 100, { type: "app_uninstalled" });
+        } else {
+          await fixture.installs.remove(scope.actor, {
+            id: scope.installed.id,
+            expectedRevision: scope.installed.revision,
+          });
+          const replacement = await fixture.connect(scope, scope.bot.id, 2);
+          expect(replacement.id).not.toBe(scope.installed.id);
+        }
+        await fixture.maintainOffline();
+        await fixture.maintainOffline();
+        const [retired] = await fixture.messages(scope);
+        expect(retired).toMatchObject({
+          id: old!.id,
+          status: "failed",
+          runId: old!.run!.id,
+          lastError: expect.stringContaining("Send a new message"),
+          run: { status: "cancelled", leaseOwner: null, leaseExpiresAt: null },
+        });
+        expect(
+          await fixture.db.prisma.task.findUniqueOrThrow({ where: { id: old!.run!.taskId } }),
+        ).toMatchObject({ status: "cancelled" });
+        expect(
+          await fixture.db.prisma.event.count({
+            where: { runId: old!.run!.id, type: "run.cancelled" },
+          }),
+        ).toBe(1);
+        const notices = await fixture.db.prisma.message.findMany({
+          where: {
+            threadId: old!.run!.threadId,
+            role: "system",
+            clientNonce: { startsWith: "slack-grant-retired:" },
+          },
+        });
+        expect(notices).toHaveLength(1);
+        expect(notices[0]!.blocks).toEqual([
+          { kind: "meta", text: "Slack authorization changed. Send a new message to continue." },
+        ]);
+        expect((await fixture.messages(other))[0]).toMatchObject({
+          id: unrelated!.id,
+          status: "running",
+          run: { status: "queued" },
+        });
+        expect(fixture.send).not.toHaveBeenCalled();
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "recovers the retired Run's computer teardown without disturbing a successor (%s)",
+    async (hasSuccessor) => {
+      const fixture = slackGrantFixture();
+      try {
+        const scope = await fixture.createScope(fixture.fixtures[0]!);
+        await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+        const [old] = await fixture.messages(scope);
+        const expiresAt = new Date(Date.now() + 60_000);
+        const computer = await fixture.db.prisma.computer.create({
+          data: {
+            spaceId: scope.actor.spaceId,
+            userId: scope.actor.userId,
+            scopeKey: `retired-fixture:${old!.runId}`,
+            homeKey: `retired-fixture-${old!.runId}`,
+            kind: "fake",
+            state: "running",
+            providerRef: `retired-fixture-${old!.runId}`,
+          },
+        });
+        const lease = await fixture.db.prisma.computerExecutionLease.create({
+          data: {
+            computerId: computer.id,
+            botId: scope.bot.id,
+            runId: old!.runId!,
+            fence: 3,
+            expiresAt,
+          },
+        });
+        fixture.teardownSandbox.releaseScreen.mockRejectedValueOnce(
+          new Error("Synthetic screen release failure"),
+        );
+        await fixture.installs.pause(scope.actor, {
+          id: scope.installed.id,
+          expectedRevision: scope.installed.revision,
+          paused: true,
+        });
+        await expect(fixture.maintainOffline()).rejects.toThrow("Synthetic screen release failure");
+        expect((await fixture.messages(scope))[0]).toMatchObject({
+          status: "failed",
+          run: { status: "cancelled" },
+        });
+        expect(fixture.teardownSandbox.execute).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ providerRef: computer.providerRef }),
+          expect.objectContaining({ argv: expect.arrayContaining([computer.id, old!.runId]) }),
+          expect.objectContaining({
+            runId: old!.runId,
+            screenLeaseId: `${old!.runId}:3`,
+            cancelRunWork: true,
+          }),
+        );
+        const pending = () => fixture.db.prisma.$queryRaw<Array<{ marker: unknown }>>`
+          SELECT "pendingGroupRunTeardowns" AS marker FROM computers WHERE id = ${computer.id}
+        `;
+        expect(await pending()).toEqual([
+          {
+            marker: { [old!.runId!]: expect.objectContaining({ providerDone: false }) },
+          },
+        ]);
+        const next = hasSuccessor
+          ? await fixture.db.prisma.computerExecutionLease.update({
+              where: { id: lease.id },
+              data: { runId: "synthetic-successor-run", fence: 4 },
+            })
+          : lease;
+        fixture.teardownSandbox.releaseScreen.mockClear();
+        await fixture.teardowns.reconcile();
+        await fixture.maintainOffline();
+        expect(fixture.teardownSandbox.execute).toHaveBeenCalledTimes(1);
+        if (hasSuccessor) expect(fixture.teardownSandbox.releaseScreen).not.toHaveBeenCalled();
+        else
+          expect(fixture.teardownSandbox.releaseScreen).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ providerRef: computer.providerRef }),
+            expect.objectContaining({ runId: old!.runId, screenLeaseId: `${old!.runId}:3` }),
+            { onlyIfRunning: true },
+          );
+        expect(
+          await fixture.db.prisma.computerExecutionLease.findUniqueOrThrow({
+            where: { id: lease.id },
+          }),
+        ).toMatchObject(
+          hasSuccessor ? next : { runId: old!.runId, fence: 3, expiresAt: new Date(0) },
+        );
+        expect(await pending()).toEqual([{ marker: null }]);
+        expect(fixture.send).not.toHaveBeenCalled();
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it("keeps the committed Run linked when dispatch stops before updating its receipt", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      const send = fixture.events.sendUserMessage.bind(fixture.events);
+      const committed = vi
+        .spyOn(fixture.events, "sendUserMessage")
+        .mockImplementation(async (input) => {
+          if (!input.teamChatClaim?.installation) return send(input);
+          const result = await send(input);
+          const receipt = await fixture.db.prisma.externalMessage.findUniqueOrThrow({
+            where: { id: input.teamChatClaim!.id },
+          });
+          expect(receipt).toMatchObject({ status: "queueing", runId: result.runId });
+          throw new Error("Synthetic dispatcher interruption after commit");
+        });
+      await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+      expect(
+        committed.mock.calls.filter(([input]) => input.teamChatClaim?.installation),
+      ).toHaveLength(1);
+      const [old] = await fixture.messages(scope);
+      expect(old?.run?.status).toBe("queued");
+      await fixture.installs.pause(scope.actor, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+        paused: true,
+      });
+      await fixture.maintainOffline();
+      expect((await fixture.messages(scope))[0]).toMatchObject({
+        runId: old!.runId,
+        status: "failed",
+        run: { status: "cancelled" },
+      });
+      expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(1);
+      expect(fixture.send).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("recovers the original Routine Run from a legacy unlinked wake", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      await fixture.db.prisma.routine.create({
+        data: {
+          spaceId: scope.actor.spaceId,
+          userId: scope.actor.userId,
+          botId: scope.bot.id,
+          name: "Process verified messages",
+          prompt: "Process the verified event",
+          active: true,
+          messageProvider: "slack",
+          crons: [],
+        },
+      });
+      await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+      const [old] = await fixture.messages(scope);
+      expect(old).toMatchObject({
+        status: "ignored",
+        run: { trigger: "webhook", status: "queued" },
+      });
+      await fixture.db.prisma.externalMessage.update({
+        where: { id: old!.id },
+        data: { runId: null },
+      });
+      await fixture.maintainOffline();
+      expect((await fixture.messages(scope))[0]).toMatchObject({ status: "ignored", runId: null });
+      await fixture.installs.pause(scope.actor, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+        paused: true,
+      });
+      await fixture.maintainOffline();
+      await fixture.maintainOffline();
+      expect((await fixture.messages(scope))[0]).toMatchObject({
+        status: "failed",
+        runId: old!.run!.id,
+        run: { status: "cancelled" },
+      });
+      expect(
+        await fixture.db.prisma.event.count({
+          where: { runId: old!.run!.id, type: "run.cancelled" },
+        }),
+      ).toBe(1);
+      expect(fixture.send).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("uses the source message to cancel its Run instead of an unrelated receipt pointer", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+      const [old] = await fixture.messages(scope);
+      const ownerRun = await fixture.events.sendUserMessage({
+        ...scope.actor,
+        threadId: old!.run!.threadId,
+        botId: scope.bot.id,
+        blocks: [{ kind: "text", text: "Independent owner task" }],
+        prompt: "Independent owner task",
+        trigger: "user",
+        clientNonce: randomUUID(),
+        allowParallelRun: true,
+      });
+      expect(ownerRun.runId).not.toBe(old!.run!.id);
+      await fixture.db.prisma.externalMessage.update({
+        where: { id: old!.id },
+        data: { runId: ownerRun.runId },
+      });
+      await fixture.installs.pause(scope.actor, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+        paused: true,
+      });
+      await fixture.maintainOffline();
+      expect((await fixture.messages(scope))[0]).toMatchObject({
+        status: "failed",
+        runId: old!.run!.id,
+        run: { status: "cancelled" },
+      });
+      expect(
+        await fixture.db.prisma.run.findUniqueOrThrow({ where: { id: ownerRun.runId! } }),
+      ).toMatchObject({ status: "queued" });
+      expect(fixture.send).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("retires due work even behind a full batch of valid receipts and unexpired send leases", async () => {
+    const fixture = slackGrantFixture();
+    try {
+      const scope = await fixture.createScope(fixture.fixtures[0]!);
+      const other = await fixture.createScope(fixture.fixtures[1]!);
+      await fixture.deliver(other, other.installed.acceptAfter.getTime() + 20);
+      await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+      const [valid] = await fixture.messages(other);
+      const [old] = await fixture.messages(scope);
+      const earlier = new Date(Math.min(valid!.createdAt.getTime(), old!.createdAt.getTime()) - 10);
+      const leaseUntil = new Date(Date.now() + 60_000);
+      await fixture.db.prisma.externalMessage.createMany({
+        data: Array.from({ length: 21 }, (_, index) => ({
+          externalConversationId: valid!.externalConversationId,
+          providerEventId: `valid-waiting-${index}`,
+          content: "Valid pending task",
+          senderId: other.installerId,
+          senderName: "Fixture Installer",
+          status: "received",
+          createdAt: earlier,
+          slackGrantRevision: other.installed.revision,
+        })),
+      });
+      // Use provider timestamps inside the active grant window for these valid rows.
+      await fixture.db.prisma.externalMessage.updateMany({
+        where: {
+          providerEventId: { startsWith: "valid-waiting-" },
+          externalConversationId: valid!.externalConversationId,
+        },
+        data: { createdAt: new Date(other.installed.acceptAfter.getTime() + 1) },
+      });
+      await fixture.db.prisma.externalMessage.createMany({
+        data: Array.from({ length: 21 }, (_, index) => ({
+          externalConversationId: old!.externalConversationId,
+          providerEventId: `unconfirmed-send-${index}`,
+          content: "Send in progress",
+          senderId: scope.installerId,
+          senderName: "Fixture Installer",
+          status: "delivering",
+          createdAt: earlier,
+          nextAttemptAt: leaseUntil,
+          slackGrantRevision: scope.installed.revision,
+        })),
+      });
+      await fixture.installs.pause(scope.actor, {
+        id: scope.installed.id,
+        expectedRevision: scope.installed.revision,
+        paused: true,
+      });
+      await fixture.maintainOffline();
+      expect((await fixture.messages(scope)).find((row) => row.id === old!.id)).toMatchObject({
+        status: "failed",
+        run: { status: "cancelled" },
+      });
+      expect(
+        await fixture.db.prisma.externalMessage.count({
+          where: {
+            externalConversationId: old!.externalConversationId,
+            status: "delivering",
+            nextAttemptAt: leaseUntil,
+          },
+        }),
+      ).toBe(21);
+      expect(
+        await fixture.db.prisma.externalMessage.count({
+          where: { externalConversationId: valid!.externalConversationId, status: "received" },
+        }),
+      ).toBe(21);
+      expect(fixture.send).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("never transfers a persisted reply even if its provider timestamp exceeds the replacement cutoff", async () => {
     const fixture = slackGrantFixture();
     try {
@@ -1060,7 +1442,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         slackGrantRevision: scope.installed.revision,
         status: "failed",
         providerReplyHandle: null,
-        lastError: expect.stringContaining("send a new message"),
+        lastError: expect.stringMatching(/send a new message/i),
       });
       await fixture.deliver(scope, at);
       expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(1);
@@ -1085,13 +1467,66 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
       expect((await fixture.messages(scope))[0]).toMatchObject({
         status: "failed",
         providerReplyHandle: null,
-        lastError: expect.stringContaining("send a new message"),
+        lastError: expect.stringMatching(/send a new message/i),
         nextAttemptAt: null,
       });
     } finally {
       await fixture.cleanup();
     }
   });
+
+  it.each([null, "stored-confirmation"])(
+    "settles a lone retired send and displays only unknown confirmation (%s)",
+    async (handle) => {
+      const fixture = slackGrantFixture();
+      try {
+        const scope = await fixture.createScope(fixture.fixtures[0]!);
+        await fixture.deliver(scope, scope.installed.acceptAfter.getTime() + 20);
+        const [old] = await fixture.messages(scope);
+        await fixture.finish(old!.run!, "Completed before the authorization change");
+        await fixture.db.prisma.externalMessage.update({
+          where: { id: old!.id },
+          data: { status: "delivering", providerReplyHandle: handle, nextAttemptAt: new Date(0) },
+        });
+        await fixture.installs.pause(scope.actor, {
+          id: scope.installed.id,
+          expectedRevision: scope.installed.revision,
+          paused: true,
+        });
+        await fixture.maintainOffline();
+        await fixture.maintainOffline();
+        expect(await fixture.messages(scope)).toMatchObject([
+          {
+            id: old!.id,
+            status: "delivered",
+            providerReplyHandle: handle ?? "unconfirmed",
+            run: { id: old!.runId, status: "completed" },
+          },
+        ]);
+        const notices = await fixture.db.prisma.message.findMany({
+          where: {
+            threadId: old!.run!.threadId,
+            role: "system",
+            clientNonce: { startsWith: "slack-grant-retired:" },
+          },
+        });
+        if (handle) expect(notices).toHaveLength(0);
+        else {
+          expect(notices).toHaveLength(1);
+          expect(notices[0]!.blocks).toEqual([
+            {
+              kind: "meta",
+              text: "Slack reply delivery could not be confirmed. Check the channel before sending a new message.",
+            },
+          ]);
+        }
+        expect(await fixture.db.prisma.run.count({ where: { botId: scope.bot.id } })).toBe(1);
+        expect(fixture.send).not.toHaveBeenCalled();
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
 
   it("settles old send receipts without retrying requests that may already have posted", async () => {
     const fixture = slackGrantFixture();
@@ -1127,7 +1562,7 @@ postgres("installed Slack through the durable TeamChat bridge", () => {
         expectedRevision: scope.installed.revision,
       });
       await fixture.restart();
-      await fixture.maintain();
+      await fixture.maintainOffline();
       expect(await fixture.messages(scope)).toMatchObject([
         { id: source!.id, status: "failed" },
         { id: accepted!.id, status: "delivered", providerReplyHandle: "stored-receipt" },
@@ -1286,11 +1721,21 @@ function slackGrantFixture(afterPersist?: (eventId: string) => Promise<void>) {
         },
       })
     : db.prisma;
+  const teardownSandbox = {
+    execute: vi.fn<SandboxProvider["execute"]>(async function* () {
+      yield { type: "exit", code: 0 };
+    }),
+    releaseScreen: vi.fn<NonNullable<SandboxProvider["releaseScreen"]>>(async () => undefined),
+  };
+  const teardowns = createGroupRunTeardownRecovery({ prisma: db.prisma, sandbox: teardownSandbox });
   const deps = {
     prisma: instrumented as typeof db.prisma,
     artifacts: {} as ArtifactStore,
     events: createThreadEvents(db.prisma),
     jobs: { enqueue: vi.fn(async () => undefined) },
+    settleComputerTeardown: vi.fn((key: Parameters<typeof teardowns.settle>[0]) =>
+      teardowns.settle(key),
+    ),
   };
   let runtime = new SlackWorkspaceMessaging(installs, provider, deps);
   let peerDb: typeof db | undefined;
@@ -1430,6 +1875,7 @@ function slackGrantFixture(afterPersist?: (eventId: string) => Promise<void>) {
   }
   return {
     db,
+    events: deps.events,
     fixtures,
     installs,
     connect,
@@ -1443,6 +1889,14 @@ function slackGrantFixture(afterPersist?: (eventId: string) => Promise<void>) {
     thread,
     cleanup,
     maintain: () => (runtime as unknown as { maintain(): Promise<void> }).maintain(),
+    maintainOffline: () =>
+      (
+        new SlackWorkspaceMessaging(installs, undefined, deps) as unknown as {
+          maintain(): Promise<void>;
+        }
+      ).maintain(),
+    teardownSandbox,
+    teardowns,
     secondRuntime: () => {
       peerDb = createDb(databaseUrl!, { applicationName: "slack-grant-recovery-peer" });
       return new SlackWorkspaceMessaging(
