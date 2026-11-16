@@ -430,7 +430,12 @@ import {
 } from "./mcp-server-tool.js";
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
-import { appendMemoryFact, selectMemoryTools } from "./memory-tools.js";
+import {
+  appendMemoryFact,
+  correctMemoryFact,
+  RememberCorrectionInput,
+  selectMemoryTools,
+} from "./memory-tools.js";
 import {
   ModelOutputRecoveryError,
   ModelQuotaWaitError,
@@ -6594,6 +6599,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             }
           }
+          // An approved replay can replace the incoming model arguments with the stored request.
+          const correctionInput =
+            name === "remember" && Object.hasOwn(args, "correction")
+              ? RememberCorrectionInput.safeParse(args)
+              : undefined;
+          if (correctionInput && !correctionInput.success) {
+            return {
+              error:
+                "A correction needs a Bot memory path, exact original text, a positive revision, and nonblank replacement text.",
+            };
+          }
+          const memoryCorrection = correctionInput?.data;
           if (name === AGENT_CONNECTION_RESPONSE_TOOL) {
             if (scripted && (!isSteeringContinuation || !lastScriptedState)) {
               return { error: "Connection approvals are unavailable on this run." };
@@ -7649,7 +7666,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
           const markdownMemoryWrite = name === "remember" || name === "save_shared_memory";
           const memoryReceiptRequest = (effect: { id: string }): MemoryCommitReceiptRequest => {
-            const path = String(args.path ?? "").trim();
+            const path = memoryCorrection?.path ?? String(args.path ?? "").trim();
             return {
               ...(name === "remember"
                 ? { scope: "bot", botId: bot.id, path: path || "MEMORY.md" }
@@ -7679,7 +7696,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return undefined;
             if (!saved) return undefined;
             const result =
-              name === "remember"
+              name === "remember" && !memoryCorrection
                 ? { ok: true }
                 : { ok: true, path: saved.path, revision: saved.revision };
             const settled = await deps.prisma.$transaction(async (tx) => {
@@ -8774,25 +8791,48 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }, finish);
           }
           if (name === "remember") {
-            const path = String(args.path ?? "").trim() || "MEMORY.md";
-            // Re-read after a revision conflict so facts from competing runs survive.
+            const path = memoryCorrection?.path ?? (String(args.path ?? "").trim() || "MEMORY.md");
+            const request = { scope: "bot" as const, botId: bot.id, path };
+            const readAgain = (revision?: number) => ({
+              error:
+                "Bot memory changed since it was read. Read the latest version before correcting it.",
+              ...(revision === undefined ? {} : { currentRevision: revision }),
+            });
+            // Append can re-read on conflict; a correction is bound to one revision.
             for (let attempt = 1; ; attempt += 1) {
               context.signal.throwIfAborted();
-              const request = { scope: "bot" as const, botId: bot.id, path };
               const snapshot = await deps.memory.read(request, context);
               context.signal.throwIfAborted();
               const existing = snapshot.documents[0];
-              const content = appendMemoryFact(existing?.content ?? "", String(args.content ?? ""));
-              if (content === (existing?.content ?? "")) return finish({ ok: true });
+              const revision = existing?.revision ?? 0;
+              const current = existing?.content ?? "";
+              if (memoryCorrection && revision !== memoryCorrection.correction.expectedRevision)
+                return finish(readAgain(existing?.revision));
+              const content = memoryCorrection
+                ? correctMemoryFact(
+                    current,
+                    memoryCorrection.correction.original,
+                    memoryCorrection.content,
+                  )
+                : appendMemoryFact(current, String(args.content ?? ""));
+              if (content === undefined)
+                return finish({
+                  error: "Read the latest Bot memory. The original text must occur exactly once.",
+                  currentRevision: revision,
+                });
+              if (content === current)
+                return finish(
+                  memoryCorrection ? { ok: true, path, revision, unchanged: true } : { ok: true },
+                );
               try {
                 const early = await claimMemoryWrite();
                 if (early !== undefined) return early;
                 context.signal.throwIfAborted();
-                await deps.memory.commit(
+                const saved = await deps.memory.commit(
                   {
                     ...request,
                     content,
-                    expectedRevision: existing?.revision ?? 0,
+                    expectedRevision: revision,
                     runLease: { owner: workerId, fence },
                     runApproval: markdownRunApproval("remember"),
                     ...(applied
@@ -8801,12 +8841,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   context,
                 );
-                return finish({ ok: true });
+                return finish(
+                  memoryCorrection
+                    ? { ok: true, path: saved.path, revision: saved.revision }
+                    : { ok: true },
+                );
               } catch (error) {
                 if (error instanceof MemoryWriteAuthorizationError)
                   return handleMemoryAuthorizationError(error);
                 const message = error instanceof Error ? error.message : "";
-                if (message !== MEMORY_REVISION_CONFLICT_ERROR || attempt >= 3) throw error;
+                if (message !== MEMORY_REVISION_CONFLICT_ERROR) throw error;
+                if (memoryCorrection) {
+                  context.signal.throwIfAborted();
+                  const latest = await deps.memory.read(request, context);
+                  context.signal.throwIfAborted();
+                  return finish(readAgain(latest.documents[0]?.revision));
+                }
+                if (attempt >= 3) throw error;
               }
             }
           }
@@ -12692,7 +12743,9 @@ function toolUsageLine(parts: {
     pageWorkClause(parts.pageBrowserAllowed, disabled),
     webLookupClause(disabled),
     ...secretGuidance(parts.pageBrowserAllowed, disabled),
-    builtinOffered(disabled, "remember") ? "Use remember for durable facts." : undefined,
+    builtinOffered(disabled, "remember")
+      ? "Use remember for Bot Markdown facts. When the user corrects a saved fact, use correction with the exact path, current revision, and exact old text. If you cannot identify these from current memory, ask the user; do not append a conflicting fact."
+      : undefined,
     scratchpadClause(disabled),
     builtinOffered(disabled, "request_takeover")
       ? "Use request_takeover when the user must provide protected input or human judgment."
