@@ -3091,11 +3091,14 @@ describeJourneys("required product journeys", () => {
       ).toBe(409);
       expect((await readOldRun()).status).toBe(afterTransition.status);
       const ownerAnswer = await raw(app, cookie, "threads/answer", decision);
+      // Preserve the Run's current approval gate without assigning a new
+      // lifecycle policy to a paused or removed schedule.
+      const wasCancelled = afterTransition.status === "cancelled";
       let expectedState = afterTransition.status;
       const readEffect = () =>
         prisma.externalEffect.findUniqueOrThrow({ where: { id: approval.id } });
       let settled: Awaited<ReturnType<typeof readEffect>>;
-      if (action === "stop") {
+      if (wasCancelled) {
         expect(ownerAnswer.status).toBe(409);
         settled = await readEffect();
       } else {
@@ -3121,7 +3124,7 @@ describeJourneys("required product journeys", () => {
         expect(settled.status).toBe("completed");
       }
       const writes = connector.records.length;
-      if (action === "stop") expect(writes).toBe(baseline);
+      if (wasCancelled) expect(writes).toBe(baseline);
       expect((await raw(app, cookie, "threads/answer", decision)).status).toBe(409);
       await executor.continueRun(old.runId, "stale-routine-worker");
       expect(connector.records).toHaveLength(writes);
