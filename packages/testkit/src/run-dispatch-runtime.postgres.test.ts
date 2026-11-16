@@ -945,267 +945,373 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     }
   }, 30_000);
 
-  it.each(["repeated-results", "distinct-files", "helper-isolation", "helper-results"] as const)(
-    "settles result-aware Pi work: %s",
-    async (scenario) => {
-      const fixtureKey = "synthetic-result-aware-key";
-      const model: Model<"openai-completions"> = {
-        provider: "anthropic",
-        id: "synthetic-result-aware",
-        name: "Synthetic result-aware model",
-        api: "openai-completions",
-        baseUrl: "https://models.invalid/v1",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200_000,
-        maxTokens: 1_024,
-      };
-      vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
-      vi.stubEnv("PI_DEFAULT_MODEL", model.id);
-      vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
-      const models = modelsForRequest(
-        { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
-        model.provider,
-      ) as MutableModels;
-      const previousProvider = models.getProvider(model.provider);
-      const providerFailures: unknown[] = [];
-      const files = Array.from(
-        { length: 30 },
-        (_, i) =>
-          `notes/result-${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}.txt`,
-      );
-      let requests = 0;
-      let parentRequests = 0;
-      const helperRequests = new Map<string, number>();
-      const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
-        try {
-          requests += 1;
-          expect(requests).toBeLessThanOrEqual(64);
-          if (scenario.startsWith("helper-")) {
-            const userContext = JSON.stringify(
-              context.messages.filter((message) => message.role === "user"),
-            );
-            const helper = ["Alpha", "Beta"].find((name) =>
-              userContext.includes(`Check the ${name} result`),
-            );
-            if (!helper) {
-              parentRequests += 1;
-              expect(parentRequests).toBeLessThanOrEqual(2);
-              if (parentRequests === 2)
-                return piResponse(activeModel, [{ type: "text", text: "Both helpers finished." }]);
-              return piResponse(
-                activeModel,
-                (scenario === "helper-isolation" ? ["Alpha", "Beta"] : ["Alpha"]).map((name) => ({
-                  type: "toolCall" as const,
-                  id: `start-${name}`,
-                  name: "run_subagent",
-                  arguments: { name, task: `Check the ${name} result and report back.` },
-                })),
-              );
-            }
-            const call = (helperRequests.get(helper) ?? 0) + 1;
-            helperRequests.set(helper, call);
-            if (scenario === "helper-isolation" && call === 15)
-              return piResponse(activeModel, [{ type: "text", text: `${helper} finished.` }]);
+  it.each([
+    "repeated-results",
+    "distinct-files",
+    "helper-isolation",
+    "helper-results",
+    "running-shell-stopped",
+    "running-shell-succeeded",
+    "running-shell-failed",
+  ] as const)("settles result-aware Pi work: %s", async (scenario) => {
+    const fixtureKey = "synthetic-result-aware-key";
+    const model: Model<"openai-completions"> = {
+      provider: "anthropic",
+      id: "synthetic-result-aware",
+      name: "Synthetic result-aware model",
+      api: "openai-completions",
+      baseUrl: "https://models.invalid/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 1_024,
+    };
+    vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
+    vi.stubEnv("PI_DEFAULT_MODEL", model.id);
+    vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
+    const models = modelsForRequest(
+      { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
+      model.provider,
+    ) as MutableModels;
+    const previousProvider = models.getProvider(model.provider);
+    const providerFailures: unknown[] = [];
+    const files = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `notes/result-${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}.txt`,
+    );
+    const runningShell = scenario.startsWith("running-shell-");
+    let releaseShell!: () => void;
+    const shellReleased = new Promise<void>((resolve) => {
+      releaseShell = resolve;
+    });
+    let returnedShell!: () => void;
+    const shellReturned = new Promise<void>((resolve) => {
+      returnedShell = resolve;
+    });
+    let requests = 0;
+    let parentRequests = 0;
+    const helperRequests = new Map<string, number>();
+    const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
+      try {
+        requests += 1;
+        expect(requests).toBeLessThanOrEqual(64);
+        if (scenario.startsWith("helper-") || scenario === "running-shell-stopped") {
+          const userContext = JSON.stringify(
+            context.messages.filter((message) => message.role === "user"),
+          );
+          const helper = ["Alpha", "Beta"].find((name) =>
+            userContext.includes(`Check the ${name} result`),
+          );
+          if (!helper) {
+            parentRequests += 1;
+            expect(parentRequests).toBeLessThanOrEqual(2);
+            if (parentRequests === 2)
+              return piResponse(activeModel, [{ type: "text", text: "Both helpers finished." }]);
             return piResponse(activeModel, [
-              {
-                type: "toolCall",
-                id: `${helper}-result-${call}`,
-                name: "message_user",
-                arguments: { message: `${helper} checking ${"again ".repeat(call)}for a result.` },
-              },
+              ...(scenario === "running-shell-stopped"
+                ? [
+                    {
+                      type: "toolCall" as const,
+                      id: "running-shell-call",
+                      name: "shell",
+                      arguments: { command: "synthetic-long-command" },
+                    },
+                  ]
+                : []),
+              ...(scenario === "helper-isolation" ? ["Alpha", "Beta"] : ["Alpha"]).map((name) => ({
+                type: "toolCall" as const,
+                id: `start-${name}`,
+                name: "run_subagent",
+                arguments: { name, task: `Check the ${name} result and report back.` },
+              })),
             ]);
           }
-          expect(requests).toBeLessThanOrEqual(31);
-          if (scenario === "distinct-files" && requests === 31)
-            return piResponse(activeModel, [{ type: "text", text: "Saved all thirty files." }]);
-          if (requests > 1)
-            expect(
-              context.messages.findLast((message) => message.role === "toolResult"),
-            ).toMatchObject({ toolCallId: `result-call-${requests - 1}` });
+          const call = (helperRequests.get(helper) ?? 0) + 1;
+          helperRequests.set(helper, call);
+          if (scenario === "helper-isolation" && call === 15)
+            return piResponse(activeModel, [{ type: "text", text: `${helper} finished.` }]);
           return piResponse(activeModel, [
             {
               type: "toolCall",
-              id: `result-call-${requests}`,
-              name: scenario === "distinct-files" ? "write_file" : "message_user",
-              arguments:
-                scenario === "distinct-files"
-                  ? { path: files[requests - 1], content: "saved fixture content" }
-                  : { message: `Checking ${"again ".repeat(requests)}for a result.` },
+              id: `${helper}-result-${call}`,
+              name: "message_user",
+              arguments: { message: `${helper} checking ${"again ".repeat(call)}for a result.` },
             },
           ]);
-        } catch (error) {
-          providerFailures.push(error);
-          throw error;
         }
-      };
-      models.setProvider(
-        createProvider({
-          id: model.provider,
-          models: [model],
-          auth: {
-            apiKey: {
-              name: "Synthetic result-aware fixture",
-              resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
-            },
-          },
-          api: { stream, streamSimple: stream },
-        }),
-      );
-      let targetRunId: string | undefined;
-      let aborted = false;
-      let requestsAtAbort: number | undefined;
-      const pi = new PiAgentRuntime();
-      const scripted = new ScriptedAgentRuntime();
-      const executions: string[] = [];
-      const runtime: AgentRuntime = {
-        describe: () => pi.describe(),
-        run(request, context) {
-          if (request.runId !== targetRunId) return scripted.run(request, context);
-          context?.signal?.addEventListener(
-            "abort",
-            () => {
-              aborted = true;
-              requestsAtAbort = requests;
-            },
-            { once: true },
-          );
-          const execute = request.executeTool!;
-          request.executeTool = (name, args, id, route, observer) => {
-            executions.push(id);
-            return execute(name, args, id, route, observer);
-          };
-          return pi.run(request, context);
-        },
-        abort: (runId) => pi.abort(runId),
-      };
-      const sandbox = new FakeSandboxProvider();
-      let audit: ReturnType<typeof vi.spyOn> | undefined;
-      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
-      try {
-        fixture = await openApp(runtime, {
-          sandbox,
-          agentRuntime: "pi",
-          defaultProvider: model.provider,
-          defaultModel: model.id,
-          deploymentModelConfigured: true,
-          contextStrategy: "current",
-          wakeupDriver: "memory",
-        });
-        audit = vi.spyOn(getLogger(), "info");
-        const seeded = await seed(fixture.handles, scenario, "dedicated", async () => {
-          await fixture!.handles.awaitIdle?.();
-        });
-        targetRunId = seeded.run.id;
-        await fixture.handles.executor.continueRun(targetRunId, "result-aware-worker");
-        expect(providerFailures).toEqual([]);
-        const final = await fixture.handles.prisma.run.findUniqueOrThrow({
-          where: { id: targetRunId },
-        });
-        expect(final).toMatchObject({ status: "completed", leaseOwner: null, leaseFence: 1 });
-        expect(
-          await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
-        ).toEqual([
-          expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
-        ]);
-        const messages = await fixture.handles.prisma.message.findMany({
-          where: { runId: targetRunId, role: "bot" },
-        });
-        const blocks = messages.flatMap((message) =>
-          MessageBlockSchema.array().parse(message.blocks),
-        );
-        expect(blocks.some((block) => block.kind === "ask")).toBe(false);
-        const steps = blocks.flatMap((block) => (block.kind === "steps" ? block.steps : []));
-        const stops = audit.mock.calls.filter(
-          ([message, fields]) =>
-            message === "run.loop_guard_stopped" && fields?.["run.id"] === targetRunId,
-        );
-        if (scenario === "repeated-results" || scenario === "helper-results") {
-          // The first published update and the later budget response are distinct results.
-          expect(requests).toBeGreaterThanOrEqual(25);
-          if (scenario === "helper-results") expect(parentRequests).toBe(1);
-          else expect(requests).toBeLessThanOrEqual(28);
-          expect(aborted).toBe(true);
-          // Helpers can have already queued calls while the event consumer persists history.
-          // Once the stop aborts the runtime, it must not start another model request.
-          expect(requests).toBe(requestsAtAbort);
-          expect(JSON.stringify(blocks)).toContain("with the same result 25 times in a row");
-          expect(stops).toEqual([
-            [
-              "run.loop_guard_stopped",
-              expect.objectContaining({
-                "loop.reason": "repeated_results",
-                "loop.count": 25,
-                "loop.failures": 0,
-              }),
-            ],
-          ]);
-          expect(
-            steps.reduce(
-              (n, step) =>
-                n +
-                (step.outcomes?.succeeded ?? 0) +
-                (step.outcomes?.failed ?? 0) +
-                (step.outcomes?.stopped ?? 0),
-              0,
-            ),
-          ).toBe(steps.reduce((n, step) => n + step.count, 0));
-        } else if (scenario === "helper-isolation") {
-          expect(parentRequests).toBe(2);
-          expect([...helperRequests.entries()].sort()).toEqual([
-            ["Alpha", 15],
-            ["Beta", 15],
-          ]);
-          expect(stops).toEqual([]);
-          expect(JSON.stringify(blocks)).toContain("Both helpers finished.");
-          const completedHelpers = blocks.filter(
-            (block) => block.kind === "subagent" && block.status === "completed",
-          );
-          expect(completedHelpers).toHaveLength(2);
-          expect(executions).toHaveLength(30);
-        } else {
-          expect(requests).toBe(31);
-          expect(executions).toHaveLength(30);
-          expect(stops).toEqual([]);
-          expect(JSON.stringify(blocks)).toContain("Saved all thirty files.");
-          expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(30);
-          const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
-            where: { bots: { some: { id: seeded.botId } } },
-          });
-          expect(computer.homeRevision).toEqual(expect.any(String));
-          for (const filePath of [files[0]!, files.at(-1)!]) {
+        expect(requests).toBeLessThanOrEqual(31);
+        if (runningShell) {
+          if (requests === 1)
+            return piResponse(activeModel, [
+              {
+                type: "toolCall",
+                id: "running-shell-call",
+                name: "shell",
+                arguments: { command: "synthetic-long-command" },
+              },
+            ]);
+          if (requests === 2)
             expect(
-              await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
-                operationId: "result-aware-readback",
-                traceId: "result-aware-readback",
-                userId: seeded.userId,
-                spaceId: seeded.spaceId,
-                botId: seeded.botId,
-                runId: targetRunId,
-                signal: new AbortController().signal,
-              }),
-            ).toBe("saved fixture content");
+              context.messages.findLast((message) => message.role === "toolResult"),
+            ).toMatchObject({ details: { code: null, running: true } });
+          if (scenario !== "running-shell-stopped") {
+            releaseShell();
+            if (requests > 2) {
+              expect(JSON.stringify(context.messages)).toContain(
+                scenario === "running-shell-failed" ? "exit code: 2" : "exit code: 0",
+              );
+            }
+            return piResponse(activeModel, [
+              {
+                type: "text",
+                text: requests === 2 ? "Waiting for final exit." : "Command settled.",
+              },
+            ]);
           }
         }
-        expect(new Set(executions).size).toBe(executions.length);
-        const requestCount = requests;
-        // A terminal Run cannot be started again by an ordinary wakeup.
-        await fixture.handles.executor.continueRun(targetRunId, "second-result-aware-worker");
-        expect(requests).toBe(requestCount);
-        expect(await fixture.handles.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(
-          1,
-        );
-      } finally {
-        if (targetRunId) pi.abort(targetRunId);
-        await fixture?.close();
-        audit?.mockRestore();
-        if (previousProvider) models.setProvider(previousProvider);
-        else models.deleteProvider(model.provider);
-        vi.unstubAllEnvs();
+        if (scenario === "distinct-files" && requests === 31)
+          return piResponse(activeModel, [{ type: "text", text: "Saved all thirty files." }]);
+        if (requests > 1 && !(runningShell && requests === 2))
+          expect(
+            context.messages.findLast((message) => message.role === "toolResult"),
+          ).toMatchObject({ toolCallId: `result-call-${requests - 1}` });
+        return piResponse(activeModel, [
+          {
+            type: "toolCall",
+            id: `result-call-${requests}`,
+            name: scenario === "distinct-files" ? "write_file" : "message_user",
+            arguments:
+              scenario === "distinct-files"
+                ? { path: files[requests - 1], content: "saved fixture content" }
+                : { message: `Checking ${"again ".repeat(requests)}for a result.` },
+          },
+        ]);
+      } catch (error) {
+        providerFailures.push(error);
+        throw error;
       }
-    },
-  );
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: {
+          apiKey: {
+            name: "Synthetic result-aware fixture",
+            resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
+          },
+        },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+    let targetRunId: string | undefined;
+    let aborted = false;
+    let requestsAtAbort: number | undefined;
+    const pi = new PiAgentRuntime();
+    const scripted = new ScriptedAgentRuntime();
+    const executions: string[] = [];
+    const runtime: AgentRuntime = {
+      describe: () => pi.describe(),
+      run(request, context) {
+        if (request.runId !== targetRunId) return scripted.run(request, context);
+        context?.signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            requestsAtAbort = requests;
+          },
+          { once: true },
+        );
+        const execute = request.executeTool!;
+        request.executeTool = (name, args, id, route, observer) => {
+          executions.push(id);
+          return (async () => {
+            if (scenario === "running-shell-stopped" && name === "run_subagent")
+              await shellReturned;
+            const result = await execute(name, args, id, route, observer);
+            if (name === "shell") returnedShell();
+            return result;
+          })();
+        };
+        return pi.run(request, context);
+      },
+      abort: (runId) => pi.abort(runId),
+    };
+    const sandbox = new FakeSandboxProvider();
+    const originalExecute = sandbox.execute.bind(sandbox);
+    const command = vi
+      .spyOn(sandbox, "execute")
+      .mockImplementation(async function* (computer, request, context) {
+        if (!runningShell || context.runId !== targetRunId) {
+          yield* originalExecute(computer, request, context);
+          return;
+        }
+        yield { type: "stdout", data: "synthetic command still working\n" };
+        let onAbort!: () => void;
+        try {
+          await Promise.race([
+            shellReleased,
+            new Promise<never>((_resolve, reject) => {
+              onAbort = () => reject(new Error("synthetic command interrupted"));
+              if (context.signal.aborted) onAbort();
+              else context.signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ]);
+          yield {
+            type: "exit",
+            code: scenario === "running-shell-failed" ? 2 : 0,
+            terminalStateVerified: true,
+          };
+        } finally {
+          context.signal.removeEventListener("abort", onAbort);
+        }
+      });
+    let audit: ReturnType<typeof vi.spyOn> | undefined;
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        sandbox,
+        agentRuntime: "pi",
+        defaultProvider: model.provider,
+        defaultModel: model.id,
+        deploymentModelConfigured: true,
+        contextStrategy: "current",
+        wakeupDriver: "memory",
+      });
+      audit = vi.spyOn(getLogger(), "info");
+      const seeded = await seed(fixture.handles, scenario, "dedicated", async () => {
+        await fixture!.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      await fixture.handles.executor.continueRun(targetRunId, "result-aware-worker");
+      expect(providerFailures).toEqual([]);
+      const final = await fixture.handles.prisma.run.findUniqueOrThrow({
+        where: { id: targetRunId },
+      });
+      expect(final).toMatchObject({ status: "completed", leaseOwner: null, leaseFence: 1 });
+      expect(
+        await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
+      ).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
+      const messages = await fixture.handles.prisma.message.findMany({
+        where: { runId: targetRunId, role: "bot" },
+      });
+      const blocks = messages.flatMap((message) =>
+        MessageBlockSchema.array().parse(message.blocks),
+      );
+      expect(blocks.some((block) => block.kind === "ask")).toBe(false);
+      const steps = blocks.flatMap((block) => (block.kind === "steps" ? block.steps : []));
+      const stops = audit.mock.calls.filter(
+        ([message, fields]) =>
+          message === "run.loop_guard_stopped" && fields?.["run.id"] === targetRunId,
+      );
+      if (runningShell && scenario !== "running-shell-stopped") {
+        expect(requests).toBe(3);
+        expect(stops).toEqual([]);
+        expect(steps.filter((step) => step.label === "Shell")).toEqual([
+          expect.objectContaining({
+            count: 1,
+            outcomes: scenario === "running-shell-failed" ? { failed: 1 } : { succeeded: 1 },
+          }),
+        ]);
+        expect(JSON.stringify(blocks)).toContain("Command settled.");
+      } else if (
+        scenario === "repeated-results" ||
+        scenario === "helper-results" ||
+        scenario === "running-shell-stopped"
+      ) {
+        // The first published update and the later budget response are distinct results.
+        expect(requests).toBeGreaterThanOrEqual(25);
+        if (scenario === "helper-results" || scenario === "running-shell-stopped")
+          expect(parentRequests).toBe(1);
+        else expect(requests).toBeLessThanOrEqual(28);
+        if (runningShell)
+          expect(steps.find((step) => step.label === "Shell")).toMatchObject({
+            outcomes: { stopped: 1 },
+          });
+        expect(aborted).toBe(true);
+        // Helpers can have already queued calls while the event consumer persists history.
+        // Once the stop aborts the runtime, it must not start another model request.
+        expect(requests).toBe(requestsAtAbort);
+        expect(JSON.stringify(blocks)).toContain("with the same result 25 times in a row");
+        expect(stops).toEqual([
+          [
+            "run.loop_guard_stopped",
+            expect.objectContaining({
+              "loop.reason": "repeated_results",
+              "loop.count": 25,
+              "loop.failures": 0,
+            }),
+          ],
+        ]);
+        expect(
+          steps.reduce(
+            (n, step) =>
+              n +
+              (step.outcomes?.succeeded ?? 0) +
+              (step.outcomes?.failed ?? 0) +
+              (step.outcomes?.stopped ?? 0),
+            0,
+          ),
+        ).toBe(steps.reduce((n, step) => n + step.count, 0));
+      } else if (scenario === "helper-isolation") {
+        expect(parentRequests).toBe(2);
+        expect([...helperRequests.entries()].sort()).toEqual([
+          ["Alpha", 15],
+          ["Beta", 15],
+        ]);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Both helpers finished.");
+        const completedHelpers = blocks.filter(
+          (block) => block.kind === "subagent" && block.status === "completed",
+        );
+        expect(completedHelpers).toHaveLength(2);
+        expect(executions).toHaveLength(30);
+      } else {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(30);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Saved all thirty files.");
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(30);
+        const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
+          where: { bots: { some: { id: seeded.botId } } },
+        });
+        expect(computer.homeRevision).toEqual(expect.any(String));
+        for (const filePath of [files[0]!, files.at(-1)!]) {
+          expect(
+            await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
+              operationId: "result-aware-readback",
+              traceId: "result-aware-readback",
+              userId: seeded.userId,
+              spaceId: seeded.spaceId,
+              botId: seeded.botId,
+              runId: targetRunId,
+              signal: new AbortController().signal,
+            }),
+          ).toBe("saved fixture content");
+        }
+      }
+      expect(new Set(executions).size).toBe(executions.length);
+      const requestCount = requests;
+      // A terminal Run cannot be started again by an ordinary wakeup.
+      await fixture.handles.executor.continueRun(targetRunId, "second-result-aware-worker");
+      expect(requests).toBe(requestCount);
+      expect(await fixture.handles.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(1);
+    } finally {
+      releaseShell();
+      returnedShell();
+      if (targetRunId) pi.abort(targetRunId);
+      await fixture?.close();
+      command.mockRestore();
+      audit?.mockRestore();
+      if (previousProvider) models.setProvider(previousProvider);
+      else models.deleteProvider(model.provider);
+      vi.unstubAllEnvs();
+    }
+  });
 
   it.each([true, false])("settles loop-guard tools, publishing=%s", async (publishing) => {
     const lateText = "The already-started progress message must reach the linked chat.";

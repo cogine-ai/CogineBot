@@ -3042,6 +3042,11 @@ export function toolCompletionOutcome(
   const error =
     completion.error === undefined ? toolResultError(completion.result) : completion.error;
   if (error !== undefined) return "failed";
+  if (
+    isRunningShellCommand(completion.result) ||
+    isRunningShellCommand((completion.result as { details?: unknown } | null)?.details)
+  )
+    return undefined;
   for (const value of [
     completion.result,
     (completion.result as { details?: unknown } | null)?.details,
@@ -8686,6 +8691,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
               if (observed.completion) {
                 const completion = observed.completion.then(async (final) => {
+                  if (terminalExitCode !== undefined)
+                    toolOutcomes.set(executionId, terminalExitCode === 0 ? "succeeded" : "failed");
                   clearPublishTimer();
                   await appendComputerCommand({
                     ...commandEvent,

@@ -110,6 +110,8 @@ describe("tool completion outcome", () => {
     [{ details: { exitCode: 1 } }, "failed"],
     [{ details: { code: 0 } }, "succeeded"],
     [{ ok: true }, "succeeded"],
+    [{ stdout: "waiting", stderr: "", code: null, running: true }, undefined],
+    [{ details: { stdout: "waiting", stderr: "", code: null, running: true } }, undefined],
     [{ error: "denied" }, "failed"],
     [{ isError: true, content: [{ type: "text", text: "denied" }] }, "failed"],
   ] as const)("classifies a returned result %j", (result, expected) => {
