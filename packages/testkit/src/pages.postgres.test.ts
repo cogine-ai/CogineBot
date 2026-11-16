@@ -5,8 +5,8 @@ import { join } from "node:path";
 import type { MessagingInboundMessage } from "@rakazo/adapter-kit";
 import { routineWakeupJob } from "@rakazo/adapter-kit";
 import { ComposioEmulator, LocalArtifactStore, toTeamChatInbound } from "@rakazo/adapters";
-import type { Actor, ModelCredential } from "@rakazo/contracts";
-import { callClientNonce } from "@rakazo/core";
+import type { Actor, MessageBlock, ModelCredential } from "@rakazo/contracts";
+import { callClientNonce, humanizeToolName } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   applyRowSecurityPolicies,
@@ -37,7 +37,11 @@ import { TeamChatBridge } from "../../../apps/api/src/team-chat-bridge.js";
 import { prepareSharedPageUpdate } from "../../adapters/src/page-share-update.js";
 import type { PageToolContext } from "../../adapters/src/page-tools.js";
 import { recoverSavedPageFromTool, savePageFromTool } from "../../adapters/src/page-tools.js";
-import { parseStoredScriptedState } from "../../adapters/src/scripted-state.js";
+import {
+  parseStoredScriptedState,
+  scriptedStateJson,
+  sealScriptedState,
+} from "../../adapters/src/scripted-state.js";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
 import { startModelEmulator } from "./model-emulator.js";
@@ -764,183 +768,246 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     45_000,
   );
 
-  it("resumes one shared Page approval at the same scripted cursor under row security", async () => {
-    const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-scripted-approval-"));
-    let stop: (() => Promise<void>) | undefined;
-    try {
-      const { createApp } = await import("../../../apps/api/src/app.ts");
-      const handles = await createApp({
-        databaseUrl: runtimeUrl!,
-        realtimeDatabaseUrl: runtimeUrl!,
-        authUrl: appOrigin,
-        webOrigin: appOrigin,
-        dataDir,
-        sandboxProvider: "fake",
-        agentRuntime: "scripted",
-        defaultProvider: "scripted",
-        defaultModel: "scripted",
-        wakeupDriver: "memory",
-        signupsEnabled: "true",
-        composio: new ComposioEmulator(),
-        encryptionKey: "offline-page-approval-encryption-key",
-      });
-      stop = handles.stop;
-      const { cookie, rpc } = await pageAppSession(handles);
-      const { id: botId } = await rpc<{ id: string }>("bots/create", {
-        name: "Scripted Page fixture",
-        title: "",
-        description: "",
-        notifyOnFinish: false,
-      });
-      await discardBotIntroRun(handles, cookie, botId);
-      const enqueue = handles.jobs.enqueue.bind(handles.jobs);
-      const held = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
-        if (job.name !== "run.continue") await enqueue(job);
-      });
+  it.each(["current", "legacy-known", "legacy-unknown"] as const)(
+    "resumes one shared Page approval at the same scripted cursor under row security: %s",
+    async (format) => {
+      const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-scripted-approval-"));
+      let stop: (() => Promise<void>) | undefined;
       try {
-        const db = admin();
-        const { spaceId, userId } = await db.bot.findUniqueOrThrow({ where: { id: botId } });
-        const scope = { spaceId, userId, botId, groupId: null };
-        const { id: pageId } = await db.page.create({
-          data: {
-            ...scope,
-            title: "Inventory",
-            versions: {
-              create: {
-                version: 1,
-                title: "Inventory",
-                source: source("Original value"),
-                code: "fixture current render",
+        const { createApp } = await import("../../../apps/api/src/app.ts");
+        const handles = await createApp({
+          databaseUrl: runtimeUrl!,
+          realtimeDatabaseUrl: runtimeUrl!,
+          authUrl: appOrigin,
+          webOrigin: appOrigin,
+          dataDir,
+          sandboxProvider: "fake",
+          agentRuntime: "scripted",
+          defaultProvider: "scripted",
+          defaultModel: "scripted",
+          wakeupDriver: "memory",
+          signupsEnabled: "true",
+          composio: new ComposioEmulator(),
+          encryptionKey: "offline-page-approval-encryption-key",
+        });
+        stop = handles.stop;
+        const { cookie, rpc } = await pageAppSession(handles);
+        const { id: botId } = await rpc<{ id: string }>("bots/create", {
+          name: "Scripted Page fixture",
+          title: "",
+          description: "",
+          notifyOnFinish: false,
+        });
+        await discardBotIntroRun(handles, cookie, botId);
+        const enqueue = handles.jobs.enqueue.bind(handles.jobs);
+        const held = vi.spyOn(handles.jobs, "enqueue").mockImplementation(async (job) => {
+          if (job.name !== "run.continue") await enqueue(job);
+        });
+        try {
+          const db = admin();
+          const { spaceId, userId } = await db.bot.findUniqueOrThrow({ where: { id: botId } });
+          const scope = { spaceId, userId, botId, groupId: null };
+          const { id: pageId } = await db.page.create({
+            data: {
+              ...scope,
+              title: "Inventory",
+              versions: {
+                create: {
+                  version: 1,
+                  title: "Inventory",
+                  source: source("Original value"),
+                  code: "fixture current render",
+                },
               },
             },
-          },
-        });
-        const tenant = <T>(work: () => Promise<T>) => runAsTenant({ spaceId, userId }, work);
-        await tenant(() =>
-          swapPageShare(client(), scope, pageId, preparedShare({ ...scope, title: "Inventory" })),
-        );
-        const { runId: initialId } = await rpc<{ runId: string }>("threads/send", {
-          botId,
-          text: "Initial task",
-        });
-        const leaseOwner = "initial-scripted-worker";
-        const leaseFence = 2;
-        const initial = await db.run.update({
-          where: { id: initialId, status: "queued" },
-          data: {
-            status: "running",
-            leaseOwner,
-            leaseFence,
-            leaseExpiresAt: new Date(Date.now() + 60_000),
-          },
-        });
-        const attempt = await db.attempt.create({
-          data: { runId: initialId, fence: leaseFence, status: "running" },
-        });
-        const args = { pageId, edits: [{ find: "Original value", replace: "Reviewed value" }] };
-        for (const text of [
-          "write a file called notes/before-review.txt that says before-review",
-          `call save_page with ${JSON.stringify(args)}`,
-          "write a file called notes/after-review.txt that says after-review",
-        ]) {
-          await rpc("threads/send", { botId, text });
-        }
-        const events = createThreadEvents(handles.prisma);
-        const finished = await tenant(() =>
-          events.finalizeRun({
-            spaceId,
-            threadId: initial.threadId,
+          });
+          const tenant = <T>(work: () => Promise<T>) => runAsTenant({ spaceId, userId }, work);
+          await tenant(() =>
+            swapPageShare(client(), scope, pageId, preparedShare({ ...scope, title: "Inventory" })),
+          );
+          const { runId: initialId } = await rpc<{ runId: string }>("threads/send", {
             botId,
-            runId: initial.id,
-            taskId: initial.taskId,
-            attemptId: attempt.id,
-            leaseOwner,
-            leaseFence,
-            outcome: "completed",
-            blocks: [{ kind: "text", text: "Initial answer" }],
-          }),
-        );
-        const runId = finished?.continuationRunId;
-        if (!runId) throw new Error("Expected a steering continuation");
-        await tenant(() => handles.executor.continueRun(runId, "scripted-page-pause-worker"));
-        const paused = await db.run.findUniqueOrThrow({ where: { id: runId } });
-        expect(paused.status).toBe("waiting_input");
-        const checkpoint = parseStoredScriptedState(paused.scriptedState, runId);
-        expect(checkpoint).toMatchObject({
-          version: 4,
-          pause: { kind: "input", attemptId: checkpoint.attemptId, fence: checkpoint.fence },
-          state: { cursor: { phase: "tool" } },
-          pendingEffect: { kind: "save_page", requestKind: "shared_page_update" },
-        });
-        const effect = await db.externalEffect.findFirstOrThrow({
-          where: { runId, kind: "save_page" },
-        });
-        expect(effect).toMatchObject({ id: checkpoint.pendingEffect!.id, status: "intended" });
-        const messageId = checkpoint.pause!.messageId!;
-        const card = await db.message.findUniqueOrThrow({ where: { id: messageId, runId } });
-        expect(card.blocks).toEqual([
-          expect.objectContaining({
-            kind: "ask",
-            approvalEffectId: effect.id,
-            reviewMode: "screen",
-            detail: expect.stringMatching(/Original value[\s\S]*Reviewed value/),
-          }),
-        ]);
-        expect(await db.pageVersion.count({ where: { pageId } })).toBe(1);
-        const fileEffects = () =>
-          db.externalEffect.findMany({ where: { runId, kind: "write_file" } });
-        const before = await fileEffects();
-        expect(before).toEqual([
-          expect.objectContaining({
-            status: "completed",
-            request: expect.objectContaining({ path: "notes/before-review.txt" }),
-          }),
-        ]);
-
-        await rpc("threads/answer", { botId, runId, messageId, answer: "allow" });
-        await tenant(() => handles.executor.continueRun(runId, "scripted-page-resume-worker"));
-
-        await expect(db.run.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
-          status: "completed",
-        });
-        const effects = await db.externalEffect.findMany({ where: { runId, kind: "save_page" } });
-        expect(effects).toEqual([
-          expect.objectContaining({
-            id: effect.id,
-            idempotencyKey: effect.idempotencyKey,
-            request: effect.request,
-            status: "completed",
-          }),
-        ]);
-        expect(
-          await db.pageVersion.findMany({
-            where: { pageId },
-            orderBy: { version: "asc" },
-            select: { source: true },
-          }),
-        ).toEqual([{ source: source("Original value") }, { source: source("Reviewed value") }]);
-        const after = await fileEffects();
-        expect(after).toHaveLength(2);
-        expect(after).toEqual(
-          expect.arrayContaining([
-            before[0],
+            text: "Initial task",
+          });
+          const leaseOwner = "initial-scripted-worker";
+          const leaseFence = 2;
+          const initial = await db.run.update({
+            where: { id: initialId, status: "queued" },
+            data: {
+              status: "running",
+              leaseOwner,
+              leaseFence,
+              leaseExpiresAt: new Date(Date.now() + 60_000),
+            },
+          });
+          const attempt = await db.attempt.create({
+            data: { runId: initialId, fence: leaseFence, status: "running" },
+          });
+          const prefixPage = await db.page.create({
+            data: {
+              ...scope,
+              title: "Private prefix",
+              versions: {
+                create: {
+                  version: 1,
+                  title: "Private prefix",
+                  source: source("Prefix original"),
+                  code: "fixture prefix render",
+                },
+              },
+            },
+          });
+          const prefixArgs = {
+            pageId: prefixPage.id,
+            edits: [{ find: "Prefix original", replace: "Prefix saved" }],
+          };
+          const args = { pageId, edits: [{ find: "Original value", replace: "Reviewed value" }] };
+          for (const text of [
+            "write a file called notes/before-review.txt that says before-review",
+            `call save_page with ${JSON.stringify(prefixArgs)}`,
+            `call save_page with ${JSON.stringify(args)}`,
+            "write a file called notes/after-review.txt that says after-review",
+          ]) {
+            await rpc("threads/send", { botId, text });
+          }
+          const events = createThreadEvents(handles.prisma);
+          const finished = await tenant(() =>
+            events.finalizeRun({
+              spaceId,
+              threadId: initial.threadId,
+              botId,
+              runId: initial.id,
+              taskId: initial.taskId,
+              attemptId: attempt.id,
+              leaseOwner,
+              leaseFence,
+              outcome: "completed",
+              blocks: [{ kind: "text", text: "Initial answer" }],
+            }),
+          );
+          const runId = finished?.continuationRunId;
+          if (!runId) throw new Error("Expected a steering continuation");
+          await tenant(() => handles.executor.continueRun(runId, "scripted-page-pause-worker"));
+          const paused = await db.run.findUniqueOrThrow({ where: { id: runId } });
+          expect(paused.status).toBe("waiting_input");
+          const checkpoint = parseStoredScriptedState(paused.scriptedState, runId);
+          expect(checkpoint).toMatchObject({
+            version: 4,
+            pause: { kind: "input", attemptId: checkpoint.attemptId, fence: checkpoint.fence },
+            state: { cursor: { phase: "tool" } },
+            pendingEffect: { kind: "save_page", requestKind: "shared_page_update" },
+          });
+          if (format !== "current") {
+            const { toolCalls: _displayMap, ...output } = checkpoint.output;
+            if (format === "legacy-unknown")
+              output.messageSegments = output.messageSegments.map((block) =>
+                block.kind !== "steps"
+                  ? block
+                  : {
+                      ...block,
+                      steps: block.steps.map(({ outcomes: _known, ...step }) => step),
+                    },
+              );
+            const { digest: _digest, pause, ...legacy } = checkpoint;
+            await db.run.update({
+              where: { id: runId },
+              data: {
+                scriptedState: scriptedStateJson({
+                  ...sealScriptedState({ ...legacy, output }),
+                  pause,
+                }),
+              },
+            });
+          }
+          const effect = await db.externalEffect.findFirstOrThrow({
+            where: { id: checkpoint.pendingEffect!.id, runId, kind: "save_page" },
+          });
+          expect(effect).toMatchObject({ id: checkpoint.pendingEffect!.id, status: "intended" });
+          const messageId = checkpoint.pause!.messageId!;
+          const card = await db.message.findUniqueOrThrow({ where: { id: messageId, runId } });
+          expect(card.blocks).toEqual([
+            expect.objectContaining({
+              kind: "ask",
+              approvalEffectId: effect.id,
+              reviewMode: "screen",
+              detail: expect.stringMatching(/Original value[\s\S]*Reviewed value/),
+            }),
+          ]);
+          expect(await db.pageVersion.count({ where: { pageId } })).toBe(1);
+          const fileEffects = () =>
+            db.externalEffect.findMany({ where: { runId, kind: "write_file" } });
+          const before = await fileEffects();
+          expect(before).toEqual([
             expect.objectContaining({
               status: "completed",
-              request: expect.objectContaining({ path: "notes/after-review.txt" }),
+              request: expect.objectContaining({ path: "notes/before-review.txt" }),
             }),
-          ]),
-        );
+          ]);
+
+          await rpc("threads/answer", { botId, runId, messageId, answer: "allow" });
+          await tenant(() => handles.executor.continueRun(runId, "scripted-page-resume-worker"));
+
+          await expect(db.run.findUniqueOrThrow({ where: { id: runId } })).resolves.toMatchObject({
+            status: "completed",
+          });
+          const effects = await db.externalEffect.findMany({ where: { runId, kind: "save_page" } });
+          expect(effects).toHaveLength(2);
+          expect(effects).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                id: effect.id,
+                idempotencyKey: effect.idempotencyKey,
+                request: effect.request,
+                status: "completed",
+              }),
+            ]),
+          );
+          expect(await db.pageVersion.count({ where: { pageId: prefixPage.id } })).toBe(2);
+          expect(
+            await db.pageVersion.findMany({
+              where: { pageId },
+              orderBy: { version: "asc" },
+              select: { source: true },
+            }),
+          ).toEqual([{ source: source("Original value") }, { source: source("Reviewed value") }]);
+          const after = await fileEffects();
+          expect(after).toHaveLength(2);
+          expect(after).toEqual(
+            expect.arrayContaining([
+              before[0],
+              expect.objectContaining({
+                status: "completed",
+                request: expect.objectContaining({ path: "notes/after-review.txt" }),
+              }),
+            ]),
+          );
+          const finalMessages = await db.message.findMany({ where: { runId, role: "bot" } });
+          const steps = finalMessages.flatMap((message) =>
+            (message.blocks as MessageBlock[]).flatMap((block) =>
+              block.kind === "steps" ? block.steps : [],
+            ),
+          );
+          expect(steps.reduce((count, step) => count + step.count, 0)).toBe(4);
+          expect(steps.reduce((count, step) => count + (step.outcomes?.succeeded ?? 0), 0)).toBe(
+            format === "legacy-unknown" ? 2 : 4,
+          );
+          expect(steps.find((step) => step.label === humanizeToolName("save_page"))?.count).toBe(2);
+          if (format !== "legacy-unknown")
+            expect(steps.every((step) => step.outcomes?.succeeded === step.count)).toBe(true);
+          else expect(steps[0].outcomes).toBeUndefined();
+        } finally {
+          held.mockRestore();
+        }
       } finally {
-        held.mockRestore();
+        try {
+          await stop?.();
+        } finally {
+          await rm(dataDir, { recursive: true, force: true });
+        }
       }
-    } finally {
-      try {
-        await stop?.();
-      } finally {
-        await rm(dataDir, { recursive: true, force: true });
-      }
-    }
-  }, 45_000);
+    },
+    45_000,
+  );
 
   it("updates a scheduled Page in place and respects failure, pause, and deletion", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "cogine-routine-page-"));

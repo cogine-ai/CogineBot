@@ -49,7 +49,11 @@ const origin = "http://127.0.0.1:5173";
 const wait = (assertion: () => Promise<void> | void) =>
   vi.waitFor(assertion, { timeout: 10_000, interval: 20 });
 
-function piResponse(activeModel: Model<Api>, content: AssistantMessage["content"]) {
+function piResponse(
+  activeModel: Model<Api>,
+  content: AssistantMessage["content"],
+  streamText = false,
+) {
   const hasCalls = content.some((part) => part.type === "toolCall");
   const message: AssistantMessage = {
     role: "assistant",
@@ -71,6 +75,11 @@ function piResponse(activeModel: Model<Api>, content: AssistantMessage["content"
   const stream = createAssistantMessageEventStream();
   stream.push({ type: "start", partial: { ...message, content: [] } });
   for (const [contentIndex, toolCall] of content.entries()) {
+    if (streamText && toolCall.type === "text") {
+      stream.push({ type: "text_start", contentIndex, partial: message });
+      stream.push({ type: "text_delta", contentIndex, delta: toolCall.text, partial: message });
+      stream.push({ type: "text_end", contentIndex, content: toolCall.text, partial: message });
+    }
     if (toolCall.type !== "toolCall") continue;
     stream.push({ type: "toolcall_start", contentIndex, partial: message });
     stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: message });
@@ -1624,6 +1633,8 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
 
   it.each([
     "repeated-results",
+    "narrated-results",
+    "progress-results",
     "distinct-files",
     "helper-isolation",
     "helper-results",
@@ -1722,6 +1733,23 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           ]);
         }
         expect(requests).toBeLessThanOrEqual(31);
+        if (scenario === "narrated-results" || scenario === "progress-results") {
+          if (requests === 31)
+            return piResponse(activeModel, [{ type: "text", text: "Completed narrated checks." }]);
+          return piResponse(
+            activeModel,
+            [
+              { type: "text", text: `Checking item ${requests}.` },
+              {
+                type: "toolCall",
+                id: `narrated-${requests}`,
+                name: "message_user",
+                arguments: { message: `Checking ${requests}.` },
+              },
+            ],
+            true,
+          );
+        }
         if (scenario.startsWith("productive-batch")) {
           if (requests === 31)
             return piResponse(activeModel, [{ type: "text", text: "Read all thirty documents." }]);
@@ -1847,7 +1875,15 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
             return result;
           })();
         };
-        return pi.run(request, context);
+        const events = pi.run(request, context);
+        if (scenario === "progress-results")
+          return (async function* () {
+            for await (const event of events)
+              yield event.type === "text"
+                ? { type: "progress" as const, text: event.text, activity: false }
+                : event;
+          })();
+        return events;
       },
       abort: (runId) => pi.abort(runId),
     };
@@ -1932,7 +1968,12 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         ([message, fields]) =>
           message === "run.loop_guard_stopped" && fields?.["run.id"] === targetRunId,
       );
-      if (scenario.startsWith("productive-batch")) {
+      if (scenario === "narrated-results" || scenario === "progress-results") {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(30);
+        expect(stops).toEqual([]);
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(30);
+      } else if (scenario.startsWith("productive-batch")) {
         expect(requests).toBe(31);
         expect(executions).toHaveLength(60);
         expect(stops).toEqual([]);

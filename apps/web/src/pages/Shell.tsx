@@ -906,6 +906,8 @@ export function ShellPage() {
   // Screen-load failures can sit beside a still-valid embed URL; boot and
   // takeover failures must stay visible even when a URL remains.
   const [computerErrorFromScreen, setComputerErrorFromScreen] = useState(false);
+  const computerErrorFromScreenRef = useRef(false);
+  computerErrorFromScreenRef.current = computerErrorFromScreen;
   useEffect(() => {
     if (!computerOpen) {
       setComputerViewport(null);
@@ -1856,8 +1858,11 @@ export function ShellPage() {
         isCurrent: current,
         commit: (screen) => {
           setScreenUrl(screen.url);
-          setComputerError(screen.error);
-          setComputerErrorFromScreen(Boolean(screen.error));
+          // A screen read replaces only its own error; a failed control action keeps its retry.
+          if (screen.error || computerErrorFromScreenRef.current) {
+            setComputerError(screen.error);
+            setComputerErrorFromScreen(Boolean(screen.error));
+          }
           cacheComputerFor(id, { screenUrl: screen.url });
         },
         fallbackError: t`Could not connect to the computer screen`,
