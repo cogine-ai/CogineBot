@@ -4010,10 +4010,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
       };
 
-      if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return;
       const fence = nextFence(run.leaseFence);
       const now = new Date();
       const claimAndStart = async (db: Pick<PrismaClient, "run">): Promise<boolean> => {
+        if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return false;
         const leased = await db.run.updateMany({
           where: {
             id: runId,
