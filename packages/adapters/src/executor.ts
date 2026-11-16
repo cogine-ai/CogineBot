@@ -5494,14 +5494,52 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : [],
           ),
         );
-        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
-          withToolStepOutcomes(
+        const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
+        // Older snapshots retain aggregate step outcomes without per-call provenance.
+        const legacySteps = restoredOutput?.toolCalls
+          ? []
+          : (restoredOutput?.messageSegments.flatMap((block) =>
+              block.kind === "steps" ? block.steps : [],
+            ) ?? []);
+        const retainLegacyOutcomes = legacySteps.some((step) => step.outcomes !== undefined);
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) => {
+          const annotated = withToolStepOutcomes(
             segments,
-            toolCalls.map((call) => ({
+            toolCalls.map((call, index) => ({
               label: call.label,
-              outcome: toolOutcomes.get(call.executionId) ?? unfinished,
+              outcome:
+                toolOutcomes.get(call.executionId) ??
+                (index < priorCompletedToolCount ? undefined : unfinished),
             })),
           );
+          if (!retainLegacyOutcomes || annotated.every((block, index) => block === segments[index]))
+            return annotated;
+          let index = 0;
+          return annotated.map((block) =>
+            block.kind !== "steps"
+              ? block
+              : {
+                  ...block,
+                  steps: block.steps.map((step) => {
+                    const legacy = legacySteps[index++];
+                    if (!legacy?.outcomes || legacy.label !== step.label) return step;
+                    const outcomes = { ...step.outcomes };
+                    for (const status of ["succeeded", "failed", "stopped"] as const) {
+                      const count = (outcomes[status] ?? 0) + (legacy.outcomes[status] ?? 0);
+                      if (count) outcomes[status] = count;
+                    }
+                    // Missing historical identities cannot justify crediting the same call twice.
+                    return {
+                      ...step,
+                      outcomes:
+                        Object.values(outcomes).reduce((n, count) => n + count, 0) <= step.count
+                          ? outcomes
+                          : legacy.outcomes,
+                    };
+                  }),
+                },
+          );
+        };
         const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
@@ -5908,10 +5946,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
-              toolCalls: toolCalls.map((call) => ({
-                ...call,
-                outcome: toolOutcomes.get(call.executionId),
-              })),
+              ...(!retainLegacyOutcomes
+                ? {
+                    toolCalls: toolCalls.map((call) => ({
+                      ...call,
+                      outcome: toolOutcomes.get(call.executionId),
+                    })),
+                  }
+                : {}),
             },
             runSecrets,
           );
