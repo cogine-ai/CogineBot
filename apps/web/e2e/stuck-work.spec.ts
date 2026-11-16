@@ -161,6 +161,25 @@ test("a loop stop preserves completed tools without crediting unfinished calls",
   }
 });
 
+test("a live grouped failure stays working until its remaining call settles", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem("rakazo.showToolActivity", "on"));
+  for (const viewport of [
+    { name: "desktop-1440x900", width: 1440, height: 900 },
+    { name: "mobile-390x844", width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/e2e/fixtures/tool-activity.html?view=thread&phase=grouped-live");
+    const rows = page.getByTestId("tool-rows");
+    await expect(rows.getByText("Check conflicts ×2", { exact: true })).toBeVisible();
+    await expect(rows.getByRole("status").filter({ hasText: "Working…" })).toHaveCount(1);
+    await expect(rows.getByText("Failed", { exact: true })).toHaveCount(0);
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
+    await captureScreenshot(page, testInfo, `live-grouped-outcome-${viewport.name}`);
+  }
+});
+
 async function captureActivitySidebar(
   page: Page,
   testInfo: Parameters<typeof captureScreenshot>[1],
