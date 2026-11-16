@@ -66,6 +66,22 @@ test("a stopped run distinguishes saved, failed, stopped and unknown tool result
   }
 });
 
+test("a live grouped failure stays working until its remaining call settles", async ({
+  page,
+}, testInfo) => {
+  await seedToolActivityOn(page);
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${fixture}?view=thread&phase=grouped-live`);
+    const rows = page.getByTestId("tool-rows");
+    await expect(rows.getByText("Check conflicts ×2", { exact: true })).toBeVisible();
+    await expect(rows.getByRole("status").filter({ hasText: "Working…" })).toHaveCount(1);
+    await expect(rows.getByText("Failed", { exact: true })).toHaveCount(0);
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
+    await captureScreenshot(page, testInfo, `live-grouped-outcome-${viewport.name}`);
+  }
+});
+
 test("tool activity shows for live and finished runs when the user turned it on", async ({
   page,
 }, testInfo) => {

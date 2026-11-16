@@ -122,6 +122,14 @@ describe("tool completion outcome", () => {
     expect(toolCompletionOutcome({ ...base, paused: true, error: "waiting" })).toBeUndefined();
     expect(toolCompletionOutcome({ ...base, error: "" })).toBe("failed");
   });
+  it.each([{ ok: true, code: 200 }, { exitCode: 42 }, { details: { code: 201 } }])(
+    "preserves application-specific numeric fields in connector results: %j",
+    (result) => {
+      expect(toolCompletionOutcome({ ...base, name: "destination.write", result })).toBe(
+        "succeeded",
+      );
+    },
+  );
 });
 
 describe("loop stop audit", () => {

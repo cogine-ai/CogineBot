@@ -1418,9 +1418,11 @@ describePostgres("model connection HTTP acceptance", () => {
     );
     const target = await bot(cookie);
     const thread = await handles.prisma.thread.findUniqueOrThrow({ where: { botId: target.id } });
-    const routines = await Promise.all(
-      ["First", "Second"].map((name) =>
-        rpc<{ id: string }>(cookie, "routines/create", {
+    const routines: Array<{ id: string }> = [];
+    // Fixture creation has no concurrency contract; the gated binding operations below do.
+    for (const name of ["First", "Second"]) {
+      routines.push(
+        await rpc<{ id: string }>(cookie, "routines/create", {
           botId: target.id,
           name: `Inbound ${name}`,
           prompt: "Synthetic inbound work",
@@ -1431,8 +1433,8 @@ describePostgres("model connection HTTP acceptance", () => {
           ...binding(original, "second-model"),
           thinkingLevel: "low",
         }),
-      ),
-    );
+      );
+    }
     const captured = await handles.prisma.routine.findMany({
       where: { id: { in: routines.map((routine) => routine.id) } },
       select: {

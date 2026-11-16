@@ -3056,10 +3056,9 @@ export function toolCompletionOutcome(
     isRunningShellCommand((completion.result as { details?: unknown } | null)?.details)
   )
     return undefined;
-  for (const value of [
-    completion.result,
-    (completion.result as { details?: unknown } | null)?.details,
-  ]) {
+  for (const value of completion.name === "shell"
+    ? [completion.result, (completion.result as { details?: unknown } | null)?.details]
+    : []) {
     if (!value || typeof value !== "object") continue;
     const { code, exitCode } = value as { code?: unknown; exitCode?: unknown };
     const status = typeof code === "number" ? code : exitCode;
@@ -5535,16 +5534,73 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
         let pendingToolNames: string[] = restoredOutput ? [...restoredOutput.pendingToolNames] : [];
-        const toolCalls: Array<{ label: string; executionId: string }> = [];
-        const toolOutcomes = new Map<string, ToolStepOutcome>();
-        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
-          withToolStepOutcomes(
+        const restoredToolCalls =
+          restoredOutput?.toolCalls ??
+          scriptedResume.stored?.state.script
+            .flatMap((turn) => turn.toolCalls ?? [])
+            .slice(0, lastToolOrdinal + 1)
+            .map((call, ordinal) => ({
+              label: humanizeToolName(call.name),
+              executionId: `${runId}:${call.name}:${ordinal}`,
+            })) ??
+          [];
+        const toolCalls = restoredToolCalls.map(({ label, executionId }) => ({
+          label,
+          executionId,
+        }));
+        const toolOutcomes = new Map<string, ToolStepOutcome>(
+          restoredToolCalls.flatMap((call) =>
+            "outcome" in call && call.outcome
+              ? [[call.executionId, call.outcome] as [string, ToolStepOutcome]]
+              : [],
+          ),
+        );
+        const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
+        // Older snapshots retain aggregate step outcomes without per-call provenance.
+        const legacySteps = restoredOutput?.toolCalls
+          ? []
+          : (restoredOutput?.messageSegments.flatMap((block) =>
+              block.kind === "steps" ? block.steps : [],
+            ) ?? []);
+        const retainLegacyOutcomes = legacySteps.some((step) => step.outcomes !== undefined);
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) => {
+          const annotated = withToolStepOutcomes(
             segments,
-            toolCalls.map((call) => ({
+            toolCalls.map((call, index) => ({
               label: call.label,
-              outcome: toolOutcomes.get(call.executionId) ?? unfinished,
+              outcome:
+                toolOutcomes.get(call.executionId) ??
+                (index < priorCompletedToolCount ? undefined : unfinished),
             })),
           );
+          if (!retainLegacyOutcomes || annotated.every((block, index) => block === segments[index]))
+            return annotated;
+          let index = 0;
+          return annotated.map((block) =>
+            block.kind !== "steps"
+              ? block
+              : {
+                  ...block,
+                  steps: block.steps.map((step) => {
+                    const legacy = legacySteps[index++];
+                    if (!legacy?.outcomes || legacy.label !== step.label) return step;
+                    const outcomes = { ...step.outcomes };
+                    for (const status of ["succeeded", "failed", "stopped"] as const) {
+                      const count = (outcomes[status] ?? 0) + (legacy.outcomes[status] ?? 0);
+                      if (count) outcomes[status] = count;
+                    }
+                    // Missing historical identities cannot justify crediting the same call twice.
+                    return {
+                      ...step,
+                      outcomes:
+                        Object.values(outcomes).reduce((n, count) => n + count, 0) <= step.count
+                          ? outcomes
+                          : legacy.outcomes,
+                    };
+                  }),
+                },
+          );
+        };
         const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
@@ -5951,6 +6007,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
+              ...(!retainLegacyOutcomes
+                ? {
+                    toolCalls: toolCalls.map((call) => ({
+                      ...call,
+                      outcome: toolOutcomes.get(call.executionId),
+                    })),
+                  }
+                : {}),
             },
             runSecrets,
           );
@@ -13252,6 +13316,15 @@ function redactScriptedOutput(output: ScriptedOutputState, secrets: string[]): S
     currentTextSegment: redactSecrets(output.currentTextSegment, secrets),
     messageSegments: redactScriptedDeliveryBlocks(output.messageSegments, secrets),
     pendingToolNames: output.pendingToolNames.map((name) => redactSecrets(name, secrets)),
+    ...(output.toolCalls
+      ? {
+          toolCalls: output.toolCalls.map((call) => ({
+            ...call,
+            label: redactSecrets(call.label, secrets),
+            executionId: redactSecrets(call.executionId, secrets),
+          })),
+        }
+      : {}),
   };
 }
 

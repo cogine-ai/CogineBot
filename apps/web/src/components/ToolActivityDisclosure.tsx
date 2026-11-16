@@ -45,7 +45,9 @@ export function ToolSteps({
             : outcomes?.succeeded === step.count
               ? "succeeded"
               : "unknown";
-        const isCurrent = index === currentIndex && outcome === "unknown";
+        const settled =
+          (outcomes?.succeeded ?? 0) + (outcomes?.failed ?? 0) + (outcomes?.stopped ?? 0);
+        const isCurrent = index === currentIndex && (outcome === "unknown" || settled < step.count);
         const presentation = presentations[isCurrent ? "working" : outcome];
         return (
           <div key={index} className="flex min-w-0 items-center gap-2 leading-5">
@@ -54,7 +56,9 @@ export function ToolSteps({
               style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
             >
               <span aria-hidden>{presentation.glyph}</span>
-              <span className="sr-only">{presentation.label}</span>
+              <span role="status" className="sr-only">
+                {presentation.label}
+              </span>
             </span>
             <span
               className={`min-w-0 flex-1 truncate text-[13px] ${

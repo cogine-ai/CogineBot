@@ -504,6 +504,33 @@ describe("stored scripted continuation envelope", () => {
     expect(parseStoredScriptedState(reverseObjectKeys(value), RUN_ID)).toEqual(value);
   });
 
+  it("retains per-call display associations and outcomes through storage", () => {
+    const value = storedFixture();
+    const calls = [
+      { label: "Write file", executionId: `${RUN_ID}:write_file:0`, outcome: "succeeded" },
+      { label: "Native execute tool", executionId: `${RUN_ID}:native_execute_tool:1` },
+    ];
+    const stored = reseal({
+      ...value,
+      output: { ...value.output, lastToolOrdinal: 1, toolCalls: calls },
+    });
+    expect(
+      parseStoredScriptedState(JSON.parse(JSON.stringify(stored)), RUN_ID).output.toolCalls,
+    ).toEqual(calls);
+    for (const toolCalls of [
+      calls.slice(1),
+      [calls[0], calls[0]],
+      [{ ...calls[0], outcome: "assumed" }, calls[1]],
+    ]) {
+      expect(() =>
+        parseStoredScriptedState(
+          reseal({ ...stored, output: { ...value.output, lastToolOrdinal: 1, toolCalls } }),
+          RUN_ID,
+        ),
+      ).toThrow(ERROR);
+    }
+  });
+
   it("allows only completed-tool ordinals outside a pending tool boundary", () => {
     const value = storedFixture();
     const completed = reseal({
