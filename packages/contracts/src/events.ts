@@ -207,7 +207,19 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("steps"),
-    steps: z.array(z.object({ label: z.string(), count: z.number().int().positive() })),
+    steps: z.array(
+      z.object({
+        label: z.string(),
+        count: z.number().int().positive(),
+        outcomes: z
+          .object({
+            succeeded: z.number().int().positive().optional(),
+            failed: z.number().int().positive().optional(),
+            stopped: z.number().int().positive().optional(),
+          })
+          .optional(),
+      }),
+    ),
     durationMs: z.number().int().nonnegative().optional(),
   }),
   z.object({

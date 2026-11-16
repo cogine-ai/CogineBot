@@ -936,6 +936,17 @@ its lock; a deploy that finds the lock held exits non-zero. For a checkout outsi
 `RAKAZO_DEPLOY_DIR=/absolute/path` in a root-owned `/etc/rakazo/deploy.env` readable by the
 deploy user.
 
+The production Compose worker stops taking new Runs and lets its active turns finish for up to
+five minutes before handing unfinished work back through the existing recovery path. Stop and
+lease loss retain their normal cancellation checks. API and desktop shutdown continue to hand
+work back immediately. Set `RUN_DRAIN_ENABLED=false` to disable the worker's finishing window.
+The worker container receives seven minutes to stop: five for active turns and two for cleanup.
+The deploy script stops it separately from the other writers, and verifies that every old writer
+has stopped before migration. Forward and rollback command timeouts both default to ten minutes;
+`RAKAZO_DEPLOY_UP_TIMEOUT` and `RAKAZO_DEPLOY_ROLLBACK_TIMEOUT` must each allow at least eight
+minutes. A shorter or invalid override refuses deployment before changing resources. This can
+increase update waiting time; it does not enable overlapping old and new workers or zero downtime.
+
 The deployment host also needs `jq`, Docker Buildx 0.14 or newer, and a Compose version that supports
 `build --builder`, `pull --ignore-buildable`, and `pull --policy`. The script checks these prerequisites
 before changing deployment resources; it does not install packages or expand the deploy user's

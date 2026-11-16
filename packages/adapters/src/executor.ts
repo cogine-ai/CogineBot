@@ -110,7 +110,7 @@ import {
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   TimeZoneSchema,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
+import type { ActionApprovalRule, PlatformModelAllowlist, ToolStepOutcome } from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   AGENT_CONNECTION_RESPONSE_TOOL,
@@ -166,6 +166,7 @@ import {
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
   websiteCredentialNotice,
+  withToolStepOutcomes,
 } from "@rakazo/core";
 import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
@@ -193,6 +194,7 @@ import {
   historyGrantWhere,
   historyMyChatsAllowed,
   InvalidSpaceNameError,
+  isDatabaseUnavailable,
   isTooManyDatabaseConnections,
   loadRunHistoryMessages,
   loadRunProgressReset,
@@ -212,6 +214,7 @@ import {
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
   retireModelCredential,
+  retryWhileDatabaseUnavailable,
   runAsSystem,
   SpaceLimitError,
   searchHistory,
@@ -637,7 +640,12 @@ import {
   updateTicket,
 } from "./ticket-tools.js";
 import type { LoopGuardStreak } from "./tool-loop.js";
-import { advanceToolCallLoopGuard, loopGuardStopText, toolResultFingerprint } from "./tool-loop.js";
+import {
+  advanceToolCallLoopGuard,
+  loopGuardStop,
+  loopGuardStopText,
+  toolResultFingerprint,
+} from "./tool-loop.js";
 import { isFailedToolResult, toolResultError } from "./tool-result-error.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -3010,6 +3018,8 @@ export interface ExecutorDeps {
   codexCatalog?: CodexLiveCatalog;
   /** Aborted when createApp stop() begins so in-flight continueRun boot waits exit promptly. */
   shutdownSignal?: AbortSignal;
+  /** Stops new claims immediately while an opted-in worker drains its active turns. */
+  stoppingSignal?: AbortSignal;
 }
 
 function isAuditableToolResult(value: unknown): value is {
@@ -3032,6 +3042,55 @@ export function toolCompletionFromResult(
   const paused = isToolPauseResult(result);
   if (isFailedToolResult(result)) return { ...base, error: result.error, paused };
   return { ...base, result, paused };
+}
+
+/** Commands can return normally while reporting a non-zero exit code. */
+export function toolCompletionOutcome(
+  completion: AgentToolCompletion,
+): "succeeded" | "failed" | undefined {
+  if (completion.paused) return undefined;
+  const error =
+    completion.error === undefined ? toolResultError(completion.result) : completion.error;
+  if (error !== undefined) return "failed";
+  if (
+    isRunningShellCommand(completion.result) ||
+    isRunningShellCommand((completion.result as { details?: unknown } | null)?.details)
+  )
+    return undefined;
+  for (const value of completion.name === "shell"
+    ? [completion.result, (completion.result as { details?: unknown } | null)?.details]
+    : []) {
+    if (!value || typeof value !== "object") continue;
+    const { code, exitCode } = value as { code?: unknown; exitCode?: unknown };
+    const status = typeof code === "number" ? code : exitCode;
+    if (typeof status === "number") return status === 0 ? "succeeded" : "failed";
+  }
+  return "succeeded";
+}
+
+type LoopGuardStop = {
+  tool: string;
+  reason: "repeated_calls" | "repeated_results";
+  count: number;
+  failures: number;
+};
+
+export function logLoopGuardStop(
+  target: { spaceId: string; threadId: string; botId: string; runId: string; trigger: string },
+  stop: LoopGuardStop,
+  secrets: string[] = [],
+): void {
+  getLogger().info("run.loop_guard_stopped", {
+    "run.id": target.runId,
+    "space.id": target.spaceId,
+    "thread.id": target.threadId,
+    "bot.id": target.botId,
+    "run.trigger": target.trigger,
+    tool: redactSecrets(stop.tool, secrets),
+    "loop.reason": stop.reason,
+    "loop.count": stop.count,
+    "loop.failures": stop.failures,
+  });
 }
 
 export function toolCompletionAuditPayload(
@@ -3846,7 +3905,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       quotaWaitRevision?: number,
     ) {
       let deps = baseDeps;
-      if (deps.shutdownSignal?.aborted) return;
+      if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return;
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
       if (!run) return;
       const quotaWait =
@@ -3954,6 +4013,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const fence = nextFence(run.leaseFence);
       const now = new Date();
       const claimAndStart = async (db: Pick<PrismaClient, "run">): Promise<boolean> => {
+        if (deps.stoppingSignal?.aborted || deps.shutdownSignal?.aborted) return false;
         const leased = await db.run.updateMany({
           where: {
             id: runId,
@@ -4027,158 +4087,198 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
         return started.count === 1;
       };
+      let setupFailure: { error: unknown } | undefined;
       let started: boolean;
-      if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
-        const admission = await runAsSystem("admit an approved bot collaboration run", () =>
-          withTransactionRetry(() =>
-            deps.prisma.$transaction(async (tx) => {
-              const gate = await authorizeCollaborationRunStart(tx, runId);
-              return { started: gate.allowed && (await claimAndStart(tx)), notices: gate.notices };
+      try {
+        if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
+          const admission = await runAsSystem("admit an approved bot collaboration run", () =>
+            withTransactionRetry(() =>
+              deps.prisma.$transaction(async (tx) => {
+                const gate = await authorizeCollaborationRunStart(tx, runId);
+                return {
+                  started: gate.allowed && (await claimAndStart(tx)),
+                  notices: gate.notices,
+                };
+              }),
+            ),
+          );
+          await notifyCollaborationNotices(deps.events, admission.notices);
+          started = admission.started;
+        } else {
+          started = await claimAndStart(deps.prisma);
+        }
+      } catch (error) {
+        // A claim can commit before its reply or its transition to running fails.
+        // Read ownership back; a rolled-back collaboration claim grants no authority.
+        const current = await retryWhileDatabaseUnavailable(
+          () =>
+            deps.prisma.run.findUnique({
+              where: { id: runId },
+              select: { status: true, leaseOwner: true, leaseFence: true },
             }),
-          ),
+          { signal: deps.shutdownSignal },
         );
-        await notifyCollaborationNotices(deps.events, admission.notices);
-        started = admission.started;
-      } else {
-        started = await claimAndStart(deps.prisma);
+        if (
+          current?.leaseOwner !== workerId ||
+          current.leaseFence !== fence ||
+          (current.status !== "leased" && current.status !== "running")
+        )
+          throw error;
+        started =
+          current.status === "running" ||
+          (await retryWhileDatabaseUnavailable(
+            async () => {
+              await deps.prisma.run.updateMany({
+                where: { id: runId, status: "leased", leaseOwner: workerId, leaseFence: fence },
+                data: { status: "running" },
+              });
+              return deps.prisma.run.findFirst({
+                where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+                select: { id: true },
+              });
+            },
+            { signal: deps.shutdownSignal },
+          )) !== null;
+        setupFailure = { error };
       }
       if (!started) return;
-      if (isSteeringContinuation) {
-        // A former worker can finish its receipt transaction before this lease is won.
-        // Admission reads cannot authorize an effect; inspect the ledger under our fence.
-        scriptedFileReceipts = await deps.prisma.externalEffect.findMany({
-          where: { runId, spaceId: run.spaceId, kind: "scripted.file" },
-          select: { id: true, status: true },
-        });
-        if (scriptedAdmissionError instanceof ScriptedFileUncertainError)
-          scriptedAdmissionError = undefined;
-        if (scriptedFileReceipts.length && !scriptedResume.stored)
-          scriptedAdmissionError = new ScriptedStateInvalidError();
-        if (
-          scriptedFileReceipts.some(
-            (effect) => effect.status !== "completed" && effect.status !== "intended",
-          )
-        )
-          scriptedAdmissionError = new ScriptedFileUncertainError();
-      }
-      if (scriptedAdmissionError) {
-        const failed = await failScriptedRunPreservingSteering(deps.prisma, {
-          runId,
-          taskId: run.taskId,
-          threadId: run.threadId,
-          spaceId: run.spaceId,
-          botId: run.botId,
-          status: "running",
-          leaseOwner: workerId,
-          workerId,
-          leaseFence: fence,
-          error:
-            scriptedAdmissionError instanceof ScriptedFileUncertainError
-              ? scriptedAdmissionError.message
-              : "Scripted continuation progress could not be verified",
-        });
-        if (failed) {
-          await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
-          await settleLocalPeerDelivery();
-        }
-        return;
-      }
       const expiredQuotaWait = pendingQuotaWaitExpired(quotaWait, Date.now());
+      const progressRunStartedAt = run.startedAt ?? new Date();
       let computerLease: ComputerExecutionLease | null = null;
-      if (!expiredQuotaWait) {
-        const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
-          where: { id: run.botId },
-          select: {
-            computerId: true,
-            computerSwitching: true,
-            computer: { select: { scope: true } },
-          },
-        });
-        if (!leaseTarget.computerId) throw new Error("Bot has no computer");
-        const computerRun = {
-          id: runId,
-          botId: run.botId,
-          bot: { computerId: leaseTarget.computerId },
-        };
-        const isComputerBlocked = async () =>
-          (await findRunRecoveryBlockers(deps.prisma, [computerRun], new Date())).has(runId);
-        const waitForComputer = async (untilReleased = false) => {
-          if (quotaWait?.dispatchedFence !== null) {
-            await requeueComputerRun(
-              deps,
-              runId,
-              workerId,
-              fence,
-              resumeCheckpoint,
-              heldForTakeover,
-              untilReleased,
-            );
-            return;
-          }
-          const now = Date.now();
-          const retryAt = new Date(
-            untilReleased
-              ? now
-              : Math.min(
-                  now + computerRetryDelay(fence),
-                  Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
-                ),
-          );
-          const waiting = await reparkRunQuotaWaitForComputer(deps.prisma, {
-            runId,
-            spaceId: run.spaceId,
-            threadId: run.threadId,
-            botId: run.botId,
-            leaseOwner: workerId,
-            leaseFence: fence,
-            state: quotaWait,
-            wakeAt: retryAt,
+      let attempt: { id: string };
+      try {
+        if (setupFailure) throw setupFailure.error;
+        if (isSteeringContinuation) {
+          // A former worker can finish its receipt transaction before this lease is won.
+          // Admission reads cannot authorize an effect; inspect the ledger under our fence.
+          scriptedFileReceipts = await deps.prisma.externalEffect.findMany({
+            where: { runId, spaceId: run.spaceId, kind: "scripted.file" },
+            select: { id: true, status: true },
           });
-          if (!waiting) return;
-          if (waiting.eventSeq !== null) {
-            await deps.events.notify(run.threadId, waiting.eventSeq).catch(() => undefined);
+          if (scriptedAdmissionError instanceof ScriptedFileUncertainError)
+            scriptedAdmissionError = undefined;
+          if (scriptedFileReceipts.length && !scriptedResume.stored)
+            scriptedAdmissionError = new ScriptedStateInvalidError();
+          if (
+            scriptedFileReceipts.some(
+              (effect) => effect.status !== "completed" && effect.status !== "intended",
+            )
+          )
+            scriptedAdmissionError = new ScriptedFileUncertainError();
+        }
+        if (scriptedAdmissionError) {
+          const failed = await failScriptedRunPreservingSteering(deps.prisma, {
+            runId,
+            taskId: run.taskId,
+            threadId: run.threadId,
+            spaceId: run.spaceId,
+            botId: run.botId,
+            status: "running",
+            leaseOwner: workerId,
+            workerId,
+            leaseFence: fence,
+            error:
+              scriptedAdmissionError instanceof ScriptedFileUncertainError
+                ? scriptedAdmissionError.message
+                : "Scripted continuation progress could not be verified",
+          });
+          if (failed) {
+            await deps.events.notify(failed.threadId, failed.seq).catch(() => undefined);
+            await settleLocalPeerDelivery();
           }
-          // Recheck once after parking: a release just before the write cannot see this wait.
-          if (untilReleased ? !(await isComputerBlocked()) : retryAt.getTime() > Date.now()) {
-            await deps.jobs.enqueue(runQuotaResumeJob(runId, quotaWait.revision, retryAt));
-          }
-        };
-        if (leaseTarget.computerSwitching) {
-          await waitForComputer();
           return;
         }
-        try {
-          await settleTakeoverCards();
-        } catch (error) {
-          if (error instanceof RunHistoryWriteError) return;
-          throw error;
-        }
-        try {
-          computerLease = await acquireComputerExecutionLease(deps.prisma, {
-            computerId: leaseTarget.computerId,
-            runId,
-            botId: run.botId,
-            workerId,
-            runFence: fence,
+        if (!expiredQuotaWait) {
+          const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
+            where: { id: run.botId },
+            select: {
+              computerId: true,
+              computerSwitching: true,
+              computer: { select: { scope: true } },
+            },
           });
-          if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
-            computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+          if (!leaseTarget.computerId) throw new Error("Bot has no computer");
+          const computerRun = {
+            id: runId,
+            botId: run.botId,
+            bot: { computerId: leaseTarget.computerId },
+          };
+          const isComputerBlocked = async () =>
+            (await findRunRecoveryBlockers(deps.prisma, [computerRun], new Date())).has(runId);
+          const waitForComputer = async (untilReleased = false) => {
+            if (quotaWait?.dispatchedFence !== null) {
+              await requeueComputerRun(
+                deps,
+                runId,
+                workerId,
+                fence,
+                resumeCheckpoint,
+                heldForTakeover,
+                untilReleased,
+              );
+              return;
+            }
+            const now = Date.now();
+            const retryAt = new Date(
+              untilReleased
+                ? now
+                : Math.min(
+                    now + computerRetryDelay(fence),
+                    Date.parse(quotaWait.beganAt) + RUN_QUOTA_WAIT_MAX_MS,
+                  ),
+            );
+            const waiting = await reparkRunQuotaWaitForComputer(deps.prisma, {
+              runId,
+              spaceId: run.spaceId,
+              threadId: run.threadId,
+              botId: run.botId,
+              leaseOwner: workerId,
+              leaseFence: fence,
+              state: quotaWait,
+              wakeAt: retryAt,
+            });
+            if (!waiting) return;
+            if (waiting.eventSeq !== null) {
+              await deps.events.notify(run.threadId, waiting.eventSeq).catch(() => undefined);
+            }
+            // Recheck once after parking: a release just before the write cannot see this wait.
+            if (untilReleased ? !(await isComputerBlocked()) : retryAt.getTime() > Date.now()) {
+              await deps.jobs.enqueue(runQuotaResumeJob(runId, quotaWait.revision, retryAt));
+            }
+          };
+          if (leaseTarget.computerSwitching) {
+            await waitForComputer();
+            return;
+          }
+          try {
+            await settleTakeoverCards();
+          } catch (error) {
+            if (error instanceof RunHistoryWriteError) return;
+            throw error;
+          }
+          try {
+            computerLease = await acquireComputerExecutionLease(deps.prisma, {
               computerId: leaseTarget.computerId,
               runId,
               botId: run.botId,
               workerId,
               runFence: fence,
             });
+            if (!computerLease && leaseTarget.computer?.scope === "dedicated") {
+              computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
+                computerId: leaseTarget.computerId,
+                runId,
+                botId: run.botId,
+                workerId,
+                runFence: fence,
+              });
+            }
+          } catch (error) {
+            if (!(error instanceof ComputerBusyError)) throw error;
+            await waitForComputer(await isComputerBlocked());
+            return;
           }
-        } catch (error) {
-          if (!(error instanceof ComputerBusyError)) throw error;
-          await waitForComputer(await isComputerBlocked());
-          return;
         }
-      }
-      const progressRunStartedAt = run.startedAt ?? new Date();
-      let attempt: { id: string };
-      try {
         const execution: {
           started: boolean;
           cancellationSeq?: number;
@@ -4223,8 +4323,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
         attempt = await deps.prisma.attempt.create({ data: { runId, fence, status: "running" } });
       } catch (error) {
-        await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
-        throw error;
+        await releaseComputerExecutionLease(deps.prisma, computerLease).catch((releaseError) =>
+          getLogger().warn("run setup computer lease release failed", {
+            "run.id": runId,
+            error: sanitizeConnectorError(releaseError, deps.secrets),
+          }),
+        );
+        computerLease = null;
+        setupFailure = { error };
+        // A create can commit and lose its reply. Reuse this claim's row before creating one.
+        attempt = await retryWhileDatabaseUnavailable(
+          async () =>
+            (await deps.prisma.attempt.findFirst({ where: { runId, fence } })) ??
+            (await deps.prisma.attempt.create({ data: { runId, fence, status: "running" } })),
+          { signal: deps.shutdownSignal },
+        );
       }
 
       deps = withRunLease(deps, runId, { owner: workerId, fence });
@@ -4385,6 +4498,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let dispatchHandedOff = false;
       let quotaAdmissionConsumed = false;
       try {
+        if (setupFailure) throw scriptedAdmissionError ?? setupFailure.error;
         onRunStarted?.();
         dispatchHandedOff = Boolean(onRunStarted);
         if (expiredQuotaWait) {
@@ -4568,6 +4682,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const ownerSignal = runAbortController.signal;
         const runtimeAbortController = new AbortController();
         let toolLoopStopText: string | undefined;
+        let toolLoopStop: LoopGuardStop | undefined;
         runtimeAbortController.signal.addEventListener(
           "abort",
           () => {
@@ -4692,6 +4807,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const discoveredPromise = deps.connector
           ? deps.connector.discoverTools(context)
           : Promise.resolve([]);
+        // Keep its rejection observed if a later setup step fails before Promise.all.
+        void discoveredPromise.catch(() => undefined);
         const pageHistoryIds = new Set<string>();
         const threadContext = threadContextForRun(
           run.trigger,
@@ -5418,7 +5535,74 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
         let pendingToolNames: string[] = restoredOutput ? [...restoredOutput.pendingToolNames] : [];
-        const flushPendingTools = () => {
+        const restoredToolCalls =
+          restoredOutput?.toolCalls ??
+          scriptedResume.stored?.state.script
+            .flatMap((turn) => turn.toolCalls ?? [])
+            .slice(0, lastToolOrdinal + 1)
+            .map((call, ordinal) => ({
+              label: humanizeToolName(call.name),
+              executionId: `${runId}:${call.name}:${ordinal}`,
+            })) ??
+          [];
+        const toolCalls = restoredToolCalls.map(({ label, executionId }) => ({
+          label,
+          executionId,
+        }));
+        const toolOutcomes = new Map<string, ToolStepOutcome>(
+          restoredToolCalls.flatMap((call) =>
+            "outcome" in call && call.outcome
+              ? [[call.executionId, call.outcome] as [string, ToolStepOutcome]]
+              : [],
+          ),
+        );
+        const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
+        // Older snapshots retain aggregate step outcomes without per-call provenance.
+        const legacySteps = restoredOutput?.toolCalls
+          ? []
+          : (restoredOutput?.messageSegments.flatMap((block) =>
+              block.kind === "steps" ? block.steps : [],
+            ) ?? []);
+        const retainLegacyOutcomes = legacySteps.some((step) => step.outcomes !== undefined);
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) => {
+          const annotated = withToolStepOutcomes(
+            segments,
+            toolCalls.map((call, index) => ({
+              label: call.label,
+              outcome:
+                toolOutcomes.get(call.executionId) ??
+                (index < priorCompletedToolCount ? undefined : unfinished),
+            })),
+          );
+          if (!retainLegacyOutcomes || annotated.every((block, index) => block === segments[index]))
+            return annotated;
+          let index = 0;
+          return annotated.map((block) =>
+            block.kind !== "steps"
+              ? block
+              : {
+                  ...block,
+                  steps: block.steps.map((step) => {
+                    const legacy = legacySteps[index++];
+                    if (!legacy?.outcomes || legacy.label !== step.label) return step;
+                    const outcomes = { ...step.outcomes };
+                    for (const status of ["succeeded", "failed", "stopped"] as const) {
+                      const count = (outcomes[status] ?? 0) + (legacy.outcomes[status] ?? 0);
+                      if (count) outcomes[status] = count;
+                    }
+                    // Missing historical identities cannot justify crediting the same call twice.
+                    return {
+                      ...step,
+                      outcomes:
+                        Object.values(outcomes).reduce((n, count) => n + count, 0) <= step.count
+                          ? outcomes
+                          : legacy.outcomes,
+                    };
+                  }),
+                },
+          );
+        };
+        const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
             currentTextSegment = "";
@@ -5427,6 +5611,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             messageSegments = appendToolCallSegment(messageSegments, name);
           }
           pendingToolNames = [];
+          messageSegments = withReplyToolOutcomes(messageSegments, unfinished);
         };
         const tryFlushPendingTools = () => {
           if (pendingToolNames.length > 0 && endsSentence(currentTextSegment)) flushPendingTools();
@@ -5437,6 +5622,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let toolCallStreak: LoopGuardStreak = { key: undefined, count: 0 };
         const helperToolCallStreaks = new Map<string, LoopGuardStreak>();
         const toolResults = new Map<string, string>();
+        const toolResponseCalls = new Map<string, { response: number; executionIds: string[] }>();
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
         let terminalCheckpointComplete = false;
@@ -5818,10 +6004,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
             {
               assembled,
               currentTextSegment,
-              messageSegments: structuredClone(messageSegments),
+              messageSegments: structuredClone(withReplyToolOutcomes(messageSegments)),
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
+              ...(!retainLegacyOutcomes
+                ? {
+                    toolCalls: toolCalls.map((call) => ({
+                      ...call,
+                      outcome: toolOutcomes.get(call.executionId),
+                    })),
+                  }
+                : {}),
             },
             runSecrets,
           );
@@ -8639,6 +8833,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
               if (observed.completion) {
                 const completion = observed.completion.then(async (final) => {
+                  if (terminalExitCode !== undefined)
+                    toolOutcomes.set(executionId, terminalExitCode === 0 ? "succeeded" : "failed");
                   clearPublishTimer();
                   await appendComputerCommand({
                     ...commandEvent,
@@ -11296,6 +11492,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 if (turnState.restoredPending?.executionId === completion.executionId)
                   turnState.restoredPending = undefined;
                 if (!completion.paused) turnState.pendingCaptures.delete(completion.executionId);
+                const outcome = toolCompletionOutcome(completion);
+                if (outcome) toolOutcomes.set(completion.executionId, outcome);
                 toolResults.set(
                   completion.executionId,
                   toolResultFingerprint(completion.result, completion.error),
@@ -11596,6 +11794,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                 });
                 pendingToolNames.push(event.name);
+                toolCalls.push({
+                  label: humanizeToolName(event.name),
+                  executionId: event.executionId,
+                });
                 tryFlushPendingTools();
               }
               let namespace = "main";
@@ -11617,24 +11819,46 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const previousResult = streak.executionId
                 ? toolResults.get(streak.executionId)
                 : undefined;
+              let responseCalls = toolResponseCalls.get(namespace);
+              const previousResponseResults =
+                event.response !== undefined && responseCalls?.response !== event.response
+                  ? (responseCalls?.executionIds.map((id) => toolResults.get(id)) ?? [])
+                  : undefined;
               const loopGuard = advanceToolCallLoopGuard(
                 streak,
                 event.name,
                 event.args,
                 previousResult,
                 event.response,
+                previousResponseResults,
               );
               if (loopGuard.streak !== streak) {
-                if (streak.executionId) toolResults.delete(streak.executionId);
+                if (streak.executionId && event.response === undefined)
+                  toolResults.delete(streak.executionId);
                 const next = { ...loopGuard.streak, executionId: event.executionId };
                 if (namespace === "main") toolCallStreak = next;
                 else helperToolCallStreaks.set(namespace, next);
               }
+              if (event.response !== undefined) {
+                if (responseCalls?.response !== event.response) {
+                  // Keep every result until the next response compares the whole batch.
+                  for (const id of responseCalls?.executionIds ?? []) toolResults.delete(id);
+                  responseCalls = { response: event.response, executionIds: [] };
+                  toolResponseCalls.set(namespace, responseCalls);
+                }
+                responseCalls.executionIds.push(event.executionId);
+              }
               if (loopGuard.stuck) {
-                toolLoopStopText = loopGuardStopText(
-                  humanizeToolName(event.name),
-                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
-                );
+                const stoppedStreak =
+                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!;
+                const stop = loopGuardStop(stoppedStreak);
+                toolLoopStop = {
+                  tool: event.name,
+                  reason: stop.kind === "same_result" ? "repeated_results" : "repeated_calls",
+                  count: stop.count,
+                  failures: stoppedStreak.failures ?? 0,
+                };
+                toolLoopStopText = loopGuardStopText(humanizeToolName(event.name), stoppedStreak);
                 break;
               }
               if (scripted) {
@@ -11642,6 +11866,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 try {
                   const result = await applyTool(event.name, event.args, event.executionId);
                   toolResults.set(event.executionId, toolResultFingerprint(result));
+                  const completion = toolCompletionFromResult(
+                    {
+                      name: event.name,
+                      executionId: event.executionId,
+                      durationMs: Date.now() - startedAt,
+                    },
+                    result,
+                  );
+                  const outcome = toolCompletionOutcome(completion);
+                  if (outcome) toolOutcomes.set(event.executionId, outcome);
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11650,18 +11884,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       botId: bot.id,
                       runId,
                     },
-                    toolCompletionFromResult(
-                      {
-                        name: event.name,
-                        executionId: event.executionId,
-                        durationMs: Date.now() - startedAt,
-                      },
-                      result,
-                    ),
+                    completion,
                     runSecrets,
                   );
                   if (isToolPauseResult(result)) return;
                 } catch (error) {
+                  toolOutcomes.set(event.executionId, "failed");
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11761,7 +11989,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // Keep the lease alive until their writes finish, then expose terminal.
             if (deps.shutdownSignal?.aborted || approvalPausePending || !leaseValid) return;
             approvedEffectReplays.assertDrained();
-            flushPendingTools();
+            flushPendingTools("stopped");
             if (!(await renewRunLease(deps, runId, workerId, fence))) return;
             if (historyEvidence === undefined && messageSegments.length > 0) {
               await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
@@ -11783,6 +12011,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : [{ kind: "text", text: toolLoopStopText }],
             });
             if (!stopped) return;
+            if (toolLoopStop) {
+              logLoopGuardStop(
+                {
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  runId,
+                  trigger: run.trigger,
+                },
+                toolLoopStop,
+                runSecrets,
+              );
+            }
             endRunAfterFinalization();
             await settleLocalPeerDelivery();
             if (stopped.continuationRunId) {
@@ -12141,7 +12382,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return;
         }
         const computerBusy = setupError instanceof ComputerBusyError;
-        const retryForever = computerBusy || isTooManyDatabaseConnections(setupError);
+        const retryForever = computerBusy || isDatabaseUnavailable(setupError);
         const providerOutage =
           setupError instanceof SandboxUnavailableError ||
           setupError instanceof SandboxUnresponsiveError;
@@ -12149,55 +12390,57 @@ export function createRunExecutor(deps: ExecutorDeps) {
           setupError instanceof SandboxRateLimitError
             ? setupError.message
             : "Run setup failed; retrying";
-        {
-          // undici collapses every network failure to "fetch failed"; the cause names the
-          // host and errno, which is the only part worth paging over.
-          const causeMessage =
-            setupError instanceof Error && setupError.cause instanceof Error
-              ? `: ${setupError.cause.message}`
-              : "";
-          const reportedSetupError = redactSecrets(
-            setupError instanceof Error
-              ? `${setupError.message}${causeMessage}`
-              : String(setupError),
-            runSecrets,
-          );
-          if (providerOutage || !leaseValid)
-            getLogger().warn("run setup failed", { error: reportedSetupError });
-          else if (!computerBusy) getLogger().error("run setup failed", reportedSetupError);
-        }
-        const priorFailures = retryForever ? 0 : await setupFailureStreak(deps.prisma, runId);
+        const causeMessage =
+          setupError instanceof Error && setupError.cause instanceof Error
+            ? `: ${setupError.cause.message}`
+            : "";
+        const setupMessage = sanitizeConnectorError(
+          setupError instanceof Error ? `${setupError.message}${causeMessage}` : setupError,
+          runSecrets,
+        );
+        if (providerOutage || !leaseValid)
+          getLogger().warn("run setup failed", { "run.id": runId, error: setupMessage });
+        else if (!computerBusy)
+          getLogger().error("run setup failed", setupMessage, { "run.id": runId });
+        const whileDatabaseDown = <T>(write: () => Promise<T>) =>
+          retryWhileDatabaseUnavailable(write, { signal: deps.shutdownSignal });
+        const priorFailures = retryForever
+          ? 0
+          : await whileDatabaseDown(() => setupFailureStreak(deps.prisma, runId));
         if (!retryForever && priorFailures >= RUN_SETUP_FAILURE_LIMIT - 1) {
-          const failureMessage = redactSecrets(
-            setupError instanceof Error ? setupError.message : String(setupError),
-            runSecrets,
-          );
-          await settleRunFailure(failureMessage);
+          await settleRunFailure(setupMessage);
           return;
         }
         const retryAt = new Date(
           Date.now() +
             (providerOutage ? providerOutageRetryDelay(priorFailures) : computerRetryDelay(fence)),
         );
-        const released = await writeComputerRunRequeue(
-          deps,
-          runId,
-          workerId,
-          fence,
-          resumeCheckpoint,
-          heldForTakeover,
-          retryForever ? null : setupFailureMessage,
-          retryAt,
+        // Keep the retry budget with the fenced release, including a lost commit reply.
+        const released = await whileDatabaseDown(() =>
+          deps.prisma.$transaction(async (tx) => {
+            const released = await writeComputerRunRequeue(
+              { prisma: tx },
+              runId,
+              workerId,
+              fence,
+              resumeCheckpoint,
+              heldForTakeover,
+              retryForever ? null : setupFailureMessage,
+              retryAt,
+            );
+            if (released)
+              await tx.attempt.update({
+                where: { id: attempt.id },
+                data: {
+                  status: "setup_failed",
+                  error: retryForever ? null : setupMessage,
+                  finishedAt: new Date(),
+                },
+              });
+            return released;
+          }),
         );
         if (released) {
-          await deps.prisma.attempt.update({
-            where: { id: attempt.id },
-            data: {
-              status: "setup_failed",
-              error: retryForever ? null : setupFailureMessage,
-              finishedAt: new Date(),
-            },
-          });
           if (retryForever || dispatchHandedOff) {
             await deps.jobs.enqueue({
               ...runContinueJob(runId),
@@ -13072,6 +13315,15 @@ function redactScriptedOutput(output: ScriptedOutputState, secrets: string[]): S
     currentTextSegment: redactSecrets(output.currentTextSegment, secrets),
     messageSegments: redactScriptedDeliveryBlocks(output.messageSegments, secrets),
     pendingToolNames: output.pendingToolNames.map((name) => redactSecrets(name, secrets)),
+    ...(output.toolCalls
+      ? {
+          toolCalls: output.toolCalls.map((call) => ({
+            ...call,
+            label: redactSecrets(call.label, secrets),
+            executionId: redactSecrets(call.executionId, secrets),
+          })),
+        }
+      : {}),
   };
 }
 

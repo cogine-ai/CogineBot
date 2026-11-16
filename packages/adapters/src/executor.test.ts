@@ -2,6 +2,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE } from "@rakazo/contracts";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
 import {
@@ -11,6 +12,7 @@ import {
   dockerComputerToolInstruction,
   isTerminalModelSetupError,
   loadCurrentTurnImages,
+  logLoopGuardStop,
   missingTurnImagesInstruction,
   parseUpdateBotPatch,
   persistentComputerInstruction,
@@ -20,6 +22,7 @@ import {
   threadContextForRun,
   toolCompletionAuditPayload,
   toolCompletionFromResult,
+  toolCompletionOutcome,
   userTurnInstructions,
   VOICE_CALL_INSTRUCTION,
   voiceCallInstruction,
@@ -96,6 +99,66 @@ describe("bot tool permissions", () => {
       ),
     ).not.toContain("read_history");
   });
+});
+
+describe("tool completion outcome", () => {
+  const base = { name: "shell", executionId: "call-1", durationMs: 1 };
+  it.each([
+    [{ code: 0 }, "succeeded"],
+    [{ code: 2 }, "failed"],
+    [{ exitCode: 1 }, "failed"],
+    [{ details: { exitCode: 1 } }, "failed"],
+    [{ details: { code: 0 } }, "succeeded"],
+    [{ ok: true }, "succeeded"],
+    [{ stdout: "waiting", stderr: "", code: null, running: true }, undefined],
+    [{ details: { stdout: "waiting", stderr: "", code: null, running: true } }, undefined],
+    [{ error: "denied" }, "failed"],
+    [{ isError: true, content: [{ type: "text", text: "denied" }] }, "failed"],
+  ] as const)("classifies a returned result %j", (result, expected) => {
+    expect(toolCompletionOutcome({ ...base, result })).toBe(expected);
+  });
+  it("does not credit approval pauses, including those carrying an error", () => {
+    expect(toolCompletionOutcome({ ...base, paused: true, result: { ok: true } })).toBeUndefined();
+    expect(toolCompletionOutcome({ ...base, paused: true, error: "waiting" })).toBeUndefined();
+    expect(toolCompletionOutcome({ ...base, error: "" })).toBe("failed");
+  });
+  it.each([{ ok: true, code: 200 }, { exitCode: 42 }, { details: { code: 201 } }])(
+    "preserves application-specific numeric fields in connector results: %j",
+    (result) => {
+      expect(toolCompletionOutcome({ ...base, name: "destination.write", result })).toBe(
+        "succeeded",
+      );
+    },
+  );
+});
+
+describe("loop stop audit", () => {
+  it.each(["repeated_calls", "repeated_results"] as const)(
+    "records %s without arguments, results or secret tool names",
+    (reason) => {
+      const info = vi.spyOn(getLogger(), "info");
+      try {
+        logLoopGuardStop(
+          { spaceId: "space", threadId: "thread", botId: "bot", runId: "run", trigger: "user" },
+          { tool: "connector_fake-key", reason, count: 25, failures: 0 },
+          ["fake-key"],
+        );
+        expect(info).toHaveBeenCalledWith("run.loop_guard_stopped", {
+          "space.id": "space",
+          "thread.id": "thread",
+          "bot.id": "bot",
+          "run.id": "run",
+          "run.trigger": "user",
+          tool: "connector_[redacted]",
+          "loop.reason": reason,
+          "loop.count": 25,
+          "loop.failures": 0,
+        });
+      } finally {
+        info.mockRestore();
+      }
+    },
+  );
 });
 
 describe("tool completion audit", () => {
@@ -2164,9 +2227,18 @@ description: Prepare standup notes
     "repairs a %s card before acquiring the computer or calling the model",
     async (checkpoint) => {
       const boundary = new Error("stop before computer acquisition");
+      const attempt = {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+        create: vi.fn().mockResolvedValue({ id: "attempt-1" }),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      };
       const tx = {
+        attempt,
         $queryRaw: vi.fn().mockResolvedValue([{ id: "group-thread" }]),
         run: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
           findFirst: vi.fn().mockResolvedValue({ status: "running" }),
           findUnique: vi.fn().mockResolvedValue({
             status: "running",
@@ -2189,8 +2261,10 @@ description: Prepare standup notes
         event: { create: vi.fn(async ({ data }) => ({ ...data, threadId: "group-thread" })) },
       };
       const prisma = {
+        attempt,
         $transaction: vi.fn(async (callback) => callback(tx)),
         run: {
+          findFirst: vi.fn().mockResolvedValue(null),
           findUnique: vi.fn().mockResolvedValue({
             id: "run-1",
             spaceId: "space-1",
@@ -2218,10 +2292,21 @@ description: Prepare standup notes
       const runtimeRun = vi.fn();
       const executor = createRunExecutor({
         prisma,
+        secrets: [],
         events: { notify },
         runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
       } as unknown as Parameters<typeof createRunExecutor>[0]);
-      await expect(executor.continueRun("run-1", "worker-1")).rejects.toBe(boundary);
+      await expect(executor.continueRun("run-1", "worker-1")).rejects.toThrow(
+        "Run setup failed; retrying",
+      );
+      expect(attempt.update).toHaveBeenCalledWith({
+        where: { id: "attempt-1" },
+        data: {
+          status: "setup_failed",
+          error: boundary.message,
+          finishedAt: expect.any(Date),
+        },
+      });
       expect(tx.message.update).toHaveBeenCalledWith({
         where: { id: "card-1" },
         data: {
