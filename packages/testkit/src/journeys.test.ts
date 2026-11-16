@@ -19,7 +19,6 @@ import {
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
-import { connectorApprovalFromEffect } from "../../adapters/src/approval-effect.js";
 import type { BotIntroHarness } from "./discard-bot-intro.js";
 import { discardBotIntroFromCreate } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -3111,14 +3110,13 @@ describeJourneys("required product journeys", () => {
         expectedState = "completed";
         settled = await readEffect();
         expect(connector.records).toHaveLength(baseline + 1);
-        const approvedArgs =
-          connectorApprovalFromEffect(approval.request)?.args ?? approval.request;
+        const approvedArgs = approval.request as Record<string, unknown>;
         expect(approvedArgs).toMatchObject({
           collection: expect.any(String),
           title: expect.any(String),
           body: expect.any(String),
         });
-        expect(connector.records[baseline]).toMatchObject(approvedArgs as Record<string, unknown>);
+        expect(connector.records[baseline]).toMatchObject(approvedArgs);
         expect(settled.status).toBe("completed");
       }
       const writes = connector.records.length;
