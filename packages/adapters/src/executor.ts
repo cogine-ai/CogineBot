@@ -4084,28 +4084,67 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
         return started.count === 1;
       };
+      let setupFailure: { error: unknown } | undefined;
       let started: boolean;
-      if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
-        const admission = await runAsSystem("admit an approved bot collaboration run", () =>
-          withTransactionRetry(() =>
-            deps.prisma.$transaction(async (tx) => {
-              const gate = await authorizeCollaborationRunStart(tx, runId);
-              return { started: gate.allowed && (await claimAndStart(tx)), notices: gate.notices };
+      try {
+        if (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin)) {
+          const admission = await runAsSystem("admit an approved bot collaboration run", () =>
+            withTransactionRetry(() =>
+              deps.prisma.$transaction(async (tx) => {
+                const gate = await authorizeCollaborationRunStart(tx, runId);
+                return {
+                  started: gate.allowed && (await claimAndStart(tx)),
+                  notices: gate.notices,
+                };
+              }),
+            ),
+          );
+          await notifyCollaborationNotices(deps.events, admission.notices);
+          started = admission.started;
+        } else {
+          started = await claimAndStart(deps.prisma);
+        }
+      } catch (error) {
+        // A claim can commit before its reply or its transition to running fails.
+        // Read ownership back; a rolled-back collaboration claim grants no authority.
+        const current = await retryWhileDatabaseUnavailable(
+          () =>
+            deps.prisma.run.findUnique({
+              where: { id: runId },
+              select: { status: true, leaseOwner: true, leaseFence: true },
             }),
-          ),
+          { signal: deps.shutdownSignal },
         );
-        await notifyCollaborationNotices(deps.events, admission.notices);
-        started = admission.started;
-      } else {
-        started = await claimAndStart(deps.prisma);
+        if (
+          current?.leaseOwner !== workerId ||
+          current.leaseFence !== fence ||
+          (current.status !== "leased" && current.status !== "running")
+        )
+          throw error;
+        started =
+          current.status === "running" ||
+          (await retryWhileDatabaseUnavailable(
+            async () => {
+              await deps.prisma.run.updateMany({
+                where: { id: runId, status: "leased", leaseOwner: workerId, leaseFence: fence },
+                data: { status: "running" },
+              });
+              return deps.prisma.run.findFirst({
+                where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
+                select: { id: true },
+              });
+            },
+            { signal: deps.shutdownSignal },
+          )) !== null;
+        setupFailure = { error };
       }
       if (!started) return;
       const expiredQuotaWait = pendingQuotaWaitExpired(quotaWait, Date.now());
       const progressRunStartedAt = run.startedAt ?? new Date();
       let computerLease: ComputerExecutionLease | null = null;
       let attempt: { id: string };
-      let setupFailure: { error: unknown } | undefined;
       try {
+        if (setupFailure) throw setupFailure.error;
         if (isSteeringContinuation) {
           // A former worker can finish its receipt transaction before this lease is won.
           // Admission reads cannot authorize an effect; inspect the ledger under our fence.

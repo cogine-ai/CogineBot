@@ -1396,6 +1396,13 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
   });
 
   it.each([
+    "claim-read",
+    "start-update",
+    "start-ack-lost",
+    "claim-ack-lost",
+    "claim-read-recovery-ack-lost",
+    "collaboration-rollback",
+    "collaboration-ack-lost",
     "bot-query",
     "computer-query",
     "computer-lease",
@@ -1409,6 +1416,8 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       let targetBotId: string | undefined;
       let targetComputerId: string | undefined;
       let injected = false;
+      let claimed = false;
+      let recoveryReplyLost = false;
       const failure = () => {
         injected = true;
         return new Error(
@@ -1416,8 +1425,53 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         );
       };
       const db = createDb(process.env.DATABASE_URL!, { applicationName: "claimed-setup-fixture" });
-      const controlled = db.prisma.$extends({
+      const queried = db.prisma.$extends({
         query: {
+          run: {
+            async updateMany({ args, query }) {
+              if (
+                (stage === "start-update" || stage === "collaboration-rollback") &&
+                args.where?.id === targetRunId &&
+                args.data.status === "running" &&
+                !injected
+              )
+                throw failure();
+              const result = await query(args);
+              if (args.where?.id === targetRunId && args.data.status === "running") {
+                if (stage === "start-ack-lost" && !injected && result.count === 1) throw failure();
+                if (
+                  stage === "claim-read-recovery-ack-lost" &&
+                  injected &&
+                  result.count === 1 &&
+                  !recoveryReplyLost
+                ) {
+                  recoveryReplyLost = true;
+                  throw Object.assign(new Error("synthetic recovery transition reply lost"), {
+                    code: "P1001",
+                  });
+                }
+              }
+              if (
+                args.where?.id === targetRunId &&
+                args.data.status === "leased" &&
+                result.count === 1
+              ) {
+                claimed = true;
+                if (stage === "claim-ack-lost" && !injected) throw failure();
+              }
+              return result;
+            },
+            async findUniqueOrThrow({ args, query }) {
+              if (
+                (stage === "claim-read" || stage === "claim-read-recovery-ack-lost") &&
+                args.where.id === targetRunId &&
+                claimed &&
+                !injected
+              )
+                throw failure();
+              return query(args);
+            },
+          },
           bot: {
             async findUniqueOrThrow({ args, query }) {
               if (
@@ -1456,6 +1510,15 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           },
         },
       });
+      const controlled = queried.$extends({
+        client: {
+          async $transaction(...args: unknown[]) {
+            const result = await Reflect.apply(queried.$transaction, queried, args);
+            if (stage === "collaboration-ack-lost" && claimed && !injected) throw failure();
+            return result;
+          },
+        },
+      });
       let runtimeCalls = 0;
       const scripted = new ScriptedAgentRuntime();
       const runtime: AgentRuntime = {
@@ -1477,14 +1540,33 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         });
         targetRunId = seeded.run.id;
         targetBotId = seeded.botId;
+        if (stage === "collaboration-rollback" || stage === "collaboration-ack-lost")
+          await db.prisma.run.update({
+            where: { id: targetRunId },
+            data: { origin: "bot_peer", startedAt: new Date() },
+          });
         targetComputerId = (await db.prisma.bot.findUniqueOrThrow({ where: { id: targetBotId } }))
           .computerId!;
         await fixture.handles.executor
           .continueRun(targetRunId, "first-setup-worker")
           .catch(() => undefined);
         expect(injected).toBe(true);
+        if (stage === "claim-read-recovery-ack-lost") expect(recoveryReplyLost).toBe(true);
         expect(runtimeCalls).toBe(0);
         const parked = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        if (stage === "collaboration-rollback") {
+          expect(parked).toMatchObject({ status: "queued", leaseOwner: null, leaseFence: 0 });
+          expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(0);
+          await fixture.handles.executor.continueRun(targetRunId, "after-rollback-worker");
+          expect(runtimeCalls).toBe(1);
+          expect(
+            await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+          ).toMatchObject({ status: "completed", leaseFence: 1 });
+          expect(await db.prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
+            expect.objectContaining({ status: "completed", fence: 1 }),
+          ]);
+          return;
+        }
         expect(parked).toMatchObject({
           status: "queued",
           leaseOwner: null,
