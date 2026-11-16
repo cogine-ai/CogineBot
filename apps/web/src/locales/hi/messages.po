@@ -7535,3 +7535,15 @@ msgstr "शेड्यूल के स्वामी की पुष्ट�
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "आयात की गई रूटीन रुकी हुई स्थिति में शुरू होती हैं।"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "सफल"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "परिणाम अज्ञात"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# टूल} other {# टूल}}"

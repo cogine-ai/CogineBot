@@ -7690,3 +7690,15 @@ msgstr "无法确认此安排的归属。"
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "导入的例行任务默认暂停。"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "成功"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "结果未知"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# 个工具} other {# 个工具}}"

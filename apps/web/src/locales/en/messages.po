@@ -7630,3 +7630,15 @@ msgstr "The schedule owner could not be confirmed."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Imported routines start paused."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Succeeded"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Result unknown"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# tool} other {# tools}}"

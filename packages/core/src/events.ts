@@ -329,13 +329,43 @@ function liveMessageText(blocks: readonly MessageBlock[]): string {
     .join("");
 }
 
-export type ToolStep = { label: string; count: number };
+export type ToolStepOutcome = "succeeded" | "failed" | "stopped";
+export type ToolStep = Extract<MessageBlock, { kind: "steps" }>["steps"][number];
+
+/** Annotate aligned calls without crediting a result to a different visible step. */
+export function withToolStepOutcomes(
+  segments: readonly MessageBlock[],
+  calls: readonly { label: string; outcome: ToolStepOutcome | undefined }[],
+): MessageBlock[] {
+  let next = 0;
+  const annotated: MessageBlock[] = [];
+  for (const block of segments) {
+    if (block.kind !== "steps") {
+      annotated.push(block);
+      continue;
+    }
+    const steps: ToolStep[] = [];
+    for (const step of block.steps) {
+      const outcomes: NonNullable<ToolStep["outcomes"]> = {};
+      const own = calls.slice(next, next + step.count);
+      next += step.count;
+      if (own.length < step.count || own.some((call) => call.label !== step.label))
+        return [...segments];
+      for (const call of own)
+        if (call.outcome) outcomes[call.outcome] = (outcomes[call.outcome] ?? 0) + 1;
+      const { outcomes: _previous, ...rest } = step;
+      steps.push({ ...rest, ...(Object.keys(outcomes).length > 0 ? { outcomes } : {}) });
+    }
+    annotated.push({ ...block, steps });
+  }
+  return annotated;
+}
 
 export function appendToolStep(steps: readonly ToolStep[], toolName: string): ToolStep[] {
   const label = humanizeToolName(toolName);
   const last = steps.at(-1);
   if (last && last.label === label) {
-    return [...steps.slice(0, -1), { label, count: last.count + 1 }];
+    return [...steps.slice(0, -1), { ...last, count: last.count + 1 }];
   }
   return [...steps, { label, count: 1 }];
 }

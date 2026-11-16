@@ -1,3 +1,4 @@
+import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it } from "vitest";
 import {
   appendTextSegment,
@@ -20,7 +21,63 @@ import {
   trackToolCallStreak,
   trackToolNameStreak,
   withLiveStreamingProgress,
+  withToolStepOutcomes,
 } from "./events.js";
+
+describe("tool step outcomes", () => {
+  it("keeps completion and stopping separate across grouped calls and narration", () => {
+    const segments: MessageBlock[] = [
+      { kind: "steps", steps: [{ label: "Shell", count: 3 }] },
+      { kind: "text", text: "Saved the first file." },
+      { kind: "steps", steps: [{ label: "Write file", count: 1 }] },
+    ];
+    expect(
+      withToolStepOutcomes(segments, [
+        { label: "Shell", outcome: "succeeded" },
+        { label: "Shell", outcome: "failed" },
+        { label: "Shell", outcome: "stopped" },
+        { label: "Write file", outcome: undefined },
+      ]),
+    ).toEqual([
+      {
+        kind: "steps",
+        steps: [{ label: "Shell", count: 3, outcomes: { succeeded: 1, failed: 1, stopped: 1 } }],
+      },
+      segments[1],
+      segments[2],
+    ]);
+    expect(segments[0]).not.toHaveProperty("steps.0.outcomes");
+  });
+
+  it("does not assign new outcomes to unmatched restored calls", () => {
+    const segments: MessageBlock[] = [
+      { kind: "steps", steps: [{ label: "Shell", count: 2, outcomes: { succeeded: 1 } }] },
+    ];
+    expect(withToolStepOutcomes(segments, [{ label: "Shell", outcome: "succeeded" }])).toEqual(
+      segments,
+    );
+    expect(
+      withToolStepOutcomes(segments, [
+        { label: "Shell", outcome: "succeeded" },
+        { label: "Write file", outcome: "succeeded" },
+      ]),
+    ).toEqual(segments);
+  });
+
+  it("updates known outcomes without treating still-pending calls as successful", () => {
+    const segments: MessageBlock[] = [
+      { kind: "steps", steps: [{ label: "Shell", count: 2, outcomes: { succeeded: 2 } }] },
+    ];
+    const result = withToolStepOutcomes(segments, [
+      { label: "Shell", outcome: "succeeded" },
+      { label: "Shell", outcome: undefined },
+    ]);
+    expect(result[0]).toHaveProperty("steps.0.outcomes", { succeeded: 1 });
+    expect(
+      appendToolStep((result[0] as Extract<MessageBlock, { kind: "steps" }>).steps, "shell"),
+    ).toEqual([{ label: "Shell", count: 3, outcomes: { succeeded: 1 } }]);
+  });
+});
 
 describe("containsSecret", () => {
   it("detects secrets that JSON escaping changes", () => {

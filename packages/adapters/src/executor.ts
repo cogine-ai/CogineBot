@@ -110,7 +110,7 @@ import {
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   TimeZoneSchema,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
+import type { ActionApprovalRule, PlatformModelAllowlist, ToolStepOutcome } from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   AGENT_CONNECTION_RESPONSE_TOOL,
@@ -167,6 +167,7 @@ import {
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
   websiteCredentialNotice,
+  withToolStepOutcomes,
 } from "@rakazo/core";
 import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
@@ -631,7 +632,12 @@ import {
   updateTicket,
 } from "./ticket-tools.js";
 import type { LoopGuardStreak } from "./tool-loop.js";
-import { advanceToolCallLoopGuard, loopGuardStopText, toolResultFingerprint } from "./tool-loop.js";
+import {
+  advanceToolCallLoopGuard,
+  loopGuardStop,
+  loopGuardStopText,
+  toolResultFingerprint,
+} from "./tool-loop.js";
 import { isFailedToolResult, toolResultError } from "./tool-result-error.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -3028,6 +3034,51 @@ export function toolCompletionFromResult(
   return { ...base, result, paused };
 }
 
+/** Commands can return normally while reporting a non-zero exit code. */
+export function toolCompletionOutcome(
+  completion: AgentToolCompletion,
+): "succeeded" | "failed" | undefined {
+  if (completion.paused) return undefined;
+  const error =
+    completion.error === undefined ? toolResultError(completion.result) : completion.error;
+  if (error !== undefined) return "failed";
+  for (const value of [
+    completion.result,
+    (completion.result as { details?: unknown } | null)?.details,
+  ]) {
+    if (!value || typeof value !== "object") continue;
+    const { code, exitCode } = value as { code?: unknown; exitCode?: unknown };
+    const status = typeof code === "number" ? code : exitCode;
+    if (typeof status === "number") return status === 0 ? "succeeded" : "failed";
+  }
+  return "succeeded";
+}
+
+type LoopGuardStop = {
+  tool: string;
+  reason: "repeated_calls" | "repeated_results";
+  count: number;
+  failures: number;
+};
+
+export function logLoopGuardStop(
+  target: { spaceId: string; threadId: string; botId: string; runId: string; trigger: string },
+  stop: LoopGuardStop,
+  secrets: string[] = [],
+): void {
+  getLogger().info("run.loop_guard_stopped", {
+    "run.id": target.runId,
+    "space.id": target.spaceId,
+    "thread.id": target.threadId,
+    "bot.id": target.botId,
+    "run.trigger": target.trigger,
+    tool: redactSecrets(stop.tool, secrets),
+    "loop.reason": stop.reason,
+    "loop.count": stop.count,
+    "loop.failures": stop.failures,
+  });
+}
+
 export function toolCompletionAuditPayload(
   completion: AgentToolCompletion,
   secrets: string[] = [],
@@ -4562,6 +4613,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const ownerSignal = runAbortController.signal;
         const runtimeAbortController = new AbortController();
         let toolLoopStopText: string | undefined;
+        let toolLoopStop: LoopGuardStop | undefined;
         runtimeAbortController.signal.addEventListener(
           "abort",
           () => {
@@ -5412,7 +5464,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
         let pendingToolNames: string[] = restoredOutput ? [...restoredOutput.pendingToolNames] : [];
-        const flushPendingTools = () => {
+        const toolCalls: Array<{ label: string; executionId: string }> = [];
+        const toolOutcomes = new Map<string, ToolStepOutcome>();
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
+          withToolStepOutcomes(
+            segments,
+            toolCalls.map((call) => ({
+              label: call.label,
+              outcome: toolOutcomes.get(call.executionId) ?? unfinished,
+            })),
+          );
+        const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
             currentTextSegment = "";
@@ -5421,6 +5483,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             messageSegments = appendToolCallSegment(messageSegments, name);
           }
           pendingToolNames = [];
+          messageSegments = withReplyToolOutcomes(messageSegments, unfinished);
         };
         const tryFlushPendingTools = () => {
           if (pendingToolNames.length > 0 && endsSentence(currentTextSegment)) flushPendingTools();
@@ -5812,7 +5875,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             {
               assembled,
               currentTextSegment,
-              messageSegments: structuredClone(messageSegments),
+              messageSegments: structuredClone(withReplyToolOutcomes(messageSegments)),
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
@@ -11246,6 +11309,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 if (turnState.restoredPending?.executionId === completion.executionId)
                   turnState.restoredPending = undefined;
                 if (!completion.paused) turnState.pendingCaptures.delete(completion.executionId);
+                const outcome = toolCompletionOutcome(completion);
+                if (outcome) toolOutcomes.set(completion.executionId, outcome);
                 toolResults.set(
                   completion.executionId,
                   toolResultFingerprint(completion.result, completion.error),
@@ -11546,6 +11611,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                 });
                 pendingToolNames.push(event.name);
+                toolCalls.push({
+                  label: humanizeToolName(event.name),
+                  executionId: event.executionId,
+                });
                 tryFlushPendingTools();
               }
               let namespace = "main";
@@ -11581,10 +11650,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 else helperToolCallStreaks.set(namespace, next);
               }
               if (loopGuard.stuck) {
-                toolLoopStopText = loopGuardStopText(
-                  humanizeToolName(event.name),
-                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
-                );
+                const stoppedStreak =
+                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!;
+                const stop = loopGuardStop(stoppedStreak);
+                toolLoopStop = {
+                  tool: event.name,
+                  reason: stop.kind === "same_result" ? "repeated_results" : "repeated_calls",
+                  count: stop.count,
+                  failures: stoppedStreak.failures ?? 0,
+                };
+                toolLoopStopText = loopGuardStopText(humanizeToolName(event.name), stoppedStreak);
                 break;
               }
               if (scripted) {
@@ -11592,6 +11667,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 try {
                   const result = await applyTool(event.name, event.args, event.executionId);
                   toolResults.set(event.executionId, toolResultFingerprint(result));
+                  const completion = toolCompletionFromResult(
+                    {
+                      name: event.name,
+                      executionId: event.executionId,
+                      durationMs: Date.now() - startedAt,
+                    },
+                    result,
+                  );
+                  const outcome = toolCompletionOutcome(completion);
+                  if (outcome) toolOutcomes.set(event.executionId, outcome);
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11600,18 +11685,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       botId: bot.id,
                       runId,
                     },
-                    toolCompletionFromResult(
-                      {
-                        name: event.name,
-                        executionId: event.executionId,
-                        durationMs: Date.now() - startedAt,
-                      },
-                      result,
-                    ),
+                    completion,
                     runSecrets,
                   );
                   if (isToolPauseResult(result)) return;
                 } catch (error) {
+                  toolOutcomes.set(event.executionId, "failed");
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11711,7 +11790,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // Keep the lease alive until their writes finish, then expose terminal.
             if (deps.shutdownSignal?.aborted || approvalPausePending || !leaseValid) return;
             approvedEffectReplays.assertDrained();
-            flushPendingTools();
+            flushPendingTools("stopped");
             if (!(await renewRunLease(deps, runId, workerId, fence))) return;
             if (historyEvidence === undefined && messageSegments.length > 0) {
               await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
@@ -11733,6 +11812,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : [{ kind: "text", text: toolLoopStopText }],
             });
             if (!stopped) return;
+            if (toolLoopStop) {
+              logLoopGuardStop(
+                {
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  runId,
+                  trigger: run.trigger,
+                },
+                toolLoopStop,
+                runSecrets,
+              );
+            }
             endRunAfterFinalization();
             await settleLocalPeerDelivery();
             if (stopped.continuationRunId) {

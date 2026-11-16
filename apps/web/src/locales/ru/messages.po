@@ -7591,3 +7591,15 @@ msgstr "Не удалось подтвердить владельца распи
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Импортированные процедуры изначально приостановлены."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Успешно"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Результат неизвестен"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# инструмент} few {# инструмента} many {# инструментов} other {# инструмента}}"
