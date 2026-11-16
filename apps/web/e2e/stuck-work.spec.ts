@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
+import type { MessageBlock } from "@rakazo/contracts";
 import {
   captureScreenshot,
   completeOnboarding,
@@ -18,20 +19,28 @@ type ThreadCarrier = {
   thread?: ThreadCarrier;
 };
 
-/** Render fixture only. expireStuckRun reads the saved thread line back in its unit test. */
-function injectExpiredStatus(body: { json?: ThreadCarrier }, text = EXPIRED_TAKEOVER) {
+/** Rendering fixture; separate PostgreSQL and unit tests exercise actual settlement. */
+function injectThreadMessage(
+  body: { json?: ThreadCarrier },
+  message: {
+    id: string;
+    role: "bot" | "system";
+    blocks: MessageBlock[];
+  },
+) {
   const targets = [body.json, body.json?.thread].filter((target): target is ThreadCarrier =>
     Boolean(target?.threadId && Array.isArray(target.messages)),
   );
   for (const target of targets) {
     const messages = target.messages ?? [];
+    const messageId = message.id;
     if (
       messages.some(
         (message) =>
           typeof message === "object" &&
           message !== null &&
           "id" in message &&
-          message.id === EXPIRED_MESSAGE_ID,
+          message.id === messageId,
       )
     ) {
       continue;
@@ -39,11 +48,11 @@ function injectExpiredStatus(body: { json?: ThreadCarrier }, text = EXPIRED_TAKE
     const seq = Math.max(target.cursor ?? 0, 0) + 1;
     target.cursor = seq;
     messages.push({
-      id: EXPIRED_MESSAGE_ID,
+      id: message.id,
       threadId: target.threadId,
       seq,
-      role: "system",
-      blocks: [{ kind: "meta", text }],
+      role: message.role,
+      blocks: message.blocks,
       createdAt: new Date().toISOString(),
     });
   }
@@ -78,7 +87,11 @@ for (const [kind, text] of [
     const inject = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
       const response = await route.fetch();
       const body = (await response.json()) as { json?: ThreadCarrier };
-      injectExpiredStatus(body, text);
+      injectThreadMessage(body, {
+        id: EXPIRED_MESSAGE_ID,
+        role: "system",
+        blocks: [{ kind: "meta", text }],
+      });
       await route.fulfill({
         status: response.status(),
         headers: response.headers(),
@@ -95,6 +108,58 @@ for (const [kind, text] of [
     await captureScreenshot(page, testInfo, `slack-${kind}-grant-status`);
   });
 }
+
+test("a loop stop preserves completed tools without crediting unfinished calls", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem("rakazo.showToolActivity", "on"));
+  await signup(page, `loop-stop-tools-${Date.now()}@example.test`, "password12", "Tool Results");
+  await completeOnboarding(page);
+  await page.goto("/app");
+  await page.waitForURL(/\/app\/[^/]+$/);
+  const stopText =
+    "I got stuck calling Message user with the same result 25 times in a row without making progress, so I stopped early. Try rephrasing this, or ask me to try a different approach.";
+  const blocks: MessageBlock[] = [
+    {
+      kind: "steps",
+      steps: [
+        { label: "Saved file", count: 1, outcomes: { succeeded: 1 } },
+        { label: "Rejected request", count: 1, outcomes: { failed: 1 } },
+        { label: "Interrupted command", count: 1, outcomes: { stopped: 1 } },
+        { label: "Unconfirmed result", count: 1 },
+      ],
+    },
+    { kind: "text", text: stopText },
+  ];
+  const inject = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { json?: ThreadCarrier };
+    injectThreadMessage(body, { id: "loop-stop-tools-result", role: "bot", blocks });
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: JSON.stringify(body),
+    });
+  };
+  await page.route("**/rpc/bootstrap", inject);
+  await page.route("**/rpc/threads/get", inject);
+  for (const viewport of [
+    { name: "desktop-1440x900", width: 1440, height: 900 },
+    { name: "mobile-390x844", width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(stopText, { exact: true })).toBeVisible();
+    const card = page.getByTestId("tool-activity");
+    await expect(card.locator("summary")).toHaveText("4 tools");
+    await card.locator("summary").click();
+    const rows = card.getByTestId("tool-rows");
+    for (const status of ["Succeeded", "Failed", "Stopped", "Result unknown"])
+      await expect(rows.getByText(status, { exact: true })).toHaveCount(1);
+    await expect(rows).not.toContainText("Working…");
+    await captureScreenshot(page, testInfo, `loop-stop-tools-${viewport.name}`);
+  }
+});
 
 async function captureActivitySidebar(
   page: Page,
@@ -170,7 +235,11 @@ test("aged queued work is marked and an expired wait leaves a status line", asyn
   const fulfillExpiredStatus = async (route: Parameters<Parameters<typeof page.route>[1]>[0]) => {
     const response = await route.fetch();
     const body = (await response.json()) as { json?: ThreadCarrier };
-    injectExpiredStatus(body);
+    injectThreadMessage(body, {
+      id: EXPIRED_MESSAGE_ID,
+      role: "system",
+      blocks: [{ kind: "meta", text: EXPIRED_TAKEOVER }],
+    });
     await route.fulfill({
       status: response.status(),
       headers: response.headers(),
