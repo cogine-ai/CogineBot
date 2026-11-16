@@ -62,7 +62,9 @@ for (const [kind, text] of [
     "Slack reply delivery could not be confirmed. Check the channel before sending a new message.",
   ],
 ] as const) {
-  test(`a ${kind} Slack grant leaves a readable resend instruction`, async ({ page }, testInfo) => {
+  test(`${kind === "retired" ? "a retired" : "an unconfirmed"} Slack reply leaves a readable instruction`, async ({
+    page,
+  }, testInfo) => {
     await signup(
       page,
       `slack-retired-${Date.now()}@example.test`,
@@ -88,6 +90,8 @@ for (const [kind, text] of [
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("combobox", { name: /^Message/ })).toBeEnabled();
+    // An empty thread becomes ready after its first server heartbeat.
+    await expect(page.getByTestId("connection-status")).not.toBeVisible({ timeout: 30_000 });
     await captureScreenshot(page, testInfo, `slack-${kind}-grant-status`);
   });
 }
