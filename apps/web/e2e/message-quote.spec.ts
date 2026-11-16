@@ -147,6 +147,60 @@ test("selecting a text span quotes it into a reply", async ({ page }, testInfo) 
   );
 });
 
+test("a quote selection taller than the viewport remains usable", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `quote-viewport-${stamp}@example.test`, "password12", "Quote Tester");
+  await completeOnboarding(page);
+
+  const transcript = page.getByTestId("transcript");
+  const composer = page.getByRole("combobox", { name: /Message/ });
+  const start = `quote-start-${stamp}`;
+  const end = `quote-end-${stamp}`;
+  const source = [
+    start,
+    ...Array.from({ length: 40 }, (_, index) => `line ${index + 1}`),
+    end,
+  ].join("\n");
+  await composer.fill(source);
+  await composer.press("Enter");
+  const sourceRow = transcript
+    .locator("[data-message-id]")
+    .filter({ has: page.getByTestId("message-user-bubble") })
+    .filter({ hasText: start })
+    .first();
+  await expect(sourceRow).toBeVisible({ timeout: 20_000 });
+  await selectAndRelease(page, sourceRow, start, end);
+  const selectionHeight = await page.evaluate(
+    () => window.getSelection()?.getRangeAt(0).getBoundingClientRect().height ?? 0,
+  );
+  expect(selectionHeight).toBeGreaterThan(page.viewportSize()!.height);
+  const quoteButton = page.getByTestId("quote-selection");
+  await expect(quoteButton).toBeInViewport({ ratio: 1 });
+  await captureScreenshot(page, testInfo, "message-quote-tall-selection");
+  await page.setViewportSize({ width: 960, height: 540 });
+  await expect(quoteButton).toBeInViewport({ ratio: 1 });
+  await transcript.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(quoteButton).toBeInViewport({ ratio: 1 });
+  await captureScreenshot(page, testInfo, "message-quote-resized-scrolled-selection");
+  await quoteButton.click();
+  const replyChip = page.getByTestId("reply-chip");
+  await expect(replyChip).toContainText(start);
+  await expect(replyChip).toContainText(end);
+  await expect(composer).toBeFocused();
+  const reply = `viewport-reply-${stamp}`;
+  await composer.fill(reply);
+  await composer.press("Enter");
+  const sent = transcript
+    .locator("[data-message-id]")
+    .filter({ has: page.getByTestId("message-user-bubble") })
+    .filter({ hasText: reply })
+    .first();
+  await expect(sent.getByTestId("reply-parent-preview")).toContainText(start);
+  await expect(sent.getByTestId("reply-parent-preview")).toContainText(end);
+});
+
 test("rendered markdown selections survive server quote derivation", async ({ page }, testInfo) => {
   const stamp = Date.now();
   await signup(page, `quote-markdown-${stamp}@rakazo.test`, "password12", "Quote Tester");
