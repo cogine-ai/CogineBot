@@ -1423,6 +1423,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       releaseFinalResult = resolve;
     });
     let finalResultHeld = false;
+    let heldFinalResult = () => {};
+    const finalResultRetained = new Promise<void>((resolve) => {
+      heldFinalResult = resolve;
+    });
     let runtimeAborted = false;
     const executions: string[] = [];
     const runtime: AgentRuntime = {
@@ -1447,11 +1451,22 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           // transport until cleanup, preventing an unrelated eighth model call.
           return result.then(async (value) => {
             finalResultHeld = true;
+            heldFinalResult();
             await finalResultReleased;
             return value;
           });
         };
-        return pi.run(request, context);
+        return (async function* () {
+          for await (const event of pi.run(request, context)) {
+            if (
+              event.type === "tool" &&
+              event.executionId === JSON.stringify(["pi-tool", "main", "dirty-repeat-6"])
+            ) {
+              await finalResultRetained;
+            }
+            yield event;
+          }
+        })();
       },
       abort: (runId) => pi.abort(runId),
     };
@@ -1560,6 +1575,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         "times in a row without making progress, so I stopped early",
       );
     } finally {
+      heldFinalResult();
       releaseFinalResult();
       if (targetRunId) await pi.abort(targetRunId);
       await executing?.catch(() => undefined);
