@@ -8168,7 +8168,6 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
   const [placement, setPlacement] = useState<{
     top: number;
     left: number;
-    above: boolean;
   } | null>(null);
 
   useLayoutEffect(() => {
@@ -8180,14 +8179,13 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
       const rect = range.getBoundingClientRect();
       const width = buttonRef.current?.offsetWidth ?? 0;
       const height = buttonRef.current?.offsetHeight ?? 0;
-      const above = rect.top >= height + 8;
+      const top = rect.top >= height + 8 ? rect.top - height - 8 : rect.bottom + 8;
       setPlacement({
-        top: above ? rect.top - 8 : rect.bottom + 8,
+        top: Math.max(8, Math.min(top, window.innerHeight - height - 8)),
         left: Math.min(
           Math.max(rect.left + rect.width / 2, width / 2 + 8),
           window.innerWidth - width / 2 - 8,
         ),
-        above,
       });
     };
     update();
@@ -8213,10 +8211,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
       }}
       onClick={onQuote}
       style={placement ? { top: placement.top, left: placement.left } : { visibility: "hidden" }}
-      className={cn(
-        "fixed z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-foreground shadow-md hover:bg-muted",
-        placement?.above === false ? "translate-y-0" : "-translate-y-full",
-      )}
+      className="fixed z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-[13px] font-medium text-foreground shadow-md hover:bg-muted"
     >
       <TextQuote size={13} strokeWidth={2} />
       {t`Quote`}

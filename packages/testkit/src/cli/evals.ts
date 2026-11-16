@@ -8,10 +8,10 @@ import { ModelConnectInputSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { EVAL_CASES, HISTORY_EVAL_CASES } from "../evals/cases.js";
+import { EVAL_CASES, HISTORY_EVAL_CASES, HISTORY_FRESH_CHECK } from "../evals/cases.js";
 import { HISTORY_FIXTURE_VERSION } from "../evals/history-fixtures.js";
 import type { DiagnosticToolObservation, HistoryDiagnostic } from "../evals/history-observer.js";
-import { observeSyntheticHistory } from "../evals/history-observer.js";
+import { observeFreshHistoryCheck, observeSyntheticHistory } from "../evals/history-observer.js";
 import type { CacheDecisionMeasurement, EvalPricing } from "../evals/measurement.js";
 import { measureCalls, SpendBudget, validatePricing } from "../evals/measurement.js";
 import { emptyTrial, redact, summarize, validateControls } from "../evals/report.js";
@@ -405,9 +405,13 @@ async function main() {
               },
             });
             const historyDiagnostics: HistoryDiagnostic[] = [];
+            const historyConstraintReads =
+              scenario.id === HISTORY_FRESH_CHECK.id ? new Set<string>() : undefined;
             const toolLoopDiagnostics: DiagnosticToolObservation[] = [];
             const observedRuntime = observeSyntheticHistory(
-              runtime,
+              historyConstraintReads
+                ? observeFreshHistoryCheck(runtime, historyConstraintReads)
+                : runtime,
               historyDiagnostics,
               [connection.apiKey ?? "", connection.baseUrl ?? ""],
               toolLoopDiagnostics,
@@ -458,6 +462,7 @@ async function main() {
               ...handles,
               harnessIssues: sandbox.harnessIssues,
               fileReads: sandbox.fileReads,
+              historyConstraintReads,
               cacheDecisions,
               historyDiagnostics,
               toolLoopDiagnostics,

@@ -52,6 +52,7 @@ type ToolCall = {
   args: Record<string, unknown>;
   executionId: string;
 };
+type MemoryDocuments = Map<string, { id: string; path: string; content: string; revision: number }>;
 
 function fixture(
   runId = "run-1",
@@ -62,6 +63,7 @@ function fixture(
     ticketBoard?: boolean;
     secrets?: string[];
     semanticMemory?: SemanticMemoryProvider;
+    memoryDocuments?: MemoryDocuments;
   } = {},
 ) {
   const effects: Effect[] = [];
@@ -106,15 +108,25 @@ function fixture(
     completedAt: null,
   };
   const ticketChanges: unknown[] = [];
-  const memoryDocuments = new Map<
-    string,
-    { id: string; path: string; content: string; revision: number }
-  >();
+  const memoryDocuments = options.memoryDocuments ?? new Map();
   const memoryHistory: MemoryCommitRequest[] = [];
   const memoryReceipts = new Map<string, MemoryRevision>();
   const memoryKey = (request: MemoryReadRequest, context: AdapterContext) =>
     JSON.stringify([context.spaceId, context.userId, request.scope, request.botId, request.path]);
   const memoryRead = vi.fn(async (request: MemoryReadRequest, context: AdapterContext) => {
+    if (request.path === undefined) {
+      const scoped = JSON.stringify([
+        context.spaceId,
+        context.userId,
+        request.scope,
+        request.botId,
+      ]);
+      return {
+        documents: [...memoryDocuments]
+          .filter(([key]) => key.startsWith(`${scoped.slice(0, -1)},`))
+          .map(([, document]) => ({ ...document })),
+      };
+    }
     const document = memoryDocuments.get(memoryKey(request, context));
     return { documents: document ? [{ ...document }] : [] };
   });
@@ -389,6 +401,7 @@ function fixture(
     readCommitReceipt,
     persistMemory,
     externalEffect,
+    runtimeRun,
     pauseRunForInput,
     shutdown,
     setBeforeTool(callback: () => void) {
@@ -693,6 +706,125 @@ describe("mutating tool effect idempotency keys", () => {
     expect(f.memoryDocuments.size).toBe(0);
     expect(f.results).toEqual([{ ok: true }]);
     expect(f.effects[0]?.status).toBe("completed");
+  });
+
+  describe("explicit Bot memory correction", () => {
+    const correction = {
+      name: "remember",
+      args: {
+        path: "Preferences.md",
+        content: "Use metric units",
+        correction: { original: "Use imperial units", expectedRevision: 1 },
+      },
+      executionId: "correct-fact",
+    };
+    const original = "  Keep this section\r\nUse imperial units\r\nFollow up  ";
+    const updated = "  Keep this section\r\nUse metric units\r\nFollow up  ";
+
+    async function fixtureWithMemory(content = original) {
+      const f = fixture("run-correct");
+      await f.persistMemory(
+        { scope: "bot", botId: "bot-1", path: "Preferences.md", content, expectedRevision: 0 },
+        { spaceId: "space-1", userId: "user-1" } as AdapterContext,
+      );
+      return f;
+    }
+
+    it("replaces the exact old text and injects the corrected revision into a later run", async () => {
+      const f = await fixtureWithMemory();
+      f.setCalls([correction]);
+      await f.run();
+      expect(f.results).toEqual([{ ok: true, path: "Preferences.md", revision: 2 }]);
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([original, updated]);
+
+      const later = fixture("run-after-correction", { memoryDocuments: f.memoryDocuments });
+      await later.run();
+      const request = later.runtimeRun.mock.lastCall?.[0];
+      expect(request?.instructions).toContain("## bot: Preferences.md (revision 2)");
+      expect(request?.instructions).toContain(updated);
+      expect(request?.instructions).not.toContain("Use imperial units");
+    });
+
+    it.each([
+      ["missing original", { correction: { original: "Missing", expectedRevision: 1 } }],
+      ["stale revision", { correction: { original: "Use imperial units", expectedRevision: 2 } }],
+      ["blank replacement", { content: " \r\n" }],
+      ["NUL in replacement", { content: "new\0text" }],
+      ["invalid Unicode", { content: "\ud800" }],
+      ["no target path", { path: undefined }],
+      ["outside Bot", { botId: "other-bot" }],
+      ["outside user", { userId: "other-user" }],
+      ["outside Space", { spaceId: "other-space" }],
+      ["invalid correction", { correction: null }],
+    ] as const)("does not write or append with %s", async (_case, args) => {
+      const f = await fixtureWithMemory();
+      f.setCalls([{ ...correction, args: { ...correction.args, ...args } }]);
+      await f.run();
+      expect(f.results).toEqual([expect.objectContaining({ error: expect.any(String) })]);
+      expect(f.memoryCommit).not.toHaveBeenCalled();
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([original]);
+    });
+
+    it("does not create a new revision for an identical replacement", async () => {
+      const f = await fixtureWithMemory();
+      f.setCalls([{ ...correction, args: { ...correction.args, content: "Use imperial units" } }]);
+      await f.run();
+      expect(f.memoryCommit).not.toHaveBeenCalled();
+      expect(f.results).toEqual([
+        { ok: true, path: "Preferences.md", revision: 1, unchanged: true },
+      ]);
+    });
+
+    it("does not retry a correction against a concurrent edit", async () => {
+      const f = await fixtureWithMemory();
+      const competing = `${original}\r\nNew detail from another writer`;
+      f.memoryCommit.mockImplementationOnce(async (request, context) => {
+        await f.persistMemory(
+          { ...request, content: competing, idempotencyKey: undefined },
+          context,
+        );
+        throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+      });
+      f.setCalls([correction]);
+      await f.run();
+      expect(f.results).toEqual([
+        {
+          error: expect.stringContaining("Read the latest version"),
+          currentRevision: 2,
+        },
+      ]);
+      expect(f.memoryCommit).toHaveBeenCalledOnce();
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([original, competing]);
+    });
+
+    it("recovers the original correction receipt without overwriting a later edit", async () => {
+      const f = await fixtureWithMemory();
+      const update = f.externalEffect.updateMany.getMockImplementation()!;
+      f.externalEffect.updateMany.mockImplementation(async (request) =>
+        request.data.status === "completed" ? { count: 0 } : update(request),
+      );
+      f.setCalls([correction]);
+      await f.run();
+      expect(f.results[0]).toMatchObject({ uncertain: true });
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([original, updated]);
+
+      const [request, context] = f.memoryCommit.mock.calls[0]!;
+      await f.persistMemory(
+        { ...request, content: "Later edit", expectedRevision: 2, idempotencyKey: undefined },
+        context,
+      );
+      f.externalEffect.updateMany.mockImplementation(update);
+      f.setCalls([{ ...correction, executionId: "after-restart" }]);
+      await f.run();
+
+      expect(f.memoryCommit).toHaveBeenCalledOnce();
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([
+        original,
+        updated,
+        "Later edit",
+      ]);
+      expect(f.results.at(-1)).toEqual({ ok: true, path: "Preferences.md", revision: 2 });
+    });
   });
 
   it.each([1, 2])(

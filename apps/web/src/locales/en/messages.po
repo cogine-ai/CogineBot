@@ -7630,3 +7630,7 @@ msgstr "The schedule owner could not be confirmed."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Imported routines start paused."
+
+#: src/pages/KnowledgeSection.tsx
+msgid "This memory changed while you were editing. Copy your draft if needed, then close and reopen the document to see the latest version."
+msgstr "This memory changed while you were editing. Copy your draft if needed, then close and reopen the document to see the latest version."

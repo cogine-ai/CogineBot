@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
 import { BROWSER_ACT_KINDS } from "./browser-tools.js";
+import { MemoryCorrection } from "./memory-tools.js";
 import {
   DEFAULT_WEB_FETCH_MAX_CHARS,
   MAX_WEB_FETCH_MAX_CHARS,
@@ -554,12 +555,21 @@ export const builtinAgentTools: ConnectorTool[] = [
   },
   {
     name: "remember",
-    description: "Store a durable fact in this bot's explicit memory.",
+    description:
+      "Append a durable fact to this Bot's Markdown memory, or correct an existing fact using the current document path, revision, and exact old text. Use correction for a change to a saved fact so both versions don't remain active. This does not change semantic or shared memory.",
     inputSchema: {
       type: "object",
       properties: {
-        content: { type: "string" },
-        path: { type: "string" },
+        content: { type: "string", description: "Fact to append, or exact replacement text." },
+        path: {
+          type: "string",
+          description:
+            "Exact Bot memory document path. Required when correcting; otherwise defaults to MEMORY.md.",
+        },
+        correction: {
+          ...z.toJSONSchema(MemoryCorrection, { io: "input" }),
+          description: "Only for an explicit correction to an existing Bot Markdown fact.",
+        },
       },
       required: ["content"],
     },
@@ -770,12 +780,11 @@ export const builtinAgentTools: ConnectorTool[] = [
       oneOf: [{ required: ["messageId"] }, { required: ["toolResultId"] }],
     },
   },
-  // Semantic-memory tools: exposed by selectMemoryTools() only when a
-  // A Space memory provider is configured (which hides `remember`).
+  // Semantic memory tools are available only when a Space memory provider is configured.
   {
     name: "save_memory",
     description:
-      "Store a durable fact in this bot's semantic memory (preferences, decisions, recurring context). Use for anything worth recalling in future conversations.",
+      "Store a durable fact in this bot's semantic memory (preferences, decisions, recurring context). Use remember to correct an existing Bot Markdown fact.",
     inputSchema: {
       type: "object",
       properties: {
