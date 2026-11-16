@@ -41,6 +41,27 @@ const pending = { status: "pending" } as const;
 const ready = { status: "ready" } as const;
 const failed = (error: string) => ({ status: "error" as const, error });
 
+function signInState(row: Session | null) {
+  if (!row) return failed(MODEL_OAUTH_NOT_FOUND);
+  if (row.status === "failed") return failed(row.error ?? MODEL_OAUTH_INTERRUPTED);
+  if (row.status === "connected") return ready;
+  if (row.leaseExpiresAt && row.leaseExpiresAt.getTime() <= Date.now())
+    return failed(MODEL_OAUTH_INTERRUPTED);
+  return pending;
+}
+
+function logSignInFailure(phase: "start" | "exchange" | "save", error: unknown) {
+  getLogger().warn("Subscription sign-in failed", {
+    phase,
+    failure:
+      error instanceof ORPCError && error.code === "CONFLICT"
+        ? "connection_changed"
+        : error instanceof SyntaxError
+          ? "invalid_response"
+          : "operation_failed",
+  });
+}
+
 /** The database owns the result. The original process still handles non-transferable
  * provider interactions, including the local ChatGPT callback. */
 export class ModelOAuth {
@@ -175,6 +196,7 @@ export class ModelOAuth {
       if (!current || current.status === "failed") throw new Error(MODEL_OAUTH_INTERRUPTED);
       return begun;
     } catch (error) {
+      logSignInFailure("start", error);
       await this.fail(active, MODEL_OAUTH_INTERRUPTED);
       if (input.signal?.aborted || error instanceof ORPCError) throw error;
       throw new ORPCError("BAD_REQUEST", { message: MODEL_OAUTH_INTERRUPTED });
@@ -252,7 +274,8 @@ export class ModelOAuth {
             },
             persist,
           );
-        } catch {
+        } catch (error) {
+          logSignInFailure("exchange", error);
           await this.fail(active);
         }
       })(),
@@ -261,25 +284,15 @@ export class ModelOAuth {
   }
 
   async complete(id: string, actor: ModelOAuthActor) {
-    const row = await this.sessions.read({ ...actor, id });
-    if (!row) return failed(MODEL_OAUTH_NOT_FOUND);
-    if (row.status === "failed") return failed(row.error ?? MODEL_OAUTH_INTERRUPTED);
-    if (row.status === "connected") return ready;
-    if (row.leaseExpiresAt && row.leaseExpiresAt.getTime() <= Date.now())
-      return failed(MODEL_OAUTH_INTERRUPTED);
-    return pending;
+    return signInState(await this.sessions.read({ ...actor, id }));
   }
 
   async finish(id: string, actor: ModelOAuthActor) {
     const ref = { ...actor, id };
     const row = await this.sessions.read(ref);
-    if (!row) return failed(MODEL_OAUTH_NOT_FOUND);
-    if (row.status === "failed") return failed(row.error ?? MODEL_OAUTH_INTERRUPTED);
-    if (row.status !== "connected")
-      return row.leaseExpiresAt && row.leaseExpiresAt.getTime() <= Date.now()
-        ? failed(MODEL_OAUTH_INTERRUPTED)
-        : pending;
-    const result = ModelCredentialSchema.safeParse(row.result);
+    const state = signInState(row);
+    if (state.status !== "ready") return state;
+    const result = ModelCredentialSchema.safeParse(row?.result);
     if (!result.success || !(await this.sessions.consume(ref, "connected")))
       return failed(MODEL_OAUTH_NOT_FOUND);
     return { status: "connected" as const, value: result.data };
@@ -326,7 +339,8 @@ export class ModelOAuth {
           credentialRevision: row.credentialRevision,
         }),
       );
-    } catch {
+    } catch (error) {
+      logSignInFailure("save", error);
       await this.sessions.fail(lease);
     } finally {
       this.release(active);

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { createRouterClient } from "@orpc/server";
+import { createRouterClient, ORPCError } from "@orpc/server";
 import { EncryptedSecretStore, ModelOAuthSessions, PiOAuthLogins } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { createDb, runAsSystem, runAsTenant } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ModelOAuth } from "./model-oauth.js";
 import { createRouter, type RouterDeps } from "./router.js";
@@ -124,6 +125,62 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       witness.mockRestore();
     }
   }
+
+  it.each(["start", "exchange", "save"] as const)(
+    "records safe %s diagnostics while preserving the failed result",
+    async (phase) => {
+      const actor = await member();
+      const sensitive = "synthetic-unstructured-secret";
+      const secrets = new EncryptedSecretStore(key);
+      const exchange = vi.fn(async () => {
+        if (phase === "exchange") throw new SyntaxError(sensitive);
+        return token;
+      });
+      if (phase === "start") vi.spyOn(secrets, "put").mockRejectedValueOnce(new Error(sensitive));
+      const first = process(a, actor, exchange, secrets);
+      if (phase === "save")
+        vi.spyOn(first.oauth.sessions, "markSaving").mockRejectedValueOnce(
+          new ORPCError("CONFLICT", { message: sensitive }),
+        );
+      const warn = vi.spyOn(getLogger(), "warn");
+      try {
+        if (phase === "start") {
+          await expect(
+            first.client.models.beginOAuth({ provider: "anthropic" }),
+          ).rejects.toMatchObject({
+            code: "BAD_REQUEST",
+            message: expect.stringMatching(/interrupted/i),
+          });
+        } else {
+          const started = await first.client.models.beginOAuth({ provider: "anthropic" });
+          await first.client.models.submitOAuthCode({ loginId: started.loginId, code: "fixture" });
+          await vi.waitFor(async () =>
+            expect(
+              await first.client.models.completeOAuth({ loginId: started.loginId }),
+            ).toMatchObject({
+              status: "error",
+              error: "Subscription sign-in failed. Start sign-in again.",
+            }),
+          );
+        }
+        expect(warn).toHaveBeenCalledWith("Subscription sign-in failed", {
+          phase,
+          failure:
+            phase === "save"
+              ? "connection_changed"
+              : phase === "exchange"
+                ? "invalid_response"
+                : "operation_failed",
+        });
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(sensitive);
+        expect(await a.prisma.userModelCredential.count({ where: { userId: actor.userId } })).toBe(
+          0,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it("bounds shutdown when the session table blocks cleanup and pending login retirement", async () => {
     const actor = await member();
