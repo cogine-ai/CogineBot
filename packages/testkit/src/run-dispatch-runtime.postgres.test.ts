@@ -944,7 +944,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     }
   }, 30_000);
 
-  it("awaits already-started parallel Pi message tools before settling a loop guard", async () => {
+  it.each([true, false])("settles loop-guard tools, publishing=%s", async (publishing) => {
     const lateText = "The already-started progress message must reach the linked chat.";
     const fixtureKey = "synthetic-loop-guard-model-key";
     const model: Model<"openai-completions"> = {
@@ -1034,6 +1034,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       observedAbort = resolve;
     });
     let lateEffectId: string | undefined;
+    let enteredLateEffect = () => {};
+    const lateEffectEntered = new Promise<void>((resolve) => {
+      enteredLateEffect = resolve;
+    });
     const db = createDb(process.env.DATABASE_URL!, {
       applicationName: "synthetic-loop-guard-settlement",
     });
@@ -1048,13 +1052,20 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
               (effect.request as { message?: unknown }).message === lateText
             ) {
               lateEffectId = effect.id;
+              enteredLateEffect();
+              if (!publishing) await cleanupStarted;
             }
             return effect;
           },
         },
         run: {
           async updateMany({ args, query }) {
-            if (targetRunId && args.where?.id === targetRunId && args.data.status === "completed") {
+            if (
+              publishing &&
+              targetRunId &&
+              args.where?.id === targetRunId &&
+              args.data.status === "completed"
+            ) {
               // The sibling is waiting before BEGIN, holding no database lock.
               await latePublicationEntered;
             }
@@ -1110,7 +1121,19 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           executions.push({ name, id, args: structuredClone(args) });
           return executionScope.run(id, () => execute(name, args, id, route, observer));
         };
-        return pi.run(request, context);
+        return (async function* () {
+          for await (const event of pi.run(request, context)) {
+            if (
+              event.type === "tool" &&
+              event.executionId === JSON.stringify(["pi-tool", "main", "repeated-message-6"])
+            ) {
+              // The triggering call event can stop the iterator before its result.
+              // Establish the sibling's cancellation boundary before that stop.
+              await (publishing ? latePublicationEntered : lateEffectEntered);
+            }
+            yield event;
+          }
+        })();
       },
       abort: (runId) => pi.abort(runId),
     };
@@ -1145,7 +1168,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         where: { id: targetRunId },
         data: { trigger: "messaging", startedAt: new Date(Date.now() - 60_000) },
       });
-      await handles.prisma.messagingIdentity.create({
+      const identity = await handles.prisma.messagingIdentity.create({
         data: {
           provider: "slack",
           address: randomUUID(),
@@ -1175,48 +1198,53 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         ),
       );
       void terminalVisible.catch(() => undefined);
-      await wait(() => expect(publicationWaiting).toBe(true)).catch(async (error) => {
-        const diagnostic = {
-          modelRequests,
-          reservations,
-          providerFailures: providerFailures.map((failure) =>
-            failure instanceof Error ? failure.message : String(failure),
-          ),
-          executions,
-          run: await observer.run.findUnique({
-            where: { id: targetRunId },
-            select: { status: true, error: true, leaseOwner: true, leaseFence: true },
+      if (publishing) {
+        await wait(() => expect(publicationWaiting).toBe(true)).catch(async (error) => {
+          const diagnostic = {
+            modelRequests,
+            reservations,
+            providerFailures: providerFailures.map((failure) =>
+              failure instanceof Error ? failure.message : String(failure),
+            ),
+            executions,
+            run: await observer.run.findUnique({
+              where: { id: targetRunId },
+              select: { status: true, error: true, leaseOwner: true, leaseFence: true },
+            }),
+            effects: await observer.externalEffect.findMany({
+              where: { runId: targetRunId, kind: "message_user" },
+              select: { status: true, request: true, result: true },
+            }),
+          };
+          throw new Error(
+            `Loop guard publication gate was unreachable: ${JSON.stringify(diagnostic)}`,
+            {
+              cause: error,
+            },
+          );
+        });
+        expect(lateEffectId).toEqual(expect.any(String));
+        expect(
+          await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
+        ).toMatchObject({
+          runId: targetRunId,
+          kind: "message_user",
+          request: { message: lateText },
+        });
+        // Old code exposes terminal first; cleanup-first code instead exposes
+        // abort while still running. Both paths release the same real tool below.
+        await Promise.race([terminalVisible, cleanupStarted]);
+        await mirrorMessagingOutbound(mirrorDeps, targetRunId);
+        expect(
+          await observer.message.count({
+            where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
           }),
-          effects: await observer.externalEffect.findMany({
-            where: { runId: targetRunId, kind: "message_user" },
-            select: { status: true, request: true, result: true },
-          }),
-        };
-        throw new Error(
-          `Loop guard publication gate was unreachable: ${JSON.stringify(diagnostic)}`,
-          {
-            cause: error,
-          },
-        );
-      });
-      expect(lateEffectId).toEqual(expect.any(String));
-      expect(
-        await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
-      ).toMatchObject({
-        runId: targetRunId,
-        kind: "message_user",
-        request: { message: lateText },
-      });
-      // Old code exposes terminal first; cleanup-first code instead exposes
-      // abort while still running. Both paths release the same real tool below.
-      await Promise.race([terminalVisible, cleanupStarted]);
-      await mirrorMessagingOutbound(mirrorDeps, targetRunId);
-      expect(
-        await observer.message.count({
-          where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
-        }),
-      ).toBe(0);
-      releaseLatePublication();
+        ).toBe(0);
+        releaseLatePublication();
+      } else {
+        await cleanupStarted;
+        expect(publicationWaiting).toBe(false);
+      }
       await executing;
       await terminalVisible;
       expect(providerFailures).toEqual([]);
@@ -1234,8 +1262,16 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       const late = await observer.message.findMany({
         where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
       });
-      expect(late).toHaveLength(1);
+      expect(late).toHaveLength(publishing ? 1 : 0);
       const stop = await observer.message.findMany({ where: { runId: targetRunId, role: "bot" } });
+      expect(
+        stop
+          .flatMap((message) => MessageBlockSchema.array().parse(message.blocks))
+          .filter((block) => block.kind === "ask"),
+      ).toEqual([]);
+      expect(
+        await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
+      ).toMatchObject(publishing ? { status: "completed" } : { status: "intended", result: null });
       expect(JSON.stringify(stop)).toContain(
         "times in a row without making progress, so I stopped early",
       );
@@ -1257,10 +1293,14 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       // Recovery must see an unacknowledged Run until every admitted message
       // has finished. A premature terminal stamp permanently loses this row.
       expect(
-        await observer.messagingOutbound.findMany({ where: { sourceMessageId: late[0]!.id } }),
-      ).toEqual([
-        expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` }),
-      ]);
+        await observer.messagingOutbound.findMany({
+          where: { identityId: identity.id, body: lateText },
+        }),
+      ).toEqual(
+        publishing
+          ? [expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` })]
+          : [],
+      );
       expect(
         enqueued.some(
           (job) => job.name === "run.continue" && job.payload.runId === unrelated.run.id,
@@ -1277,6 +1317,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       });
       expect(mirrorDeps.messaging.sent).toEqual([]);
     } finally {
+      enteredLateEffect();
       enteredLatePublication();
       releaseLatePublication();
       if (targetRunId) pi.abort(targetRunId);
