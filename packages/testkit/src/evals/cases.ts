@@ -28,6 +28,7 @@ export type Evidence = {
   destinationWrites: number;
   toolNames: string[];
   fileReads?: ReadonlyArray<{ path: string; succeeded: boolean }>;
+  readConstraintBeforeFile?: boolean;
   messaging: {
     originThreadId: string | null;
     outbound: Array<{ threadId: string; body: string; handle: string }>;
@@ -535,11 +536,15 @@ const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
 const freshCheckHistory = historyFixture(1000, "exact");
-freshCheckHistory.version = "history-fresh-check-v1-seed-73";
+freshCheckHistory.version = "history-fresh-check-v2-seed-73";
 freshCheckHistory.ask =
   "Use the previous Aurora constraints and check the current pending count again.";
-freshCheckHistory.messages[30]!.text =
-  `For the Aurora recheck, read only ${reportPath}. Do not edit it.`;
+export const FRESH_CHECK_CONSTRAINT = {
+  seq: 30,
+  role: "user",
+  text: `For the Aurora recheck, read only ${reportPath}. Do not edit it.`,
+} as const;
+freshCheckHistory.messages[FRESH_CHECK_CONSTRAINT.seq]!.text = FRESH_CHECK_CONSTRAINT.text;
 freshCheckHistory.messages[31]!.text = `Previous Aurora verification: ${previousReport}.`;
 for (const message of freshCheckHistory.messages.slice(-48)) {
   if (message.role === "bot") message.steps = [{ label: "Read file", count: 1 }];
@@ -553,7 +558,10 @@ export const HISTORY_FRESH_CHECK: EvalCase = {
   files: [reportPath],
   steps: [{ ask: freshCheckHistory.ask }],
   grade: (e) => [
-    check("history-read", e.toolNames.includes("read_history")),
+    check(
+      "history-read",
+      e.toolNames.includes("read_history") && e.readConstraintBeforeFile === true,
+    ),
     check(
       "fresh-read",
       e.toolNames.filter((name) => name === "read_file").length === 1 &&

@@ -27,6 +27,7 @@ export type EvalApp = {
   runtime: AgentRuntime;
   harnessIssues?: readonly string[];
   fileReads?: Evidence["fileReads"];
+  historyConstraintReads?: ReadonlySet<string>;
   connector?: { records: readonly unknown[] };
   awaitIdle?: () => Promise<void>;
   finalizeBackground?: () => Promise<void>;
@@ -590,6 +591,7 @@ export async function runTrial(
       destinationWrites: handles.connector?.records.length ?? 0,
       toolNames: [...seenTools.values()].map((event) => event.name),
       fileReads,
+      readConstraintBeforeFile: handles.historyConstraintReads?.has(runIds.at(-1) ?? ""),
       messaging: {
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),
