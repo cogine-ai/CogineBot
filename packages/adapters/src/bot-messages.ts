@@ -2,6 +2,7 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import type { BotMessageIntent, MessageBlock } from "@rakazo/contracts";
 import {
   BOT_MESSAGE_MAX_LENGTH,
+  BOT_MESSAGE_TOO_LONG,
   botMessageContext,
   botMessageHopExhausted,
   buildBotMessageWakePrompt,
@@ -81,6 +82,7 @@ export async function messageBot(
     message: string;
     intent?: BotMessageIntent;
     deliveryKey?: string;
+    files?: Array<Extract<MessageBlock, { kind: "image" | "file" }>>;
   },
   options?: { allowTerminalSource?: boolean },
 ) {
@@ -91,7 +93,7 @@ export async function messageBot(
   if (message.length > BOT_MESSAGE_MAX_LENGTH) {
     return {
       ok: false as const,
-      error: `message exceeds the ${BOT_MESSAGE_MAX_LENGTH} character limit`,
+      error: BOT_MESSAGE_TOO_LONG,
     };
   }
 
@@ -152,6 +154,7 @@ export async function messageBot(
     intent,
     deliveryStatus: "waiting_peer",
   };
+  const files = input.files ?? [];
 
   let committed:
     | {
@@ -258,7 +261,7 @@ export async function messageBot(
         const inbound = await createThreadMessageInTransaction(tx, {
           threadId: targetThreadId,
           role: "user",
-          blocks: [inboundBlock],
+          blocks: [inboundBlock, ...files],
           replyToMessageId:
             sourceContext?.fromBotId === target.id && intent !== "fyi"
               ? sourceContext.returnToMessageId
@@ -309,7 +312,7 @@ export async function messageBot(
             messageId: inbound.id,
             messageSeq: inbound.seq,
             role: "user",
-            blocks: [inboundBlock],
+            blocks: [inboundBlock, ...files],
           },
         });
         const outboundEvent = await appendEventInTransaction(tx, {

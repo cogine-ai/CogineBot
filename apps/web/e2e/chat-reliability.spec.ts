@@ -407,6 +407,128 @@ async function ready(page: Page) {
   await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
 }
 
+for (const target of ["peer", "group"] as const) {
+  for (const width of [1280, 390]) {
+    test(`selected ${target} files arrive live and download from their original chat at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      const { state, errors } = await mockChat(page);
+      const stream = await controlledStream(page);
+      await page.setViewportSize({ width, height: 844 });
+      state.groups = [
+        {
+          id: "file-review",
+          spaceId: "space-primary",
+          name: "File review",
+          pinned: false,
+          sectionId: null,
+          archivedAt: null,
+          threadId: "thread-file-review",
+          preview: "Ready",
+          unread: false,
+          members: state.bots
+            .slice(0, 2)
+            .map(({ id, name, color }) => ({ botId: id, name, color })),
+          updatedAt: stamp,
+          createdAt: stamp,
+        },
+      ];
+      const bytes = Buffer.from([80, 75, 3, 4, 0, 255, 12]);
+      const downloads: unknown[] = [];
+      await page.route("**/rpc/artifacts/get", async (route) => {
+        downloads.push(route.request().postDataJSON().json);
+        return json(route, { contentBase64: bytes.toString("base64") });
+      });
+      await ready(page);
+      if (target === "group") {
+        await page.goto("/app/g/file-review");
+        await expect(page.getByRole("combobox", { name: "Message File review" })).toBeVisible();
+      }
+      const threadId = target === "group" ? "thread-file-review" : "thread-chief";
+      const blocks: ThreadMessage["blocks"] = [
+        target === "group"
+          ? {
+              kind: "handoff",
+              fromBotId: "chief",
+              toBotId: "research-one",
+              text: "Review selected materials",
+            }
+          : {
+              kind: "bot_message_received",
+              fromBotId: "research-one",
+              fromBotName: "Research One",
+              text: "Internal delivery instructions",
+            },
+        {
+          kind: "file",
+          artifactId: "selected-report",
+          name: "selected-report.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          size: bytes.length,
+        },
+      ];
+      const delivered: ProductEvent = {
+        id: "selected-delivery",
+        spaceId: "space-primary",
+        threadId,
+        botId: "chief",
+        seq: 5,
+        type: target === "group" ? "group.handoff" : "thread.message.created",
+        payload: { messageId: "selected-delivery", messageSeq: 1, role: "bot", blocks },
+        createdAt: stamp,
+      };
+      await stream.emit(delivered);
+      const transcript = page.getByTestId("transcript");
+      const file = transcript.getByRole("button", { name: /selected-report\.xlsx application/ });
+      await expect(file).toBeVisible();
+      if (target === "peer") {
+        await expect(transcript.getByTestId("peer-receipt-chip")).toContainText("Research One");
+        await expect(transcript).not.toContainText("Internal delivery instructions");
+      } else {
+        await expect(transcript).toContainText("Research One ← Chief");
+      }
+      await stream.emit(delivered);
+      await expect(file).toHaveCount(1);
+      await captureScreenshot(page, testInfo, `selected-${target}-file-${width}`);
+      const completed = page.waitForEvent("download");
+      await file.click();
+      const download = await completed;
+      expect(download.suggestedFilename()).toBe("selected-report.xlsx");
+      const readable = await download.createReadStream();
+      expect(readable).not.toBeNull();
+      const chunks: Buffer[] = [];
+      for await (const chunk of readable!) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+      expect(downloads).toEqual([
+        {
+          ...(target === "group" ? { groupId: "file-review" } : { botId: "chief" }),
+          artifactId: "selected-report",
+        },
+      ]);
+      const message: ThreadMessage = {
+        id: "selected-delivery",
+        threadId,
+        seq: 1,
+        botId: "chief",
+        role: "bot",
+        blocks,
+        createdAt: stamp,
+      };
+      state.thread = (route, data) => json(route, { ...data, cursor: 5, messages: [message] });
+      state.bootstrap = (route, data) =>
+        json(route, {
+          ...data,
+          thread: data.thread ? { ...data.thread, cursor: 5, messages: [message] } : null,
+        });
+      await page.reload();
+      await expect(file).toHaveCount(1);
+      expect(state.sends).toHaveLength(0);
+      expect(state.uploads).toHaveLength(0);
+      expect(errors).toEqual([]);
+    });
+  }
+}
+
 test("a voice-originated Page review stays actionable in chat after hanging up", async ({
   page,
 }, testInfo) => {

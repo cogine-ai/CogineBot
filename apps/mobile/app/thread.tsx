@@ -1984,6 +1984,7 @@ function Thread({
                 event.type === "agent.tool.completed" ||
                 event.type === "thread.message.created" ||
                 event.type === "thread.message.updated" ||
+                event.type === "group.handoff" ||
                 event.type === "thread.message.reaction" ||
                 event.type === "thread.subagent" ||
                 event.type === "thread.cloud_agent" ||
@@ -2010,7 +2011,10 @@ function Thread({
               if (event.type === "bot.updated") {
                 void refreshMentionBots();
               }
-              if (event.type === "thread.message.created" && event.payload?.role === "bot") {
+              if (
+                (event.type === "thread.message.created" || event.type === "group.handoff") &&
+                event.payload?.role === "bot"
+              ) {
                 readVisibleTarget.current = null;
                 markReadIfVisible();
               }
@@ -4285,8 +4289,11 @@ const MessageBubble = memo(function MessageBubble({
       </View>
     );
   }
+  const hasAttachments = message.blocks.some(
+    (block) => block.kind === "file" || block.kind === "image",
+  );
   const handoff = message.blocks.find((block) => block.kind === "handoff");
-  if (handoff) {
+  if (handoff && !hasAttachments) {
     const from = memberName(members, handoff.fromBotId) ?? t("bot");
     const to = memberName(members, handoff.toBotId) ?? t("bot");
     const origin = t("{from} messaged {to}", { from, to });
@@ -4307,7 +4314,7 @@ const MessageBubble = memo(function MessageBubble({
     ): block is Extract<MessageBlock, { kind: "bot_message_sent" | "bot_message_received" }> =>
       block.kind === "bot_message_sent" || block.kind === "bot_message_received",
   );
-  if (peerMessage) {
+  if (peerMessage && !hasAttachments) {
     const sent = peerMessage.kind === "bot_message_sent";
     const peer = sent ? peerMessage.toBotName : peerMessage.fromBotName;
     const peerBotId = sent ? peerMessage.toBotId : peerMessage.fromBotId;
@@ -4617,8 +4624,18 @@ const MessageBubble = memo(function MessageBubble({
     })
     .join("\n");
   if (attachments.length > 0) {
-    const speaker =
-      message.role === "bot" ? (memberName(members, message.botId) ?? botName) : undefined;
+    const speaker = peerMessage
+      ? peerMessage.kind === "bot_message_received"
+        ? t("Message from {peer}", { peer: peerMessage.fromBotName })
+        : t("Messaged {peer}", { peer: peerMessage.toBotName })
+      : handoff
+        ? t("{from} messaged {to}", {
+            from: memberName(members, handoff.fromBotId) ?? t("bot"),
+            to: memberName(members, handoff.toBotId) ?? t("bot"),
+          })
+        : message.role === "bot"
+          ? (memberName(members, message.botId) ?? botName)
+          : undefined;
     const speakerColor =
       message.role === "bot" ? speakerColorFor(bots, members, message.botId) : undefined;
     return (

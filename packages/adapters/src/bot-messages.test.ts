@@ -1,3 +1,4 @@
+import { BOT_MESSAGE_TOO_LONG } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -17,6 +18,15 @@ const run = {
   sourceMessageId: null as string | null,
 };
 const sender = { id: "bot-sender", name: "Researcher" };
+const selectedFiles = [
+  {
+    kind: "file" as const,
+    artifactId: "selected-file",
+    name: "review.zip",
+    mimeType: "application/zip",
+    size: 12,
+  },
+];
 
 function deps(
   options: {
@@ -146,6 +156,7 @@ describe("messaging another bot", () => {
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-target",
       message: "Research this",
+      files: selectedFiles,
     });
 
     expect(sent).toEqual({ ok: false, error: "policy_disabled" });
@@ -320,7 +331,7 @@ describe("messaging another bot", () => {
       bot_id: "bot-target",
       message: "x".repeat(8_001),
     });
-    expect(sent).toEqual({ ok: false, error: "message exceeds the 8000 character limit" });
+    expect(sent).toEqual({ ok: false, error: BOT_MESSAGE_TOO_LONG });
     expect(harness.tx.run.create).not.toHaveBeenCalled();
   });
 
@@ -329,6 +340,7 @@ describe("messaging another bot", () => {
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-target",
       message: "hello",
+      files: selectedFiles,
     });
     expect(sent).toMatchObject({ ok: false });
     expect(harness.enqueue).not.toHaveBeenCalled();
@@ -637,6 +649,7 @@ describe("hardening", () => {
       bot_id: "bot-target",
       message: "chart it",
       deliveryKey: "call-1",
+      files: selectedFiles,
     });
 
     expect(sent).toMatchObject({ ok: true, replayed: true, botId: "bot-target" });

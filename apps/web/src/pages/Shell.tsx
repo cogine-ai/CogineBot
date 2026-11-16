@@ -1674,6 +1674,7 @@ export function ShellPage() {
             event.type === "thread.cleared" ||
             event.type === "thread.message.created" ||
             event.type === "thread.message.updated" ||
+            event.type === "group.handoff" ||
             event.type === "thread.message.reaction"
           ) {
             const next = reduceThreadSnapshot(current, event);
@@ -1682,7 +1683,8 @@ export function ShellPage() {
               if (
                 next !== current &&
                 (event.type === "thread.message.created" ||
-                  event.type === "thread.message.updated") &&
+                  event.type === "thread.message.updated" ||
+                  event.type === "group.handoff") &&
                 typeof event.payload.messageSeq === "number" &&
                 !current.messages.some((message) => message.id === messageId) &&
                 next.messages.some((message) => message.id === messageId)
@@ -2358,7 +2360,10 @@ export function ShellPage() {
           true,
           true,
         );
-        if (event.type === "thread.message.created" && event.payload.role === "bot") {
+        if (
+          (event.type === "thread.message.created" || event.type === "group.handoff") &&
+          event.payload.role === "bot"
+        ) {
           readVisibleGroups.current.delete(groupId);
           markVisibleGroupRead();
         }

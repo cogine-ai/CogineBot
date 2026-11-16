@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   navigation: { isFocused: () => true, setOptions: vi.fn(), goBack: vi.fn() },
   params: { botId: "bot-a", spaceId: "space-a", name: "Writer", readOnly: "1" },
   approvals: [] as DelegatedApproval[],
+  files: [] as MessageBlock[],
+  openArtifact: vi.fn(async () => undefined),
   block: {
     kind: "bot_message_sent",
     toBotId: "bot-b",
@@ -64,6 +66,7 @@ vi.mock("./api", async (importOriginal) => {
     loadSessionToken: async () => "synthetic-session",
   };
 });
+vi.mock("./artifact-open", () => ({ openMobileArtifact: state.openArtifact }));
 vi.mock("./session", () => ({
   currentSessionGeneration: () => 0,
   currentReadySessionGeneration: () => 0,
@@ -267,6 +270,8 @@ beforeEach(() => {
   resetI18nForTests("en");
   state.params.readOnly = "1";
   state.approvals = [];
+  state.files = [];
+  state.openArtifact.mockClear();
   state.router.push.mockReset();
   state.block = {
     kind: "bot_message_sent",
@@ -290,7 +295,7 @@ beforeEach(() => {
             threadId: "thread-a",
             role: "bot",
             botId: "bot-a",
-            blocks: [state.block],
+            blocks: [state.block, ...state.files],
           },
         ],
         members: [
@@ -509,3 +514,47 @@ it.each(["created", "archived", "deleted"] as const)(
     }
   },
 );
+
+it.each([
+  {
+    kind: "received",
+    block: {
+      kind: "bot_message_received",
+      fromBotId: "bot-b",
+      fromBotName: "Research",
+      text: "Private peer body",
+    },
+    origin: "Message from Research",
+  },
+  {
+    kind: "handoff",
+    block: { kind: "handoff", fromBotId: "bot-a", toBotId: "bot-b", text: "Private peer body" },
+    origin: "Writer messaged Research",
+  },
+])("opens the selected result attachment on a $kind row", async ({ block, origin }) => {
+  state.block = block as MessageBlock;
+  state.files = [
+    {
+      kind: "file",
+      artifactId: "result-file",
+      name: "review.xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      size: 42,
+    },
+  ];
+  await act(async () => root.render(<ThreadRoute />));
+  expect(container.textContent).toContain(origin);
+  expect(container.textContent).toContain("review.xlsx");
+  expect(container.textContent).not.toContain("Private peer body");
+  const file = [...container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("review.xlsx"),
+  );
+  expect(file).toBeDefined();
+  await act(async () => file?.click());
+  expect(state.openArtifact).toHaveBeenCalledWith(
+    { botId: "bot-a" },
+    "result-file",
+    "review.xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+});

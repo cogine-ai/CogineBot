@@ -37,6 +37,32 @@ const peerExchange = [
 ];
 
 describe("user-visible messages", () => {
+  it.each(["file", "image"] as const)(
+    "keeps explicit peer %s attachments without exposing tool activity or sidebar previews",
+    (kind) => {
+      const attachment: ThreadMessage["blocks"][number] = {
+        kind,
+        artifactId: "report-artifact",
+        name: kind === "image" ? "report.png" : "report.txt",
+        mimeType: kind === "image" ? "image/png" : "text/plain",
+        size: 12,
+      };
+      const source = message("attachment", "run-peer", [
+        { kind: "steps", steps: [{ label: "Private tool activity", count: 1 }] },
+        attachment,
+      ]);
+      const options = { knownPeerRunIds: ["run-peer"] };
+      expect(userVisibleMessages([source], options)[0]?.blocks).toEqual([attachment]);
+      expect(source.blocks).toHaveLength(2);
+      expect(
+        userVisibleMessages([source], { ...options, includeDelegatedReplyText: false }),
+      ).toEqual([]);
+      expect(userVisibleMessages([source], { ...options, backgroundRunIds: ["run-peer"] })).toEqual(
+        [],
+      );
+    },
+  );
+
   it("removes the exact cached compatibility text while retaining the actual Page-only blocks", () => {
     const card = { kind: "page", title: "Report", pageId: "page-1", version: 2 } as const;
     const fallback = {

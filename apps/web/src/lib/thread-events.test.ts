@@ -25,6 +25,35 @@ import {
 } from "./thread-events.js";
 
 describe("thread event reduction", () => {
+  it("shows a group handoff attachment immediately and does not duplicate or revive its replay", () => {
+    const handoff = event({
+      type: "group.handoff",
+      payload: {
+        messageId: "handoff-file",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [
+          { kind: "handoff", fromBotId: "bot-1", toBotId: "bot-2", text: "Review" },
+          {
+            kind: "file",
+            artifactId: "material",
+            name: "report.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size: 32,
+          },
+        ],
+      },
+    });
+    expect(isThreadSnapshotEvent(handoff)).toBe(true);
+    const shown = reduceThreadSnapshot(snapshot([]), handoff)!;
+    expect(shown.messages).toMatchObject([
+      { id: "handoff-file", seq: 1, blocks: handoff.payload.blocks },
+    ]);
+    expect(reduceThreadSnapshot(shown, handoff)).toBe(shown);
+    const cleared = reduceThreadSnapshot(shown, event({ type: "thread.cleared", seq: 5 }));
+    expect(reduceThreadSnapshot(cleared, handoff)?.messages).toEqual([]);
+  });
+
   it("updates delivery without replacing message text or reviving a cleared message", () => {
     const reply = {
       ...message("saved", [{ kind: "text", text: "Saved reply" }], 1),

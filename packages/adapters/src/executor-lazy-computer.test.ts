@@ -164,6 +164,7 @@ async function runRoutine(
     yield { type: "done" as const, text: "Inbox is clear." };
   });
   const prisma = {
+    chatGroup: { findMany: vi.fn(async () => []) },
     $transaction: vi.fn(async (callback: (tx: typeof takeoverTx) => Promise<unknown>) =>
       callback(
         Object.assign(takeoverTx, {

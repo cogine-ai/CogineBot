@@ -3903,6 +3903,36 @@ describe("discarded mobile thread refresh cursor", () => {
 });
 
 describe("mobile thread event reduction", () => {
+  it("shows a group handoff file immediately and preserves duplicate and clear barriers", () => {
+    const handoff = {
+      type: "group.handoff",
+      threadId: "thread-1",
+      seq: 4,
+      payload: {
+        messageId: "handoff-file",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [
+          { kind: "handoff", fromBotId: "bot-1", toBotId: "bot-2", text: "Review" },
+          {
+            kind: "file",
+            artifactId: "material",
+            name: "report.xlsx",
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            size: 32,
+          },
+        ],
+      },
+    };
+    const shown = applyMobileThreadEvent(snapshot(), handoff)!;
+    expect(shown.messages).toMatchObject([
+      { id: "handoff-file", seq: 1, blocks: handoff.payload.blocks },
+    ]);
+    expect(applyMobileThreadEvent(shown, handoff)).toBe(shown);
+    const cleared = applyMobileThreadEvent(shown, { type: "thread.cleared", seq: 5 });
+    expect(applyMobileThreadEvent(cleared, handoff)?.messages).toEqual([]);
+  });
+
   it("appends an emoji reply with its exact target", () => {
     const initial = snapshot([mobileMessage("message-1", [{ kind: "text", text: "Done" }])]);
 

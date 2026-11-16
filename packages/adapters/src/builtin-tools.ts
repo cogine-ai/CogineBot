@@ -1,6 +1,7 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { MAX_BROWSER_UPLOAD_FILES } from "@rakazo/adapter-kit";
 import {
+  ATTACHMENT_MAX_COUNT,
   BotSecretName,
   botSecretDestinationSchema,
   GenerateSecretInput,
@@ -1279,7 +1280,17 @@ export const builtinAgentTools: ConnectorTool[] = [
           type: "string",
           description: "Exact name of the target bot when bot_id is omitted.",
         },
-        message: { type: "string", description: "What to send." },
+        message: {
+          type: "string",
+          description: "What to send. Send code, logs or other long content as files instead.",
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: ATTACHMENT_MAX_COUNT,
+          description:
+            "Paths of files or folders on your computer to send with it. A bot on your computer reads them in place; one with its own computer gets copies, so zip a folder for it. Never paste file contents into message.",
+        },
         intent: {
           type: "string",
           enum: ["request", "result", "question", "status", "fyi"],
@@ -1292,16 +1303,32 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "handoff_to_bot",
     description:
-      "In a group chat only: transfer a genuinely distinct next stage to another current member. Appends a visible handoff and starts that bot asynchronously. Do not hand a stage back merely to report or repeat the same work; post results in the shared thread.",
+      "Transfer a genuinely distinct next stage to another current group member. In a group, stay in that group. Outside a group, supply group_id from your groups list to coordinate there. Appends a visible handoff and starts that bot asynchronously. Do not hand a stage back merely to report or repeat the same work; post results in the shared thread.",
     inputSchema: {
       type: "object",
       properties: {
+        group_id: {
+          type: "string",
+          description:
+            "Explicit destination from your groups list; required outside a group, omitted in a group.",
+        },
         bot_id: { type: "string", description: "Target member bot id." },
         confirm_name: {
           type: "string",
           description: "Exact name of the target member when bot_id is omitted.",
         },
-        message: { type: "string", description: "What the receiving bot should do next." },
+        message: {
+          type: "string",
+          description:
+            "What the receiving bot should do next. Send code, logs or other long content as files instead.",
+        },
+        files: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: ATTACHMENT_MAX_COUNT,
+          description:
+            "Paths of files or folders on your computer to send with it. A bot on your computer reads them in place; one with its own computer gets copies, so zip a folder for it. Never paste file contents into message.",
+        },
       },
       required: ["message"],
     },

@@ -140,6 +140,9 @@ const EXTENSION_MIME_TYPES: Record<string, AttachmentMimeType> = {
   ".html": "text/html",
   ".htm": "text/html",
   ".json": "application/json",
+  ".zip": "application/zip",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
 const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
@@ -153,12 +156,21 @@ const MIME_TYPE_EXTENSIONS: Record<AttachmentMimeType, string> = {
   "text/csv": ".csv",
   "text/html": ".html",
   "application/json": ".json",
+  "application/zip": ".zip",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 };
 
 export function inferAttachmentMimeType(
   name: string,
   reportedType?: string,
 ): AttachmentMimeType | null {
+  if (
+    reportedType === "application/x-zip-compressed" ||
+    reportedType === "application/x-zip" ||
+    reportedType === "multipart/x-zip"
+  )
+    return "application/zip";
   const dot = name.lastIndexOf(".");
   const extensionType = dot < 0 ? undefined : EXTENSION_MIME_TYPES[name.slice(dot).toLowerCase()];
   // Some browsers and native document pickers report Markdown as text/plain.
@@ -192,6 +204,16 @@ export function attachmentsForBot<T extends { botId: string }>(
 export function userTurnMessageForRun<
   T extends { id?: string; role: string; runId?: string | null; blocks: MessageBlock[] },
 >(trigger: string, runId: string, messages: T[], sourceMessageId?: string | null): T | undefined {
+  if (trigger === "bot_message" || trigger === "follow_up") {
+    if (!sourceMessageId) return undefined;
+    return messages.find(
+      (message) =>
+        message.id === sourceMessageId &&
+        message.blocks.some(
+          (block) => block.kind === "bot_message_received" || block.kind === "handoff",
+        ),
+    );
+  }
   // External deliveries must name their own source message. Never attach a
   // previous chat upload to an unattended Run by guessing from its history.
   if (

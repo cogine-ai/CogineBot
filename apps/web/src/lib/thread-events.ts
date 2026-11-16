@@ -310,6 +310,7 @@ export function isThreadSnapshotEvent(event: ProductEvent): boolean {
     event.type === "agent.tool.completed" ||
     event.type === "thread.message.created" ||
     event.type === "thread.message.updated" ||
+    event.type === "group.handoff" ||
     event.type === "thread.message.delivery" ||
     event.type === "thread.message.reaction" ||
     event.type === "run.started" ||
@@ -343,7 +344,9 @@ export function reduceThreadSnapshot(
     );
   }
   const messageEvent =
-    event.type === "thread.message.created" || event.type === "thread.message.updated";
+    event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
+    event.type === "group.handoff";
   const known = messageEvent
     ? (prev.messages.find(
         (message) => message.id === String(event.payload.messageId ?? event.id),
@@ -658,7 +661,11 @@ export function reduceThreadSnapshot(
         : prev.messages,
     };
   }
-  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
+  if (
+    event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
+    event.type === "group.handoff"
+  ) {
     const messageSeq = event.payload.messageSeq;
     if (typeof messageSeq !== "number") return original;
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
