@@ -7,7 +7,10 @@ import type {
 import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import {
+  InvalidGrantError,
+  TemporarilyUnavailableError,
+} from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
@@ -410,7 +413,14 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
 
   async saveTokens(value: OAuthTokens): Promise<void> {
     const runtimeRefresh = !this.options.state && Boolean(this.storedOAuth?.tokens?.refresh_token);
-    await this.storeTokens(value, runtimeRefresh);
+    try {
+      await this.storeTokens(value, runtimeRefresh);
+    } catch (error) {
+      // The SDK treats an ordinary save error as permission to start authorization.
+      if (runtimeRefresh && !(error instanceof McpReauthorizationRequiredError))
+        throw new TemporarilyUnavailableError("MCP credentials could not be saved; retry");
+      throw error;
+    }
   }
 
   private async storeTokens(value: OAuthTokens, recoverSave: boolean): Promise<void> {

@@ -335,6 +335,38 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     30_000,
   );
 
+  it("does not invalidate authorization when both SDK refresh saves fail", async () => {
+    const f = await fixture({ withStaticCredential: false, expired: false });
+    let issued = false;
+    const fault = failSecretCommit(f.db.pool, "rolled-back", {
+      always: true,
+      when: () => issued && fault.failures() < 2,
+    });
+    await expect(
+      runAsTenant(f.context, () =>
+        auth(f.provider, {
+          serverUrl: f.server.endpoint!,
+          fetchFn: async (input, init) => {
+            const request = new Request(input, init);
+            if (new URL(request.url).pathname.includes("oauth-protected-resource"))
+              return Response.json({
+                resource: f.server.endpoint,
+                authorization_servers: [issuer],
+              });
+            const response = await f.refresh(input, init);
+            issued = true;
+            return response;
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ name: "TemporarilyUnavailableError" });
+    expect(fault.failures()).toBe(2);
+    expect(f.refresh).toHaveBeenCalledTimes(1);
+    const current = await f.read();
+    expect(current.material.oauth?.tokens?.refresh_token).toBe("refresh-0");
+    expect(current.material.oauth?.codeVerifier).toBeUndefined();
+  }, 30_000);
+
   it("fails rather than adopting an uncommitted grant when saves keep rolling back", async () => {
     const f = await fixture();
     const fault = failSecretCommit(f.db.pool, "rolled-back", { always: true });
