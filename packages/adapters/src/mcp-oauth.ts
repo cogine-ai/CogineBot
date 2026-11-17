@@ -404,14 +404,18 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     }
     // The primitive strips response-provided issuer; stamp the server we used.
     // Persistence failures must reach the caller rather than expose an uncommitted grant.
-    await this.saveTokens({ ...next, issuer });
+    await this.storeTokens({ ...next, issuer }, true);
   }
 
   async saveTokens(value: OAuthTokens): Promise<void> {
+    await this.storeTokens(value, false);
+  }
+
+  private async storeTokens(value: OAuthTokens, recoverSave: boolean): Promise<void> {
     const oauth = this.oauth();
     oauth.tokens = value;
     oauth.obtainedAt = Date.now();
-    await this.persist();
+    await this.persist(recoverSave);
   }
   async redirectToAuthorization(url: URL): Promise<void> {
     let authorizationUrl: URL;
@@ -486,12 +490,19 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     return this.material.oauth;
   }
 
-  private async persist(): Promise<void> {
+  private async persist(recoverSave = false): Promise<void> {
     const snapshot = structuredClone(this.material);
     const next = this.persistQueue.then(async () => {
       if (this.persistenceConflict) throw this.persistenceConflict;
       try {
-        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
+        try {
+          await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
+        } catch (error) {
+          if (!recoverSave || error instanceof McpOAuthCredentialsChangedError) throw error;
+          // A commit may have lost its reply. Reuse this exact grant and the existing
+          // conditional save to confirm it or persist it once; never refresh it again.
+          await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
+        }
         this.storedOAuth = structuredClone(snapshot.oauth);
       } catch (error) {
         if (error instanceof McpOAuthCredentialsChangedError) {
