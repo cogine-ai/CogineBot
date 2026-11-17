@@ -132,7 +132,6 @@ import {
   formatSkillRunPrompt,
   formatSkillsCatalogInstruction,
   humanizeToolName,
-  inferAttachmentMimeType,
   isBackgroundRunTrigger,
   isCallClientNonce,
   isMessagingChannelRun,
@@ -289,7 +288,8 @@ import {
 } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
 import { attachedImageArtifactIds, resolveUpdateBotAvatar } from "./bot-avatar.js";
-import { loadBotMessageContext, messageBot, returnBotMessageOutcome } from "./bot-messages.js";
+import { handoffToBotWithFiles, messageBotWithFiles } from "./bot-file-handoff.js";
+import { loadBotMessageContext, returnBotMessageOutcome } from "./bot-messages.js";
 import {
   allowPrivateHttpSecretOrigins,
   BOT_SECRET_HTTP_APPROVAL_CHANGED,
@@ -402,7 +402,7 @@ import {
   loginGenerationEffectArgs,
   readLoginEffectRequest,
 } from "./generated-login-request.js";
-import { handoffToGroupBot, loadGroupContext } from "./group-handoff.js";
+import { loadBotGroupDirectory, loadGroupContext } from "./group-handoff.js";
 import type { CompactedHistoryMessage } from "./history-compaction.js";
 import {
   COMPACTION_BATCH_SIZE,
@@ -626,6 +626,7 @@ import {
   listRecentThreadFiles,
   materializeCurrentTurnFiles,
   materializeRecentThreadFiles,
+  readWorkspaceFile,
   recentThreadFilesInstruction,
 } from "./thread-artifacts.js";
 import type { TicketChangeNotifier } from "./ticket-changes.js";
@@ -8648,21 +8649,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await recordComputerAction("attach_file", filePath, { error });
               return finish({ error, path: filePath });
             };
-            if (!deps.artifacts) return failAttach("artifact storage unavailable");
-            const storedPath = resolveBotWorkspacePath(computerMode, bot.id, filePath);
-            let bytes: Uint8Array;
-            try {
-              bytes = await deps.sandbox.readFile(await runComputer.get(), storedPath, context, {
-                maxBytes: ATTACHMENT_MAX_BYTES,
-              });
-            } catch {
-              return failAttach("file not found or unreadable");
-            }
-            const mimeType = inferAttachmentMimeType(filePath);
-            if (!mimeType) return failAttach("unsupported attachment type");
+            const read = await readWorkspaceFile(deps, {
+              context,
+              computer: () => runComputer.get(),
+              computerMode,
+              botId: bot.id,
+              filePath,
+            });
+            if ("error" in read) return failAttach(read.error);
+            const bytes = read.bytes;
             try {
               const attached = await attachWorkspaceFileToThread(
-                { prisma: deps.prisma, artifacts: deps.artifacts },
+                { prisma: deps.prisma, artifacts: read.artifacts },
                 {
                   spaceId: run.spaceId,
                   userId: run.userId,
@@ -10598,31 +10596,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             });
           }
           if (name === "message_bot") {
-            const sent = await messageBot(
-              deps,
-              { ...run, sourceMessageId: run.sourceMessageId },
-              { id: bot.id, name: bot.name },
+            const sent = await messageBotWithFiles(
               {
-                bot_id: args.bot_id ? String(args.bot_id) : undefined,
-                confirm_name: args.confirm_name ? String(args.confirm_name) : undefined,
-                message: redactSecrets(String(args.message ?? ""), runSecrets),
-                intent: args.intent as
-                  | "request"
-                  | "result"
-                  | "question"
-                  | "status"
-                  | "fyi"
-                  | undefined,
-                deliveryKey: effectKey,
+                deps,
+                run,
+                bot,
+                thread,
+                computer: { mode: computerMode, get: () => runComputer.get() },
+                context,
+                secrets: runSecrets,
               },
+              { args, executionId, effectKey },
             );
             if (!sent.ok) return finish({ error: sent.error });
-            return finish({
-              ok: true,
-              botId: sent.botId,
-              name: sent.name,
-              note: sent.note,
-            });
+            return finish({ ok: true, botId: sent.botId, name: sent.name, note: sent.note });
           }
           if (name === "connect_agent") {
             const result = await connectAgent(
@@ -10666,16 +10653,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(result);
           }
           if (name === "handoff_to_bot") {
-            if (!thread.groupId)
-              return finish({
-                error: "handoff_to_bot is only for group chats",
-              });
-            const result = await handoffToGroupBot(deps, run, thread.groupId, {
-              bot_id: args.bot_id ? String(args.bot_id) : undefined,
-              confirm_name: args.confirm_name ? String(args.confirm_name) : undefined,
-              message: String(args.message ?? ""),
-            });
-            if ("ok" in result && result.ok) handedOff = true;
+            const result = await handoffToBotWithFiles(
+              {
+                deps,
+                run,
+                bot,
+                thread,
+                computer: { mode: computerMode, get: () => runComputer.get() },
+                context,
+                secrets: runSecrets,
+              },
+              { args, executionId, effectKey },
+            );
+            if ("ok" in result && result.ok && thread.groupId) handedOff = true;
             return finish(result);
           }
           if (name === "archive_bot" || name === "delete_bot") {
@@ -11047,6 +11037,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             })
           : history;
         const runtimeHistory = [...historicalContext, ...historyWithImages];
+        const botGroupDirectory = thread.groupId
+          ? undefined
+          : await loadBotGroupDirectory(deps.prisma, {
+              botId: bot.id,
+              spaceId: run.spaceId,
+              userId: run.userId,
+            });
         // Without a roster a bot only knows the bots it spawned itself.
         const botDirectory = thread.groupId
           ? undefined
@@ -11233,7 +11230,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 taskCatalogInstruction,
                 workspaceInstruction,
                 agentEnvironmentInstruction,
-                botDirectory,
+                botDirectory:
+                  [botDirectory, botGroupDirectory].filter(Boolean).join("\n\n") || undefined,
                 pluginLine,
                 agentSkillsLine,
                 taughtSkillsLine,

@@ -15,7 +15,10 @@ function harness(
   existing?: { sourceRuns: { id: string; botId: string }[] },
 ) {
   const runCreate = vi.fn(async () => ({ id: "run-b" }));
-  const messageCreate = vi.fn(async () => ({ id: "message-1" }));
+  const messageCreate = vi.fn(async (_input: { data: { blocks: unknown } }) => ({
+    id: "message-1",
+    seq: 1,
+  }));
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: "group-1" }]),
     space: {
@@ -38,6 +41,8 @@ function harness(
     chatGroup: {
       findFirst: vi.fn(async () => ({
         id: "group-1",
+        name: "Team",
+        thread: { id: run.threadId },
         members: ["bot-a", "bot-b", "bot-c"].map((id) => ({
           bot: { id, name: id.toUpperCase() },
         })),
@@ -47,13 +52,14 @@ function harness(
     run: {
       findFirst: vi.fn(async () => ({
         id: run.id,
+        thread: { groupId: "group-1" },
         sourceMessage: { blocks: sourceBlocks },
       })),
       findUnique: vi.fn(async () => ({ status: "running" })),
       create: runCreate,
     },
     message: {
-      findUnique: vi.fn(async () => existing ?? null),
+      findUnique: vi.fn(async () => (existing ? { id: "message-1", ...existing } : null)),
       create: messageCreate,
     },
     thread: {
@@ -69,6 +75,12 @@ function harness(
     },
   };
   const prisma = {
+    chatGroup: {
+      findFirst: vi.fn(async () => ({
+        thread: { id: run.threadId },
+        members: ["bot-a", "bot-b", "bot-c"].map((id) => ({ bot: { id, name: id.toUpperCase() } })),
+      })),
+    },
     $transaction: vi.fn(async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx)),
   } as unknown as PrismaClient;
   return {
@@ -79,10 +91,44 @@ function harness(
     },
     messageCreate,
     runCreate,
+    eventCreate: tx.event.create,
   };
 }
 
 describe("group handoff ownership", () => {
+  it("carries the same selected files in its durable message and live event", async () => {
+    const { deps, messageCreate, eventCreate } = harness([]);
+    const files = [
+      {
+        kind: "file" as const,
+        artifactId: "selected-file",
+        name: "review.zip",
+        mimeType: "application/zip",
+        size: 12,
+      },
+    ];
+    await expect(
+      handoffToGroupBot(deps as never, run, "group-1", {
+        bot_id: "bot-b",
+        message: "Review the selected material",
+        files,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const blocks = messageCreate.mock.calls[0]?.[0].data.blocks;
+    expect(blocks).toEqual([expect.objectContaining({ kind: "handoff" }), ...files]);
+    expect(eventCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            messageId: "message-1",
+            messageSeq: 1,
+            role: "bot",
+            blocks,
+          }),
+        }),
+      }),
+    );
+  });
   it("marks a new ownership transfer as a follow-up with a chain hop", async () => {
     const { deps, messageCreate, runCreate } = harness([{ kind: "text", text: "user request" }]);
 
@@ -155,6 +201,15 @@ describe("group handoff ownership", () => {
       handoffToGroupBot(deps as never, run, "group-1", {
         bot_id: "bot-c",
         message: "A duplicate stage",
+        files: [
+          {
+            kind: "file",
+            artifactId: "selected-file",
+            name: "review.zip",
+            mimeType: "application/zip",
+            size: 12,
+          },
+        ],
       }),
     ).resolves.toMatchObject({ ok: true, botId: "bot-b", runId: "run-b" });
     expect(messageCreate).not.toHaveBeenCalled();

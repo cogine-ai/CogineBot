@@ -22,23 +22,38 @@ import {
 } from "./thread-artifacts.js";
 
 describe("current-turn thread files", () => {
-  it("keeps ZIP file attachment outside the current Bot capability", async () => {
-    const put = vi.fn();
-    await expect(
-      attachWorkspaceFileToThread(
-        { prisma: {} as PrismaClient, artifacts: { put } as unknown as ArtifactStore },
-        {
-          spaceId: "workspace-1",
-          userId: "user-1",
-          botId: "bot-1",
-          runId: "run-1",
-          filePath: "bundle.zip",
-          bytes: new Uint8Array([1, 2, 3]),
-          operationId: "attach-1",
-        },
-      ),
-    ).rejects.toThrow("Unsupported attachment type");
-    expect(put).not.toHaveBeenCalled();
+  it.each([
+    ["bundle.zip", "application/zip"],
+    ["report.xls", "application/vnd.ms-excel"],
+    ["report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ])("saves %s through the existing attachment store", async (filePath, mimeType) => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const put = vi.fn().mockResolvedValue({ id: "stored-1" });
+    const artifact = {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn(async ({ data }) => ({ id: "artifact-1", ...data })),
+    };
+    const tx = { artifact, $queryRaw: vi.fn().mockResolvedValue([{ lock: "1" }]) };
+    const result = await attachWorkspaceFileToThread(
+      {
+        prisma: {
+          artifact,
+          $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
+        } as unknown as PrismaClient,
+        artifacts: { put } as unknown as ArtifactStore,
+      },
+      {
+        spaceId: "workspace-1",
+        userId: "user-1",
+        botId: "bot-1",
+        runId: "run-1",
+        filePath,
+        bytes,
+        operationId: "attach-1",
+      },
+    );
+    expect(result.block).toMatchObject({ kind: "file", name: filePath, mimeType, size: 3 });
+    expect(put).toHaveBeenCalledWith({ name: filePath, mimeType, bytes }, expect.anything());
   });
 
   it("removes stored bytes when artifact metadata cannot be created", async () => {

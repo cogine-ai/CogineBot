@@ -1,3 +1,4 @@
+import { BOT_MESSAGE_TOO_LONG } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -17,6 +18,15 @@ const run = {
   sourceMessageId: null as string | null,
 };
 const sender = { id: "bot-sender", name: "Researcher" };
+const selectedFiles = [
+  {
+    kind: "file" as const,
+    artifactId: "selected-file",
+    name: "review.zip",
+    mimeType: "application/zip",
+    size: 12,
+  },
+];
 
 function deps(
   options: {
@@ -146,6 +156,7 @@ describe("messaging another bot", () => {
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-target",
       message: "Research this",
+      files: selectedFiles,
     });
 
     expect(sent).toEqual({ ok: false, error: "policy_disabled" });
@@ -320,7 +331,7 @@ describe("messaging another bot", () => {
       bot_id: "bot-target",
       message: "x".repeat(8_001),
     });
-    expect(sent).toEqual({ ok: false, error: "message exceeds the 8000 character limit" });
+    expect(sent).toEqual({ ok: false, error: BOT_MESSAGE_TOO_LONG });
     expect(harness.tx.run.create).not.toHaveBeenCalled();
   });
 
@@ -329,6 +340,7 @@ describe("messaging another bot", () => {
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-target",
       message: "hello",
+      files: selectedFiles,
     });
     expect(sent).toMatchObject({ ok: false });
     expect(harness.enqueue).not.toHaveBeenCalled();
@@ -493,27 +505,44 @@ describe("messaging another bot", () => {
     expect(harness.tx.run.create).not.toHaveBeenCalled();
   });
 
-  it("keeps model-supplied status updates subject to the hop limit", async () => {
-    const harness = deps({
-      hopBlocks: [
+  it.each(["result", "status"] as const)(
+    "keeps model-supplied %s with files subject to the hop limit",
+    async (intent) => {
+      const harness = deps({
+        hopBlocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "bot-target",
+            fromBotName: "Coordinator",
+            text: "please finish",
+            hop: 6,
+            intent: "request",
+          },
+        ],
+      });
+      const sent = await messageBot(
+        harness.deps,
+        { ...run, sourceMessageId: "message-source" },
+        sender,
         {
-          kind: "bot_message_received",
-          fromBotId: "bot-target",
-          fromBotName: "Coordinator",
-          text: "please finish",
-          hop: 6,
-          intent: "request",
+          bot_id: "bot-target",
+          message: "selected result",
+          intent,
+          files: [
+            {
+              kind: "file",
+              artifactId: "result-file",
+              name: "report.txt",
+              mimeType: "text/plain",
+              size: 32,
+            },
+          ],
         },
-      ],
-    });
-    const sent = await messageBot(
-      harness.deps,
-      { ...run, sourceMessageId: "message-source" },
-      sender,
-      { bot_id: "bot-target", message: "still working", intent: "status" },
-    );
-    expect(sent.ok).toBe(false);
-  });
+      );
+      expect(sent).toMatchObject({ ok: false, error: expect.stringContaining("message limit") });
+      expect(harness.tx.run.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps a person-started chain going", async () => {
     const harness = deps({
@@ -637,6 +666,7 @@ describe("hardening", () => {
       bot_id: "bot-target",
       message: "chart it",
       deliveryKey: "call-1",
+      files: selectedFiles,
     });
 
     expect(sent).toMatchObject({ ok: true, replayed: true, botId: "bot-target" });

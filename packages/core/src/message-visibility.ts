@@ -22,7 +22,7 @@ export type UserVisibleMessagesOptions = {
    */
   backgroundRunIds?: Iterable<string>;
   /**
-   * Surface a peer-run's own `text` reply (e.g. a delegating bot's summary to the user)
+   * Surface a peer-run's own text reply and explicitly attached files
    * alongside `ask` cards. Defaults to true for chat-thread rendering; set false for
    * contexts like sidebar previews that should stay ask-only and never echo peer chatter.
    */
@@ -35,7 +35,7 @@ export function isPeerReceiptBlocks(blocks: readonly MessageBlock[]): boolean {
   );
 }
 
-/** Newly reachable MCP-only peer rows expose their approval blocks, not hidden activity. */
+/** Newly reachable attachment/approval rows do not expose hidden peer activity. */
 export function peerVisibleMessageBlocks(
   blocks: readonly MessageBlock[],
   includeText = true,
@@ -45,8 +45,12 @@ export function peerVisibleMessageBlocks(
     blocks.some((block) => block.kind === "ask" || (includeText && block.kind === "text"))
   )
     return blocks;
-  const approvals = blocks.filter((block) => block.kind === "mcp_approval");
-  return approvals.length ? approvals : null;
+  const visible = blocks.filter(
+    (block) =>
+      block.kind === "mcp_approval" ||
+      (includeText && (block.kind === "file" || block.kind === "image")),
+  );
+  return visible.length ? visible : null;
 }
 
 /** User-input cards remain visible when their run otherwise stays in the background. */

@@ -31,6 +31,33 @@ export type MaterializedThreadFile = {
   path: string;
 };
 
+/** Read a workspace file that can travel through the existing attachment store. */
+export async function readWorkspaceFile(
+  deps: { sandbox: SandboxProvider; artifacts?: ArtifactStore },
+  input: {
+    context: AdapterContext;
+    computer: () => Promise<ComputerRef>;
+    computerMode: ComputerMode;
+    botId: string;
+    filePath: string;
+  },
+): Promise<{ error: string } | { bytes: Uint8Array; artifacts: ArtifactStore }> {
+  if (!deps.artifacts) return { error: "artifact storage unavailable" };
+  let bytes: Uint8Array;
+  try {
+    bytes = await deps.sandbox.readFile(
+      await input.computer(),
+      resolveBotWorkspacePath(input.computerMode, input.botId, input.filePath),
+      input.context,
+      { maxBytes: ATTACHMENT_MAX_BYTES },
+    );
+  } catch {
+    return { error: "file not found or unreadable" };
+  }
+  if (!inferAttachmentMimeType(input.filePath)) return { error: "unsupported attachment type" };
+  return { bytes, artifacts: deps.artifacts };
+}
+
 export async function attachWorkspaceFileToThread(
   deps: {
     prisma: PrismaClient;

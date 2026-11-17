@@ -359,6 +359,7 @@ function fixture({
   };
   let connectionReadCount = 0;
   const prisma = {
+    chatGroup: { findMany: vi.fn(async () => []) },
     $queryRaw: vi.fn(async () =>
       semanticTarget && semanticMemory
         ? [
@@ -1249,6 +1250,7 @@ describe("group peer dispatch across runtime modes", () => {
     Object.assign(f.prisma.bot, { findMany: vi.fn(async () => [target]) });
     Object.assign(f.prisma, {
       chatGroup: {
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async () => ({
           id: "group-1",
           name: "Peer group",

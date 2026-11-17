@@ -209,6 +209,7 @@ function fixture(
     ),
   };
   const prisma = {
+    chatGroup: { findMany: vi.fn(async () => []) },
     $queryRaw: vi.fn(async () => []),
     run: {
       findUnique: vi.fn(async () => run),

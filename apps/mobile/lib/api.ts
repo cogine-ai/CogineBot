@@ -1687,7 +1687,9 @@ export function applyMobileThreadEvent(
     );
   }
   const messageEvent =
-    event.type === "thread.message.created" || event.type === "thread.message.updated";
+    event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
+    event.type === "group.handoff";
   const known = messageEvent
     ? prev.messages.find(
         (message) =>
@@ -1968,8 +1970,15 @@ export function applyMobileThreadEvent(
         : prev.messages,
     };
   }
-  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
-    const { remaining } = takeLiveMessage(prev.messages, progressMessageId(event));
+  if (
+    event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
+    event.type === "group.handoff"
+  ) {
+    const remaining =
+      event.type === "group.handoff" && event.runId
+        ? prev.messages
+        : takeLiveMessage(prev.messages, progressMessageId(event)).remaining;
     const id = String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`);
     const known = prev.messages.find((message) => message.id === id);
     const next: MobileMessage = {

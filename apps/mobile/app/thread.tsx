@@ -68,6 +68,7 @@ import {
   useRouter,
 } from "expo-router";
 import { useHeaderHeight } from "expo-router/react-navigation";
+import type { ReactNode } from "react";
 import {
   memo,
   useCallback,
@@ -1984,6 +1985,7 @@ function Thread({
                 event.type === "agent.tool.completed" ||
                 event.type === "thread.message.created" ||
                 event.type === "thread.message.updated" ||
+                event.type === "group.handoff" ||
                 event.type === "thread.message.reaction" ||
                 event.type === "thread.subagent" ||
                 event.type === "thread.cloud_agent" ||
@@ -2010,7 +2012,10 @@ function Thread({
               if (event.type === "bot.updated") {
                 void refreshMentionBots();
               }
-              if (event.type === "thread.message.created" && event.payload?.role === "bot") {
+              if (
+                (event.type === "thread.message.created" || event.type === "group.handoff") &&
+                event.payload?.role === "bot"
+              ) {
                 readVisibleTarget.current = null;
                 markReadIfVisible();
               }
@@ -4285,13 +4290,17 @@ const MessageBubble = memo(function MessageBubble({
       </View>
     );
   }
+  const hasAttachments = message.blocks.some(
+    (block) => block.kind === "file" || block.kind === "image",
+  );
+  let collaborationReceipt: ReactNode = null;
   const handoff = message.blocks.find((block) => block.kind === "handoff");
   if (handoff) {
     const from = memberName(members, handoff.fromBotId) ?? t("bot");
     const to = memberName(members, handoff.toBotId) ?? t("bot");
     const origin = t("{from} messaged {to}", { from, to });
     const status = collaborationDeliveryLabel(handoff.deliveryStatus);
-    return (
+    collaborationReceipt = (
       <AgentEventLabel
         actionProps={actionProps}
         label={status ? `${origin} · ${status}` : origin}
@@ -4300,6 +4309,7 @@ const MessageBubble = memo(function MessageBubble({
         onToggle={() => setPeerExpanded((expanded) => !expanded)}
       />
     );
+    if (!hasAttachments) return collaborationReceipt;
   }
   const peerMessage = message.blocks.find(
     (
@@ -4307,7 +4317,7 @@ const MessageBubble = memo(function MessageBubble({
     ): block is Extract<MessageBlock, { kind: "bot_message_sent" | "bot_message_received" }> =>
       block.kind === "bot_message_sent" || block.kind === "bot_message_received",
   );
-  if (peerMessage) {
+  if (peerMessage && !handoff) {
     const sent = peerMessage.kind === "bot_message_sent";
     const peer = sent ? peerMessage.toBotName : peerMessage.fromBotName;
     const peerBotId = sent ? peerMessage.toBotId : peerMessage.fromBotId;
@@ -4322,7 +4332,7 @@ const MessageBubble = memo(function MessageBubble({
       tokens.mutedForeground;
     // Compact receipt only: peer bodies stay out of the human thread.
     // Full view-only peer chat is web-first; mobile keeps the chip without expand.
-    return (
+    collaborationReceipt = (
       <Pressable
         {...actionProps}
         accessible
@@ -4345,6 +4355,7 @@ const MessageBubble = memo(function MessageBubble({
         </Text>
       </Pressable>
     );
+    if (!hasAttachments) return collaborationReceipt;
   }
   const channelMessage = message.blocks.find(
     (block): block is Extract<MessageBlock, { kind: "channel_message" }> =>
@@ -4618,7 +4629,9 @@ const MessageBubble = memo(function MessageBubble({
     .join("\n");
   if (attachments.length > 0) {
     const speaker =
-      message.role === "bot" ? (memberName(members, message.botId) ?? botName) : undefined;
+      !collaborationReceipt && message.role === "bot"
+        ? (memberName(members, message.botId) ?? botName)
+        : undefined;
     const speakerColor =
       message.role === "bot" ? speakerColorFor(bots, members, message.botId) : undefined;
     return (
@@ -4634,6 +4647,7 @@ const MessageBubble = memo(function MessageBubble({
           gap: 8,
         }}
       >
+        {collaborationReceipt}
         {speaker ? (
           <Text
             style={{

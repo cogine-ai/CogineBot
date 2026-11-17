@@ -12,8 +12,8 @@ import {
 } from "./attachments.js";
 
 describe("attachment helpers", () => {
-  it("keeps ZIP deferred and rejects unsupported mime types and empty payloads", () => {
-    expect(() => validateAttachmentMimeType("application/zip")).toThrow(AttachmentValidationError);
+  it("accepts ZIP but rejects unsupported mime types and empty payloads", () => {
+    expect(() => validateAttachmentMimeType("application/zip")).not.toThrow();
     expect(() => validateAttachmentMimeType("application/octet-stream")).toThrow(
       AttachmentValidationError,
     );
@@ -82,10 +82,10 @@ describe("attachment helpers", () => {
     "application/x-zip",
     "multipart/x-zip",
     "application/octet-stream",
-  ])("rejects inference for deferred ZIP attachments reported as %s", (reportedType) => {
-    expect(inferAttachmentMimeType("archive.zip", reportedType)).toBeNull();
-    expect(inferAttachmentMimeType("archive.ZIP", reportedType)).toBeNull();
-    expect(attachmentExtensionForMimeType("application/zip")).toBe("");
+  ])("normalizes ZIP attachment reports as %s", (reportedType) => {
+    expect(inferAttachmentMimeType("archive.zip", reportedType)).toBe("application/zip");
+    expect(inferAttachmentMimeType("archive.ZIP", reportedType)).toBe("application/zip");
+    expect(attachmentExtensionForMimeType("application/zip")).toBe(".zip");
   });
 
   it("selects current-turn images by user turn or explicit external source", () => {
@@ -133,6 +133,45 @@ describe("attachment helpers", () => {
     expect(attachmentsForBot(attachments, "bot-two")).toEqual([attachments[1]]);
     expect(attachmentsForBot(attachments, undefined)).toEqual([]);
   });
+
+  it.each(["bot_message", "follow_up"])(
+    "uses only the explicitly bound collaboration message for %s attachments",
+    (trigger) => {
+      const peer = {
+        id: "peer",
+        role: "bot",
+        runId: "sender",
+        blocks: [
+          {
+            kind: "bot_message_received" as const,
+            fromBotId: "bot-a",
+            fromBotName: "Sender",
+            text: "Review",
+          },
+        ],
+      };
+      const handoff = {
+        id: "handoff",
+        role: "bot",
+        runId: "source",
+        blocks: [
+          { kind: "handoff" as const, fromBotId: "bot-a", toBotId: "bot-b", text: "Review" },
+        ],
+      };
+      const unrelated = {
+        id: "other",
+        role: "user",
+        runId: "receiver",
+        blocks: [{ kind: "text" as const, text: "Earlier upload" }],
+      };
+      const messages = [unrelated, peer, handoff];
+      expect(userTurnMessageForRun(trigger, "receiver", messages, "peer")).toBe(peer);
+      expect(userTurnMessageForRun(trigger, "receiver", messages, "handoff")).toBe(handoff);
+      expect(userTurnMessageForRun(trigger, "receiver", messages)).toBeUndefined();
+      expect(userTurnMessageForRun(trigger, "receiver", messages, "other")).toBeUndefined();
+      expect(userTurnMessageForRun(trigger, "receiver", messages, "missing")).toBeUndefined();
+    },
+  );
 });
 
 describe("peer message history", () => {

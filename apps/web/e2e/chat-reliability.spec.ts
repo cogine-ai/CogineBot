@@ -18,6 +18,8 @@ import {
   isBotCreationSpawnKey,
   normalizeCreateBotProfile,
 } from "@rakazo/contracts";
+import { RESPONSE_STREAMING_STORAGE_KEY } from "@rakazo/core";
+import { TOOL_ACTIVITY_STORAGE_KEY } from "../src/lib/tool-activity-preference";
 import { captureScreenshot, openNewBot } from "./helpers";
 
 // Exercise the real app with synthetic HTTP contracts; no API, database or model is contacted.
@@ -407,6 +409,195 @@ async function ready(page: Page) {
   await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
 }
 
+for (const target of ["peer", "group"] as const) {
+  for (const width of [1280, 390]) {
+    test(`selected ${target} files arrive live and download from their original chat at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      const { state, errors } = await mockChat(page);
+      const stream = await controlledStream(page);
+      if (target === "group")
+        await page.addInitScript(
+          ({ streaming, tools }) => {
+            localStorage.setItem(streaming, "on");
+            localStorage.setItem(tools, "on");
+          },
+          { streaming: RESPONSE_STREAMING_STORAGE_KEY, tools: TOOL_ACTIVITY_STORAGE_KEY },
+        );
+      await page.setViewportSize({ width, height: 844 });
+      state.groups = [
+        {
+          id: "file-review",
+          spaceId: "space-primary",
+          name: "File review",
+          pinned: false,
+          sectionId: null,
+          archivedAt: null,
+          threadId: "thread-file-review",
+          preview: "Ready",
+          unread: false,
+          members: state.bots
+            .slice(0, 2)
+            .map(({ id, name, color }) => ({ botId: id, name, color })),
+          updatedAt: stamp,
+          createdAt: stamp,
+        },
+      ];
+      const bytes = Buffer.from([80, 75, 3, 4, 0, 255, 12]);
+      const downloads: unknown[] = [];
+      await page.route("**/rpc/artifacts/get", async (route) => {
+        downloads.push(route.request().postDataJSON().json);
+        return json(route, { contentBase64: bytes.toString("base64") });
+      });
+      await ready(page);
+      if (target === "group") {
+        await page.goto("/app/g/file-review");
+        await expect(page.getByRole("combobox", { name: "Message File review" })).toBeVisible();
+      }
+      const threadId = target === "group" ? "thread-file-review" : "thread-chief";
+      const blocks: ThreadMessage["blocks"] = [
+        target === "group"
+          ? {
+              kind: "handoff",
+              fromBotId: "chief",
+              toBotId: "research-one",
+              text: "Review selected materials",
+            }
+          : {
+              kind: "bot_message_received",
+              fromBotId: "research-one",
+              fromBotName: "Research One",
+              text: "Internal delivery instructions",
+            },
+        {
+          kind: "file",
+          artifactId: "selected-report",
+          name: "selected-report.xlsx",
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          size: bytes.length,
+        },
+      ];
+      const delivered: ProductEvent = {
+        id: "selected-delivery",
+        spaceId: "space-primary",
+        threadId,
+        botId: "chief",
+        seq: 5,
+        type: target === "group" ? "group.handoff" : "thread.message.created",
+        ...(target === "group" ? { runId: "sender-run" } : {}),
+        payload: { messageId: "selected-delivery", messageSeq: 1, role: "bot", blocks },
+        createdAt: stamp,
+      };
+      await expect
+        .poll(stream.activeTargets)
+        .toContain(target === "group" ? "group:file-review" : "bot:chief");
+      const transcript = page.getByTestId("transcript");
+      const senderProgress = transcript.locator('[data-message-id="progress:sender-run"]');
+      if (target === "group") {
+        await stream.emit({
+          ...delivered,
+          id: "sender-started",
+          seq: 1,
+          type: "run.started",
+          payload: { trigger: "user" },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-progress",
+          seq: 2,
+          type: "thread.progress",
+          payload: { delta: "Before handoff." },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-tool",
+          seq: 3,
+          type: "agent.tool.called",
+          payload: { name: "read_file" },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-more",
+          seq: 4,
+          type: "thread.progress",
+          payload: { delta: " Preparing " },
+        });
+        await expect(senderProgress).toContainText("Before handoff.");
+        await expect(senderProgress).toContainText("Read file");
+      }
+      await stream.emit(delivered);
+      const file = transcript.getByRole("button", { name: /selected-report\.xlsx application/ });
+      await expect(file).toBeVisible();
+      if (target === "peer") {
+        await expect(transcript.getByTestId("peer-receipt-chip")).toContainText("Research One");
+        await expect(transcript).not.toContainText("Internal delivery instructions");
+      } else {
+        await expect(transcript).toContainText("Research One ← Chief");
+        await expect(senderProgress).toContainText("Before handoff.");
+        await expect(senderProgress).toContainText("Read file");
+        await stream.emit({
+          ...delivered,
+          id: "sender-after",
+          seq: 6,
+          type: "thread.progress",
+          payload: { delta: "files." },
+        });
+        await expect(senderProgress).toContainText("Preparing files.");
+      }
+      await stream.emit(delivered);
+      await expect(file).toHaveCount(1);
+      await captureScreenshot(page, testInfo, `selected-${target}-file-${width}`);
+      const completed = page.waitForEvent("download");
+      await file.click();
+      const download = await completed;
+      expect(download.suggestedFilename()).toBe("selected-report.xlsx");
+      const readable = await download.createReadStream();
+      expect(readable).not.toBeNull();
+      const chunks: Buffer[] = [];
+      for await (const chunk of readable!) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+      expect(downloads).toEqual([
+        {
+          ...(target === "group" ? { groupId: "file-review" } : { botId: "chief" }),
+          artifactId: "selected-report",
+        },
+      ]);
+      if (target === "group") {
+        await stream.emit({
+          ...delivered,
+          id: "sender-completed",
+          seq: 7,
+          type: "run.completed",
+          payload: {},
+        });
+        await expect(senderProgress).toHaveCount(0);
+        await expect(file).toHaveCount(1);
+      }
+      const message: ThreadMessage = {
+        id: "selected-delivery",
+        threadId,
+        seq: 1,
+        botId: "chief",
+        role: "bot",
+        blocks,
+        createdAt: stamp,
+      };
+      const cursor = target === "group" ? 7 : 5;
+      state.thread = (route, data) => json(route, { ...data, cursor, messages: [message] });
+      state.bootstrap = (route, data) =>
+        json(route, {
+          ...data,
+          thread: data.thread ? { ...data.thread, cursor, messages: [message] } : null,
+        });
+      await page.reload();
+      await expect(file).toHaveCount(1);
+      expect(state.sends).toHaveLength(0);
+      expect(state.uploads).toHaveLength(0);
+      expect(errors).toEqual([]);
+    });
+  }
+}
+
 test("a voice-originated Page review stays actionable in chat after hanging up", async ({
   page,
 }, testInfo) => {
@@ -547,7 +738,7 @@ async function highlighted(page: Page, name: string) {
 async function controlledStream(page: Page) {
   await page.addInitScript(() => {
     const nativeFetch = window.fetch.bind(window);
-    const openStreams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+    const openStreams = new Map<ReadableStreamDefaultController<Uint8Array>, string>();
     let failed: boolean | number = false;
     let requests = 0;
     let events: Array<{ seq: number; [key: string]: unknown }> = [];
@@ -555,13 +746,16 @@ async function controlledStream(page: Page) {
     Object.defineProperty(window, "reliabilityStream", {
       value: {
         cursors,
+        get activeTargets() {
+          return [...openStreams.values()];
+        },
         get requests() {
           return requests;
         },
         fail(value: boolean | number) {
           failed = value;
           if (value) {
-            for (const controller of openStreams)
+            for (const controller of openStreams.keys())
               controller.error(new TypeError("Failed to fetch"));
             openStreams.clear();
           }
@@ -570,7 +764,7 @@ async function controlledStream(page: Page) {
           events = value;
         },
         emit(event: (typeof events)[number]) {
-          for (const controller of openStreams)
+          for (const controller of openStreams.keys())
             controller.enqueue(
               new TextEncoder().encode(
                 `event: message\ndata: ${JSON.stringify({ json: event })}\n\n`,
@@ -604,7 +798,10 @@ async function controlledStream(page: Page) {
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           current = controller;
-          openStreams.add(controller);
+          openStreams.set(
+            controller,
+            target.groupId ? `group:${target.groupId}` : `bot:${target.botId}`,
+          );
           for (const event of events) {
             if (event.seq > target.cursor)
               controller.enqueue(
@@ -667,6 +864,12 @@ async function controlledStream(page: Page) {
             window as unknown as { reliabilityStream: { emit: (event: unknown) => void } }
           ).reliabilityStream.emit(value),
         event,
+      ),
+    activeTargets: () =>
+      page.evaluate(
+        () =>
+          (window as unknown as { reliabilityStream: { activeTargets: string[] } })
+            .reliabilityStream.activeTargets,
       ),
     cursors: () =>
       page.evaluate(

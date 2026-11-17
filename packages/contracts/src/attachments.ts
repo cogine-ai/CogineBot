@@ -19,6 +19,9 @@ export const ATTACHMENT_FILE_MIME_TYPES = [
   "text/csv",
   "text/html",
   "application/json",
+  "application/zip",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ] as const;
 
 export const ATTACHMENT_ALLOWED_MIME_TYPES = [
