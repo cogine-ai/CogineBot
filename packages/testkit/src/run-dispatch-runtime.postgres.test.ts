@@ -1313,9 +1313,16 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         });
         targetRunId = seeded.run.id;
         targetBotId = seeded.botId;
-        await fixture.handles.executor
-          .continueRun(targetRunId, "setup-write-worker")
-          .catch(() => undefined);
+        // PostgreSQL may take longer than the backoff to accept a valid write.
+        const recoveryTime = Date.now();
+        const recoveryClock = vi.spyOn(Date, "now").mockReturnValue(recoveryTime);
+        try {
+          await fixture.handles.executor
+            .continueRun(targetRunId, "setup-write-worker")
+            .catch(() => undefined);
+        } finally {
+          recoveryClock.mockRestore();
+        }
         expect(injected).toBe(true);
         expect(await db.prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
           expect.objectContaining({
@@ -1658,9 +1665,16 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           });
         targetComputerId = (await db.prisma.bot.findUniqueOrThrow({ where: { id: targetBotId } }))
           .computerId!;
-        await fixture.handles.executor
-          .continueRun(targetRunId, "first-setup-worker")
-          .catch(() => undefined);
+        // Measure the requested backoff independently of database scheduling latency.
+        const recoveryTime = Date.now();
+        const recoveryClock = vi.spyOn(Date, "now").mockReturnValue(recoveryTime);
+        try {
+          await fixture.handles.executor
+            .continueRun(targetRunId, "first-setup-worker")
+            .catch(() => undefined);
+        } finally {
+          recoveryClock.mockRestore();
+        }
         expect(injected).toBe(true);
         if (stage === "claim-read-recovery-ack-lost") expect(recoveryReplyLost).toBe(true);
         expect(runtimeCalls).toBe(0);
