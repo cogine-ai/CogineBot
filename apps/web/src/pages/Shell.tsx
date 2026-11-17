@@ -884,6 +884,7 @@ export function ShellPage() {
   const computerOpenRef = useRef(false);
   const computerBotIdRef = useRef<string | undefined>(undefined);
   const computerBootEpoch = useRef(0);
+  const computerControlEpoch = useRef(0);
   const computerBootObservation = useRef<(() => boolean) | null>(null);
   const computerBootAttempt = useRef<{
     botId: string;
@@ -893,6 +894,7 @@ export function ShellPage() {
   } | null>(null);
   function invalidateComputerBoot() {
     computerBootEpoch.current += 1;
+    computerControlEpoch.current += 1;
     computerBootObservation.current = null;
     computerBootAttempt.current = null;
     setBooting(false);
@@ -909,6 +911,7 @@ export function ShellPage() {
   const [failedComputerRelease, setFailedComputerReleaseState] = useState<{
     botId: string;
     reason?: ComputerReleaseReason;
+    released?: boolean;
   } | null>(null);
   const failedComputerReleaseRef = useRef<typeof failedComputerRelease>(null);
   function setFailedComputerRelease(failure: typeof failedComputerRelease) {
@@ -1171,6 +1174,7 @@ export function ShellPage() {
     };
   }, [settingsOwner]);
   useLayoutEffect(() => {
+    computerControlEpoch.current += 1;
     if (computerBootObservation.current && !computerBootObservation.current()) {
       invalidateComputerBoot();
     }
@@ -4722,6 +4726,7 @@ export function ShellPage() {
   async function takeComputerControl(botId: string) {
     if (computerControlPending.current) return false;
     computerControlPending.current = true;
+    computerControlEpoch.current += 1;
     setTakingComputerControl(true);
     try {
       return await openComputer(botId, true);
@@ -4736,15 +4741,22 @@ export function ShellPage() {
   }, []);
 
   const releaseComputer = useCallback(
-    async (reason?: ComputerReleaseReason, expectedBotId?: string) => {
+    async (reason?: ComputerReleaseReason, expectedBotId?: string, releaseCompleted = false) => {
       const botId = computerBotIdRef.current ?? activeBotId.current;
       if (!botId || (expectedBotId && expectedBotId !== botId)) return;
-      const current = () => (computerBotIdRef.current ?? activeBotId.current) === botId;
+      const epoch = ++computerControlEpoch.current;
+      const current = () =>
+        computerControlEpoch.current === epoch &&
+        (computerBotIdRef.current ?? activeBotId.current) === botId;
       setComputerError(null);
       setComputerErrorFromScreen(false);
       setFailedComputerRelease(null);
+      let released = releaseCompleted;
       try {
-        await rpc.computer.release({ botId, reason });
+        if (!released) {
+          await rpc.computer.release({ botId, reason });
+          released = true;
+        }
         if (!current()) return;
         await refreshComputerFor(botId, current);
         if (!current()) return;
@@ -4758,7 +4770,7 @@ export function ShellPage() {
         if (!current()) return;
         setComputerError(t`Could not continue`);
         setComputerErrorFromScreen(false);
-        setFailedComputerRelease({ botId, reason });
+        setFailedComputerRelease({ botId, reason, ...(released ? { released: true } : {}) });
       }
     },
     [t],
@@ -4793,7 +4805,11 @@ export function ShellPage() {
           size="sm"
           onClick={() => {
             if (failedComputerRelease)
-              void releaseComputer(failedComputerRelease.reason, failedComputerRelease.botId);
+              void releaseComputer(
+                failedComputerRelease.reason,
+                failedComputerRelease.botId,
+                failedComputerRelease.released,
+              );
             else if (computerBot) void refreshComputerScreen(computerBot.id);
           }}
         >

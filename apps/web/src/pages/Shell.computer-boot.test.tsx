@@ -213,10 +213,12 @@ function bootstrap(): AppBootstrap {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 let root: Root;
 let container: HTMLDivElement;
@@ -915,6 +917,78 @@ it.each([
     expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
   },
 );
+
+it.each(["bot-round-trip", "new-takeover", "new-release"] as const)(
+  "ignores an older failed release after a %s",
+  async (change) => {
+    await showRunningComputer();
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const release = deferred<ComputerStatus>();
+    const fallback = boundary.call.getMockImplementation()!;
+    let first = true;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.release") {
+        if (first) {
+          first = false;
+          // The server has released control before the response is received.
+          currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+          return release.promise;
+        }
+        return Promise.resolve(currentComputer);
+      }
+      return fallback(path, input, options);
+    });
+    await click(button("I’m done"));
+    if (change === "bot-round-trip") {
+      await act(async () => navigate("/app/worker"));
+      await act(async () => navigate("/app/chief"));
+    } else if (change === "new-takeover") {
+      await click(button("Close computer"));
+      await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+      await click(
+        button("Take control", document.querySelector('[data-testid="computer-chrome"]')!),
+      );
+      expect(callsTo("computer.takeover")).toHaveLength(2);
+    } else {
+      await click(button("Close computer"));
+      currentComputer = { ...currentComputer, controlHolder: "user", controlBotId: "chief" };
+      await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+      await click(button("I’m done"));
+      expect(callsTo("computer.release")).toHaveLength(2);
+    }
+    await act(async () => release.reject(new Error("late release failure")));
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(document.querySelector('[data-testid="computer-viewport"] [role="alert"]')).toBeNull();
+  },
+);
+
+it("does not release again when only the post-release refresh failed", async () => {
+  await showRunningComputer();
+  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+  const fallback = boundary.call.getMockImplementation()!;
+  let released = false;
+  let failRefresh = true;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.release") {
+      released = true;
+      currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+      return Promise.resolve(currentComputer);
+    }
+    if (released && failRefresh && path === "threads.get")
+      return Promise.reject(new Error("refresh unavailable"));
+    return fallback(path, input, options);
+  });
+  await click(button("I’m done"));
+  expect(document.body.textContent).toContain("Could not continue");
+  failRefresh = false;
+  const reads = callsTo("threads.get").length;
+  await click(button("Retry", document.querySelector('[data-testid="computer-viewport"]')!));
+  expect(callsTo("threads.get")).toHaveLength(reads + 1);
+  expect(callsTo("computer.release")).toHaveLength(1);
+  expect(document.body.textContent).not.toContain("Could not continue");
+});
 
 it("retries a screen read without releasing computer control", async () => {
   await showRunningComputer();
@@ -2810,6 +2884,7 @@ it.each(["stale-retry", "late-failure", "late-success"] as const)(
     const failure = vi.fn();
     const values = {
       useCallback: (fn: unknown) => fn,
+      computerControlEpoch: { current: 0 },
       computerBotIdRef: { current: scenario === "stale-retry" ? "worker" : "chief" },
       activeBotId: { current: "chief" },
       setComputerError: vi.fn(),
@@ -2853,6 +2928,7 @@ it("stops a release's status and screen refresh when computer selection changes 
   let stillCurrent!: () => boolean;
   const values = {
     useCallback: (fn: unknown) => fn,
+    computerControlEpoch: { current: 0 },
     computerBotIdRef: selected,
     activeBotId: { current: "chief" },
     setComputerError: vi.fn(),
