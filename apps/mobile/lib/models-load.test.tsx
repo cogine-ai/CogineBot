@@ -1898,41 +1898,50 @@ it("preserves native dormant effort when saving a reasoning-disabled connection"
   expect(saved.thinkingLevel).toBe("low");
 });
 
-it("reveals the native retained effort after enabling reasoning", async () => {
-  let saved = {
-    ...credential,
-    thinkingLevel: "high",
-    modelSettings: { "model-a": { reasoning: false } as Record<string, unknown> },
-  };
-  const normal = state.rpc.getMockImplementation()!;
-  state.rpc.mockImplementation(async (procedure, input) => {
-    if (procedure === "models/credentials") return [saved];
-    if (procedure === "models/saveModelSettings") {
-      saved = {
-        ...saved,
-        modelSettings: { "model-a": (input as { settings: Record<string, unknown> }).settings },
-      };
-      return { ok: true };
+it.each([false, true])(
+  "reveals the native retained effort after enabling reasoning (protocol change %s)",
+  async (changeProtocol) => {
+    let saved = {
+      ...credential,
+      thinkingLevel: "high",
+      modelSettings: { "model-a": { reasoning: false } as Record<string, unknown> },
+    };
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (procedure, input) => {
+      if (procedure === "models/credentials") return [saved];
+      if (procedure === "models/saveModelSettings") {
+        saved = {
+          ...saved,
+          modelSettings: { "model-a": (input as { settings: Record<string, unknown> }).settings },
+        };
+        return { ok: true };
+      }
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    if (changeProtocol) {
+      await act(async () => button("API protocol").click());
+      const menu = vi.mocked(presentMessageActionSheet).mock.calls.at(-1)?.[0];
+      await act(async () => menu?.actions.find((entry) => entry.text === "Responses")?.onPress());
     }
-    return normal(procedure, input);
-  });
-  await act(async () => root.render(<Models />));
-  await act(async () => modelSettingsButton("Advanced").click());
-  await act(async () =>
-    modelSettingsPanel()
-      .querySelector<HTMLInputElement>('input[aria-label="Supports thinking"]')!
-      .click(),
-  );
-  await act(async () => modelSettingsButton("Save").click());
-  expect(button("Reasoning effort").textContent).toContain("High");
-  const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-    (item) => item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
-  )!;
-  await act(async () => save.click());
-  expect(
-    state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
-  ).toMatchObject({ thinkingLevel: "high" });
-});
+    await act(async () => modelSettingsButton("Advanced").click());
+    await act(async () =>
+      modelSettingsPanel()
+        .querySelector<HTMLInputElement>('input[aria-label="Supports thinking"]')!
+        .click(),
+    );
+    await act(async () => modelSettingsButton("Save").click());
+    expect(button("Reasoning effort").textContent).toContain("High");
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) =>
+        item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    await act(async () => save.click());
+    expect(
+      state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
+    ).toMatchObject({ thinkingLevel: "high" });
+  },
+);
 
 it("keeps the native committed revision when a settings readback supersedes the connection readback", async () => {
   const normal = state.rpc.getMockImplementation()!;

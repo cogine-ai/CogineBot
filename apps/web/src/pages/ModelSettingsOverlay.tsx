@@ -536,10 +536,7 @@ export function ModelSettingsOverlay({
     setApiProtocol(next);
     setThinkingLevel(
       (current) =>
-        clampCatalogThinkingLevel(
-          current,
-          modelReasoning ? compatibleThinkingLevels(next) : [],
-        ) as ThinkingLevel | null,
+        clampCatalogThinkingLevel(current, compatibleThinkingLevels(next)) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
     invalidatePreflight();

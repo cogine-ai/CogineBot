@@ -1744,43 +1744,47 @@ it("preserves a dormant effort when saving the connection after resetting model 
   }
 });
 
-it("reveals the retained effort after enabling model reasoning without replacing connection drafts", async () => {
-  const connection: ModelCredential = {
-    ...compatibleConnection(),
-    thinkingLevel: "high",
-    modelSettings: { "model-a": { reasoning: false } },
-  };
-  useCompatibleConnections([connection]);
-  models.credentials.mockImplementation(async () => [connection]);
-  models.saveModelSettings.mockImplementation(async ({ modelId, settings }) => {
-    connection.modelSettings = { ...connection.modelSettings, [modelId]: settings };
-    return { ok: true };
-  });
-  const view = await renderSettings();
-  try {
-    await typeInto(compatibleKeyField(view.container), "synthetic-replacement");
-    const panel = view.container.querySelector<HTMLDetailsElement>(
-      '[data-testid="model-settings-panel"]',
-    )!;
-    await act(async () => panel.querySelector("summary")?.click());
-    const label = [...panel.querySelectorAll("label")].find(
-      (item) => item.textContent === "Supports thinking",
-    )!;
-    await act(async () => label.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
-    await act(async () => buttons(panel, "Save")[0]?.click());
-    expect(panel.textContent).toContain("Saved.");
-    const save = buttons(view.container, "Save").find(
-      (item) => !item.closest('[data-testid="model-settings-panel"]'),
-    )!;
-    await act(async () => save.click());
-    expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+it.each([false, true])(
+  "reveals the retained effort after enabling model reasoning without replacing connection drafts (protocol change %s)",
+  async (changeProtocol) => {
+    const connection: ModelCredential = {
+      ...compatibleConnection(),
       thinkingLevel: "high",
-      apiKey: "synthetic-replacement",
+      modelSettings: { "model-a": { reasoning: false } },
+    };
+    useCompatibleConnections([connection]);
+    models.credentials.mockImplementation(async () => [connection]);
+    models.saveModelSettings.mockImplementation(async ({ modelId, settings }) => {
+      connection.modelSettings = { ...connection.modelSettings, [modelId]: settings };
+      return { ok: true };
     });
-  } finally {
-    await view.unmount();
-  }
-});
+    const view = await renderSettings();
+    try {
+      await typeInto(compatibleKeyField(view.container), "synthetic-replacement");
+      if (changeProtocol) await choose(select(view.container, "API protocol"), "responses");
+      const panel = view.container.querySelector<HTMLDetailsElement>(
+        '[data-testid="model-settings-panel"]',
+      )!;
+      await act(async () => panel.querySelector("summary")?.click());
+      const label = [...panel.querySelectorAll("label")].find(
+        (item) => item.textContent === "Supports thinking",
+      )!;
+      await act(async () => label.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+      await act(async () => buttons(panel, "Save")[0]?.click());
+      expect(panel.textContent).toContain("Saved.");
+      const save = buttons(view.container, "Save").find(
+        (item) => !item.closest('[data-testid="model-settings-panel"]'),
+      )!;
+      await act(async () => save.click());
+      expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+        thinkingLevel: "high",
+        apiKey: "synthetic-replacement",
+      });
+    } finally {
+      await view.unmount();
+    }
+  },
+);
 
 it("keeps the committed connection revision when a settings readback supersedes the connection readback", async () => {
   const connection = compatibleConnection();
