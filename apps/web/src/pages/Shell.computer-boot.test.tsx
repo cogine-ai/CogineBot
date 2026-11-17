@@ -2843,3 +2843,42 @@ it.each(["stale-retry", "late-failure", "late-success"] as const)(
     expect(values.refreshComputerScreen).not.toHaveBeenCalled();
   },
 );
+
+it("stops a release's status and screen refresh when computer selection changes between awaits", async () => {
+  const start = shellSource.indexOf("  const releaseComputer = useCallback(");
+  const end = shellSource.indexOf("  function dismissComposerError()", start);
+  const selected = { current: "chief" };
+  const read = deferred<void>();
+  const entered = deferred<void>();
+  let stillCurrent!: () => boolean;
+  const values = {
+    useCallback: (fn: unknown) => fn,
+    computerBotIdRef: selected,
+    activeBotId: { current: "chief" },
+    setComputerError: vi.fn(),
+    setComputerErrorFromScreen: vi.fn(),
+    setFailedComputerRelease: vi.fn(),
+    rpc: { computer: { release: vi.fn(async () => undefined) } },
+    refreshComputerFor: vi.fn(async (_id: string, current: () => boolean) => {
+      stillCurrent = current;
+      entered.resolve();
+      await read.promise;
+    }),
+    refreshComputerScreen: vi.fn(),
+    activeGroupId: { current: "ops" },
+    refreshGroupThreadRef: { current: vi.fn() },
+    t: (parts: TemplateStringsArray) => parts.join(""),
+  };
+  const release = new Function(
+    ...Object.keys(values),
+    `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn releaseComputer;`,
+  )(...Object.values(values));
+  const work = release("done", "chief");
+  await entered.promise;
+  selected.current = "worker";
+  expect(stillCurrent()).toBe(false);
+  read.resolve();
+  await work;
+  expect(values.refreshComputerScreen).not.toHaveBeenCalled();
+  expect(values.refreshGroupThreadRef.current).not.toHaveBeenCalled();
+});

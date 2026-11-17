@@ -4739,20 +4739,23 @@ export function ShellPage() {
     async (reason?: ComputerReleaseReason, expectedBotId?: string) => {
       const botId = computerBotIdRef.current ?? activeBotId.current;
       if (!botId || (expectedBotId && expectedBotId !== botId)) return;
+      const current = () => (computerBotIdRef.current ?? activeBotId.current) === botId;
       setComputerError(null);
       setComputerErrorFromScreen(false);
       setFailedComputerRelease(null);
       try {
         await rpc.computer.release({ botId, reason });
-        if ((computerBotIdRef.current ?? activeBotId.current) !== botId) return;
-        await refreshComputerFor(botId);
-        await refreshComputerScreen(botId);
+        if (!current()) return;
+        await refreshComputerFor(botId, current);
+        if (!current()) return;
+        await refreshComputerScreen(botId, current);
+        if (!current()) return;
         const groupId = activeGroupId.current;
         if (groupId) {
           await refreshGroupThreadRef.current(groupId).catch(() => undefined);
         }
       } catch {
-        if ((computerBotIdRef.current ?? activeBotId.current) !== botId) return;
+        if (!current()) return;
         setComputerError(t`Could not continue`);
         setComputerErrorFromScreen(false);
         setFailedComputerRelease({ botId, reason });
