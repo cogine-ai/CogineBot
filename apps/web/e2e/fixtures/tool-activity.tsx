@@ -21,7 +21,9 @@ import "../../src/styles.css";
 
 const params = new URLSearchParams(location.search);
 const view = params.get("view") === "settings" ? "settings" : "thread";
-const live = params.get("phase") === "live";
+const groupedLive = params.get("phase") === "grouped-live";
+const live = params.get("phase") === "live" || groupedLive;
+const stopped = params.get("phase") === "stopped";
 
 const USER_TEXT = "Find a free slot on Tuesday.";
 const REPLY_TEXT = "Tuesday at 2 pm is free.";
@@ -38,14 +40,37 @@ const STEP_LABELS = [
 
 const stepsBlock: MessageBlock = {
   kind: "steps",
-  steps: STEP_LABELS.map((label) => ({ label, count: 1 })),
+  steps: STEP_LABELS.map((label, index) => ({
+    label,
+    count: 1,
+    ...(groupedLive && index === 7
+      ? { count: 2, outcomes: { failed: 1 } }
+      : live || (stopped && index === 7)
+        ? {}
+        : {
+            outcomes:
+              stopped && index === 5
+                ? { failed: 1 }
+                : stopped && index === 6
+                  ? { stopped: 1 }
+                  : { succeeded: 1 },
+          }),
+  })),
   ...(live ? {} : { durationMs: 12_400 }),
 };
 
 // A live run that has only called tools so far, or the finished reply with its tool card.
 const botBlocks: MessageBlock[] = live
   ? [stepsBlock]
-  : [stepsBlock, { kind: "text", text: REPLY_TEXT }];
+  : [
+      stepsBlock,
+      {
+        kind: "text",
+        text: stopped
+          ? "I got stuck calling Message user with the same result 25 times in a row without making progress, so I stopped early. Try rephrasing this, or ask me to try a different approach."
+          : REPLY_TEXT,
+      },
+    ];
 
 function BotMessage({ blocks }: { blocks: MessageBlock[] }) {
   const showToolActivity = useSyncExternalStore(subscribeToolActivity, getToolActivityEnabled);

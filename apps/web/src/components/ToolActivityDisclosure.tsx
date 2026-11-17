@@ -1,4 +1,4 @@
-import { Plural } from "@lingui/react/macro";
+import { Plural, Trans } from "@lingui/react/macro";
 import type { ThreadMessage } from "@rakazo/contracts";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
@@ -19,6 +19,13 @@ export function ToolSteps({
   /** Show only the last `limit` steps, with a count of the earlier ones above them. */
   limit?: number;
 }) {
+  const presentations = {
+    working: { glyph: "◷", color: "text-warning", label: <Trans>Working…</Trans> },
+    succeeded: { glyph: "✓", color: "text-success", label: <Trans>Succeeded</Trans> },
+    failed: { glyph: "×", color: "text-destructive", label: <Trans>Failed</Trans> },
+    stopped: { glyph: "■", color: "text-muted-foreground", label: <Trans>Stopped</Trans> },
+    unknown: { glyph: "–", color: "text-muted-foreground", label: <Trans>Result unknown</Trans> },
+  };
   const hidden = limit !== undefined && steps.length > limit ? steps.length - limit : 0;
   const shown = hidden > 0 ? steps.slice(hidden) : steps;
   return (
@@ -30,14 +37,28 @@ export function ToolSteps({
       ) : null}
       {shown.map((step, offset) => {
         const index = hidden + offset;
-        const isCurrent = index === currentIndex;
+        const outcomes = step.outcomes;
+        const outcome = outcomes?.failed
+          ? "failed"
+          : outcomes?.stopped
+            ? "stopped"
+            : outcomes?.succeeded === step.count
+              ? "succeeded"
+              : "unknown";
+        const settled =
+          (outcomes?.succeeded ?? 0) + (outcomes?.failed ?? 0) + (outcomes?.stopped ?? 0);
+        const isCurrent = index === currentIndex && (outcome === "unknown" || settled < step.count);
+        const presentation = presentations[isCurrent ? "working" : outcome];
         return (
           <div key={index} className="flex min-w-0 items-center gap-2 leading-5">
             <span
-              className={`text-[12px] ${isCurrent ? "text-warning" : "text-success"}`}
+              className={`text-[12px] ${presentation.color}`}
               style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
             >
-              {isCurrent ? "◷" : "✓"}
+              <span aria-hidden>{presentation.glyph}</span>
+              <span role="status" className="sr-only">
+                {presentation.label}
+              </span>
             </span>
             <span
               className={`min-w-0 flex-1 truncate text-[13px] ${
@@ -96,7 +117,7 @@ export function ToolActivityDisclosure({
           <Plural value={stepCount} one="Working… · # tool" other="Working… · # tools" />
         ) : (
           <>
-            <Plural value={stepCount} one="Done · # tool" other="Done · # tools" />
+            <Plural value={stepCount} one="# tool" other="# tools" />
             {duration ? ` · ${duration}` : null}
           </>
         )}

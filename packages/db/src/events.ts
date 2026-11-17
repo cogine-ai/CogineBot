@@ -652,6 +652,7 @@ async function lockTeamChatClaim(
     installation && grant
       ? Prisma.sql`AND ec.provider = ${installedSlackProviderId(installation.id)}
         AND ec."workspaceId" = ${installation.workspaceId} AND em."senderId" = ${installation.installerId}
+        AND coalesce(em."slackGrantRevision", 1) = ${installation.revision}
         AND em."createdAt" > ${grant.acceptAfter}`
       : Prisma.empty;
   const [message] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -838,6 +839,14 @@ export async function sendUserMessage(
               : {}),
           },
         });
+        if (input.teamChatClaim?.installation) {
+          // Commit the admitted Run and its installed-channel receipt together.
+          // The caller may stop before its routing/status update is persisted.
+          await tx.externalMessage.update({
+            where: { id: input.teamChatClaim.id },
+            data: { runId: run.id },
+          });
+        }
         if (input.linkMessageToRun) {
           await tx.message.update({ where: { id: message.id }, data: { runId: run.id } });
         }

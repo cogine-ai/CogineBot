@@ -336,6 +336,7 @@ services:
     restart: unless-stopped
     command: ["pnpm", "--filter", "@rakazo/worker", "start"]
     init: true
+    stop_grace_period: 7m
     logging: *logging
     security_opt:
       - no-new-privileges:true
@@ -346,6 +347,7 @@ services:
     environment:
       <<: *app-environment
       GRAPHILE_WORKER_CONCURRENCY:
+      RUN_DRAIN_ENABLED: ${RUN_DRAIN_ENABLED:-true}
       INFISICAL_URL: ${INFISICAL_URL:-}
       INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}

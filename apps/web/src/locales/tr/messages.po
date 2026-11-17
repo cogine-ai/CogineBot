@@ -7535,3 +7535,15 @@ msgstr "Zamanlamanın sahibi doğrulanamadı."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "İçe aktarılan rutinler duraklatılmış olarak başlar."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Başarılı"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Sonuç bilinmiyor"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# araç} other {# araç}}"

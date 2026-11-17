@@ -7535,3 +7535,15 @@ msgstr "Impossible de confirmer le propriétaire de la programmation."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Les routines importées sont initialement en pause."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Réussi"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Résultat inconnu"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# outil} other {# outils}}"

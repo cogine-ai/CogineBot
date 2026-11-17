@@ -5,6 +5,7 @@ import {
   MessageBlock as MessageBlockSchema,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
 } from "@rakazo/contracts";
+import type { ToolStepOutcome } from "@rakazo/core";
 import { AGENT_CONNECTION_RESPONSE_TOOL } from "@rakazo/core";
 import {
   isToolEffectIdempotencyKey,
@@ -232,6 +233,8 @@ export interface ScriptedOutputState {
   pendingToolNames: string[];
   publishedTerminalSubagent: boolean;
   lastToolOrdinal: number;
+  /** Display associations only; effect receipts remain the authority for execution. */
+  toolCalls?: Array<{ label: string; executionId: string; outcome?: ToolStepOutcome }>;
 }
 
 export interface StoredScriptedState {
@@ -322,6 +325,7 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
         "pendingToolNames",
         "publishedTerminalSubagent",
         "lastToolOrdinal",
+        "toolCalls",
       ]) ||
       typeof output.assembled !== "string" ||
       typeof output.currentTextSegment !== "string" ||
@@ -339,6 +343,25 @@ function stored(value: unknown, runId: string): value is StoredScriptedState {
         runtime.cursor.ordinal - (runtime.cursor.phase === "tool" ? 0 : 1)
     )
       throw new Error();
+    if (output.toolCalls !== undefined) {
+      if (
+        !Array.isArray(output.toolCalls) ||
+        output.toolCalls.length !== Number(output.lastToolOrdinal) + 1 ||
+        !output.toolCalls.every(
+          (call) =>
+            object(call) &&
+            fields(call, ["label", "executionId", "outcome"]) &&
+            typeof call.label === "string" &&
+            call.label.length > 0 &&
+            typeof call.executionId === "string" &&
+            call.executionId.length > 0 &&
+            (call.outcome === undefined ||
+              ["succeeded", "failed", "stopped"].includes(String(call.outcome))),
+        ) ||
+        new Set(output.toolCalls.map((call) => call.executionId)).size !== output.toolCalls.length
+      )
+        throw new Error();
+    }
     if (
       !Array.isArray(value.effectOccurrences) ||
       !value.effectOccurrences.every(

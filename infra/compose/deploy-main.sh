@@ -12,8 +12,9 @@ fi
 APP_DIR="${RAKAZO_DEPLOY_DIR:-/srv/rakazo}"
 COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
 BUILD_TIMEOUT="${RAKAZO_DEPLOY_BUILD_TIMEOUT:-15m}"
-UP_TIMEOUT="${RAKAZO_DEPLOY_UP_TIMEOUT:-5m}"
-ROLLBACK_TIMEOUT="${RAKAZO_DEPLOY_ROLLBACK_TIMEOUT:-8m}"
+UP_TIMEOUT="${RAKAZO_DEPLOY_UP_TIMEOUT:-10m}"
+ROLLBACK_TIMEOUT="${RAKAZO_DEPLOY_ROLLBACK_TIMEOUT:-10m}"
+WORKER_STOP_SECONDS=420
 MIN_FREE_GB="${RAKAZO_DEPLOY_MIN_FREE_GB-5}"
 BUILDKIT_IMAGE="moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c"
 MAX_INTEGER=9223372036854775807
@@ -40,6 +41,14 @@ cd -- "${APP_DIR}"
 APP_DIR="$(pwd -P)"
 for command in jq timeout sudo docker df awk git stat mktemp chmod mv wc flock curl sed tail tr rm; do
   command -v "${command}" >/dev/null || fail "Deployment requires ${command}; install the documented prerequisites first"
+done
+for command_timeout in UP_TIMEOUT ROLLBACK_TIMEOUT; do
+  awk -v duration="${!command_timeout}" 'BEGIN {
+    if (duration !~ /^([0-9]+([.][0-9]*)?|[.][0-9]+)[smhd]?$/) exit 1;
+    unit = substr(duration, length(duration), 1);
+    multiplier = unit == "d" ? 86400 : unit == "h" ? 3600 : unit == "m" ? 60 : 1;
+    exit !((duration + 0) * multiplier >= 480);
+  }' || fail "RAKAZO_DEPLOY_${command_timeout} must allow at least 8 minutes for worker drain and process exit"
 done
 if command -v sha256sum >/dev/null; then hash_command=(sha256sum); else
   command -v shasum >/dev/null || fail "Deployment requires SHA-256 tooling"
@@ -322,16 +331,32 @@ runtime_writer_ids() {
       end]'
 }
 stop_runtime_writers() {
-  local timeout="$1" writers id
-  local -a ids=()
+  local timeout="$1" writers id service stop_seconds
+  local -a ids=() other_services=()
   check_engine || return 1
-  docker_command "${timeout}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 "${writer_services[@]}" || return 1
+  # Give the worker its own command budget, independent of Compose's dependency stop order.
+  for service in "${writer_services[@]}"; do
+    if [[ "${service}" == worker ]]; then
+      docker_command "${timeout}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout "${WORKER_STOP_SECONDS}" worker || return 1
+    else
+      other_services+=("${service}")
+    fi
+  done
+  if ((${#other_services[@]} > 0)); then
+    check_engine || return 1
+    docker_command "${timeout}" compose --project-name "${project}" "${compose_args[@]}" -f "${state_dir}/forward.json" stop --timeout 120 "${other_services[@]}" || return 1
+  fi
   read_containers || return 1
   writers="$(runtime_writer_ids <<<"${containers}")" || return 1
   while IFS= read -r id; do ids+=("${id}"); done < <(jq -r '.[]' <<<"${writers}")
   if ((${#ids[@]} > 0)); then
-    check_engine || return 1
-    docker_command "${timeout}" container stop --time 120 "${ids[@]}" || return 1
+    for id in "${ids[@]}"; do
+      service="$(jq -er --arg id "${id}" '.[] | select(.Id == $id) | .Config.Labels["com.docker.compose.service"]' <<<"${containers}")" || return 1
+      stop_seconds=120
+      [[ "${service}" != worker ]] || stop_seconds="${WORKER_STOP_SECONDS}"
+      check_engine || return 1
+      docker_command "${timeout}" container stop --time "${stop_seconds}" "${id}" || return 1
+    done
   fi
   check_engine || return 1
   read_containers || return 1
