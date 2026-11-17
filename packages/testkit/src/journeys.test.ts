@@ -3000,6 +3000,151 @@ describeJourneys("required product journeys", () => {
     expect(connector.records.length).toBeGreaterThan(recordsBefore);
   });
 
+  it.each(["pause", "remove", "stop"] as const)(
+    "does not widen a Routine approval after %s",
+    async (action) => {
+      const cookie = await signup(
+        app,
+        `routine-transition-${action}-${stamp}@example.test`,
+        "Routine Lifecycle",
+      );
+      const bot = await rpc<Bot>(app, cookie, "bots/create", { name: "Routine Bot" });
+      const separateBot = await rpc<Bot>(app, cookie, "bots/create", { name: "Independent Bot" });
+      await rpc(app, cookie, "approvalRules/set", {
+        effect: "require_approval",
+        matchKind: "tool",
+        matchValue: "destination.write",
+      });
+      const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
+        botId: bot.id,
+        name: "Record a note",
+        prompt: `Write this ${action} scenario to the destination CRM as a note`,
+        crons: ["0 9 * * 1"],
+        timezone: "UTC",
+        active: false,
+      });
+      const nextRunAt = new Date(Date.now() + 86_400_000);
+      await prisma.routine.update({
+        where: { id: routine.id },
+        data: { active: true, nextRunAt },
+      });
+      const baseline = connector.records.length;
+      const old = await rpc<{ runId: string }>(app, cookie, "routines/testRun", {
+        routineId: routine.id,
+      });
+      const unrelated = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+        botId: separateBot.id,
+        text: "write this to the destination crm",
+      });
+      const pending = await waitFor(
+        app,
+        cookie,
+        bot.id,
+        (snapshot) => snapshot.run?.id === old.runId && snapshot.run.status === "waiting_input",
+      );
+      await waitFor(
+        app,
+        cookie,
+        separateBot.id,
+        (snapshot) =>
+          snapshot.run?.id === unrelated.runId && snapshot.run.status === "waiting_input",
+      );
+      const approval = await prisma.externalEffect.findFirstOrThrow({
+        where: { runId: old.runId, kind: "destination.write", status: "intended" },
+      });
+      const approvalMessage = pending.messages.find(
+        (message) =>
+          message.runId === old.runId &&
+          message.blocks.some(
+            (block) =>
+              typeof block === "object" &&
+              block !== null &&
+              "approvalEffectId" in block &&
+              block.approvalEffectId === approval.id,
+          ),
+      );
+      expect(approvalMessage).toBeDefined();
+      if (action === "pause") {
+        await rpc(app, cookie, "routines/update", { routineId: routine.id, active: false });
+      } else if (action === "remove") {
+        await rpc(app, cookie, "routines/remove", { routineId: routine.id });
+      } else {
+        await rpc(app, cookie, "threads/stop", { botId: bot.id });
+      }
+      const readOldRun = () => prisma.run.findUniqueOrThrow({ where: { id: old.runId } });
+      const afterTransition = await readOldRun();
+      expect(afterTransition).toMatchObject({
+        botId: bot.id,
+        routineId: action === "remove" ? null : routine.id,
+        trigger: "routine",
+        ...(action === "stop" && { status: "cancelled" }),
+      });
+      const schedule = await prisma.routine.findUnique({ where: { id: routine.id } });
+      if (action === "remove") expect(schedule).toBeNull();
+      if (action === "pause") expect(schedule).toMatchObject({ active: false, nextRunAt: null });
+      if (action === "stop") expect(schedule).toMatchObject({ active: true, nextRunAt });
+      expect(connector.records).toHaveLength(baseline);
+
+      const decision = {
+        botId: bot.id,
+        runId: old.runId,
+        messageId: approvalMessage!.id,
+        answer: "allow",
+      };
+      expect(
+        (await raw(app, cookie, "threads/answer", { ...decision, botId: separateBot.id })).status,
+      ).toBe(409);
+      expect((await readOldRun()).status).toBe(afterTransition.status);
+      const ownerAnswer = await raw(app, cookie, "threads/answer", decision);
+      // Preserve the Run's current approval gate without assigning a new
+      // lifecycle policy to a paused or removed schedule.
+      const wasCancelled = afterTransition.status === "cancelled";
+      let expectedState = afterTransition.status;
+      const readEffect = () =>
+        prisma.externalEffect.findUniqueOrThrow({ where: { id: approval.id } });
+      let settled: Awaited<ReturnType<typeof readEffect>>;
+      if (wasCancelled) {
+        expect(ownerAnswer.status).toBe(409);
+        settled = await readEffect();
+      } else {
+        expect(ownerAnswer.ok).toBe(true);
+        await waitForDatabase(async () => {
+          const run = await readOldRun();
+          return ["completed", "failed", "cancelled"].includes(run.status);
+        });
+        expect((await readOldRun()).status).toBe("completed");
+        expectedState = "completed";
+        settled = await readEffect();
+        expect(connector.records).toHaveLength(baseline + 1);
+        const approvedArgs = approval.request as Record<string, unknown>;
+        expect(approvedArgs).toMatchObject({
+          collection: expect.any(String),
+          title: expect.any(String),
+          body: expect.any(String),
+        });
+        expect(connector.records[baseline]).toMatchObject(approvedArgs);
+        expect(settled.status).toBe("completed");
+      }
+      const writes = connector.records.length;
+      if (wasCancelled) expect(writes).toBe(baseline);
+      expect((await raw(app, cookie, "threads/answer", decision)).status).toBe(409);
+      await executor.continueRun(old.runId, "stale-routine-worker");
+      expect(connector.records).toHaveLength(writes);
+      expect((await readOldRun()).status).toBe(expectedState);
+      expect(settled.request).toEqual(approval.request);
+      expect(await readEffect()).toMatchObject({
+        status: settled.status,
+        result: settled.result,
+        request: approval.request,
+      });
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: unrelated.runId } })).toMatchObject({
+        status: "waiting_input",
+      });
+      if (action === "stop") await rpc(app, cookie, "routines/remove", { routineId: routine.id });
+      await rpc(app, cookie, "threads/stop", { botId: separateBot.id });
+    },
+  );
+
   it("22: a routine schedule with any malformed or mixed one-shot cron is rejected", async () => {
     const cookie = await signup(app, `routine-crons-j-${stamp}@rakazo.test`, "Routine Crons");
     const bot = await rpc<Bot>(app, cookie, "bots/create", {

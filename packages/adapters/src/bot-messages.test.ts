@@ -505,27 +505,44 @@ describe("messaging another bot", () => {
     expect(harness.tx.run.create).not.toHaveBeenCalled();
   });
 
-  it("keeps model-supplied status updates subject to the hop limit", async () => {
-    const harness = deps({
-      hopBlocks: [
+  it.each(["result", "status"] as const)(
+    "keeps model-supplied %s with files subject to the hop limit",
+    async (intent) => {
+      const harness = deps({
+        hopBlocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "bot-target",
+            fromBotName: "Coordinator",
+            text: "please finish",
+            hop: 6,
+            intent: "request",
+          },
+        ],
+      });
+      const sent = await messageBot(
+        harness.deps,
+        { ...run, sourceMessageId: "message-source" },
+        sender,
         {
-          kind: "bot_message_received",
-          fromBotId: "bot-target",
-          fromBotName: "Coordinator",
-          text: "please finish",
-          hop: 6,
-          intent: "request",
+          bot_id: "bot-target",
+          message: "selected result",
+          intent,
+          files: [
+            {
+              kind: "file",
+              artifactId: "result-file",
+              name: "report.txt",
+              mimeType: "text/plain",
+              size: 32,
+            },
+          ],
         },
-      ],
-    });
-    const sent = await messageBot(
-      harness.deps,
-      { ...run, sourceMessageId: "message-source" },
-      sender,
-      { bot_id: "bot-target", message: "still working", intent: "status" },
-    );
-    expect(sent.ok).toBe(false);
-  });
+      );
+      expect(sent).toMatchObject({ ok: false, error: expect.stringContaining("message limit") });
+      expect(harness.tx.run.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps a person-started chain going", async () => {
     const harness = deps({

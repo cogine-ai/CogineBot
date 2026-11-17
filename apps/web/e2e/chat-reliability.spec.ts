@@ -18,6 +18,8 @@ import {
   isBotCreationSpawnKey,
   normalizeCreateBotProfile,
 } from "@rakazo/contracts";
+import { RESPONSE_STREAMING_STORAGE_KEY } from "@rakazo/core";
+import { TOOL_ACTIVITY_STORAGE_KEY } from "../src/lib/tool-activity-preference";
 import { captureScreenshot, openNewBot } from "./helpers";
 
 // Exercise the real app with synthetic HTTP contracts; no API, database or model is contacted.
@@ -414,6 +416,14 @@ for (const target of ["peer", "group"] as const) {
     }, testInfo) => {
       const { state, errors } = await mockChat(page);
       const stream = await controlledStream(page);
+      if (target === "group")
+        await page.addInitScript(
+          ({ streaming, tools }) => {
+            localStorage.setItem(streaming, "on");
+            localStorage.setItem(tools, "on");
+          },
+          { streaming: RESPONSE_STREAMING_STORAGE_KEY, tools: TOOL_ACTIVITY_STORAGE_KEY },
+        );
       await page.setViewportSize({ width, height: 844 });
       state.groups = [
         {
@@ -474,14 +484,48 @@ for (const target of ["peer", "group"] as const) {
         botId: "chief",
         seq: 5,
         type: target === "group" ? "group.handoff" : "thread.message.created",
+        ...(target === "group" ? { runId: "sender-run" } : {}),
         payload: { messageId: "selected-delivery", messageSeq: 1, role: "bot", blocks },
         createdAt: stamp,
       };
       await expect
         .poll(stream.activeTargets)
         .toContain(target === "group" ? "group:file-review" : "bot:chief");
-      await stream.emit(delivered);
       const transcript = page.getByTestId("transcript");
+      const senderProgress = transcript.locator('[data-message-id="progress:sender-run"]');
+      if (target === "group") {
+        await stream.emit({
+          ...delivered,
+          id: "sender-started",
+          seq: 1,
+          type: "run.started",
+          payload: { trigger: "user" },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-progress",
+          seq: 2,
+          type: "thread.progress",
+          payload: { delta: "Before handoff." },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-tool",
+          seq: 3,
+          type: "agent.tool.called",
+          payload: { name: "read_file" },
+        });
+        await stream.emit({
+          ...delivered,
+          id: "sender-more",
+          seq: 4,
+          type: "thread.progress",
+          payload: { delta: " Preparing " },
+        });
+        await expect(senderProgress).toContainText("Before handoff.");
+        await expect(senderProgress).toContainText("Read file");
+      }
+      await stream.emit(delivered);
       const file = transcript.getByRole("button", { name: /selected-report\.xlsx application/ });
       await expect(file).toBeVisible();
       if (target === "peer") {
@@ -489,6 +533,16 @@ for (const target of ["peer", "group"] as const) {
         await expect(transcript).not.toContainText("Internal delivery instructions");
       } else {
         await expect(transcript).toContainText("Research One ← Chief");
+        await expect(senderProgress).toContainText("Before handoff.");
+        await expect(senderProgress).toContainText("Read file");
+        await stream.emit({
+          ...delivered,
+          id: "sender-after",
+          seq: 6,
+          type: "thread.progress",
+          payload: { delta: "files." },
+        });
+        await expect(senderProgress).toContainText("Preparing files.");
       }
       await stream.emit(delivered);
       await expect(file).toHaveCount(1);
@@ -508,6 +562,17 @@ for (const target of ["peer", "group"] as const) {
           artifactId: "selected-report",
         },
       ]);
+      if (target === "group") {
+        await stream.emit({
+          ...delivered,
+          id: "sender-completed",
+          seq: 7,
+          type: "run.completed",
+          payload: {},
+        });
+        await expect(senderProgress).toHaveCount(0);
+        await expect(file).toHaveCount(1);
+      }
       const message: ThreadMessage = {
         id: "selected-delivery",
         threadId,
@@ -517,11 +582,12 @@ for (const target of ["peer", "group"] as const) {
         blocks,
         createdAt: stamp,
       };
-      state.thread = (route, data) => json(route, { ...data, cursor: 5, messages: [message] });
+      const cursor = target === "group" ? 7 : 5;
+      state.thread = (route, data) => json(route, { ...data, cursor, messages: [message] });
       state.bootstrap = (route, data) =>
         json(route, {
           ...data,
-          thread: data.thread ? { ...data.thread, cursor: 5, messages: [message] } : null,
+          thread: data.thread ? { ...data.thread, cursor, messages: [message] } : null,
         });
       await page.reload();
       await expect(file).toHaveCount(1);

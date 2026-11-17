@@ -529,7 +529,9 @@ for (const kind of ["handoff", "bot_message_sent"] as const) {
       await act(async () => root.render(<ThreadRoute />));
       expect(container.textContent).toContain(label);
       expect(container.textContent).toContain("report.txt");
-      expect(container.textContent).not.toContain("Private peer body");
+      expect(container.textContent).not.toContain(
+        kind === "handoff" ? "Selected task details" : "Private peer body",
+      );
     },
   );
 }
