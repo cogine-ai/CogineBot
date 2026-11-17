@@ -40,7 +40,7 @@ import {
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
-import { persistPreparedSecret } from "./secret-persistence.js";
+import { deferPreparedSecretCleanup, persistPreparedSecret } from "./secret-persistence.js";
 import { reconcileSecretWrite } from "./secret-store-factory.js";
 import { withAbort } from "./web-ssrf.js";
 
@@ -296,6 +296,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     private readonly persistMaterial: (
       material: OAuthMaterial,
       storedOAuth: OAuthState | undefined,
+      recoverSave: boolean,
     ) => Promise<void>,
     private readonly options: ProviderOptions = {},
   ) {
@@ -408,7 +409,8 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   }
 
   async saveTokens(value: OAuthTokens): Promise<void> {
-    await this.storeTokens(value, false);
+    const runtimeRefresh = !this.options.state && Boolean(this.storedOAuth?.tokens?.refresh_token);
+    await this.storeTokens(value, runtimeRefresh);
   }
 
   private async storeTokens(value: OAuthTokens, recoverSave: boolean): Promise<void> {
@@ -495,14 +497,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     const next = this.persistQueue.then(async () => {
       if (this.persistenceConflict) throw this.persistenceConflict;
       try {
-        try {
-          await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
-        } catch (error) {
-          if (!recoverSave || error instanceof McpOAuthCredentialsChangedError) throw error;
-          // A commit may have lost its reply. Reuse this exact grant and the existing
-          // conditional save to confirm it or persist it once; never refresh it again.
-          await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
-        }
+        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth), recoverSave);
         this.storedOAuth = structuredClone(snapshot.oauth);
       } catch (error) {
         if (error instanceof McpOAuthCredentialsChangedError) {
@@ -1140,16 +1135,26 @@ export class McpOAuthBroker {
     return new StoredMcpOAuthProvider(
       server.id,
       loaded.material,
-      async (material, oauth) => {
-        await this.replaceMaterial(
-          server.id,
-          material,
-          context,
-          false,
-          endpoint,
-          options.onPersisted,
-          { oauth, revision },
-        );
+      async (material, oauth, recoverSave) => {
+        const save = () =>
+          this.replaceMaterial(server.id, material, context, false, endpoint, options.onPersisted, {
+            oauth,
+            revision,
+          });
+        if (!recoverSave) {
+          await save();
+          return;
+        }
+        // Keep retirement notifications behind adoption even when the first commit
+        // loses its reply. The existing conditional save confirms this exact grant.
+        await deferPreparedSecretCleanup(this.prisma, async () => {
+          try {
+            await save();
+          } catch (error) {
+            if (error instanceof McpOAuthCredentialsChangedError) throw error;
+            await save();
+          }
+        });
       },
       {
         ...(endpoint

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretNotFoundError } from "@rakazo/adapter-kit";
 import { asSystem, createDb, runAsTenant } from "@rakazo/db";
 import type { Pool } from "pg";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { McpConnector } from "./mcp-connector.js";
 import type { OAuthMaterial } from "./mcp-oauth.js";
 import { McpOAuthBroker } from "./mcp-oauth.js";
 import { withSecretPersistence } from "./secret-persistence.js";
@@ -34,9 +36,10 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     }
   });
 
-  async function fixture() {
+  async function fixture({ withStaticCredential = true, expired = true } = {}) {
     const db = openDb();
     const entries = new Map<string, string>();
+    const listeners = new Set<(ref: string) => void>();
     const store = {
       put: async (plaintext: string) => {
         const id = randomUUID();
@@ -51,6 +54,11 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       },
       delete: async (ref: string) => {
         entries.delete(ref);
+        for (const listener of listeners) listener(ref);
+      },
+      onChange: (listener: (ref: string) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
       },
       isRemote: () => true,
     } as unknown as SecretStore;
@@ -68,8 +76,9 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     });
     const context = { userId: id, spaceId: id };
     const material: OAuthMaterial = {
-      secret: "synthetic-static-credential",
+      ...(withStaticCredential ? { secret: "synthetic-static-credential" } : {}),
       oauth: {
+        redirectUri: "https://app.example.test/callback",
         tokens: {
           access_token: "access-0",
           refresh_token: "refresh-0",
@@ -77,7 +86,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
           expires_in: 3600,
           issuer,
         },
-        obtainedAt: Date.now() - 2 * 60 * 60 * 1000,
+        obtainedAt: Date.now() - (expired ? 2 * 60 * 60 * 1000 : 0),
         clientInformation: { client_id: "synthetic-client", issuer },
         discoveryState: {
           authorizationServerUrl: issuer,
@@ -136,14 +145,26 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
         material: JSON.parse(await store.load(row.ciphertext, row.id)) as OAuthMaterial,
       };
     };
-    return { db, entries, store, prisma, server, context, refresh, adopted, provider, read };
+    return {
+      db,
+      entries,
+      store,
+      prisma,
+      server,
+      context,
+      refresh,
+      adopted,
+      provider,
+      read,
+      broker,
+    };
   }
 
   /** Execute the physical outcome, then lose the database acknowledgement. */
   function failSecretCommit(
     pool: Pool,
     outcome: "lost-reply" | "rolled-back",
-    options: { always?: boolean; afterFault?: () => Promise<void> } = {},
+    options: { always?: boolean; afterFault?: () => Promise<void>; when?: () => boolean } = {},
   ) {
     type Query = (...args: unknown[]) => Promise<unknown>;
     let failures = 0;
@@ -161,7 +182,12 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
         const text = typeof first === "string" ? first : (first as { text: string }).text;
         if (text === "BEGIN") wroteSecret = false;
         if (/^INSERT INTO "public"\."secrets"/.test(text)) wroteSecret = true;
-        if (text !== "COMMIT" || !wroteSecret || (failures > 0 && !options.always))
+        if (
+          text !== "COMMIT" ||
+          !wroteSecret ||
+          (failures > 0 && !options.always) ||
+          options.when?.() === false
+        )
           return query(...args);
         await query(outcome === "lost-reply" ? "COMMIT" : "ROLLBACK");
         failures++;
@@ -192,6 +218,119 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       });
       expect(await f.provider.tokens()).toEqual(tokens);
       expect(f.refresh).toHaveBeenCalledTimes(1);
+    },
+    30_000,
+  );
+
+  it.each(["lost-reply", "rolled-back"] as const)(
+    "continues the current connection after a %s save with retirement notifications",
+    async (outcome) => {
+      const f = await fixture({ withStaticCredential: false });
+      await f.prisma.mcpServer.update({
+        where: { id: f.server.id },
+        data: { allowAllTools: true },
+      });
+      const fault = failSecretCommit(f.db.pool, outcome);
+      let initializations = 0;
+      const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        expect(request.url).toBe(f.server.endpoint);
+        expect(request.headers.get("authorization")).toBe("Bearer access-1");
+        if (request.method !== "POST") return new Response(null, { status: 405 });
+        const message = JSON.parse(await request.text());
+        if (message.method === "initialize") {
+          initializations++;
+          return Response.json({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "fixture", version: "1" },
+            },
+          });
+        }
+        if (message.method === "tools/list")
+          return Response.json({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: { tools: [{ name: "echo", inputSchema: { type: "object" } }] },
+          });
+        return new Response(null, { status: 202 });
+      });
+      const connector = new McpConnector(
+        f.db.prisma,
+        f.store,
+        {
+          network: { fetch, resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }] },
+        },
+        f.broker,
+      );
+      const context = {
+        ...f.context,
+        operationId: "test",
+        traceId: "test",
+        botId: "test",
+        signal: new AbortController().signal,
+      };
+      try {
+        const tools = await runAsTenant(f.context, () => connector.discoverTools(context));
+        expect(
+          tools.map((tool) => tool.name),
+          JSON.stringify(
+            await f.prisma.mcpServer.findUnique({
+              where: { id: f.server.id },
+              select: { healthMessage: true },
+            }),
+          ),
+        ).toEqual(["mcp__oauth__echo"]);
+        expect(fault.failures()).toBe(1);
+        expect(initializations).toBe(1);
+        expect(await runAsTenant(f.context, () => connector.discoverTools(context))).toEqual(tools);
+        expect(initializations).toBe(1);
+        expect(f.refresh).toHaveBeenCalledTimes(1);
+        const current = await f.read();
+        expect(current.material.oauth?.tokens?.refresh_token).toBe("refresh-1");
+        expect(f.entries.has(current.row.ciphertext)).toBe(true);
+      } finally {
+        await connector.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each(["lost-reply", "rolled-back"] as const)(
+    "recovers the SDK's runtime refresh after a %s save",
+    async (outcome) => {
+      const f = await fixture({ withStaticCredential: false, expired: false });
+      let issued = false;
+      const fault = failSecretCommit(f.db.pool, outcome, { when: () => issued });
+      const result = await runAsTenant(f.context, () =>
+        auth(f.provider, {
+          serverUrl: f.server.endpoint!,
+          fetchFn: async (input, init) => {
+            const request = new Request(input, init);
+            if (new URL(request.url).pathname.includes("oauth-protected-resource"))
+              return Response.json({
+                resource: f.server.endpoint,
+                authorization_servers: [issuer],
+              });
+            const response = await f.refresh(input, init);
+            issued = true;
+            return response;
+          },
+        }),
+      );
+      expect(result).toBe("AUTHORIZED");
+      expect(fault.failures()).toBe(1);
+      expect(f.refresh).toHaveBeenCalledTimes(1);
+      const current = await f.read();
+      expect(current.material.oauth?.tokens?.refresh_token).toBe("refresh-1");
+      expect(f.adopted).toHaveBeenLastCalledWith({
+        id: current.row.id,
+        ref: current.row.ciphertext,
+        material: current.material,
+      });
     },
     30_000,
   );
