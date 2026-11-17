@@ -17,14 +17,15 @@ const LOOP_GUARD_STOP_PATTERN = new RegExp(
  * Which run stopped the loop and the count its stop message gives: one call repeated exactly,
  * calls that differ only by digits, or one tool whose answer stayed the same whatever its input.
  */
-export function loopGuardStop(streak: LoopGuardStreak): {
-  kind: "identical" | "similar" | "same_result";
-  count: number;
-} {
+export type LoopGuardStop = { kind: "identical" | "similar" | "same_result"; count: number };
+
+export function loopGuardStop(streak: LoopGuardStreak): LoopGuardStop | undefined {
   const shapeCount = streak.shapeCount ?? 0;
   const failed = (streak.failures ?? 0) >= MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS - 1;
   if (!failed && shapeCount < MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS)
-    return { kind: "same_result", count: streak.sameResultCount ?? 0 };
+    return (streak.sameResultCount ?? 0) >= MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS
+      ? { kind: "same_result", count: streak.sameResultCount! }
+      : undefined;
   // Short of the similar limit, only a repeated failure stops a run, and that is an identical one.
   return streak.count >= MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS ||
     shapeCount < MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS
@@ -38,8 +39,7 @@ const LOOP_GUARD_STOP_REPEATS = {
   same_result: "the same result",
 };
 
-export function loopGuardStopText(toolName: string, streak: LoopGuardStreak): string {
-  const { kind, count } = loopGuardStop(streak);
+export function loopGuardStopText(toolName: string, { kind, count }: LoopGuardStop): string {
   return `${LOOP_GUARD_STOP_PREFIX}${toolName} with ${LOOP_GUARD_STOP_REPEATS[kind]} ${count}${LOOP_GUARD_STOP_SUFFIX}`;
 }
 
@@ -116,7 +116,7 @@ export function advanceToolCallLoopGuard(
   previousResult?: string,
   response?: number,
   previousResponseResults?: readonly (string | undefined)[],
-): { streak: LoopGuardStreak; stuck: boolean } {
+): { streak: LoopGuardStreak; stuck: boolean; stop?: LoopGuardStop } {
   // Preserve JSON's optional-field handling, then compare objects independently of field order.
   const serialized = JSON.stringify(args);
   const canonicalArgs =
@@ -148,14 +148,16 @@ export function advanceToolCallLoopGuard(
   const sameResult = sameStep
     ? { sameResult: streak.sameResult, sameResultCount: streak.sameResultCount }
     : sameResultRun(streak, name, responseResult, response);
-  return {
-    streak: { ...next, name, response, ...(same ? { results, failures } : {}), ...sameResult },
-    // The first call has no answer yet, so six identical failing calls have five failures.
-    stuck:
-      failures >= MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS - 1 ||
-      (next.shapeCount ?? 0) >= MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS ||
-      (sameResult.sameResultCount ?? 0) >= MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS,
+  const updated = {
+    ...next,
+    name,
+    response,
+    ...(same ? { results, failures } : {}),
+    ...sameResult,
   };
+  // The first call has no answer yet, so six identical failing calls have five failures.
+  const stop = loopGuardStop(updated);
+  return { streak: updated, stuck: stop !== undefined, stop };
 }
 
 /**
