@@ -88,7 +88,7 @@ export function isTooManyDatabaseConnections(error: unknown): boolean {
 }
 
 /** pg-pool's error when no connection frees up within `connectionTimeoutMillis`. */
-export function isPoolCheckoutTimeout(error: unknown): boolean {
+function isPoolCheckoutTimeout(error: unknown): boolean {
   return error instanceof Error && error.message === "timeout exceeded when trying to connect";
 }
 

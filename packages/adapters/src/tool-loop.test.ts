@@ -236,7 +236,7 @@ describe("advanceToolCallLoopGuard", () => {
           failure(),
         );
         streak = result.streak;
-        if (result.stuck) return loopGuardStopText("shell", streak);
+        if (result.stuck) return loopGuardStopText("shell", loopGuardStop(streak)!);
       }
       throw new Error("never stopped");
     };
@@ -263,7 +263,9 @@ describe("advanceToolCallLoopGuard", () => {
         failure(),
       ).streak;
     }
-    expect(loopGuardStopText("shell", streak)).toContain(" with the same input 6 times in a row");
+    expect(loopGuardStopText("shell", loopGuardStop(streak)!)).toContain(
+      " with the same input 6 times in a row",
+    );
   });
 
   it.each([
@@ -360,7 +362,7 @@ describe("advanceToolCallLoopGuard", () => {
       );
       expect(response).toBe(25);
       expect(loopGuardStop(streak)).toEqual({ kind: "same_result", count: 25 });
-      const text = loopGuardStopText("Message user", streak);
+      const text = loopGuardStopText("Message user", loopGuardStop(streak)!);
       expect(text).toContain("Message user with the same result 25 times in a row");
       expect(isLoopGuardStopText(text)).toBe(true);
     }
@@ -491,7 +493,7 @@ describe("advanceToolCallLoopGuard", () => {
         { name: "shell", args: { command: command(n) }, result: answer("Still loading") },
       ]);
       expect(response).toBe(25);
-      return loopGuardStopText("Shell", streak);
+      return loopGuardStopText("Shell", loopGuardStop(streak)!);
     };
     expect(stop(() => "cat job.log")).toContain(" with the same input 25 times");
     expect(stop((n) => `cat job-${n}.log`)).toContain(" with nearly the same input 25 times");
