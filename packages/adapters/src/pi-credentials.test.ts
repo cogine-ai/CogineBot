@@ -26,6 +26,52 @@ function credential(overrides: Partial<OAuthCredential> = {}): OAuthCredential {
 }
 
 describe("PiRuntimeCredentialStore", () => {
+  it("keeps rotation ownership until a started callback settles after its deadline", async () => {
+    const stopped = new AbortController();
+    const held = credential();
+    const successor = credential({ access: "successor", refresh: "successor-refresh" });
+    let finish!: (value: OAuthCredential) => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let saved = held;
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, stopped.signal);
+        if (next) saved = { ...next, type: "oauth" };
+        return saved;
+      },
+    );
+    let settled = false;
+    const result = store.modify("anthropic", async () => {
+      started();
+      return new Promise<OAuthCredential>((resolve) => {
+        finish = resolve;
+      });
+    });
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await entered;
+    stopped.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    finish(successor);
+    await expect(result).resolves.toEqual(successor);
+    expect(saved).toEqual(successor);
+    expect(store.accessToken).toBe("successor");
+  });
   it("runs provider refresh against the locked stored token and publishes only the committed result", async () => {
     const held = credential({ access: "stale", expires: 1 });
     const stored = credential({ access: "latest", refresh: "latest-refresh", expires: 2 });
@@ -92,7 +138,7 @@ describe("PiRuntimeCredentialStore", () => {
     expect(await store.list()).toEqual([]);
   });
 
-  it("ends a stalled provider operation at the coordinated refresh deadline", async () => {
+  it("does not start a provider operation after the coordinated refresh deadline", async () => {
     const stopped = new AbortController();
     stopped.abort();
     const held = credential();

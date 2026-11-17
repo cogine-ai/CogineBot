@@ -1743,3 +1743,73 @@ it("preserves a dormant effort when saving the connection after resetting model 
     await view.unmount();
   }
 });
+
+it("reveals the retained effort after enabling model reasoning without replacing connection drafts", async () => {
+  const connection: ModelCredential = {
+    ...compatibleConnection(),
+    thinkingLevel: "high",
+    modelSettings: { "model-a": { reasoning: false } },
+  };
+  useCompatibleConnections([connection]);
+  models.credentials.mockImplementation(async () => [connection]);
+  models.saveModelSettings.mockImplementation(async ({ modelId, settings }) => {
+    connection.modelSettings = { ...connection.modelSettings, [modelId]: settings };
+    return { ok: true };
+  });
+  const view = await renderSettings();
+  try {
+    await typeInto(compatibleKeyField(view.container), "synthetic-replacement");
+    const panel = view.container.querySelector<HTMLDetailsElement>(
+      '[data-testid="model-settings-panel"]',
+    )!;
+    await act(async () => panel.querySelector("summary")?.click());
+    const label = [...panel.querySelectorAll("label")].find(
+      (item) => item.textContent === "Supports thinking",
+    )!;
+    await act(async () => label.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+    await act(async () => buttons(panel, "Save")[0]?.click());
+    expect(panel.textContent).toContain("Saved.");
+    const save = buttons(view.container, "Save").find(
+      (item) => !item.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    await act(async () => save.click());
+    expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+      thinkingLevel: "high",
+      apiKey: "synthetic-replacement",
+    });
+  } finally {
+    await view.unmount();
+  }
+});
+
+it("keeps the committed connection revision when a settings readback supersedes the connection readback", async () => {
+  const connection = compatibleConnection();
+  useCompatibleConnections([connection]);
+  const view = await renderSettings();
+  const reading = deferred<ModelCredential[]>();
+  models.credentials
+    .mockReturnValueOnce(reading.promise)
+    .mockResolvedValue([{ ...connection, connectionRevision: 8 }]);
+  models.connect.mockResolvedValue({ ...connection, connectionRevision: 8 });
+  try {
+    const save = () =>
+      buttons(view.container, "Save").find(
+        (item) => !item.closest('[data-testid="model-settings-panel"]'),
+      )!;
+    await act(async () => save().click());
+    expect(models.credentials).toHaveBeenCalledTimes(2);
+    const panel = view.container.querySelector<HTMLElement>(
+      '[data-testid="model-settings-panel"]',
+    )!;
+    const label = [...panel.querySelectorAll("label")].find(
+      (item) => item.textContent === "Maximum output tokens",
+    )!;
+    await typeInto(document.getElementById(label.htmlFor) as HTMLInputElement, "2048");
+    await act(async () => buttons(panel, "Save")[0]?.click());
+    await act(async () => reading.resolve([{ ...connection, connectionRevision: 8 }]));
+    await act(async () => save().click());
+    expect(models.connect.mock.calls.at(-1)?.[0].expectedRevision).toBe(8);
+  } finally {
+    await view.unmount();
+  }
+});

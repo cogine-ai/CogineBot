@@ -298,6 +298,19 @@ describePostgres("model connection HTTP acceptance", () => {
         const latest = (await rpc<ModelCredential[]>(cookie, "models/credentials")).find(
           (credential) => credential.id === connected.id,
         )!;
+        await rpc(cookie, "models/setDefault", {
+          provider,
+          modelId: "same-model",
+          modelCredentialId: latest.id,
+          expectedRevision: latest.connectionRevision,
+        });
+        expect(
+          (
+            await handles.prisma.spaceModelPreference.findFirstOrThrow({
+              where: { ...actor, credentialId: connected.id },
+            })
+          ).thinkingLevel,
+        ).toBe("high");
         const replaced = await rpc<ModelCredential>(
           cookie,
           "models/connect",

@@ -178,7 +178,7 @@ describe("connectionFormFields", () => {
         modelId: "local",
         credential: saved,
       });
-      expect(fields.thinkingLevel).toBe(enabled ? "high" : null);
+      expect(fields.thinkingLevel).toBe("high");
       const request = modelConnectRequest({
         form: draft({ ...fields, modelId: "local", thinkingLevel: "high" }),
         selected: { provider: COMPATIBLE, providerName: "Model server", id: "local" },

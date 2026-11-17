@@ -612,6 +612,57 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     ).resolves.toMatchObject({ provider: "github-copilot", authKind: "oauth" });
   });
 
+  it("retains a newer model selection while reconnect prepares the replacement secret", async () => {
+    const actor = await member();
+    const entered = gate<void>();
+    const release = gate<void>();
+    const secrets = new EncryptedSecretStore(key);
+    const first = process(a, actor, undefined, secrets);
+    const second = process(b, actor);
+    const connected = await second.client.models.connect({
+      provider: "anthropic",
+      apiKey: "synthetic-key",
+      modelId: "claude-sonnet-4-6",
+      thinkingLevel: "low",
+    });
+    const put = secrets.put.bind(secrets);
+    vi.spyOn(secrets, "put").mockImplementation(async (...args) => {
+      if (args[1].operationId === "cred") {
+        entered.resolve();
+        await release.promise;
+      }
+      return put(...args);
+    });
+    const start = await first.client.models.beginOAuth({ provider: "anthropic" });
+    await first.client.models.submitOAuthCode({ loginId: start.loginId, code: "fixture" });
+    await entered.promise;
+    try {
+      await second.client.models.setDefault({
+        provider: "anthropic",
+        modelId: "claude-opus-4-8",
+        modelCredentialId: connected.id,
+        expectedRevision: connected.connectionRevision,
+        thinkingLevel: "high",
+      });
+    } finally {
+      release.resolve();
+    }
+    await vi.waitFor(async () =>
+      expect(await second.client.models.completeOAuth({ loginId: start.loginId })).toEqual({
+        status: "ready",
+      }),
+    );
+    await second.client.models.finishOAuth({ loginId: start.loginId });
+    expect(await second.client.models.credentials()).toEqual([
+      expect.objectContaining({
+        id: connected.id,
+        modelId: "claude-opus-4-8",
+        thinkingLevel: "high",
+        authKind: "oauth",
+      }),
+    ]);
+  });
+
   it("keeps model settings saved after a reconnect begins and preserves connection effort", async () => {
     const actor = await member();
     const first = process(a, actor);

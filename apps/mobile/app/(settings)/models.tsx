@@ -341,7 +341,12 @@ function ModelsForm({
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
-    if (preferred.keepForm) return nextMe;
+    if (preferred.keepForm) {
+      const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
+      setConnectionRevision(current?.connectionRevision);
+      setSavedBaseUrl(current?.baseUrl);
+      return nextMe;
+    }
     const nextProvider =
       (preferred.provider &&
       nextCatalog.some(
@@ -615,11 +620,13 @@ function ModelsForm({
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel =
-    (currentEntry?.thinkingLevels ?? []).some((level) => level !== "off") ||
-    activeCredential?.reasoning
-      ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
-      : null;
+  const activeThinkingLabel = modelThinkingLevels(
+    activeCredential,
+    currentEntry,
+    me?.defaultModel,
+  ).some((level) => level !== "off")
+    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
+    : null;
   const compatibleRows = compatibleModelRows(
     savedCompatibleModelIds(credential, baseUrl),
     enabledModelIds,
@@ -973,9 +980,7 @@ function ModelsForm({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        (credential ? credentialModelSettings(credential, nextModelId).reasoning : reasoning)
-          ? compatibleThinkingLevels(apiProtocol)
-          : [],
+        compatibleThinkingLevels(apiProtocol),
       ) as ThinkingLevel | null,
     );
   }

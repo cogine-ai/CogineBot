@@ -204,7 +204,7 @@ describe("current image send admission", () => {
     },
   );
 
-  it("admits an unknown model's declared image input on its exact connection", async () => {
+  it("does not admit images for an unknown model the runtime cannot resolve", async () => {
     const { tx } = fixture();
     tx.bot.findFirst.mockResolvedValue({
       id: "bot-1",
@@ -235,7 +235,10 @@ describe("current image send admission", () => {
         },
       },
     );
-    expect(status).toBe("supported");
+    expect(
+      resolveRuntimeModel({ provider: "anthropic", id: "custom-receiver" }).model,
+    ).toBeUndefined();
+    expect(status).toBe("unknown");
   });
 
   it.each([

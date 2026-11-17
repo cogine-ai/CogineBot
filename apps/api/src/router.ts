@@ -1188,7 +1188,6 @@ export function createRouter(deps: RouterDeps) {
       const existing = session.credentialId
         ? await deps.prisma.userModelCredential.findFirst({
             where: { id: session.credentialId, userId: actor.userId, provider: login.provider },
-            include: { preferences: { where: { userId: actor.userId, spaceId: actor.spaceId } } },
           })
         : null;
       if (session.credentialId && !existing)
@@ -1229,7 +1228,7 @@ export function createRouter(deps: RouterDeps) {
           label:
             login.label ??
             listPiCatalog().find((entry) => entry.provider === login.provider)?.providerName,
-          modelId: login.modelId ?? existing?.preferences[0]?.modelId ?? undefined,
+          modelId: login.modelId,
           thinkingLevel: login.thinkingLevel,
           signal: login.signal,
           oauthSession: session,
@@ -2345,7 +2344,12 @@ export function createRouter(deps: RouterDeps) {
                           (entry) =>
                             entry.provider === input.provider && entry.id === input.modelId,
                         )?.thinkingLevels;
-                  thinkingLevel = clampCatalogThinkingLevel(thinkingLevel, allowed);
+                  const dormant =
+                    input.thinkingLevel === undefined &&
+                    checked.credential.defaultModel === input.modelId &&
+                    input.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
+                    allowed?.every((level) => level === "off") === true;
+                  if (!dormant) thinkingLevel = clampCatalogThinkingLevel(thinkingLevel, allowed);
                 }
                 await selectSpaceModelPreference(
                   tx,
@@ -9351,25 +9355,10 @@ async function persistModelCredential(
   ) {
     throw new ORPCError("BAD_REQUEST", { message: authError });
   }
-  const defaultModel =
+  const fallbackModel =
     requestedModelId ??
     defaultCatalogModelId(input.provider, input.plaintext) ??
     usableModelId(deps.env.defaultModel);
-  const allowedThinking = !defaultModel
-    ? undefined
-    : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-      ? compatibleThinkingLevels(
-          {
-            id: input.credentialId ?? "",
-            provider: input.provider,
-            label: input.label ?? "",
-            isDefault: true,
-            defaultModel,
-          },
-          input.plaintext,
-          defaultModel,
-        ).allowed
-      : await allowedThinkingLevels(deps, actor, input.provider, defaultModel);
   const stored = await deps.secrets.put(input.plaintext, {
     operationId: "cred",
     traceId: "cred",
@@ -9422,6 +9411,31 @@ async function persistModelCredential(
                 });
             }
           }
+          const previous = existing
+            ? await tx.spaceModelPreference.findFirst({
+                where: { spaceId: actor.spaceId, userId: actor.userId, credentialId: existing.id },
+                select: { modelId: true, thinkingLevel: true },
+              })
+            : null;
+          const defaultModel =
+            input.oauthSession && !requestedModelId
+              ? (usableModelId(previous?.modelId) ?? fallbackModel)
+              : fallbackModel;
+          const allowedThinking = !defaultModel
+            ? undefined
+            : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+              ? compatibleThinkingLevels(
+                  {
+                    id: input.credentialId ?? "",
+                    provider: input.provider,
+                    label: input.label ?? "",
+                    isDefault: true,
+                    defaultModel,
+                  },
+                  input.plaintext,
+                  defaultModel,
+                ).allowed
+              : await allowedThinkingLevels(deps, actor, input.provider, defaultModel);
           if (existing && input.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
             const thinking = compatibleThinkingLevels(
               { ...existing, isDefault: true, defaultModel },
@@ -9495,14 +9509,6 @@ async function persistModelCredential(
           let preserveDormantThinking = false;
           if (thinkingLevel === undefined) {
             // A stored effort only carries over while it still names this model.
-            const previous = await tx.spaceModelPreference.findFirst({
-              where: {
-                spaceId: actor.spaceId,
-                userId: actor.userId,
-                credentialId: credential.id,
-              },
-              select: { modelId: true, thinkingLevel: true },
-            });
             thinkingLevel =
               previous?.modelId === usableModelId(defaultModel) ? previous.thinkingLevel : null;
             preserveDormantThinking =

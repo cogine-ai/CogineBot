@@ -1858,6 +1858,7 @@ it.each(["save", "reset"] as const)(
     );
     expect(modelSettingsPanel().textContent).toContain("Saved.");
     expect(container.querySelector('button[aria-label="Reasoning effort"]')).toBeNull();
+    expect(container.textContent).not.toContain("Thinking: High");
     const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (item) =>
         item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
@@ -1895,4 +1896,78 @@ it("preserves native dormant effort when saving a reasoning-disabled connection"
   expect(request).toMatchObject({ credentialId: "connection-a" });
   expect(Object.hasOwn(request as object, "thinkingLevel")).toBe(false);
   expect(saved.thinkingLevel).toBe("low");
+});
+
+it("reveals the native retained effort after enabling reasoning", async () => {
+  let saved = {
+    ...credential,
+    thinkingLevel: "high",
+    modelSettings: { "model-a": { reasoning: false } as Record<string, unknown> },
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure, input) => {
+    if (procedure === "models/credentials") return [saved];
+    if (procedure === "models/saveModelSettings") {
+      saved = {
+        ...saved,
+        modelSettings: { "model-a": (input as { settings: Record<string, unknown> }).settings },
+      };
+      return { ok: true };
+    }
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => modelSettingsButton("Advanced").click());
+  await act(async () =>
+    modelSettingsPanel()
+      .querySelector<HTMLInputElement>('input[aria-label="Supports thinking"]')!
+      .click(),
+  );
+  await act(async () => modelSettingsButton("Save").click());
+  expect(button("Reasoning effort").textContent).toContain("High");
+  const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+  )!;
+  await act(async () => save.click());
+  expect(
+    state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
+  ).toMatchObject({ thinkingLevel: "high" });
+});
+
+it("keeps the native committed revision when a settings readback supersedes the connection readback", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const reading = deferred<(typeof credential)[]>();
+  let reads = 0;
+  state.rpc.mockImplementation(async (procedure, input) => {
+    if (procedure === "models/credentials") {
+      reads++;
+      if (reads === 2) return reading.promise;
+      return [{ ...credential, connectionRevision: reads === 1 ? 7 : 8 }];
+    }
+    if (procedure === "models/connect") return { ...credential, connectionRevision: 8 };
+    if (procedure === "models/saveModelSettings") return { ok: true };
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  const save = () =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) =>
+        item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+    )!;
+  await act(async () => save().click());
+  expect(reads).toBe(2);
+  expect(
+    state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
+  ).toMatchObject({ expectedRevision: 7 });
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  expect(reads).toBe(3);
+  expect(modelSettingsPanel().textContent).toContain("Saved.");
+  await act(async () => reading.resolve([{ ...credential, connectionRevision: 8 }]));
+  await act(async () => save().click());
+  expect(state.rpc.mock.calls.filter(([name]) => name === "models/connect")).toHaveLength(2);
+  expect(
+    state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
+  ).toMatchObject({ expectedRevision: 8 });
 });

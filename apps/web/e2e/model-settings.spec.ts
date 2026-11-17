@@ -1436,5 +1436,12 @@ for (const width of [1280, 390]) {
     expect(
       reconnected.find((entry) => entry.id === connections[1]!.id)?.modelSettings,
     ).toBeUndefined();
+    await panel.getByRole("checkbox", { name: "Supports thinking", exact: true }).check();
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await settings.getByText("Thinking", { exact: true }).click();
+    await expect(
+      settings.getByRole("combobox", { name: "Reasoning effort", exact: true }),
+    ).toHaveValue("low");
   });
 }

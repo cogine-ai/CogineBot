@@ -8,7 +8,7 @@ import {
 } from "./chatgpt-plan-provider.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
-import { withLiveImageInput } from "./pi-live-model.js";
+import { liveModelSibling, withLiveImageInput } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER } from "./pi-oauth.js";
@@ -59,7 +59,12 @@ export function connectionModelImageInput(
       return modelIdSupportsImages(secret.visionModelIds, modelId);
     return compatibleModelSeesImages(credential, secret, modelId) ? true : undefined;
   }
-  return catalogKnowsModel(provider, modelId) ? undefined : own?.images;
+  if (catalogKnowsModel(provider, modelId)) return undefined;
+  // Only routes the runtime can construct may use connection-declared input.
+  return provider === "openrouter" ||
+    (provider === CHATGPT_OAUTH_PROVIDER && liveModelSibling(catalogModels(), provider, id))
+    ? own?.images
+    : undefined;
 }
 
 /** Whether a compatible connection lists the model as seeing images. */

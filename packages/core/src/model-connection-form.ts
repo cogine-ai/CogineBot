@@ -26,7 +26,7 @@ import {
   connectionMaxTokensField,
   pickCatalogModelId,
 } from "./model-providers.js";
-import { credentialModelSettings, modelThinkingLevels } from "./model-settings-form.js";
+import { credentialModelSettings } from "./model-settings-form.js";
 
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;
 type DefaultModel = { defaultProvider: string | null; defaultModel: string | null };
@@ -107,7 +107,7 @@ export function connectionFormFields(input: {
   const { catalog, provider, modelId, credential, presetBaseUrl } = input;
   const compatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
   const supportedThinking = compatible
-    ? modelThinkingLevels(credential ? { ...credential, provider } : undefined, undefined, modelId)
+    ? compatibleThinkingLevels(credential?.apiProtocol)
     : catalog.find(
         (entry) =>
           canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider) &&
