@@ -229,7 +229,10 @@ export function ModelSettingsOverlay({
     },
   });
 
-  async function refresh(preferredConnectionId?: string) {
+  async function refresh(
+    preferredConnectionId?: string,
+    { keepForm = false }: { keepForm?: boolean } = {},
+  ) {
     const refreshRevision = ++refreshRevisionRef.current;
     const selectionRevision = selectionRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
@@ -295,6 +298,7 @@ export function ModelSettingsOverlay({
     );
     setMe(nextMe);
     if (selectionRevision === selectionRevisionRef.current) {
+      if (keepForm) return true;
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
       setProvider(nextProvider);
@@ -1958,7 +1962,7 @@ export function ModelSettingsOverlay({
                       settingsSelectionRevision === selectionRevisionRef.current &&
                       contextCurrent();
                     if (!current()) throw new Error(t`Could not load model settings`);
-                    const applied = await refresh(credential.id);
+                    const applied = await refresh(credential.id, { keepForm: true });
                     if (!applied || !current()) throw new Error(t`Could not load model settings`);
                   }}
                 />

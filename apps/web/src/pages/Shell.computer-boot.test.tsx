@@ -213,10 +213,12 @@ function bootstrap(): AppBootstrap {
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 let root: Root;
 let container: HTMLDivElement;
@@ -862,28 +864,234 @@ function installComputerStatusStream() {
   return { first, second, event };
 }
 
-it("keeps a failed control release visible when an earlier screen read finishes", async () => {
-  const stream = installComputerStatusStream();
+it.each([
+  ["done", "I’m done", false],
+  ["skipped", "Skip", false],
+  ["done", "I’m done", true],
+  ["skipped", "Skip", true],
+])(
+  "retries a failed %s release (%s) after an earlier screen read finishes (failed %s)",
+  async (reason, action, screenFails) => {
+    const stream = installComputerStatusStream();
+    await showRunningComputer();
+    currentComputer = { ...currentComputer, takeoverRequested: true };
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const screen = deferred<{ url: string | null }>();
+    const fallback = boundary.call.getMockImplementation()!;
+    let failRelease = true;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.screenUrl")
+        return screen.promise.then((value) => {
+          if (screenFails && failRelease) throw new Error("screen unavailable");
+          return value;
+        });
+      if (path === "computer.release") {
+        if (failRelease) return Promise.reject(new Error("release unavailable"));
+        currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+        return Promise.resolve(currentComputer);
+      }
+      return fallback(path, input, options);
+    });
+    const reads = callsTo("computer.screenUrl").length;
+    await act(async () => stream.first.resolve(stream.event(11)));
+    expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
+    await click(button(action));
+    expect(document.body.textContent).toContain("Could not continue");
+    await act(async () => screen.resolve({ url: "http://localhost/screen" }));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("Close computer"));
+    expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeNull();
+    await click(button("Retry"));
+    expect(callsTo("computer.release")).toHaveLength(2);
+    expect(document.body.textContent).toContain("Could not continue");
+    failRelease = false;
+    await click(button("Retry"));
+    expect(callsTo("computer.release")).toHaveLength(3);
+    expect(callsTo("computer.release").map((call) => call[1])).toEqual([
+      { botId: "chief", reason },
+      { botId: "chief", reason },
+      { botId: "chief", reason },
+    ]);
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
+  },
+);
+
+it.each(["bot-round-trip", "new-takeover", "new-release"] as const)(
+  "ignores an older failed release after a %s",
+  async (change) => {
+    await showRunningComputer();
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const release = deferred<ComputerStatus>();
+    const fallback = boundary.call.getMockImplementation()!;
+    let first = true;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.release") {
+        if (first) {
+          first = false;
+          // The server has released control before the response is received.
+          currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+          return release.promise;
+        }
+        return Promise.resolve(currentComputer);
+      }
+      return fallback(path, input, options);
+    });
+    await click(button("I’m done"));
+    if (change === "bot-round-trip") {
+      await act(async () => navigate("/app/worker"));
+      await act(async () => navigate("/app/chief"));
+    } else if (change === "new-takeover") {
+      await click(button("Close computer"));
+      await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+      await click(
+        button("Take control", document.querySelector('[data-testid="computer-chrome"]')!),
+      );
+      expect(callsTo("computer.takeover")).toHaveLength(2);
+    } else {
+      await click(button("Close computer"));
+      currentComputer = { ...currentComputer, controlHolder: "user", controlBotId: "chief" };
+      await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+      await click(button("I’m done"));
+      expect(callsTo("computer.release")).toHaveLength(2);
+    }
+    await act(async () => release.reject(new Error("late release failure")));
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(document.querySelector('[data-testid="computer-viewport"] [role="alert"]')).toBeNull();
+  },
+);
+
+it.each([false, true])(
+  "clears a failed release only after confirmed reset (released=%s)",
+  async (released) => {
+    await showRunningComputer();
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const fallback = boundary.call.getMockImplementation()!;
+    const reset = deferred<void>();
+    let failRefresh = false;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.release") {
+        if (!released) return Promise.reject(new Error("release unavailable"));
+        failRefresh = true;
+        currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+        return Promise.resolve(currentComputer);
+      }
+      if (path === "threads.get" && failRefresh)
+        return Promise.reject(new Error("refresh unavailable"));
+      if (path === "computer.reset") return reset.promise;
+      return fallback(path, input, options);
+    });
+    await click(button("I’m done"));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("More computer actions"));
+    await click(button("Reset computer"));
+    await click(button("Cancel"));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("More computer actions"));
+    await click(button("Reset computer"));
+    await click(button("Reset"));
+    expect(document.body.textContent).not.toContain("Could not continue");
+    failRefresh = false;
+    currentComputer = status("chief", "running");
+    await act(async () => reset.resolve());
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(callsTo("computer.release")).toHaveLength(1);
+  },
+);
+
+it("does not release again when only the post-release refresh failed", async () => {
   await showRunningComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
   await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
-  const screen = deferred<{ url: string | null }>();
   const fallback = boundary.call.getMockImplementation()!;
+  let released = false;
+  let failRefresh = true;
   boundary.call.mockImplementation((path, input, options) => {
-    if (path === "computer.screenUrl") return screen.promise;
-    if (path === "computer.release") return Promise.reject(new Error("release unavailable"));
+    if (path === "computer.release") {
+      released = true;
+      currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+      return Promise.resolve(currentComputer);
+    }
+    if (released && failRefresh && path === "threads.get")
+      return Promise.reject(new Error("refresh unavailable"));
     return fallback(path, input, options);
   });
-  const reads = callsTo("computer.screenUrl").length;
-  await act(async () => stream.first.resolve(stream.event(11)));
-  expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
   await click(button("I’m done"));
   expect(document.body.textContent).toContain("Could not continue");
-  await act(async () => screen.resolve({ url: "http://localhost/screen" }));
-  expect(document.body.textContent).toContain("Could not continue");
-  expect(button("Close computer")).toBeTruthy();
-  expect(button("I’m done")).toBeTruthy();
+  failRefresh = false;
+  const reads = callsTo("threads.get").length;
+  await click(button("Retry", document.querySelector('[data-testid="computer-viewport"]')!));
+  expect(callsTo("threads.get")).toHaveLength(reads + 1);
+  expect(callsTo("computer.release")).toHaveLength(1);
+  expect(document.body.textContent).not.toContain("Could not continue");
 });
+
+it("retries a screen read without releasing computer control", async () => {
+  await showRunningComputer();
+  const fallback = boundary.call.getMockImplementation()!;
+  let failScreen = true;
+  boundary.call.mockImplementation((path, input, options) => {
+    if (path === "computer.screenUrl") {
+      return failScreen
+        ? Promise.reject(new Error("screen unavailable"))
+        : Promise.resolve({ url: "http://localhost/screen" });
+    }
+    return fallback(path, input, options);
+  });
+  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+  expect(document.body.textContent).toContain("screen unavailable");
+  const reads = callsTo("computer.screenUrl").length;
+  failScreen = false;
+  await click(button("Retry screen"));
+  expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
+  expect(callsTo("computer.release")).toHaveLength(0);
+  expect(document.body.textContent).not.toContain("screen unavailable");
+});
+
+it.each(["stopping", "needs_recovery", "quarantined"] as const)(
+  "clears another bot's failed release before opening a %s computer",
+  async (state) => {
+    const start = shellSource.indexOf("  async function openComputer(");
+    const end = shellSource.indexOf("  async function takeComputerControl(", start);
+    const clearFailure = vi.fn();
+    const clearError = vi.fn();
+    const target = status("worker", state);
+    const values = {
+      active: chief,
+      botsRef: { current: bootstrap().bots },
+      computerBotIdRef: { current: "chief" },
+      invalidateComputerBoot: vi.fn(),
+      setComputerBotId: vi.fn(),
+      computerCacheRef: { current: new Map([["worker", { computer: target, screenUrl: null }]]) },
+      computer: status("chief", "running"),
+      screenUrl: "http://localhost/screen",
+      commitComputer: vi.fn(),
+      setScreenUrl: vi.fn(),
+      setComputerOpen: vi.fn(),
+      computerVisible: { current: false },
+      computerStateRequiresRecovery: (value: string) =>
+        ["needs_recovery", "quarantined"].includes(value),
+      userHoldsComputerControl: vi.fn(),
+      computerTakeoverBlocked: vi.fn(),
+      snapshot: null,
+      bootComputer: vi.fn(),
+      setFailedComputerRelease: clearFailure,
+      setComputerError: clearError,
+      setComputerErrorFromScreen: vi.fn(),
+    };
+    const open = new Function(
+      ...Object.keys(values),
+      `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn openComputer;`,
+    )(...Object.values(values));
+    await expect(open("worker")).resolves.toBe(false);
+    expect(clearFailure).toHaveBeenCalledExactlyOnceWith(null);
+    expect(clearError).toHaveBeenCalledExactlyOnceWith(null);
+    expect(values.bootComputer).not.toHaveBeenCalled();
+  },
+);
 
 it.each(["stopped", "suspended", "booting"] as const)(
   "refreshes a visible %s computer immediately after an accepted running event",
@@ -2698,4 +2906,94 @@ it("resolves combined routine and attention links without restoring consumed que
   expect(params.has("m")).toBe(false);
   expect(params.has("attention")).toBe(false);
   expect(params.get("view")).toBe("later");
+});
+
+it.each(["stale-retry", "late-failure", "late-success"] as const)(
+  "keeps release recovery bound to its original bot (%s)",
+  async (scenario) => {
+    const start = shellSource.indexOf("  const releaseComputer = useCallback(");
+    const end = shellSource.indexOf("  function dismissComposerError()", start);
+    let finish!: () => void;
+    let reject!: (error: Error) => void;
+    const pending = new Promise<void>((resolve, fail) => {
+      finish = resolve;
+      reject = fail;
+    });
+    const released = vi.fn(() => pending);
+    const failure = vi.fn();
+    const values = {
+      useCallback: (fn: unknown) => fn,
+      computerControlEpoch: { current: 0 },
+      computerBotIdRef: { current: scenario === "stale-retry" ? "worker" : "chief" },
+      activeBotId: { current: "chief" },
+      setComputerError: vi.fn(),
+      setComputerErrorFromScreen: vi.fn(),
+      setFailedComputerRelease: failure,
+      rpc: { computer: { release: released } },
+      refreshComputerFor: vi.fn(),
+      refreshComputerScreen: vi.fn(),
+      activeGroupId: { current: null },
+      refreshGroupThreadRef: { current: vi.fn() },
+      t: (parts: TemplateStringsArray) => parts.join(""),
+    };
+    const release = new Function(
+      ...Object.keys(values),
+      `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn releaseComputer;`,
+    )(...Object.values(values));
+    const work = release("skipped", "chief");
+    if (scenario === "stale-retry") {
+      await work;
+      expect(released).not.toHaveBeenCalled();
+      expect(failure).not.toHaveBeenCalled();
+      return;
+    }
+    values.computerBotIdRef.current = "worker";
+    if (scenario === "late-failure") reject(new Error("release unavailable"));
+    else finish();
+    await work;
+    expect(released).toHaveBeenCalledExactlyOnceWith({ botId: "chief", reason: "skipped" });
+    expect(failure.mock.calls).toEqual([[null]]);
+    expect(values.refreshComputerFor).not.toHaveBeenCalled();
+    expect(values.refreshComputerScreen).not.toHaveBeenCalled();
+  },
+);
+
+it("stops a release's status and screen refresh when computer selection changes between awaits", async () => {
+  const start = shellSource.indexOf("  const releaseComputer = useCallback(");
+  const end = shellSource.indexOf("  function dismissComposerError()", start);
+  const selected = { current: "chief" };
+  const read = deferred<void>();
+  const entered = deferred<void>();
+  let stillCurrent!: () => boolean;
+  const values = {
+    useCallback: (fn: unknown) => fn,
+    computerControlEpoch: { current: 0 },
+    computerBotIdRef: selected,
+    activeBotId: { current: "chief" },
+    setComputerError: vi.fn(),
+    setComputerErrorFromScreen: vi.fn(),
+    setFailedComputerRelease: vi.fn(),
+    rpc: { computer: { release: vi.fn(async () => undefined) } },
+    refreshComputerFor: vi.fn(async (_id: string, current: () => boolean) => {
+      stillCurrent = current;
+      entered.resolve();
+      await read.promise;
+    }),
+    refreshComputerScreen: vi.fn(),
+    activeGroupId: { current: "ops" },
+    refreshGroupThreadRef: { current: vi.fn() },
+    t: (parts: TemplateStringsArray) => parts.join(""),
+  };
+  const release = new Function(
+    ...Object.keys(values),
+    `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn releaseComputer;`,
+  )(...Object.values(values));
+  const work = release("done", "chief");
+  await entered.promise;
+  selected.current = "worker";
+  expect(stillCurrent()).toBe(false);
+  read.resolve();
+  await work;
+  expect(values.refreshComputerScreen).not.toHaveBeenCalled();
+  expect(values.refreshGroupThreadRef.current).not.toHaveBeenCalled();
 });
