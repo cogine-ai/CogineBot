@@ -604,6 +604,36 @@ describe("encrypted account registrations", () => {
     ).toBe(true);
   });
 
+  it("signs out only the registration selected for an exact disconnect", async () => {
+    const f = await fixture();
+    const first = await f.login({ newRegistration: true, label: "First" });
+    await f.activate(first);
+    const second = await f.login({ newRegistration: true, label: "Second" });
+    const existing = [...f.modelRows.values()][0]!;
+    await disconnectChatGPTPlan(f.deps, actor, undefined, { credentialId: existing.id });
+    const firstRow = f.rows.get(first.registrationId)!;
+    const secondRow = f.rows.get(second.registrationId)!;
+    await expect(f.secrets.load(firstRow.ciphertext, firstRow.id)).resolves.toContain(
+      '"signedOut":true',
+    );
+    await expect(f.secrets.load(secondRow.ciphertext, secondRow.id)).resolves.not.toContain(
+      '"signedOut":true',
+    );
+  });
+
+  it("does not revoke the provider credential when registration cleanup fails", async () => {
+    const f = await fixture();
+    const credential = await f.login({ newRegistration: true });
+    await f.activate(credential);
+    const remove = vi.fn();
+    vi.spyOn(f.secrets, "put").mockRejectedValueOnce(new Error("Fixture storage unavailable"));
+    await expect(disconnectChatGPTPlan(f.deps, actor, remove)).rejects.toThrow(
+      "Fixture storage unavailable",
+    );
+    expect(remove).not.toHaveBeenCalled();
+    expect(auth.revokeCalls).toBe(0);
+  });
+
   it("retains registration IDs but removes retained login hints on unconfirmed revocation", async () => {
     const f = await fixture();
     const credential = await f.login({ newRegistration: true, label: "Work" });

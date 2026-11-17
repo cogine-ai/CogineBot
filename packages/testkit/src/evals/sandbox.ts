@@ -34,7 +34,7 @@ export class EvalSandboxProvider extends FakeSandboxProvider {
 
   override async readFile(...args: Parameters<FakeSandboxProvider["readFile"]>) {
     const read = { path: args[1], succeeded: false };
-    if (Object.keys(this.seedFiles).length) this.fileReads.push(read);
+    this.fileReads.push(read);
     const content = await super.readFile(...args);
     read.succeeded = true;
     return content;

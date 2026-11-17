@@ -131,7 +131,7 @@ function computerRunRequeueData(
 }
 
 export async function writeComputerRunRequeue(
-  deps: ExecutorDeps,
+  deps: { prisma: Pick<Prisma.TransactionClient, "run"> },
   runId: string,
   workerId: string,
   fence: number,

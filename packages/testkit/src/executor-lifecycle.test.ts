@@ -225,12 +225,41 @@ describeIntegration("run executor lifecycle", () => {
     ).toBe(1);
   });
 
-  it.each(["remember", "save_shared_memory"] as const)(
-    "recovers a %s commit after the original worker loses its effect result",
-    async (name) => {
-      const seeded = await seedRun(`memory-receipt-${name}`, "Save the synthetic preference");
-      const args = { path: "fixture-memory.md", content: "Original preference" };
+  it.each([
+    ["remember", false],
+    ["remember", true],
+    ["save_shared_memory", false],
+  ] as const)(
+    "recovers a %s commit after the original worker loses its effect result (correction: %s)",
+    async (name, correct) => {
+      const seeded = await seedRun(
+        `memory-receipt-${name}-${correct}`,
+        "Save the synthetic preference",
+      );
+      const args = {
+        path: "fixture-memory.md",
+        content: "New preference",
+        ...(correct && { correction: { original: "Old preference", expectedRevision: 1 } }),
+      };
       const store = new MarkdownMemoryStore(handles.prisma);
+      if (correct) {
+        await store.commit(
+          {
+            scope: "bot",
+            botId: seeded.bot.id,
+            path: args.path,
+            content: "Keep the other line\r\nOld preference\r\n",
+            expectedRevision: 0,
+          },
+          {
+            ...seeded.me,
+            operationId: "seed-memory",
+            traceId: "seed-memory",
+            signal: new AbortController().signal,
+          },
+        );
+      }
+      const committedRevision = correct ? 2 : 1;
       const results: unknown[] = [];
       const recoveredKey = toolEffectIdempotencyKey(seeded.run.id, name, args);
       // The first executor can commit the memory revision but cannot acknowledge
@@ -292,21 +321,21 @@ describeIntegration("run executor lifecycle", () => {
         const document = await handles.prisma.memoryDocument.findFirstOrThrow({
           where: { spaceId: seeded.me.spaceId, path: args.path },
         });
-        await store.commit(
-          {
-            scope: name === "remember" ? "bot" : "user",
-            botId: name === "remember" ? seeded.bot.id : undefined,
-            path: args.path,
-            content: "Later edit",
-            expectedRevision: 1,
-          },
-          {
-            ...seeded.me,
-            operationId: "later-edit",
-            traceId: "later-edit",
-            signal: new AbortController().signal,
-          },
-        );
+        expect(document.revision).toBe(committedRevision);
+        if (correct) expect(document.content).toBe("Keep the other line\r\nNew preference\r\n");
+        await rpc(seeded.cookie, "memory/update", {
+          documentId: document.id,
+          content: "Later edit",
+          ...(name === "remember" && { expectedRevision: committedRevision }),
+        });
+        if (correct) {
+          await expect(
+            rpc(seeded.cookie, "memory/update", {
+              documentId: document.id,
+              content: "Stale editor without a revision",
+            }),
+          ).rejects.toThrow("409");
+        }
         // Restore the state a different worker observes after an expired lease.
         await handles.prisma.run.update({
           where: { id: seeded.run.id },
@@ -320,7 +349,9 @@ describeIntegration("run executor lifecycle", () => {
         );
 
         const result =
-          name === "remember" ? { ok: true } : { ok: true, path: args.path, revision: 1 };
+          name === "remember" && !correct
+            ? { ok: true }
+            : { ok: true, path: args.path, revision: committedRevision };
         expect(results.at(-1)).toEqual(result);
         await expect(
           handles.prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
@@ -335,10 +366,13 @@ describeIntegration("run executor lifecycle", () => {
           }),
         ).resolves.toMatchObject({
           content: "Later edit",
-          revision: 2,
+          revision: committedRevision + 1,
           revisions: [
-            { revision: 1, sourceRunId: seeded.run.id },
-            { revision: 2, content: "Later edit" },
+            ...(correct
+              ? [{ revision: 1, content: "Keep the other line\r\nOld preference\r\n" }]
+              : []),
+            { revision: committedRevision, sourceRunId: seeded.run.id },
+            { revision: committedRevision + 1, content: "Later edit" },
           ],
         });
       } finally {
@@ -1972,6 +2006,7 @@ describeIntegration("run executor lifecycle", () => {
       await rpc(seeded.cookie, "memory/update", {
         documentId: committed.id,
         content: laterContent,
+        expectedRevision: committed.revision,
       });
       const edited = await handles.prisma.memoryDocument.findUniqueOrThrow({
         where: { id: committed.id },

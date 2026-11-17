@@ -33,6 +33,7 @@ import {
   createTicketChangeNotifier,
   createWebProvider,
   databaseCapacityBackoffMs,
+  drainRuns,
   ExpoPushProvider,
   GraphileJobPublisher,
   InMemoryJobQueue,
@@ -50,6 +51,7 @@ import {
   PipedreamConnector,
   PostgresRealtimeFanout,
   pipedreamConfigFromEnv,
+  RUN_DRAIN_MS,
   RunJobPublisher,
   RunStarter,
   RunWorkerHost,
@@ -212,6 +214,10 @@ async function main() {
     logger.warn("workspace staging cleanup", { error });
   });
   const shutdown = new AbortController();
+  const runDrain = drainRuns(
+    shutdown.signal,
+    process.env.RUN_DRAIN_ENABLED === "true" ? RUN_DRAIN_MS : 0,
+  );
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
   const runs = new RunStarter(realtime, { signal: shutdown.signal });
   const jobs: JobPublisher =
@@ -271,7 +277,8 @@ async function main() {
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,
     web: createWebProvider(),
     cloudAgent,
-    shutdownSignal: shutdown.signal,
+    stoppingSignal: shutdown.signal,
+    shutdownSignal: runDrain.signal,
   });
 
   const nativeEvents = new NativeRoutineEventService(
@@ -291,6 +298,10 @@ async function main() {
       createReservedGraphileJobWorkerHost(pool, {
         concurrency: parsePositiveInteger(process.env.GRAPHILE_WORKER_CONCURRENCY, 4),
       }),
+      () => {
+        runDrain.end();
+        shutdown.abort();
+      },
     );
   const jobHandlers = createBackgroundJobHandlers({
     nativeEvents,
@@ -334,6 +345,7 @@ async function main() {
       try {
         await reconciler.stop();
         await jobHost.stop();
+        runDrain.end();
         await executor.closeRemoteMcpSessions();
         await jobs.close();
         await secrets.close();
@@ -350,7 +362,20 @@ async function main() {
     })();
     return stopPromise;
   };
-  stopOnShutdownSignals(stop);
+  const stopNow = () => {
+    runDrain.end();
+    return stop();
+  };
+  stopOnShutdownSignals(() =>
+    stop().then(
+      () => process.exit(),
+      async (error) => {
+        logger.error("worker shutdown failed", error);
+        await logger.flush({ timeoutMs: 2_000 });
+        process.exit(1);
+      },
+    ),
+  );
   // graphile-worker fires completeJob() without awaiting it. When pool.connect()
   // then hits Postgres 53300, that rejection is unhandled. Exiting here is the
   // crash loop: Docker restarts the process before Postgres has reaped the old
@@ -359,12 +384,14 @@ async function main() {
   // undefined state).
   process.on("uncaughtException", (error) => {
     logger.error("uncaughtException", error);
-    void stop().finally(() => process.exit(1));
+    process.exitCode = 1;
+    void stopNow().finally(() => process.exit(1));
   });
   process.on("unhandledRejection", (reason) => {
     logger.error("unhandledRejection", reason);
     if (isTooManyDatabaseConnections(reason)) return;
-    void stop().finally(() => process.exit(1));
+    process.exitCode = 1;
+    void stopNow().finally(() => process.exit(1));
   });
 
   // Direct runs can already be active while the scheduler waits for capacity.
@@ -376,7 +403,7 @@ async function main() {
     } catch (error) {
       if (stopping) return;
       if (!isTooManyDatabaseConnections(error)) {
-        await stop();
+        await stopNow();
         throw error;
       }
       logger.error("worker job host start waiting on database capacity", error);

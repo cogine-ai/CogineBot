@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
@@ -36,10 +36,12 @@ import type { PrismaClient } from "@rakazo/db";
 import { createDb, createThreadEvents } from "@rakazo/db";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AppHandles } from "../../../apps/api/src/app.ts";
+import { ComputerBusyError } from "../../adapters/src/computer-lifecycle.js";
 import { formatCurrentTimeInstruction } from "../../adapters/src/current-time.js";
 import { createJobReconciler } from "../../adapters/src/job-reconciler.js";
 import { mirrorMessagingOutbound } from "../../adapters/src/messaging-delivery.js";
 import { modelsForRequest, PiAgentRuntime } from "../../adapters/src/pi-runtime.js";
+import { getLogger } from "../../logging/src/index.js";
 import { sessionCookieHeader } from "./index.js";
 
 const enabled = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
@@ -47,7 +49,11 @@ const origin = "http://127.0.0.1:5173";
 const wait = (assertion: () => Promise<void> | void) =>
   vi.waitFor(assertion, { timeout: 10_000, interval: 20 });
 
-function piResponse(activeModel: Model<Api>, content: AssistantMessage["content"]) {
+function piResponse(
+  activeModel: Model<Api>,
+  content: AssistantMessage["content"],
+  streamText = false,
+) {
   const hasCalls = content.some((part) => part.type === "toolCall");
   const message: AssistantMessage = {
     role: "assistant",
@@ -69,6 +75,11 @@ function piResponse(activeModel: Model<Api>, content: AssistantMessage["content"
   const stream = createAssistantMessageEventStream();
   stream.push({ type: "start", partial: { ...message, content: [] } });
   for (const [contentIndex, toolCall] of content.entries()) {
+    if (streamText && toolCall.type === "text") {
+      stream.push({ type: "text_start", contentIndex, partial: message });
+      stream.push({ type: "text_delta", contentIndex, delta: toolCall.text, partial: message });
+      stream.push({ type: "text_end", contentIndex, content: toolCall.text, partial: message });
+    }
     if (toolCall.type !== "toolCall") continue;
     stream.push({ type: "toolcall_start", contentIndex, partial: message });
     stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: message });
@@ -105,6 +116,7 @@ async function openApp(
     contextStrategy?: "current";
     wakeupDriver?: "memory";
     realtime?: InMemoryRealtimeFanout;
+    prisma?: PrismaClient;
   } = {},
 ) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "run-dispatch-fixture-"));
@@ -411,10 +423,18 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
 
   it.each(["card", "composer"] as const)(
     "does not answer a real Pi question through a late initial dispatch hint (%s)",
-    verifyHumanWaitAnswer,
+    (answerPath) => verifyHumanWaitAnswer(answerPath),
   );
 
-  async function verifyHumanWaitAnswer(answerPath: "card" | "composer") {
+  it.each(["P1001", "25006", "unsupported"] as const)(
+    "preserves the saved Pi turn's recovery policy after %s during restoration",
+    (failure) => verifyHumanWaitAnswer("card", failure),
+  );
+
+  async function verifyHumanWaitAnswer(
+    answerPath: "card" | "composer",
+    restoreFailure?: "P1001" | "25006" | "unsupported",
+  ) {
     const choice = "Continue with the saved work.";
     const question = "Should I write the saved tail?";
     const tailPath = "notes/human-wait-tail.txt";
@@ -488,6 +508,30 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       }),
     );
     let targetRunId: string | undefined;
+    let failRestore = false;
+    let restoreFailed = false;
+    const restoreDb = restoreFailure
+      ? createDb(process.env.DATABASE_URL!, { applicationName: "checkpoint-restore-fixture" })
+      : undefined;
+    const controlled = restoreDb?.prisma.$extends({
+      query: {
+        externalEffect: {
+          async findUnique({ args, query }) {
+            if (
+              failRestore &&
+              args.where.idempotencyKey === JSON.stringify(["runtime_checkpoint", targetRunId])
+            ) {
+              failRestore = false;
+              restoreFailed = true;
+              throw Object.assign(new Error("synthetic checkpoint database outage"), {
+                code: restoreFailure,
+              });
+            }
+            return query(args);
+          },
+        },
+      },
+    });
     let reservations = 0;
     const pi = new PiAgentRuntime({
       modelCallObserver: {
@@ -538,6 +582,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         deploymentModelConfigured: true,
         contextStrategy: "current",
         wakeupDriver: "memory",
+        ...(controlled ? { prisma: controlled as unknown as PrismaClient } : {}),
       });
       const handles = fixture.handles;
       const seeded = await seed(handles, "human wait dispatch");
@@ -656,6 +701,15 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         wakeAt: futureHumanWake,
         leaseFence: 1,
       });
+      if (restoreFailure) {
+        await dispatch.stop();
+        if (restoreFailure === "unsupported") {
+          await prisma.externalEffect.update({
+            where: { id: checkpoint.id },
+            data: { result: "unsupported saved turn" },
+          });
+        } else failRestore = true;
+      }
       const answerNonce = `human-wait-answer:${randomUUID()}`;
       if (answerPath === "composer") {
         const sent = await rpc<{ runId: string }>(handles, seeded.cookie, "threads/send", {
@@ -673,11 +727,49 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           clientNonce: answerNonce,
         });
       }
+      if (restoreFailure) {
+        await handles.executor.continueRun(targetRunId, "checkpoint-restore-worker");
+        expect(runtimeRequests).toHaveLength(1);
+        expect(modelRequests).toHaveLength(1);
+        expect(reservations).toBe(1);
+        expect(targetWrites()).toHaveLength(0);
+        const restored = await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        if (restoreFailure === "unsupported") {
+          expect(restored).toMatchObject({
+            status: "failed",
+            leaseOwner: null,
+            leaseFence: 2,
+            error: "Saved turn checkpoint could not be restored",
+          });
+          expect(network).not.toHaveBeenCalled();
+          return;
+        }
+        expect(restoreFailed).toBe(true);
+        expect(restored).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 2,
+          error: null,
+          wakeAt: expect.any(Date),
+        });
+        expect(
+          await prisma.externalEffect.findUniqueOrThrow({ where: { id: checkpoint.id } }),
+        ).toEqual(checkpoint);
+        expect(await prisma.attempt.findMany({ where: { runId: targetRunId, fence: 2 } })).toEqual([
+          expect.objectContaining({ status: "setup_failed", error: null }),
+        ]);
+        await prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() - 1) },
+        });
+        await handles.executor.continueRun(targetRunId, "checkpoint-restored-worker");
+      }
+      const finalFence = restoreFailure ? 3 : 2;
       await wait(async () =>
         expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
           status: "completed",
           wakeAt: null,
-          leaseFence: 2,
+          leaseFence: finalFence,
           leaseOwner: null,
         }),
       );
@@ -720,7 +812,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         }),
       ).toEqual([
         expect.objectContaining({ fence: 1, status: "waiting_input" }),
-        expect.objectContaining({ fence: 2, status: "completed" }),
+        ...(restoreFailure
+          ? [expect.objectContaining({ fence: 2, status: "setup_failed", error: null })]
+          : []),
+        expect.objectContaining({ fence: finalFence, status: "completed" }),
       ]);
       const finalMessages = await prisma.message.findMany({ where: { runId: targetRunId } });
       const finalCards = finalMessages.flatMap((message) =>
@@ -744,6 +839,8 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       await starter?.stop();
       restoreJobs?.();
       await fixture?.close();
+      await restoreDb?.prisma.$disconnect();
+      await restoreDb?.pool.end();
       write.mockRestore();
       network.mockRestore();
       if (previousProvider) models.setProvider(previousProvider);
@@ -944,7 +1041,1170 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     }
   }, 30_000);
 
-  it("awaits already-started parallel Pi message tools before settling a loop guard", async () => {
+  it.each(["ordinary", "busy", "database", "provider-network"] as const)(
+    "keeps the claimed setup failure budget for %s",
+    async (kind) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let failures = 0;
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-budget-fixture" });
+      const controlled = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId) {
+                failures += 1;
+                if (kind === "busy") throw new ComputerBusyError();
+                if (kind === "database")
+                  throw Object.assign(new Error("synthetic database unreachable"), {
+                    code: "P1001",
+                  });
+                if (kind === "provider-network")
+                  throw Object.assign(new Error("synthetic service connection failed"), {
+                    code: "ECONNRESET",
+                  });
+                throw new Error("synthetic repeated setup failure");
+              }
+              return query(args);
+            },
+          },
+        },
+      });
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(new ScriptedAgentRuntime(), {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, kind, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        for (let fence = 1; fence <= 8; fence += 1) {
+          await db.prisma.run.update({
+            where: { id: targetRunId },
+            data: { wakeAt: new Date(Date.now() - 1) },
+          });
+          await fixture.handles.executor
+            .continueRun(targetRunId, "setup-budget-worker")
+            .catch(() => undefined);
+          const run = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+          const waiting = kind === "busy" || kind === "database";
+          expect(run).toMatchObject({
+            status: !waiting && fence === 8 ? "failed" : "queued",
+            leaseOwner: null,
+            leaseFence: fence,
+          });
+          const attempt = await db.prisma.attempt.findFirstOrThrow({
+            where: { runId: targetRunId, fence },
+          });
+          expect(attempt.status).toBe(!waiting && fence === 8 ? "failed" : "setup_failed");
+          if (waiting) expect(attempt.error).toBeNull();
+          else expect(attempt.error).toContain("synthetic");
+        }
+        expect(failures).toBe(8);
+        expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(8);
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
+
+  it("does not settle a successor that claims while early setup is still failing", async () => {
+    let targetRunId: string | undefined;
+    let targetBotId: string | undefined;
+    let entered!: () => void;
+    const setupEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let releaseOld!: () => void;
+    const oldReleased = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    let releaseNew!: () => void;
+    const newReleased = new Promise<void>((resolve) => {
+      releaseNew = resolve;
+    });
+    let enteredNew!: () => void;
+    const newEntered = new Promise<void>((resolve) => {
+      enteredNew = resolve;
+    });
+    let injected = false;
+    const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-fence-fixture" });
+    const controlled = db.prisma.$extends({
+      query: {
+        bot: {
+          async findUniqueOrThrow({ args, query }) {
+            if (targetBotId === args.where.id && args.select?.computerId && !injected) {
+              injected = true;
+              entered();
+              await oldReleased;
+              throw new Error("synthetic old claim failure");
+            }
+            return query(args);
+          },
+        },
+      },
+    });
+    const scripted = new ScriptedAgentRuntime();
+    const runtime: AgentRuntime = {
+      describe: () => scripted.describe(),
+      async *run(request, context) {
+        if (request.runId === targetRunId) {
+          enteredNew();
+          await newReleased;
+        }
+        yield* scripted.run(request, context);
+      },
+      abort: (runId) => scripted.abort(runId),
+    };
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    let oldWork: Promise<void> | undefined;
+    let newWork: Promise<void> | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        prisma: controlled as unknown as PrismaClient,
+        wakeupDriver: "memory",
+      });
+      const seeded = await seed(fixture.handles, "setup fence", undefined, async () => {
+        await fixture!.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      targetBotId = seeded.botId;
+      oldWork = fixture.handles.executor.continueRun(targetRunId, "old-setup-worker");
+      void oldWork.catch(() => undefined);
+      await setupEntered;
+      await db.prisma.run.update({
+        where: { id: targetRunId },
+        data: { leaseExpiresAt: new Date(0) },
+      });
+      newWork = fixture.handles.executor.continueRun(targetRunId, "new-setup-worker");
+      void newWork.catch(() => undefined);
+      await newEntered;
+      releaseOld();
+      await oldWork;
+      expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        status: "running",
+        leaseOwner: "new-setup-worker",
+        leaseFence: 2,
+      });
+      expect(
+        await db.prisma.attempt.findFirstOrThrow({ where: { runId: targetRunId, fence: 2 } }),
+      ).toMatchObject({ status: "running", finishedAt: null });
+      const lease = await db.prisma.computerExecutionLease.findFirstOrThrow({
+        where: { runId: targetRunId },
+      });
+      expect(lease.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      releaseNew();
+      await newWork;
+      expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
+        status: "completed",
+        leaseFence: 2,
+      });
+      expect(
+        await db.prisma.attempt.findMany({
+          where: { runId: targetRunId },
+          orderBy: { fence: "asc" },
+        }),
+      ).toEqual([
+        expect.objectContaining({ fence: 1, status: "interrupted" }),
+        expect.objectContaining({ fence: 2, status: "completed" }),
+      ]);
+    } finally {
+      releaseOld();
+      releaseNew();
+      await Promise.allSettled([oldWork, newWork].filter((work) => work !== undefined));
+      await fixture?.close();
+      await db.prisma.$disconnect();
+      await db.pool.end();
+    }
+  });
+
+  it.each(["requeue", "attempt", "transaction"] as const)(
+    "retains one ordinary setup failure when its %s write loses acknowledgement",
+    async (stage) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let injected = false;
+      let requeued = false;
+      let requeueWrittenAt: number | undefined;
+      const unavailable = Object.assign(new Error("synthetic setup write acknowledgement lost"), {
+        code: "P1001",
+      });
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-write-receipt" });
+      const queried = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId)
+                throw new Error("synthetic actual setup failure");
+              return query(args);
+            },
+          },
+          run: {
+            async updateMany({ args, query }) {
+              if (
+                targetRunId &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                args.data.wakeAt instanceof Date
+              )
+                requeueWrittenAt ??= Date.now();
+              const result = await query(args);
+              if (
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                result.count === 1
+              )
+                requeued = true;
+              if (
+                stage === "requeue" &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                result.count === 1 &&
+                !injected
+              ) {
+                injected = true;
+                throw unavailable;
+              }
+              return result;
+            },
+          },
+          attempt: {
+            async update({ args, query }) {
+              const result = await query(args);
+              if (
+                stage === "attempt" &&
+                result.runId === targetRunId &&
+                args.data.status === "setup_failed" &&
+                !injected
+              ) {
+                injected = true;
+                throw unavailable;
+              }
+              return result;
+            },
+          },
+        },
+      });
+      const controlled = queried.$extends({
+        client: {
+          async $transaction(...args: unknown[]) {
+            const result = await Reflect.apply(queried.$transaction, queried, args);
+            if (stage === "transaction" && requeued && !injected) {
+              injected = true;
+              throw unavailable;
+            }
+            return result;
+          },
+        },
+      });
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(new ScriptedAgentRuntime(), {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, `setup ${stage} write`, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        // PostgreSQL may take longer than the backoff to accept a valid write.
+        const recoveryTime = Date.now();
+        const recoveryClock = vi.spyOn(Date, "now").mockReturnValue(recoveryTime);
+        try {
+          await fixture.handles.executor
+            .continueRun(targetRunId, "setup-write-worker")
+            .catch(() => undefined);
+        } finally {
+          recoveryClock.mockRestore();
+        }
+        expect(injected).toBe(true);
+        expect(await db.prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
+          expect.objectContaining({
+            status: "setup_failed",
+            error: "synthetic actual setup failure",
+            fence: 1,
+          }),
+        ]);
+        const parked = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        expect(parked).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 1,
+          wakeAt: expect.any(Date),
+        });
+        expect(requeueWrittenAt).toBeDefined();
+        expect(parked.wakeAt!.getTime()).toBeGreaterThan(requeueWrittenAt!);
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
+
+  it.each(["stop", "shutdown"] as const)(
+    "does not turn %s during claimed setup into an ordinary failure or revive the Run",
+    async (action) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let entered!: () => void;
+      const setupEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "setup-stop-worker" });
+      const observer = createDb(process.env.DATABASE_URL!, {
+        applicationName: "setup-stop-observer",
+      });
+      let injected = false;
+      const controlled = db.prisma.$extends({
+        query: {
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (targetBotId === args.where.id && args.select?.computerId && !injected) {
+                injected = true;
+                entered();
+                await released;
+                throw new Error("synthetic setup interrupted by owner");
+              }
+              return query(args);
+            },
+          },
+        },
+      });
+      let runtimeCalls = 0;
+      const scripted = new ScriptedAgentRuntime();
+      const runtime: AgentRuntime = {
+        describe: () => scripted.describe(),
+        async *run(request, context) {
+          if (request.runId === targetRunId) runtimeCalls += 1;
+          yield* scripted.run(request, context);
+        },
+        abort: (runId) => scripted.abort(runId),
+      };
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      let stopping: Promise<void> | undefined;
+      try {
+        // Use the application's owned dispatcher so shutdown drains this execution
+        // before disconnecting its database client.
+        fixture = await openApp(runtime, {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, `setup ${action}`);
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        await fixture.handles.jobs.enqueue(runContinueJob(targetRunId));
+        await setupEntered;
+        if (action === "stop") {
+          await rpc(fixture.handles, seeded.cookie, "threads/stop", { botId: seeded.botId });
+        } else {
+          stopping = fixture.handles.stop();
+        }
+        release();
+        if (stopping) await stopping;
+        await wait(async () => {
+          const run = await observer.prisma.run.findUniqueOrThrow({
+            where: { id: targetRunId },
+          });
+          expect(run).toMatchObject({
+            status: action === "stop" ? "cancelled" : "queued",
+            leaseFence: 1,
+          });
+          if (action === "shutdown") expect(run.leaseOwner).toBeNull();
+          const attempts = await observer.prisma.attempt.findMany({
+            where: { runId: targetRunId },
+          });
+          expect(attempts).toEqual([
+            expect.objectContaining({ status: "interrupted", fence: 1, error: null }),
+          ]);
+        });
+        expect(runtimeCalls).toBe(0);
+        expect(await observer.prisma.externalEffect.count({ where: { runId: targetRunId } })).toBe(
+          0,
+        );
+        expect(
+          await observer.prisma.computerExecutionLease.count({ where: { runId: targetRunId } }),
+        ).toBe(0);
+        if (action === "stop") {
+          await fixture.handles.executor.continueRun(targetRunId, "stale-after-stop");
+          expect(
+            await observer.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+          ).toMatchObject({ status: "cancelled", leaseFence: 1 });
+          expect(runtimeCalls).toBe(0);
+        }
+      } finally {
+        release();
+        await stopping;
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+        await observer.prisma.$disconnect();
+        await observer.pool.end();
+      }
+    },
+  );
+
+  it("observes a discovery rejection when history assembly fails before joining it", async () => {
+    const fixture = await openApp(new ScriptedAgentRuntime(), { wakeupDriver: "memory" });
+    let targetRunId: string | undefined;
+    const originalDiscovery = fixture.handles.connectors.discoverTools.bind(
+      fixture.handles.connectors,
+    );
+    let discoveries = 0;
+    const discovery = vi
+      .spyOn(fixture.handles.connectors, "discoverTools")
+      .mockImplementation((context) => {
+        if (context.runId !== targetRunId) return originalDiscovery(context);
+        discoveries += 1;
+        return Promise.reject(new Error("synthetic connector discovery rejection"));
+      });
+    try {
+      const seeded = await seed(fixture.handles, "rejected discovery", undefined, async () => {
+        await fixture.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      await fixture.handles.prisma.message.create({
+        data: {
+          botId: seeded.botId,
+          threadId: seeded.threadId,
+          role: "bot",
+          blocks: [null],
+          seq: 999,
+        },
+      });
+      await expect(
+        fixture.handles.executor.continueRun(targetRunId, "discovery-setup-worker"),
+      ).rejects.toThrow("Run setup failed; retrying");
+      expect(discoveries).toBe(1);
+      const attempts = await fixture.handles.prisma.attempt.findMany({
+        where: { runId: targetRunId },
+      });
+      expect(attempts).toEqual([
+        expect.objectContaining({
+          status: "setup_failed",
+          error: expect.stringContaining("kind"),
+        }),
+      ]);
+      expect(attempts[0]!.error).not.toContain("synthetic connector discovery rejection");
+      expect(
+        await fixture.handles.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+      ).toMatchObject({ status: "queued", leaseOwner: null, leaseFence: 1 });
+    } finally {
+      discovery.mockRestore();
+      await fixture.close();
+    }
+  });
+
+  it.each([
+    "claim-read",
+    "start-update",
+    "start-ack-lost",
+    "claim-ack-lost",
+    "claim-read-recovery-ack-lost",
+    "collaboration-rollback",
+    "collaboration-ack-lost",
+    "bot-query",
+    "computer-query",
+    "computer-lease",
+    "attempt-rollback",
+    "attempt-ack-lost",
+    "late-record",
+  ] as const)(
+    "recovers claimed setup work after %s without duplicating its attempt",
+    async (stage) => {
+      let targetRunId: string | undefined;
+      let targetBotId: string | undefined;
+      let targetComputerId: string | undefined;
+      let injected = false;
+      let claimed = false;
+      let recoveryReplyLost = false;
+      let requeueWrittenAt: number | undefined;
+      const failure = () => {
+        injected = true;
+        return new Error(
+          `synthetic ${stage} failure Bearer synthetic-private-value ${"detail ".repeat(500)}`,
+        );
+      };
+      const db = createDb(process.env.DATABASE_URL!, { applicationName: "claimed-setup-fixture" });
+      const queried = db.prisma.$extends({
+        query: {
+          run: {
+            async updateMany({ args, query }) {
+              if (
+                targetRunId &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                args.data.wakeAt instanceof Date
+              )
+                requeueWrittenAt ??= Date.now();
+              if (
+                (stage === "start-update" || stage === "collaboration-rollback") &&
+                args.where?.id === targetRunId &&
+                args.data.status === "running" &&
+                !injected
+              )
+                throw failure();
+              const result = await query(args);
+              if (args.where?.id === targetRunId && args.data.status === "running") {
+                if (stage === "start-ack-lost" && !injected && result.count === 1) throw failure();
+                if (
+                  stage === "claim-read-recovery-ack-lost" &&
+                  injected &&
+                  result.count === 1 &&
+                  !recoveryReplyLost
+                ) {
+                  recoveryReplyLost = true;
+                  throw Object.assign(new Error("synthetic recovery transition reply lost"), {
+                    code: "P1001",
+                  });
+                }
+              }
+              if (
+                args.where?.id === targetRunId &&
+                args.data.status === "leased" &&
+                result.count === 1
+              ) {
+                claimed = true;
+                if (stage === "claim-ack-lost" && !injected) throw failure();
+              }
+              return result;
+            },
+            async findUniqueOrThrow({ args, query }) {
+              if (
+                (stage === "claim-read" || stage === "claim-read-recovery-ack-lost") &&
+                args.where.id === targetRunId &&
+                claimed &&
+                !injected
+              )
+                throw failure();
+              return query(args);
+            },
+          },
+          bot: {
+            async findUniqueOrThrow({ args, query }) {
+              if (
+                targetBotId === args.where.id &&
+                !injected &&
+                ((stage === "bot-query" && args.select?.computerId) ||
+                  (stage === "late-record" && args.include?.computer))
+              )
+                throw failure();
+              return query(args);
+            },
+          },
+          computer: {
+            async findUniqueOrThrow({ args, query }) {
+              if (stage === "computer-query" && targetComputerId === args.where.id && !injected)
+                throw failure();
+              return query(args);
+            },
+          },
+          computerExecutionLease: {
+            async create({ args, query }) {
+              if (stage === "computer-lease" && targetRunId === args.data.runId && !injected)
+                throw failure();
+              return query(args);
+            },
+          },
+          attempt: {
+            async create({ args, query }) {
+              if (targetRunId === args.data.runId && !injected && stage === "attempt-rollback")
+                throw failure();
+              const result = await query(args);
+              if (targetRunId === args.data.runId && !injected && stage === "attempt-ack-lost")
+                throw failure();
+              return result;
+            },
+          },
+        },
+      });
+      const controlled = queried.$extends({
+        client: {
+          async $transaction(...args: unknown[]) {
+            const result = await Reflect.apply(queried.$transaction, queried, args);
+            if (stage === "collaboration-ack-lost" && claimed && !injected) throw failure();
+            return result;
+          },
+        },
+      });
+      let runtimeCalls = 0;
+      const scripted = new ScriptedAgentRuntime();
+      const runtime: AgentRuntime = {
+        describe: () => scripted.describe(),
+        run(request, context) {
+          if (request.runId === targetRunId) runtimeCalls += 1;
+          return scripted.run(request, context);
+        },
+        abort: (runId) => scripted.abort(runId),
+      };
+      let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+      try {
+        fixture = await openApp(runtime, {
+          prisma: controlled as unknown as PrismaClient,
+          wakeupDriver: "memory",
+        });
+        const seeded = await seed(fixture.handles, stage, undefined, async () => {
+          await fixture!.handles.awaitIdle?.();
+        });
+        targetRunId = seeded.run.id;
+        targetBotId = seeded.botId;
+        if (stage === "collaboration-rollback" || stage === "collaboration-ack-lost")
+          await db.prisma.run.update({
+            where: { id: targetRunId },
+            data: { origin: "bot_peer", startedAt: new Date() },
+          });
+        targetComputerId = (await db.prisma.bot.findUniqueOrThrow({ where: { id: targetBotId } }))
+          .computerId!;
+        // Measure the requested backoff independently of database scheduling latency.
+        const recoveryTime = Date.now();
+        const recoveryClock = vi.spyOn(Date, "now").mockReturnValue(recoveryTime);
+        try {
+          await fixture.handles.executor
+            .continueRun(targetRunId, "first-setup-worker")
+            .catch(() => undefined);
+        } finally {
+          recoveryClock.mockRestore();
+        }
+        expect(injected).toBe(true);
+        if (stage === "claim-read-recovery-ack-lost") expect(recoveryReplyLost).toBe(true);
+        expect(runtimeCalls).toBe(0);
+        const parked = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        if (stage === "collaboration-rollback") {
+          expect(parked).toMatchObject({ status: "queued", leaseOwner: null, leaseFence: 0 });
+          expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(0);
+          await fixture.handles.executor.continueRun(targetRunId, "after-rollback-worker");
+          expect(runtimeCalls).toBe(1);
+          expect(
+            await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
+          ).toMatchObject({ status: "completed", leaseFence: 1 });
+          expect(await db.prisma.attempt.findMany({ where: { runId: targetRunId } })).toEqual([
+            expect.objectContaining({ status: "completed", fence: 1 }),
+          ]);
+          return;
+        }
+        expect(parked).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 1,
+          wakeAt: expect.any(Date),
+        });
+        expect(requeueWrittenAt).toBeDefined();
+        expect(parked.wakeAt!.getTime()).toBeGreaterThan(requeueWrittenAt!);
+        const attempts = await db.prisma.attempt.findMany({ where: { runId: targetRunId } });
+        expect(attempts).toEqual([
+          expect.objectContaining({
+            status: "setup_failed",
+            fence: 1,
+            finishedAt: expect.any(Date),
+          }),
+        ]);
+        expect(attempts[0]!.error).toContain(`synthetic ${stage} failure`);
+        expect(attempts[0]!.error).not.toContain("synthetic-private-value");
+        expect(attempts[0]!.error!.length).toBeLessThanOrEqual(2_000);
+        expect(
+          await db.prisma.computerExecutionLease.count({
+            where: { runId: targetRunId, expiresAt: { gt: new Date() } },
+          }),
+        ).toBe(0);
+        // A stale delivery must respect a durable future wake, without timing a 250ms backoff.
+        await db.prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() + 60_000) },
+        });
+        await fixture.handles.executor.continueRun(targetRunId, "too-early-setup-worker");
+        expect(await db.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(1);
+        await db.prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() - 1) },
+        });
+        await fixture.handles.executor.continueRun(targetRunId, "second-setup-worker");
+        expect(runtimeCalls).toBe(1);
+        expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject(
+          { status: "completed", leaseOwner: null, leaseFence: 2 },
+        );
+        expect(
+          await db.prisma.attempt.findMany({
+            where: { runId: targetRunId },
+            orderBy: { fence: "asc" },
+          }),
+        ).toEqual([
+          expect.objectContaining({ id: attempts[0]!.id, status: "setup_failed", fence: 1 }),
+          expect.objectContaining({ status: "completed", fence: 2 }),
+        ]);
+      } finally {
+        await fixture?.close();
+        await db.prisma.$disconnect();
+        await db.pool.end();
+      }
+    },
+  );
+
+  it.each([
+    "repeated-results",
+    "narrated-results",
+    "progress-results",
+    "distinct-files",
+    "helper-isolation",
+    "helper-results",
+    "running-shell-stopped",
+    "running-shell-succeeded",
+    "running-shell-failed",
+    "productive-batch",
+    "productive-batch-fixed-first",
+    "repeated-batch",
+  ] as const)("settles result-aware Pi work: %s", async (scenario) => {
+    const fixtureKey = "synthetic-result-aware-key";
+    const model: Model<"openai-completions"> = {
+      provider: "anthropic",
+      id: "synthetic-result-aware",
+      name: "Synthetic result-aware model",
+      api: "openai-completions",
+      baseUrl: "https://models.invalid/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 1_024,
+    };
+    vi.stubEnv("PI_DEFAULT_PROVIDER", model.provider);
+    vi.stubEnv("PI_DEFAULT_MODEL", model.id);
+    vi.stubEnv("ANTHROPIC_API_KEY", fixtureKey);
+    const models = modelsForRequest(
+      { model: { provider: model.provider, id: model.id, apiKey: fixtureKey } },
+      model.provider,
+    ) as MutableModels;
+    const previousProvider = models.getProvider(model.provider);
+    const providerFailures: unknown[] = [];
+    const files = Array.from(
+      { length: 30 },
+      (_, i) =>
+        `notes/result-${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}.txt`,
+    );
+    const runningShell = scenario.startsWith("running-shell-");
+    let releaseShell!: () => void;
+    const shellReleased = new Promise<void>((resolve) => {
+      releaseShell = resolve;
+    });
+    let returnedShell!: () => void;
+    const shellReturned = new Promise<void>((resolve) => {
+      returnedShell = resolve;
+    });
+    let requests = 0;
+    let parentRequests = 0;
+    const helperRequests = new Map<string, number>();
+    const stream = (activeModel: Model<Api>, context: TranscriptContext) => {
+      try {
+        requests += 1;
+        expect(requests).toBeLessThanOrEqual(64);
+        if (scenario.startsWith("helper-") || scenario === "running-shell-stopped") {
+          const userContext = JSON.stringify(
+            context.messages.filter((message) => message.role === "user"),
+          );
+          const helper = ["Alpha", "Beta"].find((name) =>
+            userContext.includes(`Check the ${name} result`),
+          );
+          if (!helper) {
+            parentRequests += 1;
+            expect(parentRequests).toBeLessThanOrEqual(2);
+            if (parentRequests === 2)
+              return piResponse(activeModel, [{ type: "text", text: "Both helpers finished." }]);
+            return piResponse(activeModel, [
+              ...(scenario === "running-shell-stopped"
+                ? [
+                    {
+                      type: "toolCall" as const,
+                      id: "running-shell-call",
+                      name: "shell",
+                      arguments: { command: "synthetic-long-command" },
+                    },
+                  ]
+                : []),
+              ...(scenario === "helper-isolation" ? ["Alpha", "Beta"] : ["Alpha"]).map((name) => ({
+                type: "toolCall" as const,
+                id: `start-${name}`,
+                name: "run_subagent",
+                arguments: { name, task: `Check the ${name} result and report back.` },
+              })),
+            ]);
+          }
+          const call = (helperRequests.get(helper) ?? 0) + 1;
+          helperRequests.set(helper, call);
+          if (scenario === "helper-isolation" && call === 15)
+            return piResponse(activeModel, [{ type: "text", text: `${helper} finished.` }]);
+          return piResponse(activeModel, [
+            {
+              type: "toolCall",
+              id: `${helper}-result-${call}`,
+              name: "message_user",
+              arguments: { message: `${helper} checking ${"again ".repeat(call)}for a result.` },
+            },
+          ]);
+        }
+        expect(requests).toBeLessThanOrEqual(31);
+        if (scenario === "narrated-results" || scenario === "progress-results") {
+          if (requests === 31)
+            return piResponse(activeModel, [{ type: "text", text: "Completed narrated checks." }]);
+          return piResponse(
+            activeModel,
+            [
+              { type: "text", text: `Checking item ${requests}.` },
+              {
+                type: "toolCall",
+                id: `narrated-${requests}`,
+                name: "message_user",
+                arguments: { message: `Checking ${requests}.` },
+              },
+            ],
+            true,
+          );
+        }
+        if (scenario.startsWith("productive-batch")) {
+          if (requests === 31)
+            return piResponse(activeModel, [{ type: "text", text: "Read all thirty documents." }]);
+          const calls: ToolCall[] = [
+            {
+              type: "toolCall",
+              id: `document-${requests}`,
+              name: "read_file",
+              arguments: { path: files[requests - 1] },
+            },
+            {
+              type: "toolCall",
+              id: `reference-${requests}`,
+              name: "read_file",
+              arguments: { path: "notes/reference.md" },
+            },
+          ];
+          return piResponse(
+            activeModel,
+            scenario.endsWith("fixed-first") ? calls.reverse() : calls,
+          );
+        }
+        if (scenario === "repeated-batch")
+          return piResponse(
+            activeModel,
+            ["first", "second"].map((label) => ({
+              type: "toolCall" as const,
+              id: `${label}-${requests}`,
+              name: "message_user",
+              arguments: { message: `${label} checking ${"again ".repeat(requests)}for a result.` },
+            })),
+          );
+        if (runningShell) {
+          if (requests === 1)
+            return piResponse(activeModel, [
+              {
+                type: "toolCall",
+                id: "running-shell-call",
+                name: "shell",
+                arguments: { command: "synthetic-long-command" },
+              },
+            ]);
+          if (requests === 2)
+            expect(
+              context.messages.findLast((message) => message.role === "toolResult"),
+            ).toMatchObject({ details: { code: null, running: true } });
+          if (scenario !== "running-shell-stopped") {
+            releaseShell();
+            if (requests > 2) {
+              expect(JSON.stringify(context.messages)).toContain(
+                scenario === "running-shell-failed" ? "exit code: 2" : "exit code: 0",
+              );
+            }
+            return piResponse(activeModel, [
+              {
+                type: "text",
+                text: requests === 2 ? "Waiting for final exit." : "Command settled.",
+              },
+            ]);
+          }
+        }
+        if (scenario === "distinct-files" && requests === 31)
+          return piResponse(activeModel, [{ type: "text", text: "Saved all thirty files." }]);
+        if (requests > 1 && !(runningShell && requests === 2))
+          expect(
+            context.messages.findLast((message) => message.role === "toolResult"),
+          ).toMatchObject({ toolCallId: `result-call-${requests - 1}` });
+        return piResponse(activeModel, [
+          {
+            type: "toolCall",
+            id: `result-call-${requests}`,
+            name: scenario === "distinct-files" ? "write_file" : "message_user",
+            arguments:
+              scenario === "distinct-files"
+                ? { path: files[requests - 1], content: "saved fixture content" }
+                : { message: `Checking ${"again ".repeat(requests)}for a result.` },
+          },
+        ]);
+      } catch (error) {
+        providerFailures.push(error);
+        throw error;
+      }
+    };
+    models.setProvider(
+      createProvider({
+        id: model.provider,
+        models: [model],
+        auth: {
+          apiKey: {
+            name: "Synthetic result-aware fixture",
+            resolve: async () => ({ auth: { apiKey: fixtureKey }, source: "fixture" }),
+          },
+        },
+        api: { stream, streamSimple: stream },
+      }),
+    );
+    let targetRunId: string | undefined;
+    let aborted = false;
+    let requestsAtAbort: number | undefined;
+    const pi = new PiAgentRuntime();
+    const scripted = new ScriptedAgentRuntime();
+    const executions: string[] = [];
+    const runtime: AgentRuntime = {
+      describe: () => pi.describe(),
+      run(request, context) {
+        if (request.runId !== targetRunId) return scripted.run(request, context);
+        context?.signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            requestsAtAbort = requests;
+          },
+          { once: true },
+        );
+        const execute = request.executeTool!;
+        request.executeTool = (name, args, id, route, observer) => {
+          executions.push(id);
+          return (async () => {
+            if (scenario === "running-shell-stopped" && name === "run_subagent")
+              await shellReturned;
+            const result = await execute(name, args, id, route, observer);
+            if (name === "shell") returnedShell();
+            return result;
+          })();
+        };
+        const events = pi.run(request, context);
+        if (scenario === "progress-results")
+          return (async function* () {
+            for await (const event of events)
+              yield event.type === "text"
+                ? { type: "progress" as const, text: event.text, activity: false }
+                : event;
+          })();
+        return events;
+      },
+      abort: (runId) => pi.abort(runId),
+    };
+    const sandbox = new FakeSandboxProvider();
+    const originalRead = sandbox.readFile.bind(sandbox);
+    const read = vi
+      .spyOn(sandbox, "readFile")
+      .mockImplementation(async (computer, filePath, context, options) => {
+        if (scenario.startsWith("productive-batch") && context.runId === targetRunId)
+          return new TextEncoder().encode(
+            filePath.endsWith("reference.md")
+              ? "unchanged reference"
+              : `new document at ${filePath}`,
+          );
+        return originalRead(computer, filePath, context, options);
+      });
+    const originalExecute = sandbox.execute.bind(sandbox);
+    const command = vi
+      .spyOn(sandbox, "execute")
+      .mockImplementation(async function* (computer, request, context) {
+        if (!runningShell || context.runId !== targetRunId) {
+          yield* originalExecute(computer, request, context);
+          return;
+        }
+        yield { type: "stdout", data: "synthetic command still working\n" };
+        let onAbort!: () => void;
+        try {
+          await Promise.race([
+            shellReleased,
+            new Promise<never>((_resolve, reject) => {
+              onAbort = () => reject(new Error("synthetic command interrupted"));
+              if (context.signal.aborted) onAbort();
+              else context.signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ]);
+          yield {
+            type: "exit",
+            code: scenario === "running-shell-failed" ? 2 : 0,
+            terminalStateVerified: true,
+          };
+        } finally {
+          context.signal.removeEventListener("abort", onAbort);
+        }
+      });
+    let audit: ReturnType<typeof vi.spyOn> | undefined;
+    let fixture: Awaited<ReturnType<typeof openApp>> | undefined;
+    try {
+      fixture = await openApp(runtime, {
+        sandbox,
+        agentRuntime: "pi",
+        defaultProvider: model.provider,
+        defaultModel: model.id,
+        deploymentModelConfigured: true,
+        contextStrategy: "current",
+        wakeupDriver: "memory",
+      });
+      audit = vi.spyOn(getLogger(), "info");
+      const seeded = await seed(fixture.handles, scenario, "dedicated", async () => {
+        await fixture!.handles.awaitIdle?.();
+      });
+      targetRunId = seeded.run.id;
+      await fixture.handles.executor.continueRun(targetRunId, "result-aware-worker");
+      expect(providerFailures).toEqual([]);
+      const final = await fixture.handles.prisma.run.findUniqueOrThrow({
+        where: { id: targetRunId },
+      });
+      expect(final).toMatchObject({ status: "completed", leaseOwner: null, leaseFence: 1 });
+      expect(
+        await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
+      ).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
+      const messages = await fixture.handles.prisma.message.findMany({
+        where: { runId: targetRunId, role: "bot" },
+      });
+      const blocks = messages.flatMap((message) =>
+        MessageBlockSchema.array().parse(message.blocks),
+      );
+      expect(blocks.some((block) => block.kind === "ask")).toBe(false);
+      const steps = blocks.flatMap((block) => (block.kind === "steps" ? block.steps : []));
+      const stops = audit.mock.calls.filter(
+        ([message, fields]) =>
+          message === "run.loop_guard_stopped" && fields?.["run.id"] === targetRunId,
+      );
+      if (scenario === "narrated-results" || scenario === "progress-results") {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(30);
+        expect(stops).toEqual([]);
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(30);
+      } else if (scenario.startsWith("productive-batch")) {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(60);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Read all thirty documents.");
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(60);
+      } else if (runningShell && scenario !== "running-shell-stopped") {
+        expect(requests).toBe(3);
+        expect(stops).toEqual([]);
+        expect(steps.filter((step) => step.label === "Shell")).toEqual([
+          expect.objectContaining({
+            count: 1,
+            outcomes: scenario === "running-shell-failed" ? { failed: 1 } : { succeeded: 1 },
+          }),
+        ]);
+        expect(JSON.stringify(blocks)).toContain("Command settled.");
+      } else if (
+        scenario === "repeated-results" ||
+        scenario === "helper-results" ||
+        scenario === "running-shell-stopped" ||
+        scenario === "repeated-batch"
+      ) {
+        // The first published update and the later budget response are distinct results.
+        expect(requests).toBeGreaterThanOrEqual(25);
+        if (scenario === "helper-results" || scenario === "running-shell-stopped")
+          expect(parentRequests).toBe(1);
+        else expect(requests).toBeLessThanOrEqual(scenario === "repeated-batch" ? 29 : 28);
+        if (runningShell)
+          expect(steps.find((step) => step.label === "Shell")).toMatchObject({
+            outcomes: { stopped: 1 },
+          });
+        expect(aborted).toBe(true);
+        // Helpers can have already queued calls while the event consumer persists history.
+        // Once the stop aborts the runtime, it must not start another model request.
+        expect(requests).toBe(requestsAtAbort);
+        expect(JSON.stringify(blocks)).toContain("with the same result 25 times in a row");
+        expect(stops).toEqual([
+          [
+            "run.loop_guard_stopped",
+            expect.objectContaining({
+              "loop.reason": "repeated_results",
+              "loop.count": 25,
+              "loop.failures": 0,
+            }),
+          ],
+        ]);
+        expect(
+          steps.reduce(
+            (n, step) =>
+              n +
+              (step.outcomes?.succeeded ?? 0) +
+              (step.outcomes?.failed ?? 0) +
+              (step.outcomes?.stopped ?? 0),
+            0,
+          ),
+        ).toBe(steps.reduce((n, step) => n + step.count, 0));
+      } else if (scenario === "helper-isolation") {
+        expect(parentRequests).toBe(2);
+        expect([...helperRequests.entries()].sort()).toEqual([
+          ["Alpha", 15],
+          ["Beta", 15],
+        ]);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Both helpers finished.");
+        const completedHelpers = blocks.filter(
+          (block) => block.kind === "subagent" && block.status === "completed",
+        );
+        expect(completedHelpers).toHaveLength(2);
+        expect(executions).toHaveLength(30);
+      } else {
+        expect(requests).toBe(31);
+        expect(executions).toHaveLength(30);
+        expect(stops).toEqual([]);
+        expect(JSON.stringify(blocks)).toContain("Saved all thirty files.");
+        expect(steps.reduce((n, step) => n + (step.outcomes?.succeeded ?? 0), 0)).toBe(30);
+        const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
+          where: { bots: { some: { id: seeded.botId } } },
+        });
+        expect(computer.homeRevision).toEqual(expect.any(String));
+        for (const filePath of [files[0]!, files.at(-1)!]) {
+          expect(
+            await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
+              operationId: "result-aware-readback",
+              traceId: "result-aware-readback",
+              userId: seeded.userId,
+              spaceId: seeded.spaceId,
+              botId: seeded.botId,
+              runId: targetRunId,
+              signal: new AbortController().signal,
+            }),
+          ).toBe("saved fixture content");
+        }
+      }
+      expect(new Set(executions).size).toBe(executions.length);
+      const requestCount = requests;
+      // A terminal Run cannot be started again by an ordinary wakeup.
+      await fixture.handles.executor.continueRun(targetRunId, "second-result-aware-worker");
+      expect(requests).toBe(requestCount);
+      expect(await fixture.handles.prisma.attempt.count({ where: { runId: targetRunId } })).toBe(1);
+    } finally {
+      releaseShell();
+      returnedShell();
+      if (targetRunId) pi.abort(targetRunId);
+      await fixture?.close();
+      command.mockRestore();
+      read.mockRestore();
+      audit?.mockRestore();
+      if (previousProvider) models.setProvider(previousProvider);
+      else models.deleteProvider(model.provider);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([true, false])("settles loop-guard tools, publishing=%s", async (publishing) => {
     const lateText = "The already-started progress message must reach the linked chat.";
     const fixtureKey = "synthetic-loop-guard-model-key";
     const model: Model<"openai-completions"> = {
@@ -1034,6 +2294,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       observedAbort = resolve;
     });
     let lateEffectId: string | undefined;
+    let enteredLateEffect = () => {};
+    const lateEffectEntered = new Promise<void>((resolve) => {
+      enteredLateEffect = resolve;
+    });
     const db = createDb(process.env.DATABASE_URL!, {
       applicationName: "synthetic-loop-guard-settlement",
     });
@@ -1048,13 +2312,20 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
               (effect.request as { message?: unknown }).message === lateText
             ) {
               lateEffectId = effect.id;
+              enteredLateEffect();
+              if (!publishing) await cleanupStarted;
             }
             return effect;
           },
         },
         run: {
           async updateMany({ args, query }) {
-            if (targetRunId && args.where?.id === targetRunId && args.data.status === "completed") {
+            if (
+              publishing &&
+              targetRunId &&
+              args.where?.id === targetRunId &&
+              args.data.status === "completed"
+            ) {
               // The sibling is waiting before BEGIN, holding no database lock.
               await latePublicationEntered;
             }
@@ -1110,7 +2381,19 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           executions.push({ name, id, args: structuredClone(args) });
           return executionScope.run(id, () => execute(name, args, id, route, observer));
         };
-        return pi.run(request, context);
+        return (async function* () {
+          for await (const event of pi.run(request, context)) {
+            if (
+              event.type === "tool" &&
+              event.executionId === JSON.stringify(["pi-tool", "main", "repeated-message-6"])
+            ) {
+              // The triggering call event can stop the iterator before its result.
+              // Establish the sibling's cancellation boundary before that stop.
+              await (publishing ? latePublicationEntered : lateEffectEntered);
+            }
+            yield event;
+          }
+        })();
       },
       abort: (runId) => pi.abort(runId),
     };
@@ -1145,7 +2428,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         where: { id: targetRunId },
         data: { trigger: "messaging", startedAt: new Date(Date.now() - 60_000) },
       });
-      await handles.prisma.messagingIdentity.create({
+      const identity = await handles.prisma.messagingIdentity.create({
         data: {
           provider: "slack",
           address: randomUUID(),
@@ -1175,48 +2458,53 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         ),
       );
       void terminalVisible.catch(() => undefined);
-      await wait(() => expect(publicationWaiting).toBe(true)).catch(async (error) => {
-        const diagnostic = {
-          modelRequests,
-          reservations,
-          providerFailures: providerFailures.map((failure) =>
-            failure instanceof Error ? failure.message : String(failure),
-          ),
-          executions,
-          run: await observer.run.findUnique({
-            where: { id: targetRunId },
-            select: { status: true, error: true, leaseOwner: true, leaseFence: true },
+      if (publishing) {
+        await wait(() => expect(publicationWaiting).toBe(true)).catch(async (error) => {
+          const diagnostic = {
+            modelRequests,
+            reservations,
+            providerFailures: providerFailures.map((failure) =>
+              failure instanceof Error ? failure.message : String(failure),
+            ),
+            executions,
+            run: await observer.run.findUnique({
+              where: { id: targetRunId },
+              select: { status: true, error: true, leaseOwner: true, leaseFence: true },
+            }),
+            effects: await observer.externalEffect.findMany({
+              where: { runId: targetRunId, kind: "message_user" },
+              select: { status: true, request: true, result: true },
+            }),
+          };
+          throw new Error(
+            `Loop guard publication gate was unreachable: ${JSON.stringify(diagnostic)}`,
+            {
+              cause: error,
+            },
+          );
+        });
+        expect(lateEffectId).toEqual(expect.any(String));
+        expect(
+          await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
+        ).toMatchObject({
+          runId: targetRunId,
+          kind: "message_user",
+          request: { message: lateText },
+        });
+        // Old code exposes terminal first; cleanup-first code instead exposes
+        // abort while still running. Both paths release the same real tool below.
+        await Promise.race([terminalVisible, cleanupStarted]);
+        await mirrorMessagingOutbound(mirrorDeps, targetRunId);
+        expect(
+          await observer.message.count({
+            where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
           }),
-          effects: await observer.externalEffect.findMany({
-            where: { runId: targetRunId, kind: "message_user" },
-            select: { status: true, request: true, result: true },
-          }),
-        };
-        throw new Error(
-          `Loop guard publication gate was unreachable: ${JSON.stringify(diagnostic)}`,
-          {
-            cause: error,
-          },
-        );
-      });
-      expect(lateEffectId).toEqual(expect.any(String));
-      expect(
-        await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
-      ).toMatchObject({
-        runId: targetRunId,
-        kind: "message_user",
-        request: { message: lateText },
-      });
-      // Old code exposes terminal first; cleanup-first code instead exposes
-      // abort while still running. Both paths release the same real tool below.
-      await Promise.race([terminalVisible, cleanupStarted]);
-      await mirrorMessagingOutbound(mirrorDeps, targetRunId);
-      expect(
-        await observer.message.count({
-          where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
-        }),
-      ).toBe(0);
-      releaseLatePublication();
+        ).toBe(0);
+        releaseLatePublication();
+      } else {
+        await cleanupStarted;
+        expect(publicationWaiting).toBe(false);
+      }
       await executing;
       await terminalVisible;
       expect(providerFailures).toEqual([]);
@@ -1234,8 +2522,16 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       const late = await observer.message.findMany({
         where: { runId: targetRunId, blocks: { equals: [{ kind: "text", text: lateText }] } },
       });
-      expect(late).toHaveLength(1);
+      expect(late).toHaveLength(publishing ? 1 : 0);
       const stop = await observer.message.findMany({ where: { runId: targetRunId, role: "bot" } });
+      expect(
+        stop
+          .flatMap((message) => MessageBlockSchema.array().parse(message.blocks))
+          .filter((block) => block.kind === "ask"),
+      ).toEqual([]);
+      expect(
+        await observer.externalEffect.findUniqueOrThrow({ where: { id: lateEffectId } }),
+      ).toMatchObject(publishing ? { status: "completed" } : { status: "intended", result: null });
       expect(JSON.stringify(stop)).toContain(
         "times in a row without making progress, so I stopped early",
       );
@@ -1257,10 +2553,14 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       // Recovery must see an unacknowledged Run until every admitted message
       // has finished. A premature terminal stamp permanently loses this row.
       expect(
-        await observer.messagingOutbound.findMany({ where: { sourceMessageId: late[0]!.id } }),
-      ).toEqual([
-        expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` }),
-      ]);
+        await observer.messagingOutbound.findMany({
+          where: { identityId: identity.id, body: lateText },
+        }),
+      ).toEqual(
+        publishing
+          ? [expect.objectContaining({ body: lateText, idempotencyKey: `msg:${late[0]!.id}` })]
+          : [],
+      );
       expect(
         enqueued.some(
           (job) => job.name === "run.continue" && job.payload.runId === unrelated.run.id,
@@ -1277,6 +2577,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       });
       expect(mirrorDeps.messaging.sent).toEqual([]);
     } finally {
+      enteredLateEffect();
       enteredLatePublication();
       releaseLatePublication();
       if (targetRunId) pi.abort(targetRunId);
@@ -1382,6 +2683,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       releaseFinalResult = resolve;
     });
     let finalResultHeld = false;
+    let heldFinalResult = () => {};
+    const finalResultRetained = new Promise<void>((resolve) => {
+      heldFinalResult = resolve;
+    });
     let runtimeAborted = false;
     const executions: string[] = [];
     const runtime: AgentRuntime = {
@@ -1406,11 +2711,22 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           // transport until cleanup, preventing an unrelated eighth model call.
           return result.then(async (value) => {
             finalResultHeld = true;
+            heldFinalResult();
             await finalResultReleased;
             return value;
           });
         };
-        return pi.run(request, context);
+        return (async function* () {
+          for await (const event of pi.run(request, context)) {
+            if (
+              event.type === "tool" &&
+              event.executionId === JSON.stringify(["pi-tool", "main", "dirty-repeat-6"])
+            ) {
+              await finalResultRetained;
+            }
+            yield event;
+          }
+        })();
       },
       abort: (runId) => pi.abort(runId),
     };
@@ -1472,19 +2788,34 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       expect(writes).toHaveLength(1);
       expect(writes[0]?.[1]).toMatchObject({ path: filePath });
       expect(new TextDecoder().decode(writes[0]?.[1].content)).toBe(fileText);
-      // Fake is deliberately not the Docker/local-home checkpoint fast path.
-      expect(exports).toEqual([{ runId: targetRunId, aborted: false }]);
-      expect(
-        await fixture.handles.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } }),
-      ).toMatchObject({ status: "completed", error: null, leaseFence: 1, leaseOwner: null });
-      expect(
-        await fixture.handles.prisma.attempt.findMany({ where: { runId: targetRunId } }),
-      ).toEqual([
-        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
-      ]);
+      const run = await fixture.handles.prisma.run.findUniqueOrThrow({
+        where: { id: targetRunId },
+        select: { status: true, error: true, leaseFence: true, leaseOwner: true },
+      });
+      const attempts = await fixture.handles.prisma.attempt.findMany({
+        where: { runId: targetRunId },
+      });
       const computer = await fixture.handles.prisma.computer.findFirstOrThrow({
         where: { bots: { some: { id: seeded.botId } } },
       });
+      const disk = await statfs(fixture.dataDir).catch(() => null);
+      const checkpointState = JSON.stringify({
+        run,
+        attempts,
+        workspaceSaveFailure: computer.workspaceSaveFailure,
+        availableBytes: disk ? Number(disk.bavail) * Number(disk.bsize) : null,
+      });
+      // Fake is deliberately not the Docker/local-home checkpoint fast path.
+      expect(exports, checkpointState).toEqual([{ runId: targetRunId, aborted: false }]);
+      expect(run, checkpointState).toMatchObject({
+        status: "completed",
+        error: null,
+        leaseFence: 1,
+        leaseOwner: null,
+      });
+      expect(attempts).toEqual([
+        expect.objectContaining({ status: "completed", fence: 1, finishedAt: expect.any(Date) }),
+      ]);
       expect(computer).toMatchObject({ kind: "fake", homeRevision: expect.any(String) });
       expect(
         await new LocalAgentHomeStore(fixture.dataDir).readFile(computer.homeKey, filePath, {
@@ -1504,6 +2835,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         "times in a row without making progress, so I stopped early",
       );
     } finally {
+      heldFinalResult();
       releaseFinalResult();
       if (targetRunId) await pi.abort(targetRunId);
       await executing?.catch(() => undefined);

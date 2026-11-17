@@ -11,6 +11,7 @@ export * from "./computers.js";
 export * from "./connection-selection.js";
 export * from "./credential-secrets.js";
 export * from "./database-access.js";
+export * from "./database-availability.js";
 export {
   databaseRestoreFence,
   prepareDatabaseRestore,
@@ -33,6 +34,7 @@ export {
   finishPendingGroupRunTeardown,
   listPendingGroupRunTeardowns,
   loadPendingGroupRunTeardown,
+  recordGroupRunTeardowns,
 } from "./group-run-teardowns.js";
 export * from "./groups.js";
 export * from "./history-retrieval.js";

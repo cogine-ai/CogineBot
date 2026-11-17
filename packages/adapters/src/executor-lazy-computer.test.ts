@@ -167,6 +167,8 @@ async function runRoutine(
     $transaction: vi.fn(async (callback: (tx: typeof takeoverTx) => Promise<unknown>) =>
       callback(
         Object.assign(takeoverTx, {
+          run: { ...takeoverTx.run, updateMany: prisma.run.updateMany },
+          attempt: prisma.attempt,
           computer: prisma.computer,
           computerExecutionLease: prisma.computerExecutionLease,
         }),

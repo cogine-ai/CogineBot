@@ -7591,3 +7591,15 @@ msgstr "Der Eigentümer des Zeitplans konnte nicht bestätigt werden."
 #: src/components/BotPackageImport.tsx
 msgid "Imported routines start paused."
 msgstr "Importierte Routinen sind zunächst pausiert."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Erfolgreich"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Ergebnis unbekannt"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# Werkzeug} other {# Werkzeuge}}"
