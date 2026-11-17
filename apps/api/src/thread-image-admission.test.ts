@@ -1,8 +1,10 @@
+import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { resolveRuntimeModel } from "@rakazo/adapters";
+import { PiAgentRuntime, resolveRuntimeModel } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { startModelEmulator } from "../../../packages/testkit/src/model-emulator.js";
 import { threadModelImageInput } from "./thread-image-admission.js";
 import type { ThreadTarget } from "./thread-target.js";
 import { sendThreadMessage, threadImageInputStatus } from "./thread-target.js";
@@ -294,6 +296,59 @@ describe("current image send admission", () => {
         });
         expect(Boolean(runtime.model)).toBe(expected === "supported");
         expect(status).toBe(expected);
+        if (status === "supported") {
+          const emulator = await startModelEmulator({
+            modelId: "synthetic/future-receiver",
+            apiKey: "synthetic-key",
+            steps: [
+              {
+                expect: () => undefined,
+                response: { type: "text", text: "admitted model completed" },
+              },
+            ],
+          });
+          const nativeFetch = globalThis.fetch;
+          const transport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            expect(String(input)).toBe("https://openrouter.ai/api/v1/chat/completions");
+            return nativeFetch(`${emulator.baseUrl}/chat/completions`, init);
+          });
+          vi.stubGlobal("fetch", transport);
+          try {
+            const events: AgentRuntimeEvent[] = [];
+            for await (const event of new PiAgentRuntime().run(
+              {
+                botId: "bot-1",
+                threadId: "thread-1",
+                runId: "run-1",
+                prompt: "Confirm this model works.",
+                history: [],
+                tools: [],
+                model: {
+                  provider: "openrouter",
+                  id: "synthetic/future-receiver",
+                  apiKey: "synthetic-key",
+                  contextWindow,
+                  acceptsImages: true,
+                },
+              },
+              {
+                operationId: "op-1",
+                traceId: "trace-1",
+                userId: "user-1",
+                spaceId: "space-1",
+                signal: AbortSignal.timeout(10_000),
+              },
+            ))
+              events.push(event);
+            expect(events).toContainEqual(
+              expect.objectContaining({ type: "done", text: "admitted model completed" }),
+            );
+            expect(transport).toHaveBeenCalledOnce();
+          } finally {
+            vi.unstubAllGlobals();
+            await emulator.close();
+          }
+        }
       } finally {
         vi.unstubAllEnvs();
       }
