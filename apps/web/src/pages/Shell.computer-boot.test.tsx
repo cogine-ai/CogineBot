@@ -963,6 +963,45 @@ it.each(["bot-round-trip", "new-takeover", "new-release"] as const)(
   },
 );
 
+it.each([false, true])(
+  "clears a failed release only after confirmed reset (released=%s)",
+  async (released) => {
+    await showRunningComputer();
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const fallback = boundary.call.getMockImplementation()!;
+    const reset = deferred<void>();
+    let failRefresh = false;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.release") {
+        if (!released) return Promise.reject(new Error("release unavailable"));
+        failRefresh = true;
+        currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+        return Promise.resolve(currentComputer);
+      }
+      if (path === "threads.get" && failRefresh)
+        return Promise.reject(new Error("refresh unavailable"));
+      if (path === "computer.reset") return reset.promise;
+      return fallback(path, input, options);
+    });
+    await click(button("I’m done"));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("More computer actions"));
+    await click(button("Reset computer"));
+    await click(button("Cancel"));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("More computer actions"));
+    await click(button("Reset computer"));
+    await click(button("Reset"));
+    expect(document.body.textContent).not.toContain("Could not continue");
+    failRefresh = false;
+    currentComputer = status("chief", "running");
+    await act(async () => reset.resolve());
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(callsTo("computer.release")).toHaveLength(1);
+  },
+);
+
 it("does not release again when only the post-release refresh failed", async () => {
   await showRunningComputer();
   await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);

@@ -897,6 +897,11 @@ export function ShellPage() {
     computerControlEpoch.current += 1;
     computerBootObservation.current = null;
     computerBootAttempt.current = null;
+    if (failedComputerReleaseRef.current) {
+      setFailedComputerRelease(null);
+      setComputerError(null);
+      setComputerErrorFromScreen(false);
+    }
     setBooting(false);
   }
   const openComputerRef = useRef<(botId?: string) => Promise<boolean>>(async () => false);
