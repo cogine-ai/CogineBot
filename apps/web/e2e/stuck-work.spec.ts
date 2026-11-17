@@ -2,10 +2,12 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type { MessageBlock } from "@rakazo/contracts";
 import {
+  activeBotId,
   captureScreenshot,
   completeOnboarding,
   expectActivityMode,
   openActivityMenu,
+  rpc,
   signup,
 } from "./helpers";
 
@@ -273,3 +275,65 @@ test("aged queued work is marked and an expired wait leaves a status line", asyn
   await expect(page.getByText(EXPIRED_TAKEOVER)).toBeVisible({ timeout: 20_000 });
   await captureScreenshot(page, testInfo, "stuck-expired-status");
 });
+
+for (const width of [1440, 390]) {
+  test(`a failed computer release can be retried from its preview at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 960 });
+    await signup(
+      page,
+      `control-retry-${width}-${Date.now()}@example.test`,
+      "password12",
+      "Control Retry",
+    );
+    await completeOnboarding(page);
+    const botId = activeBotId(page);
+    await rpc(page, "computer/boot", { botId });
+    await page.route("https://screen.example/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><p>Desktop connected</p>" }),
+    );
+    await page.route("**/rpc/computer/screenUrl", (route) =>
+      route.fulfill({ json: { json: { url: "https://screen.example/vnc.html" } } }),
+    );
+    await page.getByTitle("Agent computer").click();
+    const preview = page.getByTestId("computer-preview");
+    await expect(preview.locator("iframe")).toBeVisible();
+    await preview.hover();
+    await preview.getByTestId("computer-preview-open").click();
+    await page.getByTestId("computer-chrome").getByRole("button", { name: "Take control" }).click();
+    await expect(page.getByRole("button", { name: "I’m done", exact: true })).toBeVisible();
+    const releases: unknown[] = [];
+    let failRelease = true;
+    await page.route("**/rpc/computer/release", async (route) => {
+      releases.push(route.request().postDataJSON());
+      if (failRelease) {
+        await route.fulfill({
+          status: 500,
+          json: {
+            json: {
+              defined: false,
+              code: "INTERNAL_SERVER_ERROR",
+              status: 500,
+              message: "release unavailable",
+            },
+          },
+        });
+      } else await route.continue();
+    });
+    await page.getByRole("button", { name: "I’m done", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Could not continue");
+    await page.getByRole("button", { name: "Close computer" }).click();
+    await expect(preview.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    await captureScreenshot(page, testInfo, "computer-release-retry");
+    failRelease = false;
+    await preview.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(preview.getByRole("alert")).toHaveCount(0);
+    await expect(preview.locator("iframe")).toBeVisible();
+    expect(releases).toEqual([
+      { json: { botId, reason: "done" } },
+      { json: { botId, reason: "done" } },
+    ]);
+    await captureScreenshot(page, testInfo, "computer-release-recovered");
+  });
+}

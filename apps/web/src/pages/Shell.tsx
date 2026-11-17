@@ -906,6 +906,9 @@ export function ShellPage() {
   // Screen-load failures can sit beside a still-valid embed URL; boot and
   // takeover failures must stay visible even when a URL remains.
   const [computerErrorFromScreen, setComputerErrorFromScreen] = useState(false);
+  const [failedComputerRelease, setFailedComputerRelease] = useState<{
+    reason?: ComputerReleaseReason;
+  } | null>(null);
   const computerErrorFromScreenRef = useRef(false);
   computerErrorFromScreenRef.current = computerErrorFromScreen;
   useEffect(() => {
@@ -1862,6 +1865,7 @@ export function ShellPage() {
           if (screen.error || computerErrorFromScreenRef.current) {
             setComputerError(screen.error);
             setComputerErrorFromScreen(Boolean(screen.error));
+            setFailedComputerRelease(null);
           }
           cacheComputerFor(id, { screenUrl: screen.url });
         },
@@ -2172,6 +2176,7 @@ export function ShellPage() {
     screenRequest.current += 1;
     setComputerError(null);
     setComputerErrorFromScreen(false);
+    setFailedComputerRelease(null);
     const cached = computerCacheRef.current.get(active.id);
     if (cached) {
       // Paint the last-known computer instantly; refreshThread/refreshComputerScreen
@@ -4270,6 +4275,7 @@ export function ShellPage() {
     if (overlay && needsBoot) setBooting(true);
     setComputerError(null);
     setComputerErrorFromScreen(false);
+    setFailedComputerRelease(null);
     try {
       const status = provision ? await provision.promise : null;
       if (!stillThisBoot()) return;
@@ -4402,6 +4408,7 @@ export function ShellPage() {
     setComputerOpen(false);
     setComputerError(null);
     setComputerErrorFromScreen(false);
+    setFailedComputerRelease(null);
     setComputerBotId(active?.id);
   }, [active?.id]);
 
@@ -4409,6 +4416,7 @@ export function ShellPage() {
     if (!computer?.busyBotName) {
       setComputerError(null);
       setComputerErrorFromScreen(false);
+      setFailedComputerRelease(null);
     }
   }, [computer?.busyBotName]);
 
@@ -4720,6 +4728,7 @@ export function ShellPage() {
       if (!botId) return;
       setComputerError(null);
       setComputerErrorFromScreen(false);
+      setFailedComputerRelease(null);
       try {
         await rpc.computer.release({ botId, reason });
         if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
@@ -4733,6 +4742,7 @@ export function ShellPage() {
         if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
         setComputerError(t`Could not continue`);
         setComputerErrorFromScreen(false);
+        setFailedComputerRelease({ reason });
       }
     },
     [t],
@@ -4765,9 +4775,12 @@ export function ShellPage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => computerBot && void refreshComputerScreen(computerBot.id)}
+          onClick={() => {
+            if (failedComputerRelease) void releaseComputer(failedComputerRelease.reason);
+            else if (computerBot) void refreshComputerScreen(computerBot.id);
+          }}
         >
-          <Trans>Retry screen</Trans>
+          {failedComputerRelease ? <Trans>Retry</Trans> : <Trans>Retry screen</Trans>}
         </Button>
       </div>
     ) : null;
