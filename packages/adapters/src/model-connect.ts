@@ -108,6 +108,7 @@ export function buildModelConnectPlaintext(
           : undefined;
     if (
       apiProtocol === "anthropic-messages" &&
+      (input.thinkingLevel !== undefined || modelReasoning) &&
       thinkingLevel !== undefined &&
       thinkingLevel !== null &&
       thinkingLevel !== "off"

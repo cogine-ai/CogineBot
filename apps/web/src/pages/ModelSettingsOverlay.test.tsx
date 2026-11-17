@@ -1629,3 +1629,27 @@ it.each([false, true])(
     }
   },
 );
+
+it("preserves a dormant effort when saving the connection after resetting model settings", async () => {
+  const connection = {
+    ...compatibleConnection(),
+    reasoning: true,
+    thinkingLevel: "low" as const,
+    modelSettings: { "model-a": {} },
+  };
+  useCompatibleConnections([connection]);
+  const view = await renderSettings();
+  try {
+    const save = buttons(view.container, "Save").find(
+      (button) => !button.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    const request = models.connect.mock.calls.at(-1)?.[0];
+    expect(request).toMatchObject({ credentialId: "connection-a" });
+    expect(Object.hasOwn(request!, "thinkingLevel")).toBe(false);
+    expect(connection.thinkingLevel).toBe("low");
+  } finally {
+    await view.unmount();
+  }
+});

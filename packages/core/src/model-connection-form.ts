@@ -270,6 +270,11 @@ export function modelConnectRequest(input: {
   ) as ThinkingLevel | null;
   const label = selected.providerName ?? selected.provider;
   if (compatible) {
+    // A hidden effort control must not clear the saved level during an ordinary connection save.
+    const preserveDormantThinking =
+      credential?.modelId === modelId &&
+      !credentialModelSettings(credential, modelId).reasoning &&
+      form.thinkingLevel === null;
     return {
       status: "ready",
       savingLimitOnly,
@@ -283,7 +288,7 @@ export function modelConnectRequest(input: {
         // The server adds the default itself.
         enabledModelIds: form.enabledModelIds.filter((id) => id !== modelId),
         reasoning: form.reasoning,
-        thinkingLevel,
+        ...(preserveDormantThinking ? {} : { thinkingLevel }),
         maxTokens,
         contextWindow,
         supportsImages: form.supportsImages,

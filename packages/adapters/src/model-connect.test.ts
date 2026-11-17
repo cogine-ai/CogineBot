@@ -163,6 +163,38 @@ describe("compatible connection format preservation", () => {
     },
   );
 
+  it.each([{}, { reasoning: false }])(
+    "preserves a dormant Anthropic effort during key replacement (%j)",
+    (settings) => {
+      const baseUrl = "http://127.0.0.1:8000/v1";
+      const previous = serializeModelSecret({
+        kind: "openai_compatible",
+        baseUrl,
+        apiKey: "synthetic-old-key",
+        reasoning: true,
+        thinkingLevel: "low",
+        apiProtocol: "anthropic-messages",
+        models: { "model-a": settings },
+      });
+      expect(
+        parseModelSecret(
+          buildModelConnectPlaintext(
+            {
+              provider: "openai-compatible",
+              baseUrl,
+              modelId: "model-a",
+              apiKey: "synthetic-new-key",
+            },
+            previous,
+          ),
+        ),
+      ).toMatchObject({
+        thinkingLevel: "low",
+        models: { "model-a": settings },
+      });
+    },
+  );
+
   it.each(["off", "xhigh", "max"] as const)(
     "saves a supported Anthropic effort for %s",
     (thinkingLevel) => {

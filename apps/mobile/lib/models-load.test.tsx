@@ -1789,3 +1789,28 @@ it.each([false, true])(
     expect(saved.modelSettings["model-b"].reasoning).toBe(false);
   },
 );
+
+it("preserves native dormant effort when saving a reasoning-disabled connection", async () => {
+  const saved = {
+    ...credential,
+    reasoning: true,
+    thinkingLevel: "low",
+    modelSettings: { "model-a": { reasoning: false } },
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((procedure, input) =>
+    procedure === "models/credentials" ? Promise.resolve([saved]) : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+  )!;
+  expect(save.disabled).toBe(false);
+  await act(async () => save.click());
+  const request = state.rpc.mock.calls
+    .filter(([procedure]) => procedure === "models/connect")
+    .at(-1)?.[1];
+  expect(request).toMatchObject({ credentialId: "connection-a" });
+  expect(Object.hasOwn(request as object, "thinkingLevel")).toBe(false);
+  expect(saved.thinkingLevel).toBe("low");
+});
