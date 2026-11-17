@@ -1485,13 +1485,6 @@ export const ModelCatalogEntrySchema = z.object({
   signIn: ModelOAuthSignInModeSchema.optional(),
   reasoning: z.boolean().optional(),
   thinkingLevels: z.array(ThinkingLevelSchema).optional(),
-  defaultCapabilities: z
-    .object({
-      images: z.boolean().optional(),
-      reasoning: z.boolean().optional(),
-      thinkingLevels: z.array(ThinkingLevelSchema).optional(),
-    })
-    .optional(),
   images: z.boolean().optional(),
   contextWindow: z.number().optional(),
   maxTokens: z.number().optional(),

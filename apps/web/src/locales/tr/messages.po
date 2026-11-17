@@ -7547,3 +7547,23 @@ msgstr "Sonuç bilinmiyor"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {# araç} other {# araç}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "Düzenlendi"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "Varsayılanlara sıfırla"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "Model ayarları kaydedilemedi"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "Maksimum çıktı belirteci sayısı bağlam sınırından küçük olmalıdır."
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "Model bağlantısı değişti. Yeniden yükleyip tekrar deneyin."

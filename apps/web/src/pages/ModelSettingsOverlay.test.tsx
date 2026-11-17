@@ -35,6 +35,7 @@ const models = vi.hoisted(() => ({
 }));
 
 const scope = vi.hoisted(() => ({ generation: 0, spaceId: "space-1" }));
+const thinkingChange = vi.hoisted(() => ({ current: (_value: string | null) => {} }));
 
 vi.mock("../lib/rpc", () => {
   const client = { models, me: vi.fn() };
@@ -126,7 +127,14 @@ vi.mock("@rakazo/ui-web", async () => {
     ),
     Label: Pass,
     Input: (props: ComponentProps<"input">) => <input {...props} />,
-    ModelThinkingOptions: () => null,
+    ModelThinkingOptions: ({
+      onThinkingLevelChange,
+    }: {
+      onThinkingLevelChange: (value: string | null) => void;
+    }) => {
+      thinkingChange.current = onThinkingLevelChange;
+      return null;
+    },
     ModelSettingsFields,
     NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
     NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
@@ -1522,3 +1530,39 @@ it("keeps a failed model settings draft, reloads the saved model and resets with
     await view.unmount();
   }
 });
+
+it.each(["save", "read"] as const)(
+  "retains the settings draft when an effort edit invalidates its pending %s",
+  async (phase) => {
+    const connection = { ...compatibleConnection(), thinkingLevel: "low" as const };
+    useCompatibleConnections([connection]);
+    const saving = deferred<{ ok: true }>();
+    if (phase === "save") models.saveModelSettings.mockReturnValueOnce(saving.promise);
+    const view = await renderSettings();
+    const reading = deferred<ModelCredential[]>();
+    if (phase === "read") models.credentials.mockReturnValueOnce(reading.promise);
+    try {
+      const panel = view.container.querySelector<HTMLElement>(
+        '[data-testid="model-settings-panel"]',
+      )!;
+      const label = [...panel.querySelectorAll("label")].find(
+        (item) => item.textContent === "Maximum output tokens",
+      )!;
+      const limit = document.getElementById(label.htmlFor) as HTMLInputElement;
+      await typeInto(limit, "2048");
+      await act(async () => buttons(panel, "Save")[0]?.click());
+      const reads = models.credentials.mock.calls.length;
+      await act(async () => thinkingChange.current("high"));
+      await act(async () => {
+        if (phase === "save") saving.resolve({ ok: true });
+        else
+          reading.resolve([{ ...connection, modelSettings: { "model-a": { maxTokens: 2048 } } }]);
+      });
+      expect(models.credentials).toHaveBeenCalledTimes(reads);
+      expect(panel.textContent).not.toContain("Saved.");
+      expect(limit.value).toBe("2048");
+    } finally {
+      await view.unmount();
+    }
+  },
+);

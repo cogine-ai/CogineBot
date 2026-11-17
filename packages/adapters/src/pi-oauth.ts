@@ -29,7 +29,8 @@ import {
   parseModelHeaders,
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
-import { Prisma, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import {
   CHATGPT_PLAN_TERMINAL_REFRESH_ERROR_CODES,

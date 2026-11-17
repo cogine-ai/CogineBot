@@ -11,7 +11,8 @@ import {
 } from "@rakazo/db";
 import { readChatGPTPlanCredential } from "./chatgpt-plan-auth.js";
 import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
-import { compatibleModelThinkingLevels, type modelCredentialDto } from "./model-connect.js";
+import type { modelCredentialDto } from "./model-connect.js";
+import { compatibleModelThinkingLevels } from "./model-connect.js";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
 import {
   catalogModelAvailableForAuth,

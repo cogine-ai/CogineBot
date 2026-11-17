@@ -79,49 +79,6 @@ export function modelHasOwnSettings(
   return Object.keys(credential.modelSettings?.[modelId] ?? {}).length > 0;
 }
 
-/** One model a connection runs, with the settings saved for it. */
-export type ConnectionModel = { id: string; label: string; settings?: ModelSettings };
-
-/**
- * The models a connection runs: an OpenAI-compatible connection's enabled models, otherwise the
- * catalog's models for its provider that this connection can serve. Models with their own
- * settings come first, so they stay easy to find in a long list.
- */
-export function connectionModels(
-  credential: Pick<
-    ModelCredential,
-    "id" | "provider" | "modelId" | "enabledModelIds" | "modelSettings"
-  >,
-  catalog: readonly Pick<
-    ModelCatalogEntry,
-    "provider" | "id" | "label" | "placeholder" | "credentialIds"
-  >[],
-): ConnectionModel[] {
-  const withSettings = (id: string, label: string) => ({
-    id,
-    label,
-    ...(modelHasOwnSettings(credential, id) ? { settings: credential.modelSettings?.[id] } : {}),
-  });
-  const models =
-    credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
-      ? (credential.enabledModelIds ?? (credential.modelId ? [credential.modelId] : [])).map((id) =>
-          withSettings(id, id),
-        )
-      : catalog
-          .filter(
-            (entry) =>
-              canonicalPiProviderId(entry.provider) ===
-                canonicalPiProviderId(credential.provider) &&
-              !entry.placeholder &&
-              (!entry.credentialIds || entry.credentialIds.includes(credential.id)),
-          )
-          .map((entry) => withSettings(entry.id, entry.label));
-  return [
-    ...models.filter((model) => model.settings),
-    ...models.filter((model) => !model.settings),
-  ];
-}
-
 /** The values a model runs with when its fields are left empty. */
 export function modelSettingsDefaults(
   provider: string,
@@ -163,14 +120,9 @@ export function credentialModelSettings(
  */
 export function modelThinkingLevels(
   credential: (SettingsCredential & Pick<ModelCredential, "apiProtocol">) | undefined,
-  entry: Pick<ModelCatalogEntry, "thinkingLevels" | "defaultCapabilities"> | undefined,
+  entry: Pick<ModelCatalogEntry, "thinkingLevels"> | undefined,
   modelId: string | null | undefined,
 ): ThinkingLevel[] {
-  if (credential && modelId && entry?.defaultCapabilities) {
-    const reasoning =
-      credentialModelSettings(credential, modelId).reasoning ?? entry.defaultCapabilities.reasoning;
-    return reasoning ? (entry.defaultCapabilities.thinkingLevels ?? []) : ["off"];
-  }
   if (credential?.provider !== OPENAI_COMPATIBLE_PROVIDER_ID || !modelId)
     return entry?.thinkingLevels ?? [];
   return credentialModelSettings(credential, modelId).reasoning
@@ -184,15 +136,15 @@ export function modelThinkingLevels(
  */
 export function modelSettingsFields(
   settings: ModelSettings,
-  entry?: Pick<ModelCatalogEntry, "images" | "reasoning" | "defaultCapabilities">,
+  entry?: Pick<ModelCatalogEntry, "images" | "reasoning">,
 ): ModelSettingsFields {
   return {
     contextWindow: settings.contextWindow !== undefined ? String(settings.contextWindow) : "",
     maxTokens: settings.maxTokens !== undefined ? String(settings.maxTokens) : "",
-    images: settings.images ?? (entry?.defaultCapabilities ?? entry)?.images ?? false,
+    images: settings.images ?? entry?.images ?? false,
     maxImagesPerPrompt:
       settings.maxImagesPerPrompt !== undefined ? String(settings.maxImagesPerPrompt) : "",
-    reasoning: settings.reasoning ?? (entry?.defaultCapabilities ?? entry)?.reasoning ?? false,
+    reasoning: settings.reasoning ?? entry?.reasoning ?? false,
   };
 }
 

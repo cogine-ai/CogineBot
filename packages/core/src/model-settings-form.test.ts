@@ -3,7 +3,6 @@ import { DEFAULT_MODEL_CONTEXT_WINDOW, DEFAULT_MODEL_MAX_TOKENS } from "@rakazo/
 import { describe, expect, it } from "vitest";
 import {
   catalogEntryFor,
-  connectionModels,
   credentialModelSettings,
   modelCapabilitiesConfigurable,
   modelSettingsDefaults,
@@ -185,39 +184,6 @@ describe("modelSettingsRequest", () => {
   });
 });
 
-describe("connectionModels", () => {
-  const catalog = [
-    { provider: "zai", id: "a", label: "A" },
-    { provider: "zai", id: "b", label: "B", credentialIds: ["other"] },
-    { provider: "zai", id: "c", label: "C" },
-    { provider: "zai", id: "custom", label: "Custom", placeholder: true },
-    { provider: "elsewhere", id: "d", label: "D" },
-  ];
-
-  it("lists the catalog models this connection serves, customized ones first", () => {
-    expect(
-      connectionModels(credential({ modelSettings: { c: { images: true }, a: {} } }), catalog),
-    ).toEqual([
-      { id: "c", label: "C", settings: { images: true } },
-      { id: "a", label: "A" },
-    ]);
-  });
-
-  it("lists an OpenAI-compatible connection's enabled models", () => {
-    expect(
-      connectionModels(
-        credential({ provider: COMPATIBLE, modelId: "x", enabledModelIds: ["x", "y"] }),
-        catalog,
-      ).map((model) => model.id),
-    ).toEqual(["x", "y"]);
-    expect(
-      connectionModels(credential({ provider: COMPATIBLE, modelId: "x" }), catalog).map(
-        (model) => model.id,
-      ),
-    ).toEqual(["x"]);
-  });
-});
-
 describe("catalogEntryFor", () => {
   it("finds a model under any alias of its provider", () => {
     const catalog = [
@@ -227,32 +193,5 @@ describe("catalogEntryFor", () => {
     expect(catalogEntryFor(catalog, "azure-openai-responses", "deployment")).toBe(catalog[1]);
     expect(catalogEntryFor(catalog, "zai", "missing")).toBeUndefined();
     expect(catalogEntryFor(catalog, "elsewhere", "glm-5.3")).toBeUndefined();
-  });
-});
-
-describe("connection-specific live capabilities", () => {
-  it("uses sibling defaults instead of another connection's overlay", () => {
-    const entry = {
-      images: true,
-      reasoning: true,
-      thinkingLevels: ["low", "high"] as const,
-      defaultCapabilities: {
-        images: false,
-        reasoning: false,
-        thinkingLevels: ["low", "high"] as ("low" | "high")[],
-      },
-    };
-    const other = credential();
-    expect(modelSettingsFields(credentialModelSettings(other, "live-model"), entry)).toMatchObject({
-      images: false,
-      reasoning: false,
-    });
-    expect(
-      modelThinkingLevels(other, { ...entry, thinkingLevels: ["low", "high"] }, "live-model"),
-    ).toEqual(["off"]);
-    const customized = credential({ modelSettings: { "live-model": { reasoning: true } } });
-    expect(
-      modelThinkingLevels(customized, { ...entry, thinkingLevels: ["low", "high"] }, "live-model"),
-    ).toEqual(["low", "high"]);
   });
 });

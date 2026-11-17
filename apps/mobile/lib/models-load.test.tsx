@@ -1625,3 +1625,94 @@ it("keeps the native draft when saved settings cannot be read back", async () =>
   expect(modelSettingsOutput().value).toBe("2048");
   expect(container.textContent).toContain("Synthetic settings read failure");
 });
+
+function useCatalogConnection() {
+  const normal = state.rpc.getMockImplementation()!;
+  const connection = { ...credential, provider: "anthropic", maxTokens: 1024 };
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "me")
+      return {
+        userId: "user-1",
+        spaceId: "space-1",
+        defaultProvider: "anthropic",
+        defaultModel: "model-a",
+      };
+    if (procedure === "models/list")
+      return ["model-a", "model-b"].map((id) => ({
+        provider: "anthropic",
+        providerName: "Anthropic",
+        id,
+        label: id,
+        billing: "API key",
+        auth: "api-key",
+        contextWindow: 64000,
+        maxTokens: 4096,
+      }));
+    if (procedure === "models/credentials") return [connection];
+    return normal(procedure, input);
+  });
+  return state.rpc.getMockImplementation()!;
+}
+
+it("exposes only per-model advanced settings for a connected catalog model", async () => {
+  useCatalogConnection();
+  await act(async () => root.render(<Models />));
+  expect(
+    [...container.querySelectorAll("button")].filter((item) =>
+      item.textContent?.startsWith("Advanced"),
+    ),
+  ).toHaveLength(1);
+});
+
+it.each(["save", "read"] as const)(
+  "keeps a newer catalog model selection during an earlier settings %s",
+  async (phase) => {
+    const normal = useCatalogConnection();
+    const saving = deferred<{ ok: true }>();
+    const reading = deferred<unknown>();
+    let submitted = false;
+    state.rpc.mockImplementation((procedure: string, input: unknown) => {
+      if (procedure === "models/saveModelSettings") {
+        submitted = true;
+        return phase === "save" ? saving.promise : Promise.resolve({ ok: true });
+      }
+      if (phase === "read" && submitted && procedure === "models/credentials")
+        return reading.promise;
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    await act(async () => modelSettingsButton("Advanced").click());
+    await edit(modelSettingsOutput(), "2048");
+    await act(async () => modelSettingsButton("Save").click());
+    await act(async () => button("model-b").click());
+    expect(button("model-b").getAttribute("aria-pressed")).toBe("true");
+    await act(async () => {
+      if (phase === "save") saving.resolve({ ok: true });
+      else
+        reading.resolve([
+          {
+            ...credential,
+            provider: "anthropic",
+            modelSettings: { "model-a": { maxTokens: 2048 } },
+          },
+        ]);
+    });
+    expect(button("model-b").getAttribute("aria-pressed")).toBe("true");
+  },
+);
+
+it("retains the native draft if another connection edit skips the save readback", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const saving = deferred<{ ok: true }>();
+  state.rpc.mockImplementation((procedure: string, input: unknown) =>
+    procedure === "models/saveModelSettings" ? saving.promise : normal(procedure, input),
+  );
+  await act(async () => root.render(<Models />));
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  await edit(baseUrl(), "http://127.0.0.1:8099/v1");
+  await act(async () => saving.resolve({ ok: true }));
+  expect(modelSettingsPanel().textContent).not.toContain("Saved.");
+  expect(modelSettingsOutput().value).toBe("2048");
+});

@@ -14,6 +14,7 @@ import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER } from "./pi-oauth.js";
 import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
+  openAiCompatibleVisionModelIds,
   registerOpenAiCompatibleCatalog,
 } from "./pi-openai-compatible-provider.js";
 
@@ -53,7 +54,7 @@ export function connectionModelImageInput(
   const id = modelId.trim();
   const own = secret.models && Object.hasOwn(secret.models, id) ? secret.models[id] : undefined;
   if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && secret.kind === "openai_compatible") {
-    if (own) return own.images;
+    if (own) return own.images ?? (openAiCompatibleVisionModelIds().has(id) ? true : undefined);
     if (secret.visionModelIds !== undefined)
       return modelIdSupportsImages(secret.visionModelIds, modelId);
     return compatibleModelSeesImages(credential, secret, modelId) ? true : undefined;

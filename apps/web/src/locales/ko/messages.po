@@ -7547,3 +7547,23 @@ msgstr "결과 알 수 없음"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {도구 #개} other {도구 #개}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "조정됨"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "기본값으로 재설정"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "모델 설정을 저장할 수 없습니다"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "최대 출력 토큰 수는 컨텍스트 한도보다 작아야 합니다."
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "모델 연결이 변경되었습니다. 새로고침한 후 다시 시도하세요."

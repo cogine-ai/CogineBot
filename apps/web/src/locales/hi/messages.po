@@ -7547,3 +7547,23 @@ msgstr "परिणाम अज्ञात"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {# टूल} other {# टूल}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "बदला गया"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "डिफ़ॉल्ट पर रीसेट करें"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "मॉडल सेटिंग सहेजी नहीं जा सकीं"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "अधिकतम आउटपुट टोकन संदर्भ सीमा से कम होने चाहिए।"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "मॉडल कनेक्शन बदल गया है। फिर से लोड करके दोबारा कोशिश करें।"

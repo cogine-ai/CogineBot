@@ -1952,11 +1952,12 @@ export function ModelSettingsOverlay({
                   entry={selected}
                   spaceId={me?.spaceId}
                   onSaved={async () => {
-                    if (
+                    const current = () =>
                       settingsSelectionRevision === selectionRevisionRef.current &&
-                      contextCurrent()
-                    )
-                      await refresh(credential.id);
+                      contextCurrent();
+                    if (!current()) throw new Error(t`Could not load model settings`);
+                    await refresh(credential.id);
+                    if (!current()) throw new Error(t`Could not load model settings`);
                   }}
                 />
               ) : null}

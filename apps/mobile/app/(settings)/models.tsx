@@ -1468,11 +1468,11 @@ function ModelsForm({
                         actions: [
                           {
                             text: t("Default"),
-                            onPress: () => setThinkingLevel(null),
+                            onPress: () => selectThinkingLevel(null),
                           },
                           ...compatibleThinkingLevels(apiProtocol).map((level) => ({
                             text: thinkingLevelLabel(level, t),
-                            onPress: () => setThinkingLevel(level),
+                            onPress: () => selectThinkingLevel(level),
                           })),
                         ],
                       });
@@ -1522,11 +1522,11 @@ function ModelsForm({
               actions: [
                 {
                   text: t("Default"),
-                  onPress: () => setThinkingLevel(null),
+                  onPress: () => selectThinkingLevel(null),
                 },
                 ...compatibleThinkingLevels(apiProtocol).map((level) => ({
                   text: thinkingLevelLabel(level, t),
-                  onPress: () => setThinkingLevel(level),
+                  onPress: () => selectThinkingLevel(level),
                 })),
               ],
             });
@@ -1632,6 +1632,7 @@ function ModelsForm({
                 accessibilityRole="radio"
                 accessibilityState={{ selected: entry.id === selected.id }}
                 onPress={() => {
+                  selectionRevisionRef.current += 1;
                   Keyboard.dismiss();
                   cancelOAuth();
                   setModelId(entry.id);
@@ -1679,11 +1680,11 @@ function ModelsForm({
                       text: t("Default ({level})", {
                         level: thinkingLevelLabel("medium", t),
                       }),
-                      onPress: () => setThinkingLevel(null),
+                      onPress: () => selectThinkingLevel(null),
                     },
                     ...catalogThinkingLevels.map((level) => ({
                       text: thinkingLevelLabel(level, t),
-                      onPress: () => setThinkingLevel(level),
+                      onPress: () => selectThinkingLevel(level),
                     })),
                   ],
                 });
@@ -1699,14 +1700,19 @@ function ModelsForm({
             </Pressable>
           ) : null}
         </View>
-        {provider !== "chatgpt-plan"
+        {!credential && provider !== "chatgpt-plan"
           ? disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))
           : null}
-        {showAdvanced && provider !== "chatgpt-plan"
+        {showAdvanced && !credential && provider !== "chatgpt-plan"
           ? limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)
           : null}
       </>
     ) : null;
+
+  function selectThinkingLevel(value: ThinkingLevel | null) {
+    selectionRevisionRef.current += 1;
+    setThinkingLevel(value);
+  }
 
   const settingsSelectionRevision = selectionRevisionRef.current;
   const modelSettingsPanel =
@@ -1731,8 +1737,11 @@ function ModelsForm({
           );
         }}
         onSaved={async () => {
-          if (settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current)
-            await load({ provider, modelId, connectionId: credential.id });
+          const current = () =>
+            settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current;
+          if (!current()) throw new Error(t("Could not load model settings"));
+          await load({ provider, modelId, connectionId: credential.id });
+          if (!current()) throw new Error(t("Could not load model settings"));
         }}
       />
     ) : null;

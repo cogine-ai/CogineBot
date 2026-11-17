@@ -7547,3 +7547,23 @@ msgstr "Résultat inconnu"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {# outil} other {# outils}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "Modifié"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "Rétablir les valeurs par défaut"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "Impossible d’enregistrer les paramètres du modèle"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "Le nombre maximal de jetons de sortie doit être inférieur à la limite de contexte."
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "La connexion du modèle a changé. Rechargez puis réessayez."

@@ -1,4 +1,5 @@
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
+import { resolveRuntimeModel } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -109,6 +110,55 @@ function fixture(group = false) {
 }
 
 describe("current image send admission", () => {
+  it("uses the operator's model default for both image admission and runtime after reset", async () => {
+    vi.stubEnv("RAKAZO_OPENAI_COMPATIBLE_VISION_MODELS", "receiver");
+    try {
+      const { tx } = fixture();
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
+        modelProvider: "openai-compatible",
+        modelId: "receiver",
+        modelCredentialId: "credential-1",
+      });
+      tx.userModelCredential.findFirst.mockResolvedValue({
+        id: "credential-1",
+        provider: "openai-compatible",
+        secretId: "secret-1",
+        preferences: [],
+        supportsImages: true,
+        defaultModel: "receiver",
+      });
+      const status = await threadModelImageInput(
+        tx as never,
+        { userId: "user-1", spaceId: "space-1" } as Actor,
+        "bot-1",
+        null,
+        {
+          deployment: null,
+          secrets: {
+            load: async () =>
+              JSON.stringify({
+                kind: "openai_compatible",
+                baseUrl: "http://127.0.0.1:8090/v1",
+                enabledModelIds: ["receiver"],
+                visionModelIds: ["receiver"],
+                models: { receiver: {} },
+              }),
+          },
+        },
+      );
+      const runtime = resolveRuntimeModel({
+        provider: "openai-compatible",
+        id: "receiver",
+        baseUrl: "http://127.0.0.1:8090/v1",
+      });
+      expect(runtime.model?.input).toContain("image");
+      expect(status).toBe("supported");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([
     [{ images: true }, "supported"],
     [{ images: false }, "unsupported"],
