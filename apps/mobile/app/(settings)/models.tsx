@@ -1740,8 +1740,8 @@ function ModelsForm({
           const current = () =>
             settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current;
           if (!current()) throw new Error(t("Could not load model settings"));
-          await load({ provider, modelId, connectionId: credential.id });
-          if (!current()) throw new Error(t("Could not load model settings"));
+          const applied = await load({ provider, modelId, connectionId: credential.id });
+          if (!applied || !current()) throw new Error(t("Could not load model settings"));
         }}
       />
     ) : null;

@@ -1566,3 +1566,35 @@ it.each(["save", "read"] as const)(
     }
   },
 );
+
+it("retains the settings draft when another refresh supersedes its readback", async () => {
+  const connection = { ...compatibleConnection(), isDefault: false };
+  useCompatibleConnections([connection]);
+  const view = await renderSettings();
+  const reading = deferred<ModelCredential[]>();
+  const replacing = deferred<ModelCredential[]>();
+  models.credentials.mockReturnValueOnce(reading.promise).mockReturnValueOnce(replacing.promise);
+  try {
+    const panel = view.container.querySelector<HTMLElement>(
+      '[data-testid="model-settings-panel"]',
+    )!;
+    const label = [...panel.querySelectorAll("label")].find(
+      (item) => item.textContent === "Maximum output tokens",
+    )!;
+    const limit = document.getElementById(label.htmlFor) as HTMLInputElement;
+    await typeInto(limit, "2048");
+    await act(async () => buttons(panel, "Save")[0]?.click());
+    await act(async () => buttons(view.container, "Use this model")[0]?.click());
+    expect(models.setDefault).toHaveBeenCalledTimes(1);
+    expect(models.credentials).toHaveBeenCalledTimes(3);
+    await act(async () =>
+      reading.resolve([{ ...connection, modelSettings: { "model-a": { maxTokens: 2048 } } }]),
+    );
+    await act(async () => replacing.reject(new Error("Synthetic replacement read failure")));
+    expect(panel.textContent).not.toContain("Saved.");
+    expect(limit.value).toBe("2048");
+    expect(panel.textContent).toContain("Could not load model settings");
+  } finally {
+    await view.unmount();
+  }
+});

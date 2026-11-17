@@ -1716,3 +1716,38 @@ it("retains the native draft if another connection edit skips the save readback"
   expect(modelSettingsPanel().textContent).not.toContain("Saved.");
   expect(modelSettingsOutput().value).toBe("2048");
 });
+
+it("retains the native draft when another refresh supersedes its readback", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const reading = deferred<unknown>();
+  const replacing = deferred<unknown>();
+  let saved = false;
+  let reads = 0;
+  state.rpc.mockImplementation((procedure: string, input: unknown) => {
+    if (procedure === "models/saveModelSettings") {
+      saved = true;
+      return Promise.resolve({ ok: true });
+    }
+    if (procedure === "models/credentials")
+      return saved
+        ? ++reads === 1
+          ? reading.promise
+          : replacing.promise
+        : Promise.resolve([{ ...credential, isDefault: false }]);
+    if (procedure === "models/setDefault") return Promise.resolve(undefined);
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  await act(async () => button("Use this model").click());
+  expect(reads).toBe(2);
+  await act(async () =>
+    reading.resolve([{ ...credential, modelSettings: { "model-a": { maxTokens: 2048 } } }]),
+  );
+  await act(async () => replacing.reject(new Error("Synthetic replacement read failure")));
+  expect(modelSettingsPanel().textContent).not.toContain("Saved.");
+  expect(modelSettingsOutput().value).toBe("2048");
+  expect(modelSettingsPanel().textContent).toContain("Could not load model settings");
+});

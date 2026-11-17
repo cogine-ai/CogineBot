@@ -311,6 +311,7 @@ export function ModelSettingsOverlay({
       applyConnectionFields(fields);
       setHeaderRows(null);
       setCompatibleQuery("");
+      return true;
     }
   }
 
@@ -1956,8 +1957,8 @@ export function ModelSettingsOverlay({
                       settingsSelectionRevision === selectionRevisionRef.current &&
                       contextCurrent();
                     if (!current()) throw new Error(t`Could not load model settings`);
-                    await refresh(credential.id);
-                    if (!current()) throw new Error(t`Could not load model settings`);
+                    const applied = await refresh(credential.id);
+                    if (!applied || !current()) throw new Error(t`Could not load model settings`);
                   }}
                 />
               ) : null}
