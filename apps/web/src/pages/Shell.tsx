@@ -906,9 +906,14 @@ export function ShellPage() {
   // Screen-load failures can sit beside a still-valid embed URL; boot and
   // takeover failures must stay visible even when a URL remains.
   const [computerErrorFromScreen, setComputerErrorFromScreen] = useState(false);
-  const [failedComputerRelease, setFailedComputerRelease] = useState<{
+  const [failedComputerRelease, setFailedComputerReleaseState] = useState<{
     reason?: ComputerReleaseReason;
   } | null>(null);
+  const failedComputerReleaseRef = useRef<typeof failedComputerRelease>(null);
+  function setFailedComputerRelease(failure: typeof failedComputerRelease) {
+    failedComputerReleaseRef.current = failure;
+    setFailedComputerReleaseState(failure);
+  }
   const computerErrorFromScreenRef = useRef(false);
   computerErrorFromScreenRef.current = computerErrorFromScreen;
   useEffect(() => {
@@ -1862,10 +1867,12 @@ export function ShellPage() {
         commit: (screen) => {
           setScreenUrl(screen.url);
           // A screen read replaces only its own error; a failed control action keeps its retry.
-          if (screen.error || computerErrorFromScreenRef.current) {
+          if (
+            !failedComputerReleaseRef.current &&
+            (screen.error || computerErrorFromScreenRef.current)
+          ) {
             setComputerError(screen.error);
             setComputerErrorFromScreen(Boolean(screen.error));
-            setFailedComputerRelease(null);
           }
           cacheComputerFor(id, { screenUrl: screen.url });
         },

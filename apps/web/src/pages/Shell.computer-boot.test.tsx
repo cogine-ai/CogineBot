@@ -863,49 +863,58 @@ function installComputerStatusStream() {
 }
 
 it.each([
-  ["done", "I’m done"],
-  ["skipped", "Skip"],
-])("retries a failed %s release after an earlier screen read finishes", async (reason, action) => {
-  const stream = installComputerStatusStream();
-  await showRunningComputer();
-  currentComputer = { ...currentComputer, takeoverRequested: true };
-  await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
-  await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
-  const screen = deferred<{ url: string | null }>();
-  const fallback = boundary.call.getMockImplementation()!;
-  let failRelease = true;
-  boundary.call.mockImplementation((path, input, options) => {
-    if (path === "computer.screenUrl") return screen.promise;
-    if (path === "computer.release") {
-      if (failRelease) return Promise.reject(new Error("release unavailable"));
-      currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
-      return Promise.resolve(currentComputer);
-    }
-    return fallback(path, input, options);
-  });
-  const reads = callsTo("computer.screenUrl").length;
-  await act(async () => stream.first.resolve(stream.event(11)));
-  expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
-  await click(button(action));
-  expect(document.body.textContent).toContain("Could not continue");
-  await act(async () => screen.resolve({ url: "http://localhost/screen" }));
-  expect(document.body.textContent).toContain("Could not continue");
-  await click(button("Close computer"));
-  expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeNull();
-  await click(button("Retry"));
-  expect(callsTo("computer.release")).toHaveLength(2);
-  expect(document.body.textContent).toContain("Could not continue");
-  failRelease = false;
-  await click(button("Retry"));
-  expect(callsTo("computer.release")).toHaveLength(3);
-  expect(callsTo("computer.release").map((call) => call[1])).toEqual([
-    { botId: "chief", reason },
-    { botId: "chief", reason },
-    { botId: "chief", reason },
-  ]);
-  expect(document.body.textContent).not.toContain("Could not continue");
-  expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
-});
+  ["done", "I’m done", false],
+  ["skipped", "Skip", false],
+  ["done", "I’m done", true],
+  ["skipped", "Skip", true],
+])(
+  "retries a failed %s release (%s) after an earlier screen read finishes (failed %s)",
+  async (reason, action, screenFails) => {
+    const stream = installComputerStatusStream();
+    await showRunningComputer();
+    currentComputer = { ...currentComputer, takeoverRequested: true };
+    await click(container.querySelector<HTMLElement>('[data-testid="computer-preview-open"]')!);
+    await click(button("Take control", document.querySelector('[data-testid="computer-chrome"]')!));
+    const screen = deferred<{ url: string | null }>();
+    const fallback = boundary.call.getMockImplementation()!;
+    let failRelease = true;
+    boundary.call.mockImplementation((path, input, options) => {
+      if (path === "computer.screenUrl")
+        return screen.promise.then((value) => {
+          if (screenFails && failRelease) throw new Error("screen unavailable");
+          return value;
+        });
+      if (path === "computer.release") {
+        if (failRelease) return Promise.reject(new Error("release unavailable"));
+        currentComputer = { ...currentComputer, controlHolder: "none", controlBotId: null };
+        return Promise.resolve(currentComputer);
+      }
+      return fallback(path, input, options);
+    });
+    const reads = callsTo("computer.screenUrl").length;
+    await act(async () => stream.first.resolve(stream.event(11)));
+    expect(callsTo("computer.screenUrl")).toHaveLength(reads + 1);
+    await click(button(action));
+    expect(document.body.textContent).toContain("Could not continue");
+    await act(async () => screen.resolve({ url: "http://localhost/screen" }));
+    expect(document.body.textContent).toContain("Could not continue");
+    await click(button("Close computer"));
+    expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeNull();
+    await click(button("Retry"));
+    expect(callsTo("computer.release")).toHaveLength(2);
+    expect(document.body.textContent).toContain("Could not continue");
+    failRelease = false;
+    await click(button("Retry"));
+    expect(callsTo("computer.release")).toHaveLength(3);
+    expect(callsTo("computer.release").map((call) => call[1])).toEqual([
+      { botId: "chief", reason },
+      { botId: "chief", reason },
+      { botId: "chief", reason },
+    ]);
+    expect(document.body.textContent).not.toContain("Could not continue");
+    expect(container.querySelector('[data-testid="computer-preview-open"]')).toBeTruthy();
+  },
+);
 
 it("retries a screen read without releasing computer control", async () => {
   await showRunningComputer();

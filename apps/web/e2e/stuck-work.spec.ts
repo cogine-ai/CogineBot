@@ -326,11 +326,25 @@ for (const width of [1440, 390]) {
     await page.getByRole("button", { name: "Close computer" }).click();
     await expect(preview.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
     await captureScreenshot(page, testInfo, "computer-release-retry");
-    failRelease = false;
+    const failedRetryResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/rpc/computer/release") && response.request().method() === "POST",
+    );
     await preview.getByRole("button", { name: "Retry", exact: true }).click();
+    expect((await failedRetryResponse).status()).toBe(500);
+    await expect(preview.getByRole("alert")).toContainText("Could not continue");
+    await expect(preview.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+    failRelease = false;
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes("/rpc/computer/release") && response.request().method() === "POST",
+    );
+    await preview.getByRole("button", { name: "Retry", exact: true }).click();
+    expect((await retryResponse).ok()).toBe(true);
     await expect(preview.getByRole("alert")).toHaveCount(0);
     await expect(preview.locator("iframe")).toBeVisible();
     expect(releases).toEqual([
+      { json: { botId, reason: "done" } },
       { json: { botId, reason: "done" } },
       { json: { botId, reason: "done" } },
     ]);
