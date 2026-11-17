@@ -1,5 +1,9 @@
 import path from "node:path";
-import { isPageShareApiPath, isPageShareDocumentPath, PAGE_RUNTIME_PATH } from "@rakazo/contracts";
+import {
+  isPageShareApiPath,
+  isPageShareDocumentPath,
+  PAGE_RUNTIME_PATH,
+} from "@rakazo/contracts/page-paths";
 
 const PASSTHROUGH_PATHS = ["/api", "/rpc", "/novnc"];
 const VIEWER_DOCUMENT = "html-viewer.html";
