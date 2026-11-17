@@ -188,9 +188,45 @@ describe("connectionFormFields", () => {
       });
       expect(request.status).toBe("ready");
       if (request.status !== "ready") return;
-      expect(request.input.thinkingLevel).toBe(enabled ? "high" : null);
+      expect(request.input.thinkingLevel).toBe(enabled ? "high" : undefined);
+      expect(Object.hasOwn(request.input, "thinkingLevel")).toBe(enabled);
       expect(request.input.reasoning).toBe(!enabled);
       expect(saved.modelSettings?.other?.reasoning).toBe(!enabled);
+    },
+  );
+
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "preserves retained form effort after thinking support is disabled on %s",
+    (apiProtocol) => {
+      const saved = credential({
+        provider: COMPATIBLE,
+        modelId: "local",
+        apiProtocol,
+        baseUrl: "https://models.example.test/v1",
+        reasoning: true,
+        thinkingLevel: "high",
+        modelSettings: { local: { reasoning: false } },
+      });
+      const request = modelConnectRequest({
+        form: draft({
+          ...connectionFormFields({
+            catalog,
+            provider: COMPATIBLE,
+            modelId: "local",
+            credential: saved,
+          }),
+          modelId: "local",
+          thinkingLevel: "high",
+        }),
+        selected: { provider: COMPATIBLE, id: "local" },
+        credential: saved,
+        credentialId: saved.id,
+        expectedRevision: 7,
+      });
+      expect(request.status).toBe("ready");
+      if (request.status !== "ready") return;
+      expect(Object.hasOwn(request.input, "thinkingLevel")).toBe(false);
+      expect(saved.thinkingLevel).toBe("high");
     },
   );
 
@@ -227,6 +263,35 @@ describe("connectionFormFields", () => {
       }
     },
   );
+
+  it("does not carry dormant effort to a different compatible model", () => {
+    const saved = credential({
+      provider: COMPATIBLE,
+      modelId: "local",
+      baseUrl: "https://models.example.test/v1",
+      thinkingLevel: "high",
+      modelSettings: { local: { reasoning: false }, other: { reasoning: false } },
+    });
+    const request = modelConnectRequest({
+      form: draft({
+        ...connectionFormFields({
+          catalog,
+          provider: COMPATIBLE,
+          modelId: "other",
+          credential: saved,
+        }),
+        modelId: "other",
+      }),
+      selected: { provider: COMPATIBLE, id: "other" },
+      credential: saved,
+      credentialId: saved.id,
+      expectedRevision: 7,
+    });
+    expect(request.status).toBe("ready");
+    if (request.status !== "ready") return;
+    expect(request.input.thinkingLevel).toBeNull();
+    expect(Object.hasOwn(request.input, "thinkingLevel")).toBe(true);
+  });
 
   it("keeps a saved protocol and clamps its effort levels to what the protocol runs", () => {
     const saved = credential({

@@ -1674,6 +1674,52 @@ it.each([false, true])(
   },
 );
 
+it.each(["save", "reset"] as const)(
+  "preserves retained effort when model settings %s hides thinking before the connection save",
+  async (action) => {
+    const connection: ModelCredential = {
+      ...compatibleConnection(),
+      reasoning: true,
+      thinkingLevel: "high",
+      modelSettings: { "model-a": { reasoning: true } },
+    };
+    useCompatibleConnections([connection]);
+    models.credentials.mockImplementation(async () => [connection]);
+    models.saveModelSettings.mockImplementation(async ({ modelId, settings }) => {
+      connection.modelSettings = { ...connection.modelSettings, [modelId]: settings };
+      return { ok: true };
+    });
+    const view = await renderSettings();
+    try {
+      const panel = view.container.querySelector<HTMLDetailsElement>(
+        '[data-testid="model-settings-panel"]',
+      )!;
+      await act(async () => panel.querySelector("summary")?.click());
+      if (action === "save") {
+        const label = [...panel.querySelectorAll("label")].find(
+          (entry) => entry.textContent === "Supports thinking",
+        )!;
+        await act(async () => label.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+      }
+      await act(async () =>
+        buttons(panel, action === "save" ? "Save" : "Reset to defaults")[0]?.click(),
+      );
+      expect(panel.textContent).toContain("Saved.");
+      expect(connection.modelSettings?.["model-a"]?.reasoning ?? false).toBe(false);
+      const save = buttons(view.container, "Save").find(
+        (button) => !button.closest('[data-testid="model-settings-panel"]'),
+      )!;
+      expect(save.disabled).toBe(false);
+      await act(async () => save.click());
+      const request = models.connect.mock.calls.at(-1)?.[0];
+      expect(request).toMatchObject({ credentialId: "connection-a", modelId: "model-a" });
+      expect(Object.hasOwn(request!, "thinkingLevel")).toBe(false);
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
 it("preserves a dormant effort when saving the connection after resetting model settings", async () => {
   const connection = {
     ...compatibleConnection(),

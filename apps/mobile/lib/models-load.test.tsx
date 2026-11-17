@@ -1825,6 +1825,53 @@ it.each([false, true])(
   },
 );
 
+it.each(["save", "reset"] as const)(
+  "preserves native retained effort when model settings %s hides thinking before the connection save",
+  async (action) => {
+    let saved = {
+      ...credential,
+      reasoning: true,
+      thinkingLevel: "high",
+      modelSettings: { "model-a": { reasoning: true } as Record<string, unknown> },
+    };
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (procedure, input) => {
+      if (procedure === "models/credentials") return [saved];
+      if (procedure === "models/saveModelSettings") {
+        const request = input as { settings: Record<string, unknown> };
+        saved = { ...saved, modelSettings: { "model-a": request.settings } };
+        return { ok: true };
+      }
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    expect(button("Reasoning effort")).toBeDefined();
+    await act(async () => modelSettingsButton("Advanced").click());
+    if (action === "save")
+      await act(async () =>
+        modelSettingsPanel()
+          .querySelector<HTMLInputElement>('input[aria-label="Supports thinking"]')!
+          .click(),
+      );
+    await act(async () =>
+      modelSettingsButton(action === "save" ? "Save" : "Reset to defaults").click(),
+    );
+    expect(modelSettingsPanel().textContent).toContain("Saved.");
+    expect(container.querySelector('button[aria-label="Reasoning effort"]')).toBeNull();
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) =>
+        item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    const request = state.rpc.mock.calls
+      .filter(([procedure]) => procedure === "models/connect")
+      .at(-1)?.[1];
+    expect(request).toMatchObject({ credentialId: "connection-a", modelId: "model-a" });
+    expect(Object.hasOwn(request as object, "thinkingLevel")).toBe(false);
+  },
+);
+
 it("preserves native dormant effort when saving a reasoning-disabled connection", async () => {
   const saved = {
     ...credential,

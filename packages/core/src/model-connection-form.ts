@@ -272,9 +272,7 @@ export function modelConnectRequest(input: {
   if (compatible) {
     // A hidden effort control must not clear the saved level during an ordinary connection save.
     const preserveDormantThinking =
-      credential?.modelId === modelId &&
-      !credentialModelSettings(credential, modelId).reasoning &&
-      form.thinkingLevel === null;
+      credential?.modelId === modelId && !credentialModelSettings(credential, modelId).reasoning;
     return {
       status: "ready",
       savingLimitOnly,
