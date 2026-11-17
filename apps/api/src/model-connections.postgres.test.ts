@@ -7,6 +7,7 @@ import { inspect } from "node:util";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import {
   ComposedSecretStore,
+  connectionModelSettings,
   EncryptedSecretStore,
   parseModelSecret,
   persistPreparedSecret,
@@ -209,6 +210,123 @@ describePostgres("model connection HTTP acceptance", () => {
       },
     };
   }
+
+  it("saves independent model settings across connections and Spaces and resets legacy limits without clearing effort", async () => {
+    const { cookie } = await account();
+    const first = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      input({ contextWindow: 32000, maxTokens: 1024, reasoning: true, thinkingLevel: "low" }),
+    );
+    const second = await rpc<ModelCredential>(cookie, "models/connect", input());
+    await rpc(cookie, "models/saveModelSettings", {
+      credentialId: first.id,
+      modelId: "same-model",
+      settings: { contextWindow: 64000, maxTokens: 2048, images: true },
+    });
+    const read = async () => {
+      const row = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: first.id },
+      });
+      const secret = await handles.prisma.secret.findUniqueOrThrow({ where: { id: row.secretId } });
+      return parseModelSecret(
+        await new EncryptedSecretStore(encryptionKey).load(secret.ciphertext, secret.id),
+      );
+    };
+    expect(connectionModelSettings(await read(), provider, "same-model")).toEqual({
+      contextWindow: 64000,
+      maxTokens: 2048,
+      images: true,
+    });
+    expect(connectionModelSettings(await read(), provider, "second-model")).toMatchObject({
+      contextWindow: 32000,
+      maxTokens: 1024,
+      reasoning: true,
+    });
+    const otherSpace = await rpc<{ id: string }>(cookie, "spaces/create", {
+      name: "Shared model settings",
+    });
+    const elsewhere = await rpc<ModelCredential[]>(cookie, "models/credentials", {}, otherSpace.id);
+    expect(
+      elsewhere.find((item) => item.id === first.id)?.modelSettings?.["same-model"],
+    ).toMatchObject({ maxTokens: 2048 });
+    expect(elsewhere.find((item) => item.id === second.id)?.modelSettings).toBeUndefined();
+    await rpc(cookie, "models/saveModelSettings", {
+      credentialId: first.id,
+      modelId: "same-model",
+      settings: {},
+    });
+    const reset = await read();
+    expect(reset.models?.["same-model"]).toEqual({});
+    expect(connectionModelSettings(reset, provider, "same-model")).toEqual({});
+    expect(reset.kind === "openai_compatible" && reset.thinkingLevel).toBe("low");
+    const replaced = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      edit(first, { apiKey: "synthetic-replacement-key" }),
+    );
+    expect(replaced.modelSettings?.["same-model"]).toEqual({});
+    expect(replaced.thinkingLevel).toBe("low");
+  });
+
+  it("rejects foreign, unavailable and invalid model settings while allowing a removed model to reset", async () => {
+    const { cookie } = await account();
+    const other = await account();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    const save = (modelId: string, settings: unknown, caller = cookie) =>
+      raw(caller, "models/saveModelSettings", { credentialId: credential.id, modelId, settings });
+    expect((await save("same-model", { maxTokens: 100 }, other.cookie)).status).toBe(404);
+    expect((await save("removed", { maxTokens: 100 })).status).toBe(400);
+    expect((await save("same-model", { maxTokens: 40000, contextWindow: 32000 })).status).toBe(400);
+    expect((await save("removed", {})).status).toBe(200);
+    await rpc(cookie, "models/disconnect", {
+      provider,
+      credentialId: credential.id,
+      expectedRevision: credential.connectionRevision,
+    });
+    expect((await save("same-model", { maxTokens: 100 })).status).toBe(404);
+  });
+
+  it("rejects a key replacement prepared before a newer model settings save", async () => {
+    const { cookie } = await account();
+    const vault = externalSecrets();
+    const credential = await rpc<ModelCredential>(cookie, "models/connect", input());
+    let staged!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      staged = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vault.setAfterPut(async (plaintext) => {
+      const secret = parseModelSecret(plaintext);
+      if (secret.kind === "openai_compatible" && secret.apiKey === "synthetic-late-replacement") {
+        staged();
+        await gate;
+      }
+    });
+    const replacement = raw(
+      cookie,
+      "models/connect",
+      edit(credential, { apiKey: "synthetic-late-replacement" }),
+    );
+    try {
+      await ready;
+      await rpc(cookie, "models/saveModelSettings", {
+        credentialId: credential.id,
+        modelId: "same-model",
+        settings: { maxTokens: 2048 },
+      });
+    } finally {
+      release();
+    }
+    expect((await replacement).status).toBe(409);
+    const connections = await rpc<ModelCredential[]>(cookie, "models/credentials");
+    expect(connections.find((item) => item.id === credential.id)?.modelSettings).toEqual({
+      "same-model": { maxTokens: 2048 },
+    });
+  });
 
   it("cleans a staged external secret after a concurrent model connection save wins", async () => {
     const vault = externalSecrets();

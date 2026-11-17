@@ -100,7 +100,7 @@ import { affordableOpenRouterOutput } from "./openrouter-output-budget.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
-import { liveModelSibling, withLiveImageInput } from "./pi-live-model.js";
+import { liveModelSibling, withLiveImageInput, withModelCapabilities } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import {
   acceptedReasoningEfforts,
@@ -1322,6 +1322,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   const credentials = credentialStoreForRequest({ model: modelConfig }, provider);
   const models = modelsForRequest({ model: modelConfig }, provider, credentials);
   let model = catalogModelWithOpenRouterFallback(models, provider, modelId);
+  const listed = model !== undefined;
   if (
     !model &&
     provider === "openrouter" &&
@@ -1335,6 +1336,13 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
     model ??= liveModelSibling(models, provider, modelId);
     if (model) model = withLiveImageInput(model, modelConfig.acceptsImages);
   }
+  if (
+    model &&
+    !listed &&
+    provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
+    provider !== CHATGPT_PLAN_PROVIDER_ID
+  )
+    model = withModelCapabilities(model, modelConfig);
   if (model && (modelConfig.contextWindow !== undefined || modelConfig.maxTokens !== undefined)) {
     model = {
       ...model,
@@ -1361,6 +1369,7 @@ function credentialStoreForRequest(
     persist ? (next) => persist(next) : undefined,
     oauth.retire,
     oauth.synchronize,
+    oauth.refresh,
   );
 }
 

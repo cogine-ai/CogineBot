@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
+  AgentModelOAuthCredential,
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
   SecretStore,
@@ -16,6 +17,7 @@ import type {
   ModelContextLimits,
   ModelOAuthBegin,
   ModelOAuthSignInMode,
+  ModelSettings,
   ThinkingLevel,
 } from "@rakazo/contracts";
 import {
@@ -23,10 +25,11 @@ import {
   MAX_MODEL_MAX_TOKENS,
   ModelApiProtocolSchema,
   ModelContextLimitsSchema,
+  ModelSettingsSchema,
   parseModelHeaders,
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
-import type { PrismaClient } from "@rakazo/db";
+import { Prisma, type PrismaClient } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import {
   CHATGPT_PLAN_TERMINAL_REFRESH_ERROR_CODES,
@@ -34,8 +37,11 @@ import {
   createChatGPTPlanOAuthAuth,
   readChatGPTPlanCredential,
 } from "./chatgpt-plan-auth.js";
+import { withChatGPTPlanCredentialLock } from "./chatgpt-plan-credential-lock.js";
 import { CHATGPT_PLAN_PROVIDER_ID } from "./chatgpt-plan-provider.js";
 import { createManualAnthropicOAuthLogin } from "./pi-anthropic-oauth.js";
+import { REFRESH_REQUEST_TIMEOUT_MS, withRefreshLock } from "./refresh-lock.js";
+import { deferSecretNotifications } from "./secret-store-factory.js";
 
 export const CHATGPT_OAUTH_PROVIDER = "openai-codex";
 export const COPILOT_OAUTH_PROVIDER = "github-copilot";
@@ -276,6 +282,35 @@ export function isRetiredModelCredentialError(error: unknown): boolean {
 
 export type StoredModelLimits = ModelContextLimits;
 
+/** Settings saved for individual models, keyed by model id. */
+type StoredModelSettings = { models?: Record<string, ModelSettings> };
+
+export function parseStoredModelSettings(value: unknown): StoredModelSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const models: Record<string, ModelSettings> = Object.create(null);
+  for (const [modelId, settings] of Object.entries(value)) {
+    const parsed = ModelSettingsSchema.safeParse(settings);
+    // An empty entry is kept: it means the model's card, not the connection's earlier values.
+    if (modelId.trim() && parsed.success) models[modelId] = parsed.data;
+  }
+  return Object.keys(models).length > 0 ? { models } : {};
+}
+
+function serializedModelSettings(secret: StoredModelSettings): StoredModelSettings {
+  return parseStoredModelSettings(secret.models);
+}
+
+/** Model settings a connection keeps when its sign-in is refreshed or replaced. */
+export type KeptModelSettings = StoredModelSettings & { maxTokens?: number };
+
+export function keptModelSettings(secret: StoredModelSecret | undefined): KeptModelSettings {
+  if (!secret) return {};
+  return {
+    ...(secret.maxTokens !== undefined ? { maxTokens: secret.maxTokens } : {}),
+    ...serializedModelSettings(secret),
+  };
+}
+
 function modelLimits(value: Record<string, unknown>): StoredModelLimits {
   const cache = ModelContextLimitsSchema.shape.cacheCapabilities.safeParse(value.cacheCapabilities);
   const window = ModelContextLimitsSchema.shape.contextWindow.safeParse(value.contextWindow);
@@ -292,8 +327,9 @@ export type StoredModelSecret =
       maxTokens?: number;
       accountId?: string;
       gatewayId?: string;
-    } & StoredModelLimits)
-  | { kind: "oauth"; credential: OAuthCredential; maxTokens?: number }
+    } & StoredModelLimits &
+      StoredModelSettings)
+  | ({ kind: "oauth"; credential: OAuthCredential; maxTokens?: number } & StoredModelSettings)
   | ({
       kind: "openai_compatible";
       baseUrl: string;
@@ -307,7 +343,8 @@ export type StoredModelSecret =
       visionModelIds?: string[];
       enabledModelIds?: string[];
       maxImagesPerPrompt?: number;
-    } & StoredModelLimits);
+    } & StoredModelLimits &
+      StoredModelSettings);
 
 export type PiOAuthConnected = {
   status: "connected";
@@ -476,6 +513,7 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
       ...(enabledModelIds ? { enabledModelIds } : {}),
       ...(maxImagesPerPrompt !== undefined ? { maxImagesPerPrompt } : {}),
       ...modelLimits(parsed),
+      ...parseStoredModelSettings(parsed.models),
     };
   }
   if (parsed.kind === "api_key") {
@@ -492,6 +530,7 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
       ...(accountId ? { accountId } : {}),
       ...(gatewayId ? { gatewayId } : {}),
       ...modelLimits(parsed),
+      ...parseStoredModelSettings(parsed.models),
     };
   }
   if (parsed.kind === "oauth") {
@@ -502,6 +541,7 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
       kind: "oauth",
       credential,
       ...(maxTokens !== undefined ? { maxTokens } : {}),
+      ...parseStoredModelSettings(parsed.models),
     };
   }
   // Legacy secrets serialize the bare OAuth credential without a kind wrapper.
@@ -515,11 +555,13 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
 
 export function serializeModelSecret(secret: StoredModelSecret): string {
   if (secret.kind === "oauth") {
-    if (secret.maxTokens === undefined) return JSON.stringify(secret.credential);
+    const models = serializedModelSettings(secret);
+    if (secret.maxTokens === undefined && !models.models) return JSON.stringify(secret.credential);
     return JSON.stringify({
       kind: "oauth",
       credential: secret.credential,
-      maxTokens: secret.maxTokens,
+      ...(secret.maxTokens !== undefined ? { maxTokens: secret.maxTokens } : {}),
+      ...models,
     });
   }
   if (secret.kind === "openai_compatible") {
@@ -541,14 +583,17 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
       ...(secret.maxImagesPerPrompt !== undefined
         ? { maxImagesPerPrompt: secret.maxImagesPerPrompt }
         : {}),
+      ...serializedModelSettings(secret),
     });
   }
+  const models = serializedModelSettings(secret);
   if (
     secret.maxTokens === undefined &&
     secret.accountId === undefined &&
     secret.gatewayId === undefined &&
     secret.contextWindow === undefined &&
-    secret.cacheCapabilities === undefined
+    secret.cacheCapabilities === undefined &&
+    !models.models
   ) {
     return secret.key;
   }
@@ -559,6 +604,7 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
     ...(secret.accountId ? { accountId: secret.accountId } : {}),
     ...(secret.gatewayId ? { gatewayId: secret.gatewayId } : {}),
     ...modelLimits(secret as unknown as Record<string, unknown>),
+    ...models,
   });
 }
 
@@ -677,7 +723,7 @@ export async function resolveModelAuth(
   }
   const now = opts?.now ?? Date.now();
   let credential = parsed.credential;
-  const maxTokens = parsed.maxTokens;
+  const kept = keptModelSettings(parsed);
   const earliestRefreshAt =
     provider === CHATGPT_PLAN_PROVIDER_ID
       ? readChatGPTPlanCredential(credential)?.earliestRefreshAt
@@ -700,7 +746,7 @@ export async function resolveModelAuth(
           serializeModelSecret({
             kind: "oauth",
             credential: checkpoint,
-            ...(maxTokens !== undefined ? { maxTokens } : {}),
+            ...kept,
           }),
         );
         throw error;
@@ -760,7 +806,7 @@ export async function resolveModelAuth(
       serializeModelSecret({
         kind: "oauth",
         credential,
-        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...kept,
       }),
     );
   }
@@ -777,7 +823,7 @@ export async function resolveModelAuth(
     secret: {
       kind: "oauth",
       credential,
-      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      ...kept,
     },
     apiKey: auth.apiKey,
   };
@@ -849,6 +895,205 @@ export function persistStoredModelSecret(
   };
 }
 
+/** Share token-refresh and settings writes across API and worker processes. */
+function withModelCredentialDatabaseLock<T>(
+  prisma: Pick<PrismaClient, "$transaction">,
+  secretId: string,
+  provider: string,
+  operation: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  if (provider === CHATGPT_PLAN_PROVIDER_ID)
+    return withChatGPTPlanCredentialLock(prisma, secretId, operation);
+  return withRefreshLock(
+    prisma,
+    (tx) =>
+      tx.$queryRaw(Prisma.sql`
+      SELECT pg_advisory_xact_lock(hashtext('coginebot-model-credential'), hashtext(${secretId}))::text AS "lock"
+    `),
+    operation,
+  );
+}
+
+/** Change only the current stored copy; a disconnect never recreates a secret. */
+export async function updateStoredModelSecret(
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
+  secretStore: Pick<SecretStore, "load" | "put">,
+  scope: { userId: string; spaceId: string },
+  secretId: string,
+  provider: string,
+  update: (secret: StoredModelSecret) => StoredModelSecret | null,
+): Promise<boolean> {
+  return withModelCredentialLock(secretId, () =>
+    deferSecretNotifications(() =>
+      withModelCredentialDatabaseLock(prisma, secretId, provider, async (tx) => {
+        const row = await tx.secret.findFirst({
+          where: { id: secretId, userId: scope.userId, spaceId: null },
+          select: { ciphertext: true },
+        });
+        if (!row) return false;
+        const next = update(parseModelSecret(await secretStore.load(row.ciphertext, secretId)));
+        if (next)
+          await persistStoredModelSecret(
+            tx,
+            secretStore,
+            scope,
+            secretId,
+          )(serializeModelSecret(next));
+        return true;
+      }),
+    ),
+  );
+}
+
+/** A runtime refresh keeps settings saved after the run started. */
+export function persistRefreshedModelCredential(
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
+  secretStore: Pick<SecretStore, "load" | "put">,
+  scope: { userId: string; spaceId: string },
+  secretId: string,
+  provider: string,
+): (next: AgentModelOAuthCredential) => Promise<void> {
+  return async (next) => {
+    await updateStoredModelSecret(prisma, secretStore, scope, secretId, provider, (current) => {
+      if (current.kind !== "oauth") return null;
+      const stored = current.credential;
+      if (stored.expires > next.expires) return null;
+      if (
+        stored.access === next.access &&
+        stored.refresh === next.refresh &&
+        stored.expires === next.expires
+      )
+        return null;
+      return {
+        kind: "oauth",
+        credential: { ...next, type: "oauth" },
+        ...keptModelSettings(current),
+      };
+    });
+  };
+}
+
+/** Resolve a due refresh from the stored copy while holding its database lock. */
+export async function resolveStoredModelAuth(
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
+  secretStore: Pick<SecretStore, "load" | "put">,
+  scope: { userId: string; spaceId: string },
+  secretId: string,
+  plaintext: string,
+  provider: string,
+  opts: Omit<ResolveModelOpts, "persist"> = {},
+): ReturnType<typeof resolveModelAuth> {
+  const now = opts.now ?? Date.now();
+  opts = { ...opts, now };
+  const parsed = parseModelSecret(plaintext);
+  const pendingPlanRotation =
+    parsed.kind === "oauth" &&
+    provider === CHATGPT_PLAN_PROVIDER_ID &&
+    readChatGPTPlanCredential(parsed.credential)?.pendingRotation !== undefined;
+  if (
+    parsed.kind !== "oauth" ||
+    (!pendingPlanRotation && parsed.credential.expires - now >= MIN_OAUTH_VALIDITY_MS)
+  )
+    return resolveModelAuth(plaintext, provider, opts);
+  let failure: Parameters<NonNullable<ResolveModelOpts["retire"]>> | undefined;
+  try {
+    const outcome = await deferSecretNotifications(() =>
+      withModelCredentialDatabaseLock(prisma, secretId, provider, async (tx) => {
+        const row = await tx.secret.findFirst({
+          where: { id: secretId, userId: scope.userId, spaceId: null },
+          select: { ciphertext: true },
+        });
+        if (!row) throw new Error("Connect that model provider again.");
+        const stored = await secretStore.load(row.ciphertext, secretId);
+        const timeout = AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS);
+        const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+        let saved = false;
+        return resolveModelAuth(stored, provider, {
+          ...opts,
+          signal,
+          persist: async (next) => {
+            await persistStoredModelSecret(tx, secretStore, scope, secretId)(next);
+            saved = true;
+          },
+          retire: async (...args) => {
+            failure = args;
+            return false;
+          },
+        }).then(
+          (resolved) => ({ resolved }),
+          (error) => (saved ? { error } : Promise.reject(error)),
+        );
+      }),
+    );
+    if ("error" in outcome) throw outcome.error;
+    return outcome.resolved;
+  } catch (error) {
+    let deleted = false;
+    if (failure && opts.retire) {
+      try {
+        deleted = (await opts.retire(...failure)) === true;
+      } catch (retireError) {
+        getLogger().error("model credential retirement failed", retireError);
+      }
+    }
+    if (deleted && failure) {
+      if (failure[0] === "account-changed")
+        throw new RetiredModelCredentialError(OAUTH_ACCOUNT_CHANGED_ERROR);
+      markRetiredModelCredentialError(error);
+    }
+    throw error;
+  }
+}
+
+/** The runtime refreshes the stored copy, using the same lock as settings saves. */
+export function refreshStoredModelCredential(
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
+  secretStore: Pick<SecretStore, "load" | "put">,
+  scope: { userId: string; spaceId: string },
+  secretId: string,
+  provider: string,
+  opts: Pick<ResolveModelOpts, "oauth" | "retire"> = {},
+) {
+  return async (
+    held: AgentModelOAuthCredential,
+    refresh: (
+      stored: AgentModelOAuthCredential,
+      signal: AbortSignal,
+    ) => Promise<AgentModelOAuthCredential | undefined>,
+  ): Promise<AgentModelOAuthCredential> => {
+    const toAuth = (opts.oauth ?? loadProviderOAuth(provider))?.toAuth;
+    const resolved = await withModelCredentialLock(secretId, () =>
+      resolveStoredModelAuth(
+        prisma,
+        secretStore,
+        scope,
+        secretId,
+        serializeModelSecret({ kind: "oauth", credential: { ...held, type: "oauth" } }),
+        provider,
+        {
+          retire: opts.retire,
+          ...(toAuth
+            ? {
+                oauth: {
+                  refresh: async (stored: OAuthCredential) => {
+                    const next = await refresh(
+                      stored,
+                      AbortSignal.timeout(REFRESH_REQUEST_TIMEOUT_MS + 5_000),
+                    );
+                    return next ? { ...next, type: "oauth" as const } : stored;
+                  },
+                  toAuth: (next: OAuthCredential) => toAuth(next),
+                },
+              }
+            : {}),
+        },
+      ),
+    );
+    if (resolved.secret.kind !== "oauth") throw new Error("Connect that model provider again.");
+    return resolved.secret.credential;
+  };
+}
+
 /**
  * Re-run the runtime's locked resolve-and-refresh for a stored credential whose
  * bearer expired, e.g. when a detached catalog read finds no usable token.
@@ -857,7 +1102,7 @@ export function persistStoredModelSecret(
  * The catalog itself never writes credentials — this is the run path's writer.
  */
 export async function refreshExpiredModelCredential(
-  prisma: Pick<PrismaClient, "secret">,
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
   secretStore: Pick<SecretStore, "load" | "put">,
   scope: { userId: string; spaceId: string },
   secretId: string,
@@ -877,10 +1122,7 @@ export async function refreshExpiredModelCredential(
     } catch {
       return;
     }
-    await resolveModelAuth(plaintext, provider, {
-      ...opts,
-      persist: persistStoredModelSecret(prisma, secretStore, scope, row.id),
-    });
+    await resolveStoredModelAuth(prisma, secretStore, scope, row.id, plaintext, provider, opts);
   });
 }
 
@@ -893,7 +1135,7 @@ const credentialRefreshKicks = new Map<string, Promise<void>>();
  * kick frees the slot so the next expired read can retry.
  */
 export function kickModelCredentialRefresh(
-  prisma: Pick<PrismaClient, "secret">,
+  prisma: Pick<PrismaClient, "$transaction" | "secret">,
   secretStore: Pick<SecretStore, "load" | "put">,
   scope: { userId: string; spaceId: string },
   secretId: string,

@@ -106,6 +106,7 @@ describe("compatible connection format preservation", () => {
       baseUrl: "http://127.0.0.1:8000/v1",
       apiKey: "old-private-key",
       apiProtocol: "future-wire",
+      models: { "fixture-model": { contextWindow: 64000 }, removed: { images: true } },
       headers: { "X-Tenant": "old-private-header" },
     });
     const fresh = parseModelSecret(
@@ -122,6 +123,7 @@ describe("compatible connection format preservation", () => {
     expect(fresh).toMatchObject({ apiKey: "new-private-key", baseUrl: "http://127.0.0.1:8001/v1" });
     expect(fresh).not.toHaveProperty("apiProtocol");
     expect(fresh).not.toHaveProperty("headers");
+    expect(fresh.models).toEqual({ "fixture-model": { contextWindow: 64000 } });
     expect(JSON.stringify(fresh)).not.toContain("old-private");
   });
 
@@ -465,6 +467,7 @@ describe("modelCredentialDto", () => {
       modelId: "qwen3-4b",
       connectionRevision: 1,
       enabledModelIds: ["qwen3-4b"],
+      visionModelIds: [],
       reasoning: false,
       thinkingLevels: ["off"],
     });

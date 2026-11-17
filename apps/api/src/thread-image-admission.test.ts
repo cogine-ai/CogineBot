@@ -110,6 +110,85 @@ function fixture(group = false) {
 
 describe("current image send admission", () => {
   it.each([
+    [{ images: true }, "supported"],
+    [{ images: false }, "unsupported"],
+    [{}, "unknown"],
+  ] as const)(
+    "uses the receiving compatible model's own settings over legacy image flags (%j)",
+    async (settings, expected) => {
+      const { tx } = fixture();
+      tx.bot.findFirst.mockResolvedValue({
+        id: "bot-1",
+        modelProvider: "openai-compatible",
+        modelId: "receiver",
+        modelCredentialId: "credential-1",
+      });
+      tx.userModelCredential.findFirst.mockResolvedValue({
+        id: "credential-1",
+        provider: "openai-compatible",
+        secretId: "secret-1",
+        preferences: [],
+        supportsImages: true,
+        defaultModel: "receiver",
+      });
+      const status = await threadModelImageInput(
+        tx as never,
+        { userId: "user-1", spaceId: "space-1" } as Actor,
+        "bot-1",
+        null,
+        {
+          deployment: null,
+          secrets: {
+            load: async () =>
+              JSON.stringify({
+                kind: "openai_compatible",
+                baseUrl: "http://127.0.0.1:8090/v1",
+                enabledModelIds: ["receiver", "other"],
+                visionModelIds: ["receiver"],
+                models: { receiver: settings, other: { images: false } },
+              }),
+          },
+        },
+      );
+      expect(status).toBe(expected);
+    },
+  );
+
+  it("admits an unknown model's declared image input on its exact connection", async () => {
+    const { tx } = fixture();
+    tx.bot.findFirst.mockResolvedValue({
+      id: "bot-1",
+      modelProvider: "anthropic",
+      modelId: "custom-receiver",
+      modelCredentialId: "credential-1",
+    });
+    tx.userModelCredential.findFirst.mockResolvedValue({
+      id: "credential-1",
+      provider: "anthropic",
+      secretId: "secret-1",
+      preferences: [],
+    });
+    const status = await threadModelImageInput(
+      tx as never,
+      { userId: "user-1", spaceId: "space-1" } as Actor,
+      "bot-1",
+      null,
+      {
+        deployment: null,
+        secrets: {
+          load: async () =>
+            JSON.stringify({
+              kind: "api_key",
+              key: "synthetic-key",
+              models: { "custom-receiver": { images: true }, other: { images: false } },
+            }),
+        },
+      },
+    );
+    expect(status).toBe("supported");
+  });
+
+  it.each([
     [false, false, "unsupported"],
     [true, false, "supported"],
     [true, true, "unknown"],

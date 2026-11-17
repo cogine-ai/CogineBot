@@ -117,6 +117,7 @@ export * from "./model-connect.js";
 export { modelConnectionErrorMessage } from "./model-connection-errors.js";
 export * from "./model-oauth-sessions.js";
 export * from "./model-selection.js";
+export * from "./model-settings.js";
 export * from "./model-vision.js";
 export { NativeActionError } from "./native-connectors/action.js";
 export * from "./native-connectors/events/api.js";

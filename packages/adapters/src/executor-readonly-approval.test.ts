@@ -2868,6 +2868,12 @@ describe("automatic review connection accounting", () => {
                   kind: "api_key",
                   key: `synthetic-${credential.id}-key`,
                   maxTokens: 64,
+                  models: {
+                    [modelId]: {
+                      maxTokens: credential.id === "connection-a" ? 97 : 193,
+                      contextWindow: credential.id === "connection-a" ? 64000 : 128000,
+                    },
+                  },
                 }),
               };
             },
@@ -2925,6 +2931,18 @@ describe("automatic review connection accounting", () => {
           { id: answerId, key: answerId ? `synthetic-${answerId}-key` : "synthetic-host-key" },
           { id: reviewId, key: reviewId ? `synthetic-${reviewId}-key` : "synthetic-host-key" },
         ]);
+        expect(
+          f.runtimeRun.mock.calls.map(([request]) => ({
+            maxTokens: request.model.maxTokens,
+            contextWindow: request.model.contextWindow,
+          })),
+        ).toEqual(
+          [answerId, reviewId].map((id) => ({
+            maxTokens: id === "connection-a" ? 97 : id === "connection-b" ? 193 : undefined,
+            contextWindow:
+              id === "connection-a" ? 64000 : id === "connection-b" ? 128000 : undefined,
+          })),
+        );
         expect(
           ledger.map((row) => ({
             credential: row.modelCredentialId,

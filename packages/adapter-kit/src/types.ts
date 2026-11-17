@@ -548,6 +548,14 @@ export interface AgentRunModel {
   oauth?: {
     credential: AgentModelOAuthCredential;
     persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
+    /** Refresh from the stored copy and commit it under the credential's shared lock. */
+    refresh?: (
+      held: AgentModelOAuthCredential,
+      operation: (
+        stored: AgentModelOAuthCredential,
+        signal: AbortSignal,
+      ) => Promise<AgentModelOAuthCredential | undefined>,
+    ) => Promise<AgentModelOAuthCredential>;
     /** Reload and publish a rotating credential under the deployment's shared lock. */
     synchronize?: (
       operation: (

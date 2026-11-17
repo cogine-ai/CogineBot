@@ -14,11 +14,13 @@ import type {
 import { getLogger } from "@rakazo/logging";
 import { CHATGPT_PLAN_PROVIDER_ID } from "./chatgpt-plan-provider.js";
 import {
+  isRetiredModelCredentialError,
   OAUTH_ACCOUNT_CHANGED_ERROR,
   oauthCredentialAccountId,
   RetiredModelCredentialError,
   terminalOAuthRefreshErrorMarker,
 } from "./pi-oauth.js";
+import { withAbort } from "./web-ssrf.js";
 
 export function toOAuthCredential(value: AgentModelOAuthCredential): OAuthCredential {
   return { ...value, type: "oauth" };
@@ -43,6 +45,7 @@ export class PiRuntimeCredentialStore implements CredentialStore {
       failed?: ModelCredentialFailedState,
     ) => Promise<boolean | undefined>,
     private readonly synchronizeOAuth?: NonNullable<AgentRunModel["oauth"]>["synchronize"],
+    private readonly refreshOAuth?: NonNullable<AgentRunModel["oauth"]>["refresh"],
   ) {
     this.credential = credential;
   }
@@ -75,6 +78,21 @@ export class PiRuntimeCredentialStore implements CredentialStore {
     const previous = this.chain;
     const operation = previous.then(async () => {
       options?.signal?.throwIfAborted();
+      const held = this.credential;
+      if (this.refreshOAuth && held?.type === "oauth") {
+        try {
+          const next = await this.refreshOAuth(held, async (stored, signal) => {
+            const refreshed = await withAbort(fn(toOAuthCredential(stored)), signal);
+            return refreshed?.type === "oauth" ? refreshed : undefined;
+          });
+          options?.signal?.throwIfAborted();
+          this.credential = toOAuthCredential(next);
+        } catch (error) {
+          if (isRetiredModelCredentialError(error)) this.credential = undefined;
+          throw error;
+        }
+        return this.credential;
+      }
       const apply = async (
         current: Credential | undefined,
         synchronized = false,

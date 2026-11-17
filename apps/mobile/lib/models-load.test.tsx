@@ -158,7 +158,9 @@ vi.mock("../components/menu-picker", () => ({
   ),
 }));
 vi.mock("react-native", () => {
-  const View = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  const View = ({ children, testID }: { children?: ReactNode; testID?: string }) => (
+    <div data-testid={testID}>{children}</div>
+  );
   return {
     View,
     ScrollView: View,
@@ -1536,4 +1538,90 @@ it("shows and selects a legacy Azure connection through the catalog alias while 
     expectedRevision: 7,
     modelId: "azure-model",
   });
+});
+
+function modelSettingsPanel() {
+  const panel = container.querySelector<HTMLElement>('[data-testid="model-settings-panel"]');
+  if (!panel) throw new Error("Missing model settings panel");
+  return panel;
+}
+function modelSettingsButton(label: string) {
+  const found = [...modelSettingsPanel().querySelectorAll("button")].find(
+    (entry) => entry.textContent === label || entry.getAttribute("aria-label") === label,
+  );
+  if (!found) throw new Error(`Missing model settings action: ${label}`);
+  return found;
+}
+function modelSettingsOutput() {
+  const field = modelSettingsPanel().querySelector<HTMLInputElement>(
+    'input[aria-label="Maximum output tokens"]',
+  );
+  if (!field) throw new Error("Missing model output field");
+  return field;
+}
+
+it("keeps native per-model drafts on failure, reloads saved values, and resets only that model", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let saved: Record<string, Record<string, unknown>> = { "model-b": { maxTokens: 512 } };
+  let fail = true;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [{ ...credential, modelSettings: saved, thinkingLevel: "low" }];
+    if (procedure === "models/saveModelSettings") {
+      if (fail) throw new Error("Synthetic settings failure");
+      const request = input as { modelId: string; settings: Record<string, unknown> };
+      saved = { ...saved, [request.modelId]: request.settings };
+      return { ok: true };
+    }
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  expect(modelSettingsPanel().textContent).toContain("Default");
+  expect(modelSettingsPanel().querySelector("input")).toBeNull();
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(
+    modelSettingsPanel().querySelector<HTMLInputElement>('input[aria-label="Context limit"]')!,
+    "64000",
+  );
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  expect(modelSettingsPanel().textContent).toContain("Synthetic settings failure");
+  expect(modelSettingsOutput().value).toBe("2048");
+  fail = false;
+  await act(async () => modelSettingsButton("Save").click());
+  expect(modelSettingsPanel().textContent).toContain("Saved.");
+  expect(modelSettingsOutput().value).toBe("2048");
+  expect(modelSettingsPanel().textContent).toContain("Adjusted");
+  const save = state.rpc.mock.calls.filter(([name]) => name === "models/saveModelSettings").at(-1);
+  expect(save?.[1]).toMatchObject({
+    credentialId: "connection-a",
+    modelId: "model-a",
+    settings: { contextWindow: 64000, maxTokens: 2048 },
+  });
+  expect(save?.[2]).toMatchObject({ requestContext: { spaceId: "space-1", sessionGeneration: 0 } });
+  await act(async () => modelSettingsButton("Reset to defaults").click());
+  expect(saved).toEqual({ "model-a": {}, "model-b": { maxTokens: 512 } });
+  expect(modelSettingsOutput().value).toBe("");
+  expect(state.rpc.mock.calls.filter(([name]) => name === "models/connect")).toHaveLength(0);
+});
+
+it("keeps the native draft when saved settings cannot be read back", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let saved = false;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/saveModelSettings") {
+      saved = true;
+      return { ok: true };
+    }
+    if (procedure === "models/credentials" && saved)
+      throw new Error("Synthetic settings read failure");
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  expect(modelSettingsPanel().textContent).not.toContain("Saved.");
+  expect(modelSettingsOutput().value).toBe("2048");
+  expect(container.textContent).toContain("Synthetic settings read failure");
 });

@@ -1301,3 +1301,112 @@ test("custom model protocols save, reopen and preserve private headers", async (
     );
   }
 });
+
+for (const width of [1280, 390]) {
+  test(`per-model settings save, recover and reset on the selected connection at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await signup(
+      page,
+      `model-settings-${width}-${Date.now()}@example.test`,
+      "password12",
+      "Model Settings",
+    );
+    await completeOnboarding(page);
+    type SavedConnection = {
+      id: string;
+      thinkingLevel?: string;
+      modelSettings?: Record<string, { maxTokens?: number; contextWindow?: number }>;
+    };
+    const connections: SavedConnection[] = [];
+    for (const port of [8090, 8091]) {
+      connections.push(
+        await rpc<SavedConnection>(page, "models/connect", {
+          provider: "openai-compatible",
+          apiKey: "synthetic-offline-key",
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          modelId: "model-a",
+          enabledModelIds: ["model-a", "model-b"],
+          reasoning: true,
+          thinkingLevel: "low",
+          maxTokens: 1024,
+          contextWindow: 32000,
+        }),
+      );
+    }
+    if (width === 390)
+      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill("openai-compatible");
+    await settings.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await settings.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    const panel = settings.getByTestId("model-settings-panel");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Default");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toBeHidden();
+    await panel.locator("summary").click();
+    await panel.getByLabel("Context limit", { exact: true }).fill("64000");
+    await panel.getByLabel("Maximum output tokens", { exact: true }).fill("2048");
+    let fail = true;
+    await page.route("**/rpc/models/saveModelSettings", async (route) => {
+      if (!fail) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 503,
+        json: {
+          json: {
+            defined: false,
+            code: "SERVICE_UNAVAILABLE",
+            status: 503,
+            message: "Synthetic settings unavailable",
+          },
+        },
+      });
+    });
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(panel.getByRole("alert")).toContainText("Synthetic settings unavailable");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveValue("2048");
+    await captureScreenshot(page, testInfo, `a1-model-draft-failure-${width}`);
+    fail = false;
+    const savedResponse = page.waitForResponse(
+      (response) => response.url().includes("/rpc/models/saveModelSettings") && response.ok(),
+    );
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await savedResponse;
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Adjusted");
+    const read = async () => rpc<SavedConnection[]>(page, "models/credentials", {});
+    const stored = await read();
+    expect(
+      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-a"],
+    ).toMatchObject({ contextWindow: 64000, maxTokens: 2048 });
+    expect(stored.find((entry) => entry.id === connections[1]!.id)?.modelSettings).toBeUndefined();
+    await captureScreenshot(page, testInfo, `a1-model-settings-saved-${width}`);
+    await panel.getByRole("button", { name: "Reset to defaults", exact: true }).click();
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveValue("");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Default");
+    const reset = (await read()).find((entry) => entry.id === connections[0]!.id)!;
+    expect(reset.modelSettings).toEqual({ "model-a": {} });
+    expect(reset.thinkingLevel).toBe("low");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveAttribute(
+      "placeholder",
+      "4096",
+    );
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+    await captureScreenshot(page, testInfo, `a1-model-settings-reset-${width}`);
+    await page.reload();
+    if (width === 390)
+      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+    await openUserSettings(page, "models");
+    await page.getByPlaceholder("Search providers").fill("openai-compatible");
+    await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await page.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    await expect(page.getByTestId("model-settings-panel").locator("summary")).toHaveText(
+      "Advanced · Default",
+    );
+  });
+}

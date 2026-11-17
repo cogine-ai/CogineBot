@@ -33,10 +33,12 @@ import {
   connectionFormFields,
   connectionFormModelId,
   createModelProbe,
+  credentialModelSettings,
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
   modelConnectRequest,
+  modelThinkingLevels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -89,6 +91,7 @@ import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
+import { ModelSettingsPanel } from "./model-settings-panel";
 
 export function ModelSettingsOverlay({
   onClose,
@@ -458,13 +461,14 @@ export function ModelSettingsOverlay({
   // per-bot Thinking picker.
   const catalogThinkingLevels =
     !isOpenAiCompatible && selected
-      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      ? modelThinkingLevels(credential, selected, selected.id).filter((level) => level !== "off")
       : [];
   const selectedStoredLevel =
     !isOpenAiCompatible && credential?.modelId === selected?.id
       ? (credential?.thinkingLevel ?? null)
       : null;
   const thinkingDirty = !isOpenAiCompatible && (thinkingLevel ?? null) !== selectedStoredLevel;
+  const settingsSelectionRevision = selectionRevisionRef.current;
   const busy = pending !== null || oauthPending;
   const effectiveBaseUrl = baseUrl.trim();
   const openAiCompatibleReady = compatibleConnectionReady({
@@ -1067,7 +1071,7 @@ export function ModelSettingsOverlay({
               setNotice(null);
             }}
           />
-          {provider !== "chatgpt-plan" ? (
+          {provider !== "chatgpt-plan" && !credential ? (
             <ModelThinkingOptions
               showThinking={false}
               disabled={busy}
@@ -1859,15 +1863,23 @@ export function ModelSettingsOverlay({
                     ) : null}
                   </div>
                   <ModelThinkingOptions
-                    reasoning={reasoning}
-                    onReasoningChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setReasoning(value);
-                      if (!value) setThinkingLevel(null);
-                      setNotice(null);
-                    }}
+                    reasoning={
+                      credential
+                        ? credentialModelSettings(credential, modelId).reasoning === true
+                        : reasoning
+                    }
+                    onReasoningChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setReasoning(value);
+                            if (!value) setThinkingLevel(null);
+                            setNotice(null);
+                          }
+                    }
                     disabled={busy}
-                    advancedLabel={t`Advanced`}
+                    advancedLabel={credential ? t`Thinking` : t`Advanced`}
                     thinkingLabel={t`Supports thinking`}
                     thinkingLevel={thinkingLevel}
                     onThinkingLevelChange={(value) => {
@@ -1882,35 +1894,71 @@ export function ModelSettingsOverlay({
                     thinkingLevelLabel={t`Reasoning effort`}
                     thinkingLevelDefaultLabel={t`Default`}
                     maxTokens={maxTokens}
-                    onMaxTokensChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setMaxTokens(value);
-                      setNotice(null);
-                    }}
+                    onMaxTokensChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setMaxTokens(value);
+                            setNotice(null);
+                          }
+                    }
                     maxTokensLabel={t`Maximum output tokens`}
                     contextWindow={contextWindow}
-                    onContextWindowChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setContextWindow(value);
-                      setNotice(null);
-                    }}
+                    onContextWindowChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setContextWindow(value);
+                            setNotice(null);
+                          }
+                    }
                     contextWindowLabel={t`Context limit`}
                     supportsImages={supportsImages}
-                    onSupportsImagesChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setSupportsImages(value);
-                      setNotice(null);
-                    }}
+                    onSupportsImagesChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setSupportsImages(value);
+                            setNotice(null);
+                          }
+                    }
                     imagesLabel={t`Supports images`}
                     maxImagesPerPrompt={maxImagesPerPrompt}
-                    onMaxImagesPerPromptChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setMaxImagesPerPrompt(value);
-                      setNotice(null);
-                    }}
+                    onMaxImagesPerPromptChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setMaxImagesPerPrompt(value);
+                            setNotice(null);
+                          }
+                    }
                     maxImagesLabel={t`Maximum images per request`}
                   />
                 </div>
+              ) : null}
+              {credential &&
+              modelId.trim() &&
+              (!isOpenAiCompatible ||
+                credential.enabledModelIds?.includes(modelId.trim()) ||
+                credential.modelId === modelId.trim()) ? (
+                <ModelSettingsPanel
+                  key={`${credential.id}:${modelId.trim()}`}
+                  credential={credential}
+                  modelId={modelId.trim()}
+                  entry={selected}
+                  spaceId={me?.spaceId}
+                  onSaved={async () => {
+                    if (
+                      settingsSelectionRevision === selectionRevisionRef.current &&
+                      contextCurrent()
+                    )
+                      await refresh(credential.id);
+                  }}
+                />
               ) : null}
               {isOpenAiCompatible ? (
                 <>

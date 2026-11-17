@@ -77,6 +77,7 @@ import {
   deploymentAutoReviewDefault,
   destroyBot,
   displayBotWorkspacePath,
+  enabledOpenAiCompatibleModelIds,
   enqueueTakeoverContinuation,
   ensureComputerWorkspaceLayout,
   expireComputerControl,
@@ -89,6 +90,7 @@ import {
   isSandboxGoneError,
   isSandboxUnsafeStop,
   isScratchpadStatus,
+  keptModelSettings,
   kickModelCredentialRefresh,
   LOCAL_PROVIDER_ID,
   LocalAgentHomeStore,
@@ -127,6 +129,7 @@ import {
   provisionComputer,
   publishComputerPowerStatus,
   queueComputerUpdate,
+  readChatGPTPlanModels,
   releaseComputerExecutionLease,
   replaceComputer,
   replaceNativeRoutineTriggersTx,
@@ -155,10 +158,12 @@ import {
   toComputerRef,
   touchInteractiveComputer,
   touchRunningComputer,
+  updateStoredModelSecret,
   updateTicket,
   validateModelAuthAvailability,
   verifyMcpInstall,
   waitForModelOAuthSave,
+  withModelSettings,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
 import type {
@@ -194,7 +199,9 @@ import {
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
   loginSecretFields,
+  MAX_MODEL_SETTINGS_PER_CONNECTION,
   MCP_OAUTH_CLIENT_REQUIRED,
+  modelOutputLeavesInputRoom,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
@@ -210,11 +217,13 @@ import {
   COMPUTER_ACTIVE_RUN_STATUSES,
   callClientNonce,
   canonicalApprovalSite,
+  catalogEntryFor,
   clampCatalogThinkingLevel,
   containsSecret,
   expandSkillReferencesInPrompt,
   hasMixedOneShotSchedule,
   isOneShotRoutineCrons,
+  modelSettingsDefaults,
   nextCronDateAcrossStrict,
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
@@ -1175,23 +1184,59 @@ export function createRouter(deps: RouterDeps) {
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const saveSubscription =
     (actor: Actor): SaveSubscription =>
-    (login, session) =>
-      persistModelCredential(
+    async (login, session) => {
+      const existing = session.credentialId
+        ? await deps.prisma.userModelCredential.findFirst({
+            where: { id: session.credentialId, userId: actor.userId, provider: login.provider },
+            include: { preferences: { where: { userId: actor.userId, spaceId: actor.spaceId } } },
+          })
+        : null;
+      if (session.credentialId && !existing)
+        throw new ORPCError("CONFLICT", {
+          message: "Model connection changed. Reload and try again.",
+        });
+      let settings: ReturnType<typeof keptModelSettings> = {};
+      let expectedCiphertext: string | null | undefined;
+      if (existing) {
+        const loaded = await loadStoredModelSecret(
+          deps.prisma,
+          deps.secrets,
+          actor.userId,
+          existing.secretId,
+        );
+        expectedCiphertext = loaded.status === "missing" ? null : loaded.ciphertext;
+        if (loaded.status === "loaded") {
+          try {
+            settings = keptModelSettings(parseModelSecret(loaded.plaintext));
+          } catch {
+            /* A corrupt copy has no readable settings to retain. */
+          }
+        }
+      }
+      return persistModelCredential(
         deps,
         actor,
         {
           provider: login.provider,
-          plaintext: serializeModelSecret({ kind: "oauth", credential: login.credential }),
+          credentialId: existing?.id,
+          expectedRevision: session.credentialRevision ?? undefined,
+          expectedCiphertext,
+          plaintext: serializeModelSecret({
+            kind: "oauth",
+            credential: login.credential,
+            ...settings,
+          }),
           label:
             login.label ??
             listPiCatalog().find((entry) => entry.provider === login.provider)?.providerName,
-          modelId: login.modelId,
+          modelId: login.modelId ?? existing?.preferences[0]?.modelId ?? undefined,
           thinkingLevel: login.thinkingLevel,
           signal: login.signal,
           oauthSession: session,
         },
         codexCatalog,
       );
+    };
   const imageAdmission = {
     secrets: deps.secrets,
     deployment: deps.env.deploymentModelConfigured
@@ -1926,6 +1971,61 @@ export function createRouter(deps: RouterDeps) {
               prepared[index],
             );
         });
+        return { ok: true as const };
+      }),
+      saveModelSettings: authed.models.saveModelSettings.handler(async ({ context, input }) => {
+        const credential = await deps.prisma.userModelCredential.findFirst({
+          where: { id: input.credentialId, userId: context.actor.userId },
+          include: {
+            preferences: {
+              where: { userId: context.actor.userId, spaceId: context.actor.spaceId },
+            },
+          },
+        });
+        if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
+        const defaultModel = credential.preferences[0]?.modelId;
+        const saved = await updateStoredModelSecret(
+          deps.prisma,
+          deps.secrets,
+          context.actor,
+          credential.secretId,
+          credential.provider,
+          (secret) => {
+            if (
+              Object.keys(input.settings).length > 0 &&
+              secret.kind === "openai_compatible" &&
+              secret.enabledModelIds !== undefined &&
+              !enabledOpenAiCompatibleModelIds(secret, defaultModel).includes(input.modelId)
+            )
+              throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that connection" });
+            const entry =
+              credential.provider === CHATGPT_PLAN_PROVIDER_ID && secret.kind === "oauth"
+                ? readChatGPTPlanModels(secret.credential).find(
+                    (model) => model.id === input.modelId,
+                  )
+                : catalogEntryFor(listPiCatalog(), credential.provider, input.modelId);
+            const defaults = modelSettingsDefaults(credential.provider, entry);
+            if (
+              (input.settings.maxTokens !== undefined ||
+                input.settings.contextWindow !== undefined) &&
+              !modelOutputLeavesInputRoom(
+                input.settings.maxTokens ?? defaults.maxTokens,
+                input.settings.contextWindow ?? defaults.contextWindow,
+              )
+            )
+              throw new ORPCError("BAD_REQUEST", {
+                message: "Maximum output tokens must be below the context limit.",
+              });
+            const next = withModelSettings(secret, input.modelId, input.settings);
+            const count = (value: typeof secret) => Object.keys(value.models ?? {}).length;
+            if (count(next) > MAX_MODEL_SETTINGS_PER_CONNECTION && count(next) > count(secret))
+              throw new ORPCError("BAD_REQUEST", {
+                message: "Too many models on this connection have their own settings",
+              });
+            return next;
+          },
+        );
+        if (!saved) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
         return { ok: true as const };
       }),
       connect: authed.models.connect.handler(async ({ context, input }) => {

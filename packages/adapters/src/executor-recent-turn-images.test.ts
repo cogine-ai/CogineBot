@@ -1,10 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest, AgentSteeringMessage } from "@rakazo/adapter-kit";
-import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
+import type { ComputerMode, MessageBlock, ModelSettings } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import type * as ComputerWorkspaceModule from "./computer-workspace.js";
 import { createRunExecutor } from "./executor.js";
+import { serializeModelSecret } from "./pi-oauth.js";
 import { serializeTurnCheckpoint } from "./turn-checkpoint.js";
 import { markMcpToolResultRoute } from "./verbatim-mcp-result.js";
 
@@ -88,6 +89,7 @@ async function runWithModel(
     answeredSteering?: boolean;
     computerMode?: ComputerMode;
     pinned?: boolean;
+    modelSettings?: ModelSettings;
     accountTimezone?: string | null;
     timezoneReadFails?: boolean;
     botOwnerId?: string;
@@ -252,7 +254,19 @@ async function runWithModel(
     secret: {
       findMany: vi.fn(async () => []),
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) =>
-        where.id === "primary-secret" ? { id: where.id, ciphertext: "fake-primary-key" } : null,
+        where.id === "primary-secret"
+          ? {
+              id: where.id,
+              ciphertext: attachmentOptions.modelSettings
+                ? serializeModelSecret({
+                    kind: "api_key",
+                    key: "fake-primary-key",
+                    maxTokens: 512,
+                    models: { [modelId]: attachmentOptions.modelSettings },
+                  })
+                : "fake-primary-key",
+            }
+          : null,
       ),
     },
     userModelCredential: {
@@ -579,6 +593,52 @@ describe("recent turn images follow model vision", () => {
       orderBy: { position: "asc" },
       select: { provider: true, modelId: true, modelCredentialId: true },
     });
+  });
+
+  it("uses the selected computer model's own limits and resolves backups independently", async () => {
+    const backup = {
+      provider: "openrouter",
+      modelId: VISION_MODEL,
+      modelCredentialId: "backup-credential",
+    };
+    const { prisma, request } = await runWithModel(VISION_MODEL, backup, false, false, {
+      pinned: true,
+      useComputer: true,
+      computerMode: "team",
+      modelSettings: { contextWindow: 64000, maxTokens: 97, maxImagesPerPrompt: 3 },
+    });
+    expect(request.model).toMatchObject({
+      modelCredentialId: "primary-credential",
+      contextWindow: 64000,
+      maxTokens: 97,
+      maxImagesPerPrompt: 3,
+    });
+    prisma.userModelCredential.findFirst.mockResolvedValue({
+      id: "backup-credential",
+      userId: "user-1",
+      provider: backup.provider,
+      secretId: "backup-secret",
+      connectionRevision: 1,
+      preferences: [{ modelId: backup.modelId, isDefault: false, thinkingLevel: "low" }],
+    });
+    prisma.secret.findFirst.mockImplementation(async () => ({
+      id: "backup-secret",
+      ciphertext: serializeModelSecret({
+        kind: "api_key",
+        key: "synthetic-backup-key",
+        maxTokens: 1024,
+        models: { [VISION_MODEL]: { contextWindow: 128000, maxTokens: 193 } },
+      }),
+    }));
+    if (!request.resolveFallbackModel) throw new Error("Backup resolver is missing");
+    await expect(
+      request.resolveFallbackModel(backup.provider, backup.modelId, backup.modelCredentialId),
+    ).resolves.toMatchObject({
+      modelCredentialId: "backup-credential",
+      contextWindow: 128000,
+      maxTokens: 193,
+    });
+    expect(request.model.maxTokens).toBe(97);
   });
 
   it("does not read or configure backups for scripted runs", async () => {

@@ -114,6 +114,7 @@ import {
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
   ModelOAuthBeginSchema,
+  ModelSettingsSaveSchema,
   REPLY_QUOTE_MAX_LENGTH,
   RemovedBotSectionSchema,
   ReorderBotsInput,
@@ -397,6 +398,7 @@ export const appContract = {
     backups: oc.output(z.array(ModelBackupChoiceSchema)),
     setBackups: oc.input(ModelBackupListSchema).output(z.object({ ok: z.literal(true) })),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
+    saveModelSettings: oc.input(ModelSettingsSaveSchema).output(z.object({ ok: z.literal(true) })),
     probeOpenAiCompatible: oc
       .input(
         z.object({

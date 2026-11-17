@@ -2,7 +2,9 @@ import type { ModelApiProtocol } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { ExecutorDeps } from "./executor.js";
 import { createRunExecutor } from "./executor.js";
-import { serializeModelSecret } from "./pi-oauth.js";
+import { parseModelSecret, serializeModelSecret } from "./pi-oauth.js";
+import { resolveRuntimeModel } from "./pi-runtime.js";
+import { observedPiStream } from "./pi-usage.js";
 import { ScriptedAgentRuntime } from "./scripted-runtime.js";
 
 const scope = { userId: "model-owner", spaceId: "model-space", botId: "model-bot" };
@@ -28,7 +30,7 @@ function fixture(protocol: ModelApiProtocol) {
         ciphertext: serializeModelSecret({
           kind: "openai_compatible",
           apiKey: `synthetic-key-${index}`,
-          baseUrl: `https://model-${index}.example.test/v1`,
+          baseUrl: `http://127.0.0.1:${8090 + index}/v1`,
           apiProtocol: index === 0 ? protocol : otherProtocol,
           headers: { "X-Tenant": `private-${index}`, "X-Locale": "en" },
           enabledModelIds: ["shared-model"],
@@ -90,7 +92,7 @@ describe("executor connection protocol resolution", () => {
         provider: "openai-compatible",
         id: "shared-model",
         modelCredentialId: "connection-a",
-        baseUrl: "https://model-0.example.test/v1",
+        baseUrl: "http://127.0.0.1:8090/v1",
         apiKey: "synthetic-key-0",
         apiProtocol: protocol,
         headers: { "X-Tenant": "private-0", "X-Locale": "en" },
@@ -110,7 +112,7 @@ describe("executor connection protocol resolution", () => {
       ).resolves.toMatchObject({
         modelCredentialId: "connection-b",
         apiProtocol: f.otherProtocol,
-        baseUrl: "https://model-1.example.test/v1",
+        baseUrl: "http://127.0.0.1:8091/v1",
         headers: { "X-Tenant": "private-1", "X-Locale": "en" },
       });
       expect(registered).not.toContain("en");
@@ -127,6 +129,109 @@ describe("executor connection protocol resolution", () => {
           ([{ where }]) => where.userId === scope.userId && where.spaceId === null,
         ),
       ).toBe(true);
+    },
+  );
+
+  it.each(protocols)(
+    "uses each actual %s model's settings without changing its stored effort",
+    async (protocol) => {
+      const f = fixture(protocol);
+      const first = f.secrets.get("secret-a")!;
+      const parsed = parseModelSecret(first.ciphertext);
+      first.ciphertext = serializeModelSecret({
+        ...parsed,
+        models: {
+          "shared-model": {
+            maxTokens: 2048,
+            contextWindow: 64000,
+            reasoning: true,
+            images: true,
+            maxImagesPerPrompt: 3,
+          },
+        },
+      });
+      const main = await f.executor.resolveModel(scope);
+      expect(main).toMatchObject({
+        modelCredentialId: "connection-a",
+        apiProtocol: protocol,
+        maxTokens: 2048,
+        contextWindow: 64000,
+        reasoning: true,
+        acceptsImages: true,
+        maxImagesPerPrompt: 3,
+      });
+      const other = await f.executor.resolveConnectedModel(
+        scope,
+        "openai-compatible",
+        "shared-model",
+        undefined,
+        true,
+        "connection-b",
+      );
+      expect(other).toMatchObject({
+        modelCredentialId: "connection-b",
+        maxTokens: 512,
+        apiProtocol: f.otherProtocol,
+      });
+      expect(other.contextWindow).toBeUndefined();
+      expect(other.maxImagesPerPrompt).toBeUndefined();
+      const runtime = resolveRuntimeModel(main);
+      expect(runtime.model).toMatchObject({
+        contextWindow: 64000,
+        maxTokens: 2048,
+        reasoning: true,
+        input: ["text", "image"],
+      });
+      const requests: Record<string, unknown>[] = [];
+      const beforeCall = vi.fn(() => "reservation");
+      const stream = observedPiStream(
+        runtime.models,
+        runtime.model!,
+        {
+          messages: [{ role: "user", content: "Short offline request", timestamp: 1 }],
+        },
+        {
+          apiKey: main.apiKey,
+          maxTokens: 17,
+          fetch: async (_input, init) => {
+            requests.push(JSON.parse(String(init?.body)));
+            return Response.json(
+              {
+                error: {
+                  message: "Synthetic serialization complete",
+                  type: "invalid_request_error",
+                },
+              },
+              { status: 400 },
+            );
+          },
+        },
+        vi.fn(),
+        { beforeCall, afterCall: vi.fn() },
+      );
+      for await (const _event of stream) {
+        /* The real SDK serializes the controlled request. */
+      }
+      const result = await stream.result();
+      expect(result.stopReason).toBe("error");
+      expect(requests, result.errorMessage).toHaveLength(1);
+      const wireField =
+        protocol === "responses"
+          ? "max_output_tokens"
+          : protocol === "anthropic-messages"
+            ? "max_tokens"
+            : "max_completion_tokens";
+      expect(requests[0]?.[wireField]).toBe(17);
+      expect(beforeCall).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ maxOutputTokens: 17 }),
+      );
+      expect(parseModelSecret(first.ciphertext).models?.["shared-model"]).toEqual({
+        maxTokens: 2048,
+        contextWindow: 64000,
+        reasoning: true,
+        images: true,
+        maxImagesPerPrompt: 3,
+      });
     },
   );
 

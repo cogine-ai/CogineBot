@@ -37,11 +37,13 @@ import {
   connectionFormFields,
   connectionFormModelId,
   createModelProbe,
+  credentialModelSettings,
   featuredModelProviders,
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
   modelConnectRequest,
+  modelThinkingLevels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -64,6 +66,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HeaderRowsEditor } from "../../components/header-rows-editor";
 import { MenuPicker } from "../../components/menu-picker";
+import { ModelSettingsPanel } from "../../components/model-settings-panel";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { Checkmark, Chevron } from "../../components/row-accessories";
@@ -631,7 +634,7 @@ function ModelsForm({
   // model settings and per-bot Thinking pickers.
   const catalogThinkingLevels =
     !isOpenAiCompatible && selected
-      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      ? modelThinkingLevels(credential, selected, selected.id).filter((level) => level !== "off")
       : [];
   const reasoningEffortValue = thinkingLevel ? thinkingLevelLabel(thinkingLevel, t) : t("Default");
   const catalogThinkingValue = thinkingLevel
@@ -1432,73 +1435,107 @@ function ModelsForm({
           ) : null}
         </>
       )}
-      {disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))}
-      {showAdvanced ? (
+      {!credential ? (
         <>
-          <View style={styles.card}>
-            <View style={styles.modelRow}>
-              <Text style={styles.modelLabel}>{t("Supports thinking")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Supports thinking")}
-                value={reasoning}
-                onValueChange={(value) => {
-                  setReasoning(value);
-                  if (!value) setThinkingLevel(null);
-                }}
-                disabled={busy}
-              />
-            </View>
-            {reasoning ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("Reasoning effort")}
-                accessibilityValue={{ text: reasoningEffortValue }}
-                disabled={busy}
-                onPress={() => {
-                  presentMessageActionSheet({
-                    title: t("Reasoning effort"),
-                    cancel: t("Cancel"),
-                    more: t("More"),
-                    colorScheme,
-                    actions: [
-                      {
-                        text: t("Default"),
-                        onPress: () => setThinkingLevel(null),
-                      },
-                      ...compatibleThinkingLevels(apiProtocol).map((level) => ({
-                        text: thinkingLevelLabel(level, t),
-                        onPress: () => setThinkingLevel(level),
-                      })),
-                    ],
-                  });
-                }}
-                style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
-              >
-                <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
-                <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
-              </Pressable>
-            ) : null}
-            <View style={[styles.modelRow, styles.singleRow]}>
-              <Text style={styles.modelLabel}>{t("Supports images")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Supports images")}
-                value={supportsImages}
-                onValueChange={setSupportsImages}
-                disabled={busy}
-              />
-            </View>
-          </View>
-          {limitField(t("Context limit"), contextWindow, setContextWindow, 7)}
-          {limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)}
-          {supportsImages
-            ? limitField(
-                t("Maximum images per request"),
-                maxImagesPerPrompt,
-                setMaxImagesPerPrompt,
-                4,
-              )
-            : null}
+          {disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))}
+          {showAdvanced ? (
+            <>
+              <View style={styles.card}>
+                <View style={styles.modelRow}>
+                  <Text style={styles.modelLabel}>{t("Supports thinking")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Supports thinking")}
+                    value={reasoning}
+                    onValueChange={(value) => {
+                      setReasoning(value);
+                      if (!value) setThinkingLevel(null);
+                    }}
+                    disabled={busy}
+                  />
+                </View>
+                {reasoning ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("Reasoning effort")}
+                    accessibilityValue={{ text: reasoningEffortValue }}
+                    disabled={busy}
+                    onPress={() => {
+                      presentMessageActionSheet({
+                        title: t("Reasoning effort"),
+                        cancel: t("Cancel"),
+                        more: t("More"),
+                        colorScheme,
+                        actions: [
+                          {
+                            text: t("Default"),
+                            onPress: () => setThinkingLevel(null),
+                          },
+                          ...compatibleThinkingLevels(apiProtocol).map((level) => ({
+                            text: thinkingLevelLabel(level, t),
+                            onPress: () => setThinkingLevel(level),
+                          })),
+                        ],
+                      });
+                    }}
+                    style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+                    <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
+                  </Pressable>
+                ) : null}
+                <View style={[styles.modelRow, styles.singleRow]}>
+                  <Text style={styles.modelLabel}>{t("Supports images")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Supports images")}
+                    value={supportsImages}
+                    onValueChange={setSupportsImages}
+                    disabled={busy}
+                  />
+                </View>
+              </View>
+              {limitField(t("Context limit"), contextWindow, setContextWindow, 7)}
+              {limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)}
+              {supportsImages
+                ? limitField(
+                    t("Maximum images per request"),
+                    maxImagesPerPrompt,
+                    setMaxImagesPerPrompt,
+                    4,
+                  )
+                : null}
+            </>
+          ) : null}
         </>
+      ) : null}
+      {credential && credentialModelSettings(credential, modelId).reasoning ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("Reasoning effort")}
+          accessibilityValue={{ text: reasoningEffortValue }}
+          disabled={busy}
+          onPress={() => {
+            presentMessageActionSheet({
+              title: t("Reasoning effort"),
+              cancel: t("Cancel"),
+              more: t("More"),
+              colorScheme,
+              actions: [
+                {
+                  text: t("Default"),
+                  onPress: () => setThinkingLevel(null),
+                },
+                ...compatibleThinkingLevels(apiProtocol).map((level) => ({
+                  text: thinkingLevelLabel(level, t),
+                  onPress: () => setThinkingLevel(level),
+                })),
+              ],
+            });
+          }}
+          style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
+        >
+          <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+          <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
+        </Pressable>
       ) : null}
     </>
   ) : null;
@@ -1669,6 +1706,35 @@ function ModelsForm({
           ? limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)
           : null}
       </>
+    ) : null;
+
+  const settingsSelectionRevision = selectionRevisionRef.current;
+  const modelSettingsPanel =
+    credential &&
+    modelId.trim() &&
+    (!isOpenAiCompatible ||
+      credential.enabledModelIds?.includes(modelId.trim()) ||
+      credential.modelId === modelId.trim()) ? (
+      <ModelSettingsPanel
+        key={`${credential.id}:${modelId.trim()}`}
+        credential={credential}
+        modelId={modelId.trim()}
+        entry={selected}
+        saveSettings={async (values) => {
+          const requestContext = await captureApiRequestContext();
+          if (!settingsCurrent())
+            throw new Error(t("Model connection changed. Reload and try again."));
+          await rpc(
+            "models/saveModelSettings",
+            { credentialId: credential.id, modelId: modelId.trim(), settings: values },
+            { requestContext },
+          );
+        }}
+        onSaved={async () => {
+          if (settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current)
+            await load({ provider, modelId, connectionId: credential.id });
+        }}
+      />
     ) : null;
 
   const chatgptUsageControl =
@@ -2219,6 +2285,7 @@ function ModelsForm({
           feedback
         )}
 
+        {modelSettingsPanel}
         <View style={styles.backupSection}>
           <Text style={styles.backupTitle}>{t("Backup models")}</Text>
           {backupLoading ? (
