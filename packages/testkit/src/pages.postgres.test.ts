@@ -768,7 +768,7 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
     45_000,
   );
 
-  it.each(["current", "legacy-known", "legacy-unknown"] as const)(
+  it.each(["current", "legacy"] as const)(
     "resumes one shared Page approval at the same scripted cursor under row security: %s",
     async (format) => {
       const dataDir = await mkdtemp(join(tmpdir(), "cogine-page-scripted-approval-"));
@@ -899,15 +899,14 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           });
           if (format !== "current") {
             const { toolCalls: _displayMap, ...output } = checkpoint.output;
-            if (format === "legacy-unknown")
-              output.messageSegments = output.messageSegments.map((block) =>
-                block.kind !== "steps"
-                  ? block
-                  : {
-                      ...block,
-                      steps: block.steps.map(({ outcomes: _known, ...step }) => step),
-                    },
-              );
+            output.messageSegments = output.messageSegments.map((block) =>
+              block.kind !== "steps"
+                ? block
+                : {
+                    ...block,
+                    steps: block.steps.map(({ outcomes: _known, ...step }) => step),
+                  },
+            );
             const { digest: _digest, pause, ...legacy } = checkpoint;
             await db.run.update({
               where: { id: runId },
@@ -989,10 +988,10 @@ postgres("private Pages operations (isolated PostgreSQL)", () => {
           );
           expect(steps.reduce((count, step) => count + step.count, 0)).toBe(4);
           expect(steps.reduce((count, step) => count + (step.outcomes?.succeeded ?? 0), 0)).toBe(
-            format === "legacy-unknown" ? 2 : 4,
+            format === "legacy" ? 2 : 4,
           );
           expect(steps.find((step) => step.label === humanizeToolName("save_page"))?.count).toBe(2);
-          if (format !== "legacy-unknown")
+          if (format === "current")
             expect(steps.every((step) => step.outcomes?.succeeded === step.count)).toBe(true);
           else expect(steps[0].outcomes).toBeUndefined();
         } finally {

@@ -1110,7 +1110,7 @@ describe("createJobReconciler", () => {
       const stuckText =
         kind === "legacy"
           ? "I got stuck calling search with the same input 8 times in a row without making progress, so I stopped early. Try rephrasing this, or ask me to try a different approach."
-          : loopGuardStopText("search", { key: "search:{}", count: 1, sameResultCount: 25 });
+          : loopGuardStopText("search", { kind: "same_result", count: 25 });
       const prisma = {
         run: {
           findMany: vi.fn(async (args: { where?: Record<string, unknown> } = {}) =>

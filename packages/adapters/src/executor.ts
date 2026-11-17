@@ -639,12 +639,7 @@ import {
   updateTicket,
 } from "./ticket-tools.js";
 import type { LoopGuardStreak } from "./tool-loop.js";
-import {
-  advanceToolCallLoopGuard,
-  loopGuardStop,
-  loopGuardStopText,
-  toolResultFingerprint,
-} from "./tool-loop.js";
+import { advanceToolCallLoopGuard, loopGuardStopText, toolResultFingerprint } from "./tool-loop.js";
 import { isFailedToolResult, toolResultError } from "./tool-result-error.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -5553,15 +5548,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ),
         );
         const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
-        // Older snapshots retain aggregate step outcomes without per-call provenance.
-        const legacySteps = restoredOutput?.toolCalls
-          ? []
-          : (restoredOutput?.messageSegments.flatMap((block) =>
-              block.kind === "steps" ? block.steps : [],
-            ) ?? []);
-        const retainLegacyOutcomes = legacySteps.some((step) => step.outcomes !== undefined);
-        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) => {
-          const annotated = withToolStepOutcomes(
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
+          withToolStepOutcomes(
             segments,
             toolCalls.map((call, index) => ({
               label: call.label,
@@ -5570,34 +5558,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 (index < priorCompletedToolCount ? undefined : unfinished),
             })),
           );
-          if (!retainLegacyOutcomes || annotated.every((block, index) => block === segments[index]))
-            return annotated;
-          let index = 0;
-          return annotated.map((block) =>
-            block.kind !== "steps"
-              ? block
-              : {
-                  ...block,
-                  steps: block.steps.map((step) => {
-                    const legacy = legacySteps[index++];
-                    if (!legacy?.outcomes || legacy.label !== step.label) return step;
-                    const outcomes = { ...step.outcomes };
-                    for (const status of ["succeeded", "failed", "stopped"] as const) {
-                      const count = (outcomes[status] ?? 0) + (legacy.outcomes[status] ?? 0);
-                      if (count) outcomes[status] = count;
-                    }
-                    // Missing historical identities cannot justify crediting the same call twice.
-                    return {
-                      ...step,
-                      outcomes:
-                        Object.values(outcomes).reduce((n, count) => n + count, 0) <= step.count
-                          ? outcomes
-                          : legacy.outcomes,
-                    };
-                  }),
-                },
-          );
-        };
         const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
@@ -6004,14 +5964,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
-              ...(!retainLegacyOutcomes
-                ? {
-                    toolCalls: toolCalls.map((call) => ({
-                      ...call,
-                      outcome: toolOutcomes.get(call.executionId),
-                    })),
-                  }
-                : {}),
+              toolCalls: toolCalls.map((call) => ({
+                ...call,
+                outcome: toolOutcomes.get(call.executionId),
+              })),
             },
             runSecrets,
           );
@@ -11846,17 +11802,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
                 responseCalls.executionIds.push(event.executionId);
               }
-              if (loopGuard.stuck) {
+              if (loopGuard.stop) {
                 const stoppedStreak =
                   namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!;
-                const stop = loopGuardStop(stoppedStreak);
+                const stop = loopGuard.stop;
                 toolLoopStop = {
                   tool: event.name,
                   reason: stop.kind === "same_result" ? "repeated_results" : "repeated_calls",
                   count: stop.count,
                   failures: stoppedStreak.failures ?? 0,
                 };
-                toolLoopStopText = loopGuardStopText(humanizeToolName(event.name), stoppedStreak);
+                toolLoopStopText = loopGuardStopText(humanizeToolName(event.name), stop);
                 break;
               }
               if (scripted) {
