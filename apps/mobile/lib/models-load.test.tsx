@@ -1560,6 +1560,66 @@ function modelSettingsOutput() {
   return field;
 }
 
+it("keeps reordered backup drafts current after saving model settings", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  let revision = 7;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "models/credentials")
+      return [
+        { ...credential, connectionRevision: revision },
+        {
+          ...credential,
+          id: "connection-b",
+          label: "Other",
+          isDefault: false,
+          connectionRevision: revision === 7 ? 3 : 11,
+        },
+      ];
+    if (procedure === "models/backups")
+      return [
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-b", modelCredentialId: "connection-a" },
+        { provider: "openai-compatible", modelId: "model-a", modelCredentialId: "connection-b" },
+      ];
+    if (procedure === "models/saveModelSettings") {
+      revision = 9;
+      return { ok: true };
+    }
+    if (procedure === "models/setBackups") return input;
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  await act(async () =>
+    button("Move Server · https://models.example.test/v1 · model-a down").click(),
+  );
+  await act(async () => modelSettingsButton("Advanced").click());
+  await edit(modelSettingsOutput(), "2048");
+  await act(async () => modelSettingsButton("Save").click());
+  expect(modelSettingsPanel().textContent).toContain("Saved.");
+  await act(async () => button("Save backups").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/setBackups")?.[1]).toEqual([
+    {
+      provider: "openai-compatible",
+      modelId: "model-b",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-a",
+      expectedRevision: 9,
+    },
+    {
+      provider: "openai-compatible",
+      modelId: "model-a",
+      modelCredentialId: "connection-b",
+      expectedRevision: 3,
+    },
+  ]);
+  expect(state.rpc.mock.calls.filter(([name]) => name === "models/backups")).toHaveLength(1);
+});
+
 it.each(["save", "reset"] as const)(
   "keeps the native non-default compatible model selected after settings %s",
   async (action) => {

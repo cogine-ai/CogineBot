@@ -9338,23 +9338,21 @@ async function persistModelCredential(
 ) {
   throwIfAborted(input.signal);
   const requestedModelId = usableModelId(input.modelId);
-  const authError = requestedModelId
-    ? validateModelAuthAvailability(input.provider, requestedModelId, input.plaintext)
-    : undefined;
-  // The backend's live catalog can clear a static OAuth exclusion for the
-  // account this credential signs into (e.g. Codex Spark on ChatGPT plans).
-  if (
-    authError &&
-    requestedModelId &&
-    !(await codexLiveListsModel(
-      codexCatalog,
-      actor.userId,
-      parseModelSecret(input.plaintext),
-      requestedModelId,
-    ))
-  ) {
-    throw new ORPCError("BAD_REQUEST", { message: authError });
-  }
+  const modelAuthError = async (modelId: string) => {
+    const error = validateModelAuthAvailability(input.provider, modelId, input.plaintext);
+    // The account's live catalog may clear a static OAuth exclusion.
+    return error &&
+      !(await codexLiveListsModel(
+        codexCatalog,
+        actor.userId,
+        parseModelSecret(input.plaintext),
+        modelId,
+      ))
+      ? error
+      : undefined;
+  };
+  const authError = requestedModelId ? await modelAuthError(requestedModelId) : undefined;
+  if (authError) throw new ORPCError("BAD_REQUEST", { message: authError });
   const fallbackModel =
     requestedModelId ??
     defaultCatalogModelId(input.provider, input.plaintext) ??
@@ -9417,10 +9415,10 @@ async function persistModelCredential(
                 select: { modelId: true, thinkingLevel: true },
               })
             : null;
+          const retainedModel =
+            input.oauthSession && !requestedModelId ? usableModelId(previous?.modelId) : undefined;
           const defaultModel =
-            input.oauthSession && !requestedModelId
-              ? (usableModelId(previous?.modelId) ?? fallbackModel)
-              : fallbackModel;
+            retainedModel && !(await modelAuthError(retainedModel)) ? retainedModel : fallbackModel;
           const allowedThinking = !defaultModel
             ? undefined
             : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID

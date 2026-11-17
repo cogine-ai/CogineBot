@@ -87,8 +87,8 @@ export class PiRuntimeCredentialStore implements CredentialStore {
             const refreshed = await fn(toOAuthCredential(stored));
             return refreshed?.type === "oauth" ? refreshed : undefined;
           });
-          options?.signal?.throwIfAborted();
           this.credential = toOAuthCredential(next);
+          options?.signal?.throwIfAborted();
         } catch (error) {
           if (isRetiredModelCredentialError(error)) this.credential = undefined;
           throw error;

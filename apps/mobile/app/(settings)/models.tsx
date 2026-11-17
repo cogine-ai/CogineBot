@@ -273,7 +273,10 @@ function ModelsForm({
     setError(null);
   }
 
-  function acceptSavedBackupConnection(saved: MobileModelCredential) {
+  function acceptSavedBackupConnection(
+    saved: MobileModelCredential,
+    currentCatalog: MobileModel[],
+  ) {
     clearStaleSavedBackupOptions();
     savedBackupOwnerRef.current = {
       apiBase: currentApiBase(),
@@ -283,7 +286,10 @@ function ModelsForm({
     savedBackupOptionsRef.current.set(
       saved.id,
       new Map(
-        connectedBackupOptions(catalog, [saved]).map((option) => [backupChoiceKey(option), option]),
+        connectedBackupOptions(currentCatalog, [saved]).map((option) => [
+          backupChoiceKey(option),
+          option,
+        ]),
       ),
     );
     setBackupModels((current) => current.map(reconcileSavedBackupChoice));
@@ -345,6 +351,7 @@ function ModelsForm({
       const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
       setConnectionRevision(current?.connectionRevision);
       setSavedBaseUrl(current?.baseUrl);
+      if (current) acceptSavedBackupConnection(current, nextCatalog);
       return nextMe;
     }
     const nextProvider =
@@ -1047,7 +1054,7 @@ function ModelsForm({
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      acceptSavedBackupConnection(savedConnection);
+      acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
       await load({ provider, modelId, connectionId: savedConnection.id });
@@ -1089,7 +1096,7 @@ function ModelsForm({
     if (!isCurrent()) return;
     oauthLoginIdRef.current = null;
     setOauth(null);
-    acceptSavedBackupConnection(savedConnection);
+    acceptSavedBackupConnection(savedConnection, catalog);
     await load({ provider, modelId, connectionId: savedConnection.id });
     if (!isCurrent()) return;
     publishFeedback("connection", {

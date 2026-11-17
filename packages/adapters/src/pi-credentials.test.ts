@@ -104,6 +104,29 @@ describe("PiRuntimeCredentialStore", () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
+  it("publishes a committed successor before reporting caller cancellation", async () => {
+    const caller = new AbortController();
+    const held = credential();
+    const successor = credential({ access: "committed-access", refresh: "committed-refresh" });
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, new AbortController().signal);
+        caller.abort();
+        return next ?? held;
+      },
+    );
+    await expect(
+      store.modify("anthropic", async () => successor, { signal: caller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.accessToken).toBe(successor.access);
+    await expect(store.read("anthropic")).resolves.toEqual(successor);
+  });
+
   it("keeps the held token when the coordinated refresh fails to commit", async () => {
     const held = credential();
     const store = new PiRuntimeCredentialStore(

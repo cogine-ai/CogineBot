@@ -55,6 +55,16 @@ describe("modelSettingsDefaults", () => {
 });
 
 describe("credentialModelSettings", () => {
+  it("normalizes surrounding whitespace before reading model-specific capabilities", () => {
+    const saved = credential({
+      provider: COMPATIBLE,
+      reasoning: false,
+      modelSettings: { "model-b": { reasoning: true, images: true } },
+    });
+    expect(credentialModelSettings(saved, " model-b ")).toEqual({ reasoning: true, images: true });
+    expect(modelThinkingLevels(saved, undefined, " model-b ")).toContain("high");
+  });
+
   it("prefers the model's own settings over what was saved for the whole connection", () => {
     const saved = credential({
       maxTokens: 2_048,
