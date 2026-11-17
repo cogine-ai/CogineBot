@@ -25,9 +25,72 @@ import {
 } from "./thread-events.js";
 
 describe("thread event reduction", () => {
+  it("keeps sender narration and tool steps across an in-group handoff until its Run ends", () => {
+    const sender = {
+      ...message("progress:run-1", [
+        { kind: "text", text: "Before handoff." },
+        { kind: "steps", steps: [{ label: "Read file", count: 1 }] },
+        { kind: "progress", text: "Preparing " },
+      ]),
+      runId: "run-1",
+    };
+    const other = { ...message("progress:other", []), runId: "other" };
+    const handoff = event({
+      type: "group.handoff",
+      runId: "run-1",
+      threadId: "thread-1",
+      seq: 4,
+      payload: {
+        messageId: "handoff-file",
+        messageSeq: 1,
+        role: "bot",
+        blocks: [
+          { kind: "handoff", fromBotId: "bot-1", toBotId: "bot-2", text: "Review" },
+          {
+            kind: "file",
+            artifactId: "material",
+            name: "report.txt",
+            mimeType: "text/plain",
+            size: 32,
+          },
+        ],
+      },
+    });
+    const shown = reduceThreadSnapshot(snapshot([sender, other]), handoff)!;
+    expect(shown.messages.find((item) => item.id === sender.id)).toMatchObject(sender);
+    expect(shown.messages.find((item) => item.id === other.id)).toMatchObject(other);
+    expect(shown.messages.filter((item) => item.id === "handoff-file")).toHaveLength(1);
+    expect(reduceThreadSnapshot(shown, handoff)).toBe(shown);
+    const continued = reduceThreadSnapshot(
+      shown,
+      event({ type: "thread.progress", runId: "run-1", seq: 5, payload: { delta: "files." } }),
+    )!;
+    expect(continued.messages.find((item) => item.id === sender.id)?.blocks).toEqual([
+      ...sender.blocks.slice(0, -1),
+      { kind: "progress", text: "Preparing files." },
+    ]);
+    const called = reduceThreadSnapshot(
+      continued,
+      event({ type: "agent.tool.called", runId: "run-1", seq: 6, payload: { name: "write_file" } }),
+    )!;
+    expect(called.messages.find((item) => item.id === sender.id)?.blocks).toEqual([
+      ...sender.blocks.slice(0, -1),
+      { kind: "text", text: "Preparing files." },
+      { kind: "steps", steps: [{ label: "Write file", count: 1 }] },
+    ]);
+    const completed = reduceThreadSnapshot(
+      called,
+      event({ type: "run.completed", runId: "run-1", seq: 7, payload: {} }),
+    )!;
+    expect(completed.messages.some((item) => item.id === sender.id)).toBe(false);
+    expect(completed.messages.find((item) => item.id === other.id)).toMatchObject(other);
+    expect(completed.messages.filter((item) => item.id === "handoff-file")).toHaveLength(1);
+  });
+
   it("shows a group handoff attachment immediately and does not duplicate or revive its replay", () => {
     const handoff = event({
       type: "group.handoff",
+      runId: undefined,
       payload: {
         messageId: "handoff-file",
         messageSeq: 1,
@@ -45,10 +108,20 @@ describe("thread event reduction", () => {
       },
     });
     expect(isThreadSnapshotEvent(handoff)).toBe(true);
-    const shown = reduceThreadSnapshot(snapshot([]), handoff)!;
-    expect(shown.messages).toMatchObject([
-      { id: "handoff-file", seq: 1, blocks: handoff.payload.blocks },
-    ]);
+    const shown = reduceThreadSnapshot(
+      snapshot([
+        message("progress:legacy", []),
+        { ...message("progress:other", []), runId: "other" },
+      ]),
+      handoff,
+    )!;
+    expect(shown.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "handoff-file", seq: 1, blocks: handoff.payload.blocks }),
+        expect.objectContaining({ id: "progress:other", runId: "other" }),
+      ]),
+    );
+    expect(shown.messages).toHaveLength(2);
     expect(reduceThreadSnapshot(shown, handoff)).toBe(shown);
     const cleared = reduceThreadSnapshot(shown, event({ type: "thread.cleared", seq: 5 }));
     expect(reduceThreadSnapshot(cleared, handoff)?.messages).toEqual([]);

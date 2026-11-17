@@ -690,7 +690,10 @@ export function reduceThreadSnapshot(
       blocks.filter((block) => block.kind === "subagent").map((block) => block.agentId),
     );
     const liveId = progressMessageId(event);
-    const { remaining } = takeLiveMessage(prev.messages, liveId);
+    const remaining =
+      event.type === "group.handoff" && event.runId
+        ? prev.messages
+        : takeLiveMessage(prev.messages, liveId).remaining;
     const without = remaining.filter((message) => !replacedSubagent(message, replacedSubagentIds));
     const messages = upsertMessageById(without, next);
     // A refreshed latest page can precede older replay frames.
