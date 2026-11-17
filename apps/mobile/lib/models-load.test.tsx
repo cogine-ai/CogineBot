@@ -1751,3 +1751,41 @@ it("retains the native draft when another refresh supersedes its readback", asyn
   expect(modelSettingsOutput().value).toBe("2048");
   expect(modelSettingsPanel().textContent).toContain("Could not load model settings");
 });
+
+it.each([false, true])(
+  "saves native model-enabled effort (protocol change %s)",
+  async (changeProtocol) => {
+    const saved = {
+      ...credential,
+      reasoning: false,
+      thinkingLevel: "low",
+      modelSettings: { "model-a": { reasoning: true }, "model-b": { reasoning: false } },
+    };
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation((procedure, input) =>
+      procedure === "models/credentials" ? Promise.resolve([saved]) : normal(procedure, input),
+    );
+    await act(async () => root.render(<Models />));
+    await act(async () => button("Reasoning effort").click());
+    const menu = vi.mocked(presentMessageActionSheet).mock.calls.at(-1)?.[0];
+    await act(async () => menu?.actions.find((entry) => entry.text === "High")?.onPress());
+    if (changeProtocol) {
+      await act(async () => button("API protocol").click());
+      const protocol = vi.mocked(presentMessageActionSheet).mock.calls.at(-1)?.[0];
+      await act(async () =>
+        protocol?.actions.find((entry) => entry.text === "Responses")?.onPress(),
+      );
+      expect(button("API protocol").textContent).toContain("Responses");
+    }
+    const save = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) =>
+        item.textContent === "Save" && !item.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    expect(
+      state.rpc.mock.calls.filter(([procedure]) => procedure === "models/connect").at(-1)?.[1],
+    ).toMatchObject({ credentialId: "connection-a", reasoning: false, thinkingLevel: "high" });
+    expect(saved.modelSettings["model-b"].reasoning).toBe(false);
+  },
+);

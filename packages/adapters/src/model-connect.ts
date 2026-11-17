@@ -86,6 +86,10 @@ export function buildModelConnectPlaintext(
         ? undefined
         : (input.maxImagesPerPrompt ?? (sameEndpoint ? previous.maxImagesPerPrompt : undefined));
     const reasoning = input.reasoning ?? compatiblePrevious?.reasoning;
+    const modelReasoning =
+      previousModels && Object.hasOwn(previousModels, prepared.modelId)
+        ? previousModels[prepared.modelId]?.reasoning
+        : reasoning;
     let thinkingLevel =
       input.thinkingLevel !== undefined
         ? input.thinkingLevel
@@ -114,7 +118,7 @@ export function buildModelConnectPlaintext(
           openAiCompatibleModel(
             prepared.modelId,
             prepared.baseUrl,
-            reasoning,
+            modelReasoning,
             false,
             undefined,
             undefined,

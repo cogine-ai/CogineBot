@@ -127,6 +127,42 @@ describe("compatible connection format preservation", () => {
     expect(JSON.stringify(fresh)).not.toContain("old-private");
   });
 
+  it.each([true, false])(
+    "clamps Anthropic effort with per-model thinking support (%s)",
+    (reasoning) => {
+      const baseUrl = "http://127.0.0.1:8000/v1";
+      const models = { "model-a": { reasoning }, "model-b": { reasoning: !reasoning } };
+      const previous = serializeModelSecret({
+        kind: "openai_compatible",
+        baseUrl,
+        apiKey: "synthetic-key",
+        reasoning: !reasoning,
+        apiProtocol: "anthropic-messages",
+        models,
+        enabledModelIds: ["model-a", "model-b"],
+      });
+      const saved = parseModelSecret(
+        buildModelConnectPlaintext(
+          {
+            provider: "openai-compatible",
+            baseUrl,
+            modelId: "model-a",
+            reasoning: !reasoning,
+            apiProtocol: "anthropic-messages",
+            thinkingLevel: "high",
+            enabledModelIds: ["model-b"],
+          },
+          previous,
+        ),
+      );
+      expect(saved).toMatchObject({
+        reasoning: !reasoning,
+        thinkingLevel: reasoning ? "high" : null,
+        models,
+      });
+    },
+  );
+
   it.each(["off", "xhigh", "max"] as const)(
     "saves a supported Anthropic effort for %s",
     (thinkingLevel) => {
