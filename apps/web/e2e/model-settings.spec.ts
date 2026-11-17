@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
-import type { Me, ThreadSnapshot } from "@rakazo/contracts";
+import type { Me, ModelCredential, ThreadSnapshot } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -232,19 +232,7 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await captureScreenshot(page, testInfo, "openai-compatible-thinking-connection");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const credentials = await rpc<
-    Array<{
-      id: string;
-      connectionRevision: number;
-      modelId?: string;
-      reasoning?: boolean;
-      thinkingLevel?: string | null;
-      maxTokens?: number;
-      contextWindow?: number;
-      supportsImages?: boolean;
-      maxImagesPerPrompt?: number;
-    }>
-  >(page, "models/credentials", {});
+  const credentials = await rpc<ModelCredential[]>(page, "models/credentials", {});
   expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.reasoning).toBe(true);
   expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.thinkingLevel).toBe(
     "low",
@@ -261,26 +249,31 @@ test("custom connections persist reasoning support and bot thinking", async ({
   );
   await page.reload();
   await openUserSettings(page, "models");
-  await page.getByText("Advanced", { exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Supports thinking" })).toBeChecked();
+  const panel = page.getByTestId("model-settings-panel");
+  await panel.locator("summary").click();
+  await expect(panel.getByRole("checkbox", { name: "Supports thinking" })).toBeChecked();
+  await page.getByText("Thinking", { exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Reasoning effort", exact: true })).toHaveValue(
     "low",
   );
-  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("8192");
-  await expect(page.getByLabel("Context limit")).toHaveValue("65536");
-  await expect(page.getByRole("checkbox", { name: "Supports images" })).toBeChecked();
-  await expect(page.getByLabel("Maximum images per request")).toHaveValue("1");
-  await page.getByLabel("Maximum images per request").fill("");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const clearedCredentials = await rpc<Array<{ modelId?: string; maxImagesPerPrompt?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(
-    clearedCredentials.find((entry) => entry.modelId === "arbitrary-model")?.maxImagesPerPrompt,
-  ).toBeUndefined();
+  await expect(panel.getByLabel("Maximum output tokens")).toHaveValue("8192");
+  await expect(panel.getByLabel("Context limit")).toHaveValue("65536");
+  await expect(panel.getByRole("checkbox", { name: "Supports images" })).toBeChecked();
+  await expect(panel.getByLabel("Maximum images per request")).toHaveValue("1");
+  await panel.getByLabel("Maximum images per request").fill("");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByText("Saved.", { exact: true })).toBeVisible();
+  const clearedCredentials = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const cleared = clearedCredentials.find((entry) => entry.modelId === "arbitrary-model");
+  expect(cleared?.modelSettings?.["arbitrary-model"]).toMatchObject({
+    reasoning: true,
+    images: true,
+    maxTokens: 8192,
+    contextWindow: 65536,
+  });
+  expect(cleared?.modelSettings?.["arbitrary-model"]?.maxImagesPerPrompt).toBeUndefined();
+  expect(cleared?.maxImagesPerPrompt).toBe(1);
+  await captureScreenshot(page, testInfo, "saved-model-capabilities");
   await page.getByRole("button", { name: "Close model settings" }).click();
   await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
   const settings = page.getByTestId("bot-settings");
@@ -462,26 +455,20 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await captureScreenshot(page, testInfo, "builtin-provider-max-tokens");
   await page.getByRole("button", { name: "Connect API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
-  const connected = await rpc<Array<{ provider: string; maxTokens?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(connected.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(8192);
-  // Connecting preserves the open disclosure; only open it if the form remounted.
-  const outputLimit = page.getByLabel("Maximum output tokens");
-  if (!(await outputLimit.isVisible())) {
-    await page.getByText("Advanced", { exact: true }).click();
-  }
+  const connected = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const savedModel = connected.find((entry) => entry.provider === "scripted")!;
+  expect(savedModel.maxTokens).toBe(8192);
+  const panel = page.getByTestId("model-settings-panel");
+  await panel.locator("summary").click();
+  const outputLimit = panel.getByLabel("Maximum output tokens");
+  await expect(outputLimit).toHaveValue("8192");
   await outputLimit.fill("16384");
-  await page.getByRole("button", { name: "Save limits", exact: true }).click();
-  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const updated = await rpc<Array<{ provider: string; maxTokens?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(updated.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(16384);
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByText("Saved.", { exact: true })).toBeVisible();
+  const updated = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const adjustedModel = updated.find((entry) => entry.provider === "scripted")!;
+  expect(adjustedModel.modelSettings?.[savedModel.modelId!]?.maxTokens).toBe(16384);
+  expect(adjustedModel.maxTokens).toBe(8192);
   await page.reload();
   await openUserSettings(page, "models");
   await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveText(
@@ -491,8 +478,8 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await expect(storedKey).toHaveValue("");
   await expect(storedKey).toHaveAttribute("placeholder", "Paste a replacement key");
   await captureScreenshot(page, testInfo, "stored-provider-api-key");
-  await page.getByText("Advanced", { exact: true }).click();
-  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("16384");
+  await panel.locator("summary").click();
+  await expect(panel.getByLabel("Maximum output tokens")).toHaveValue("16384");
 
   // Connected providers get their own section with the saved model inline;
   // searching flattens back to one ranked list.
@@ -509,6 +496,11 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await page.getByLabel("Replace API key").fill("fake-scripted-key-two");
   await page.getByRole("button", { name: "Replace API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
+  const replaced = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  expect(
+    replaced.find((entry) => entry.id === savedModel.id)?.modelSettings?.[savedModel.modelId!]
+      ?.maxTokens,
+  ).toBe(16384);
 
   const codexCredential = {
     id: "cred-codex",
