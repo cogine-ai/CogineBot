@@ -1560,6 +1560,41 @@ function modelSettingsOutput() {
   return field;
 }
 
+it.each(["save", "reset"] as const)(
+  "keeps the native non-default compatible model selected after settings %s",
+  async (action) => {
+    const normal = state.rpc.getMockImplementation()!;
+    let saved: Record<string, Record<string, unknown>> = {
+      "model-a": { maxTokens: 1024 },
+      "model-b": { maxTokens: 512 },
+    };
+    state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+      if (procedure === "models/credentials") return [{ ...credential, modelSettings: saved }];
+      if (procedure === "models/saveModelSettings") {
+        const request = input as { modelId: string; settings: Record<string, unknown> };
+        saved = { ...saved, [request.modelId]: request.settings };
+        return { ok: true };
+      }
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    await act(async () => button("model-b").click());
+    await act(async () => modelSettingsButton("Advanced").click());
+    expect(modelSettingsOutput().value).toBe("512");
+    if (action === "save") await edit(modelSettingsOutput(), "2048");
+    await act(async () =>
+      modelSettingsButton(action === "save" ? "Save" : "Reset to defaults").click(),
+    );
+    expect(button("model-b").getAttribute("aria-pressed")).toBe("true");
+    expect(modelSettingsOutput().value).toBe(action === "save" ? "2048" : "");
+    expect(modelSettingsPanel().textContent).toContain("Saved.");
+    expect(saved["model-a"]).toEqual({ maxTokens: 1024 });
+    expect(credential.modelId).toBe("model-a");
+    expect(state.rpc.mock.calls.filter(([name]) => name === "models/connect")).toHaveLength(0);
+    expect(state.rpc.mock.calls.filter(([name]) => name === "models/setDefault")).toHaveLength(0);
+  },
+);
+
 it("keeps native per-model drafts on failure, reloads saved values, and resets only that model", async () => {
   const normal = state.rpc.getMockImplementation()!;
   let saved: Record<string, Record<string, unknown>> = { "model-b": { maxTokens: 512 } };

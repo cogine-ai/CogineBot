@@ -1480,6 +1480,50 @@ it("reopens and saves a legacy Azure row through its catalog alias without rebin
   }
 });
 
+it.each(["save", "reset"] as const)(
+  "keeps the non-default compatible model selected after settings %s",
+  async (action) => {
+    const connection = compatibleConnection();
+    let saved: NonNullable<ModelCredential["modelSettings"]> = {
+      "model-a": { maxTokens: 1024 },
+      "model-b": { maxTokens: 512 },
+    };
+    useCompatibleConnections([connection]);
+    models.credentials.mockImplementation(async () => [{ ...connection, modelSettings: saved }]);
+    models.saveModelSettings.mockImplementation(async ({ modelId, settings }) => {
+      saved = { ...saved, [modelId]: settings };
+      return { ok: true };
+    });
+    const view = await renderSettings();
+    try {
+      await choose(select(view.container, "Models from server"), "model-b");
+      const panel = () =>
+        view.container.querySelector<HTMLDetailsElement>('[data-testid="model-settings-panel"]')!;
+      await act(async () => panel().querySelector("summary")?.click());
+      const output = () => {
+        const label = [...panel().querySelectorAll("label")].find(
+          (item) => item.textContent === "Maximum output tokens",
+        )!;
+        return document.getElementById(label.htmlFor) as HTMLInputElement;
+      };
+      expect(output().value).toBe("512");
+      if (action === "save") await typeInto(output(), "2048");
+      await act(async () =>
+        buttons(panel(), action === "save" ? "Save" : "Reset to defaults")[0]?.click(),
+      );
+      expect(select(view.container, "Models from server").value).toBe("model-b");
+      expect(output().value).toBe(action === "save" ? "2048" : "");
+      expect(panel().textContent).toContain("Saved.");
+      expect(saved["model-a"]).toEqual({ maxTokens: 1024 });
+      expect(connection.modelId).toBe("model-a");
+      expect(models.connect).not.toHaveBeenCalled();
+      expect(models.setDefault).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
 it("keeps a failed model settings draft, reloads the saved model and resets without changing effort", async () => {
   const connection = { ...compatibleConnection(), thinkingLevel: "low" as const };
   useCompatibleConnections([connection]);

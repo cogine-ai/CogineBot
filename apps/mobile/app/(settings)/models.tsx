@@ -96,10 +96,11 @@ import { errorText } from "../../lib/user-error";
 /** Providers with more models than this get a search field. */
 const MODEL_SEARCH_THRESHOLD = 10;
 
-type ModelSelection = {
+type ModelLoadOptions = {
   provider?: string;
   modelId?: string;
   connectionId?: string;
+  keepForm?: boolean;
 };
 
 type FeedbackAnchor = "probe" | "model" | "connection";
@@ -309,7 +310,7 @@ function ModelsForm({
     if (loginId) void settings.cancelOAuth(loginId).catch(() => undefined);
   }, [settings.cancelOAuth]);
 
-  const load = useCallback(async (preferred: ModelSelection = {}) => {
+  const load = useCallback(async (preferred: ModelLoadOptions = {}) => {
     setError(null);
     const generation = ++modelRequestGenerationRef.current;
     const selectionRevision = selectionRevisionRef.current;
@@ -340,6 +341,7 @@ function ModelsForm({
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
+    if (preferred.keepForm) return nextMe;
     const nextProvider =
       (preferred.provider &&
       nextCatalog.some(
@@ -1745,7 +1747,12 @@ function ModelsForm({
           const current = () =>
             settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current;
           if (!current()) throw new Error(t("Could not load model settings"));
-          const applied = await load({ provider, modelId, connectionId: credential.id });
+          const applied = await load({
+            provider,
+            modelId,
+            connectionId: credential.id,
+            keepForm: true,
+          });
           if (!applied || !current()) throw new Error(t("Could not load model settings"));
         }}
       />

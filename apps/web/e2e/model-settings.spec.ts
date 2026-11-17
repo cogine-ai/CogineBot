@@ -1308,6 +1308,7 @@ for (const width of [1280, 390]) {
     await completeOnboarding(page);
     type SavedConnection = {
       id: string;
+      modelId?: string;
       thinkingLevel?: string;
       modelSettings?: Record<string, { maxTokens?: number; contextWindow?: number }>;
     };
@@ -1333,6 +1334,7 @@ for (const width of [1280, 390]) {
     await settings.getByPlaceholder("Search providers").fill("openai-compatible");
     await settings.getByRole("button", { name: /OpenAI-compatible/ }).click();
     await settings.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    await settings.getByLabel("Models from server", { exact: true }).selectOption("model-b");
     const panel = settings.getByTestId("model-settings-panel");
     await expect(panel.locator("summary")).toHaveText("Advanced · Default");
     await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toBeHidden();
@@ -1368,19 +1370,26 @@ for (const width of [1280, 390]) {
     await panel.getByRole("button", { name: "Save", exact: true }).click();
     await savedResponse;
     await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await expect(settings.getByLabel("Models from server", { exact: true })).toHaveValue("model-b");
     await expect(panel.locator("summary")).toHaveText("Advanced · Adjusted");
     const read = async () => rpc<SavedConnection[]>(page, "models/credentials", {});
     const stored = await read();
     expect(
-      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-a"],
+      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-b"],
     ).toMatchObject({ contextWindow: 64000, maxTokens: 2048 });
+    expect(stored.find((entry) => entry.id === connections[0]!.id)?.modelId).toBe("model-a");
+    expect(
+      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-a"],
+    ).toBeUndefined();
     expect(stored.find((entry) => entry.id === connections[1]!.id)?.modelSettings).toBeUndefined();
     await captureScreenshot(page, testInfo, `a1-model-settings-saved-${width}`);
     await panel.getByRole("button", { name: "Reset to defaults", exact: true }).click();
     await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveValue("");
     await expect(panel.locator("summary")).toHaveText("Advanced · Default");
     const reset = (await read()).find((entry) => entry.id === connections[0]!.id)!;
-    expect(reset.modelSettings).toEqual({ "model-a": {} });
+    expect(reset.modelSettings).toEqual({ "model-b": {} });
+    expect(reset.modelId).toBe("model-a");
+    await expect(settings.getByLabel("Models from server", { exact: true })).toHaveValue("model-b");
     expect(reset.thinkingLevel).toBe("low");
     await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveAttribute(
       "placeholder",
@@ -1397,6 +1406,7 @@ for (const width of [1280, 390]) {
     await page.getByPlaceholder("Search providers").fill("openai-compatible");
     await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
     await page.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    await page.getByLabel("Models from server", { exact: true }).selectOption("model-b");
     await expect(page.getByTestId("model-settings-panel").locator("summary")).toHaveText(
       "Advanced · Default",
     );
