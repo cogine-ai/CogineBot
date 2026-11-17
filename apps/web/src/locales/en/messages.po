@@ -7634,3 +7634,15 @@ msgstr "Imported routines start paused."
 #: src/pages/KnowledgeSection.tsx
 msgid "This memory changed while you were editing. Copy your draft if needed, then close and reopen the document to see the latest version."
 msgstr "This memory changed while you were editing. Copy your draft if needed, then close and reopen the document to see the latest version."
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Succeeded"
+msgstr "Succeeded"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "Result unknown"
+msgstr "Result unknown"
+
+#: src/components/ToolActivityDisclosure.tsx
+msgid "{stepCount, plural, one {# tool} other {# tools}}"
+msgstr "{stepCount, plural, one {# tool} other {# tools}}"

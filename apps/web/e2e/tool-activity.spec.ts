@@ -42,6 +42,30 @@ async function setToggle(page: Page, on: boolean) {
   await toggle.scrollIntoViewIfNeeded();
 }
 
+test("a stopped run distinguishes saved, failed, stopped and unknown tool results", async ({
+  page,
+}, testInfo) => {
+  await seedToolActivityOn(page);
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await page.goto(`${fixture}?view=thread&phase=stopped`);
+    await expect(page.getByTestId("message-bot-bubble")).toContainText(
+      "with the same result 25 times",
+    );
+    const card = page.getByTestId("tool-activity");
+    await expect(card.locator("summary")).toHaveText("8 tools · 12s");
+    await card.locator("summary").click();
+    const rows = page.getByTestId("tool-rows");
+    await expect(rows.getByText("Succeeded", { exact: true })).toHaveCount(5);
+    await expect(rows.getByText("Failed", { exact: true })).toHaveCount(1);
+    await expect(rows.getByText("Stopped", { exact: true })).toHaveCount(1);
+    await expect(rows.getByText("Result unknown", { exact: true })).toHaveCount(1);
+    await expect(rows).not.toContainText("Working…");
+    await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
+    await captureScreenshot(page, testInfo, `stopped-tool-outcomes-${viewport.name}`);
+  }
+});
+
 test("tool activity shows for live and finished runs when the user turned it on", async ({
   page,
 }, testInfo) => {
@@ -70,7 +94,7 @@ test("tool activity shows for live and finished runs when the user turned it on"
     const doneCard = page.getByTestId("tool-activity");
     await expect(doneCard).toHaveCount(1);
     await expect(doneCard).toHaveJSProperty("open", false);
-    await expect(doneCard.locator("summary")).toContainText("Done · 8 tools · 12s");
+    await expect(doneCard.locator("summary")).toContainText("8 tools · 12s");
     await captureScreenshot(page, testInfo, `default-done-collapsed-${viewport.name}`);
 
     await doneCard.locator("summary").click();
@@ -103,7 +127,7 @@ test("the settings toggle hides and restores tool activity", async ({ page }, te
   await openThread(page, "done");
   await expect(page.getByTestId("message-bot-bubble")).toHaveText(REPLY_TEXT);
   await expect(page.getByTestId("tool-activity")).toHaveCount(0);
-  await expect(page.getByText("Done · 8 tools", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("8 tools", { exact: false })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "off-done");
 
   await openThread(page, "live");
@@ -117,9 +141,7 @@ test("the settings toggle hides and restores tool activity", async ({ page }, te
 
   await openThread(page, "done");
   await expect(page.getByTestId("tool-activity")).toHaveCount(1);
-  await expect(page.getByTestId("tool-activity").locator("summary")).toContainText(
-    "Done · 8 tools",
-  );
+  await expect(page.getByTestId("tool-activity").locator("summary")).toContainText("8 tools");
   await captureScreenshot(page, testInfo, "on-again-done");
 });
 
@@ -144,7 +166,7 @@ test("the chat transcript shows tool activity when turned on and hides it when t
   });
   const card = transcript.getByTestId("tool-activity");
   await expect(card.first()).toBeVisible();
-  await expect(card.first().locator("summary")).toContainText(/Done · \d+ tools?/);
+  await expect(card.first().locator("summary")).toContainText(/\d+ tools?/);
   await expect(card.first()).toHaveJSProperty("open", false);
   await card.first().locator("summary").click();
   await expect(transcript.getByTestId("tool-rows").first()).toBeVisible();

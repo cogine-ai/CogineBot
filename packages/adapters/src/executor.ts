@@ -110,7 +110,7 @@ import {
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   TimeZoneSchema,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, PlatformModelAllowlist } from "@rakazo/core";
+import type { ActionApprovalRule, PlatformModelAllowlist, ToolStepOutcome } from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   AGENT_CONNECTION_RESPONSE_TOOL,
@@ -167,6 +167,7 @@ import {
   unattendedTriggerToolRequiresApproval,
   userTurnMessageForRun,
   websiteCredentialNotice,
+  withToolStepOutcomes,
 } from "@rakazo/core";
 import { normalizedHttpUrl, urlSite } from "@rakazo/core/egress";
 import {
@@ -3033,6 +3034,55 @@ export function toolCompletionFromResult(
   return { ...base, result, paused };
 }
 
+/** Commands can return normally while reporting a non-zero exit code. */
+export function toolCompletionOutcome(
+  completion: AgentToolCompletion,
+): "succeeded" | "failed" | undefined {
+  if (completion.paused) return undefined;
+  const error =
+    completion.error === undefined ? toolResultError(completion.result) : completion.error;
+  if (error !== undefined) return "failed";
+  if (
+    isRunningShellCommand(completion.result) ||
+    isRunningShellCommand((completion.result as { details?: unknown } | null)?.details)
+  )
+    return undefined;
+  for (const value of completion.name === "shell"
+    ? [completion.result, (completion.result as { details?: unknown } | null)?.details]
+    : []) {
+    if (!value || typeof value !== "object") continue;
+    const { code, exitCode } = value as { code?: unknown; exitCode?: unknown };
+    const status = typeof code === "number" ? code : exitCode;
+    if (typeof status === "number") return status === 0 ? "succeeded" : "failed";
+  }
+  return "succeeded";
+}
+
+type LoopGuardStop = {
+  tool: string;
+  reason: "repeated_calls" | "repeated_results";
+  count: number;
+  failures: number;
+};
+
+export function logLoopGuardStop(
+  target: { spaceId: string; threadId: string; botId: string; runId: string; trigger: string },
+  stop: LoopGuardStop,
+  secrets: string[] = [],
+): void {
+  getLogger().info("run.loop_guard_stopped", {
+    "run.id": target.runId,
+    "space.id": target.spaceId,
+    "thread.id": target.threadId,
+    "bot.id": target.botId,
+    "run.trigger": target.trigger,
+    tool: redactSecrets(stop.tool, secrets),
+    "loop.reason": stop.reason,
+    "loop.count": stop.count,
+    "loop.failures": stop.failures,
+  });
+}
+
 export function toolCompletionAuditPayload(
   completion: AgentToolCompletion,
   secrets: string[] = [],
@@ -4567,6 +4617,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const ownerSignal = runAbortController.signal;
         const runtimeAbortController = new AbortController();
         let toolLoopStopText: string | undefined;
+        let toolLoopStop: LoopGuardStop | undefined;
         runtimeAbortController.signal.addEventListener(
           "abort",
           () => {
@@ -5417,7 +5468,39 @@ export function createRunExecutor(deps: ExecutorDeps) {
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
         let pendingToolNames: string[] = restoredOutput ? [...restoredOutput.pendingToolNames] : [];
-        const flushPendingTools = () => {
+        const restoredToolCalls =
+          restoredOutput?.toolCalls ??
+          scriptedResume.stored?.state.script
+            .flatMap((turn) => turn.toolCalls ?? [])
+            .slice(0, lastToolOrdinal + 1)
+            .map((call, ordinal) => ({
+              label: humanizeToolName(call.name),
+              executionId: `${runId}:${call.name}:${ordinal}`,
+            })) ??
+          [];
+        const toolCalls = restoredToolCalls.map(({ label, executionId }) => ({
+          label,
+          executionId,
+        }));
+        const toolOutcomes = new Map<string, ToolStepOutcome>(
+          restoredToolCalls.flatMap((call) =>
+            "outcome" in call && call.outcome
+              ? [[call.executionId, call.outcome] as [string, ToolStepOutcome]]
+              : [],
+          ),
+        );
+        const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
+        const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
+          withToolStepOutcomes(
+            segments,
+            toolCalls.map((call, index) => ({
+              label: call.label,
+              outcome:
+                toolOutcomes.get(call.executionId) ??
+                (index < priorCompletedToolCount ? undefined : unfinished),
+            })),
+          );
+        const flushPendingTools = (unfinished?: ToolStepOutcome) => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
             currentTextSegment = "";
@@ -5426,6 +5509,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             messageSegments = appendToolCallSegment(messageSegments, name);
           }
           pendingToolNames = [];
+          messageSegments = withReplyToolOutcomes(messageSegments, unfinished);
         };
         const tryFlushPendingTools = () => {
           if (pendingToolNames.length > 0 && endsSentence(currentTextSegment)) flushPendingTools();
@@ -5436,6 +5520,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let toolCallStreak: LoopGuardStreak = { key: undefined, count: 0 };
         const helperToolCallStreaks = new Map<string, LoopGuardStreak>();
         const toolResults = new Map<string, string>();
+        const toolResponseCalls = new Map<string, { response: number; executionIds: string[] }>();
         let lastComputerFrameId: string | undefined;
         let unchangedVisualStreak: UnchangedVisualStreak = { count: 0 };
         let terminalCheckpointComplete = false;
@@ -5817,10 +5902,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             {
               assembled,
               currentTextSegment,
-              messageSegments: structuredClone(messageSegments),
+              messageSegments: structuredClone(withReplyToolOutcomes(messageSegments)),
               pendingToolNames: [...pendingToolNames],
               publishedTerminalSubagent,
               lastToolOrdinal,
+              toolCalls: toolCalls.map((call) => ({
+                ...call,
+                outcome: toolOutcomes.get(call.executionId),
+              })),
             },
             runSecrets,
           );
@@ -8640,6 +8729,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               );
               if (observed.completion) {
                 const completion = observed.completion.then(async (final) => {
+                  if (terminalExitCode !== undefined)
+                    toolOutcomes.set(executionId, terminalExitCode === 0 ? "succeeded" : "failed");
                   clearPublishTimer();
                   await appendComputerCommand({
                     ...commandEvent,
@@ -11297,6 +11388,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 if (turnState.restoredPending?.executionId === completion.executionId)
                   turnState.restoredPending = undefined;
                 if (!completion.paused) turnState.pendingCaptures.delete(completion.executionId);
+                const outcome = toolCompletionOutcome(completion);
+                if (outcome) toolOutcomes.set(completion.executionId, outcome);
                 toolResults.set(
                   completion.executionId,
                   toolResultFingerprint(completion.result, completion.error),
@@ -11597,6 +11690,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                 });
                 pendingToolNames.push(event.name);
+                toolCalls.push({
+                  label: humanizeToolName(event.name),
+                  executionId: event.executionId,
+                });
                 tryFlushPendingTools();
               }
               let namespace = "main";
@@ -11618,24 +11715,46 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const previousResult = streak.executionId
                 ? toolResults.get(streak.executionId)
                 : undefined;
+              let responseCalls = toolResponseCalls.get(namespace);
+              const previousResponseResults =
+                event.response !== undefined && responseCalls?.response !== event.response
+                  ? (responseCalls?.executionIds.map((id) => toolResults.get(id)) ?? [])
+                  : undefined;
               const loopGuard = advanceToolCallLoopGuard(
                 streak,
                 event.name,
                 event.args,
                 previousResult,
                 event.response,
+                previousResponseResults,
               );
               if (loopGuard.streak !== streak) {
-                if (streak.executionId) toolResults.delete(streak.executionId);
+                if (streak.executionId && event.response === undefined)
+                  toolResults.delete(streak.executionId);
                 const next = { ...loopGuard.streak, executionId: event.executionId };
                 if (namespace === "main") toolCallStreak = next;
                 else helperToolCallStreaks.set(namespace, next);
               }
-              if (loopGuard.stuck) {
-                toolLoopStopText = loopGuardStopText(
-                  humanizeToolName(event.name),
-                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!,
-                );
+              if (event.response !== undefined) {
+                if (responseCalls?.response !== event.response) {
+                  // Keep every result until the next response compares the whole batch.
+                  for (const id of responseCalls?.executionIds ?? []) toolResults.delete(id);
+                  responseCalls = { response: event.response, executionIds: [] };
+                  toolResponseCalls.set(namespace, responseCalls);
+                }
+                responseCalls.executionIds.push(event.executionId);
+              }
+              if (loopGuard.stop) {
+                const stoppedStreak =
+                  namespace === "main" ? toolCallStreak : helperToolCallStreaks.get(namespace)!;
+                const stop = loopGuard.stop;
+                toolLoopStop = {
+                  tool: event.name,
+                  reason: stop.kind === "same_result" ? "repeated_results" : "repeated_calls",
+                  count: stop.count,
+                  failures: stoppedStreak.failures ?? 0,
+                };
+                toolLoopStopText = loopGuardStopText(humanizeToolName(event.name), stop);
                 break;
               }
               if (scripted) {
@@ -11643,6 +11762,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 try {
                   const result = await applyTool(event.name, event.args, event.executionId);
                   toolResults.set(event.executionId, toolResultFingerprint(result));
+                  const completion = toolCompletionFromResult(
+                    {
+                      name: event.name,
+                      executionId: event.executionId,
+                      durationMs: Date.now() - startedAt,
+                    },
+                    result,
+                  );
+                  const outcome = toolCompletionOutcome(completion);
+                  if (outcome) toolOutcomes.set(event.executionId, outcome);
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11651,18 +11780,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       botId: bot.id,
                       runId,
                     },
-                    toolCompletionFromResult(
-                      {
-                        name: event.name,
-                        executionId: event.executionId,
-                        durationMs: Date.now() - startedAt,
-                      },
-                      result,
-                    ),
+                    completion,
                     runSecrets,
                   );
                   if (isToolPauseResult(result)) return;
                 } catch (error) {
+                  toolOutcomes.set(event.executionId, "failed");
                   await appendToolCompletionAudit(
                     deps,
                     {
@@ -11762,7 +11885,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             // Keep the lease alive until their writes finish, then expose terminal.
             if (deps.shutdownSignal?.aborted || approvalPausePending || !leaseValid) return;
             approvedEffectReplays.assertDrained();
-            flushPendingTools();
+            flushPendingTools("stopped");
             if (!(await renewRunLease(deps, runId, workerId, fence))) return;
             if (historyEvidence === undefined && messageSegments.length > 0) {
               await publishMessage(deps, run, "bot", redactBlocks(messageSegments, runSecrets));
@@ -11784,6 +11907,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 : [{ kind: "text", text: toolLoopStopText }],
             });
             if (!stopped) return;
+            if (toolLoopStop) {
+              logLoopGuardStop(
+                {
+                  spaceId: run.spaceId,
+                  threadId: thread.id,
+                  botId: bot.id,
+                  runId,
+                  trigger: run.trigger,
+                },
+                toolLoopStop,
+                runSecrets,
+              );
+            }
             endRunAfterFinalization();
             await settleLocalPeerDelivery();
             if (stopped.continuationRunId) {
@@ -13073,6 +13209,15 @@ function redactScriptedOutput(output: ScriptedOutputState, secrets: string[]): S
     currentTextSegment: redactSecrets(output.currentTextSegment, secrets),
     messageSegments: redactScriptedDeliveryBlocks(output.messageSegments, secrets),
     pendingToolNames: output.pendingToolNames.map((name) => redactSecrets(name, secrets)),
+    ...(output.toolCalls
+      ? {
+          toolCalls: output.toolCalls.map((call) => ({
+            ...call,
+            label: redactSecrets(call.label, secrets),
+            executionId: redactSecrets(call.executionId, secrets),
+          })),
+        }
+      : {}),
   };
 }
 
