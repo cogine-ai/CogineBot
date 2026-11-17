@@ -423,10 +423,18 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
 
   it.each(["card", "composer"] as const)(
     "does not answer a real Pi question through a late initial dispatch hint (%s)",
-    verifyHumanWaitAnswer,
+    (answerPath) => verifyHumanWaitAnswer(answerPath),
   );
 
-  async function verifyHumanWaitAnswer(answerPath: "card" | "composer") {
+  it.each(["P1001", "25006", "unsupported"] as const)(
+    "preserves the saved Pi turn's recovery policy after %s during restoration",
+    (failure) => verifyHumanWaitAnswer("card", failure),
+  );
+
+  async function verifyHumanWaitAnswer(
+    answerPath: "card" | "composer",
+    restoreFailure?: "P1001" | "25006" | "unsupported",
+  ) {
     const choice = "Continue with the saved work.";
     const question = "Should I write the saved tail?";
     const tailPath = "notes/human-wait-tail.txt";
@@ -500,6 +508,30 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       }),
     );
     let targetRunId: string | undefined;
+    let failRestore = false;
+    let restoreFailed = false;
+    const restoreDb = restoreFailure
+      ? createDb(process.env.DATABASE_URL!, { applicationName: "checkpoint-restore-fixture" })
+      : undefined;
+    const controlled = restoreDb?.prisma.$extends({
+      query: {
+        externalEffect: {
+          async findUnique({ args, query }) {
+            if (
+              failRestore &&
+              args.where.idempotencyKey === JSON.stringify(["runtime_checkpoint", targetRunId])
+            ) {
+              failRestore = false;
+              restoreFailed = true;
+              throw Object.assign(new Error("synthetic checkpoint database outage"), {
+                code: restoreFailure,
+              });
+            }
+            return query(args);
+          },
+        },
+      },
+    });
     let reservations = 0;
     const pi = new PiAgentRuntime({
       modelCallObserver: {
@@ -550,6 +582,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         deploymentModelConfigured: true,
         contextStrategy: "current",
         wakeupDriver: "memory",
+        ...(controlled ? { prisma: controlled as unknown as PrismaClient } : {}),
       });
       const handles = fixture.handles;
       const seeded = await seed(handles, "human wait dispatch");
@@ -668,6 +701,15 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         wakeAt: futureHumanWake,
         leaseFence: 1,
       });
+      if (restoreFailure) {
+        await dispatch.stop();
+        if (restoreFailure === "unsupported") {
+          await prisma.externalEffect.update({
+            where: { id: checkpoint.id },
+            data: { result: "unsupported saved turn" },
+          });
+        } else failRestore = true;
+      }
       const answerNonce = `human-wait-answer:${randomUUID()}`;
       if (answerPath === "composer") {
         const sent = await rpc<{ runId: string }>(handles, seeded.cookie, "threads/send", {
@@ -685,11 +727,49 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           clientNonce: answerNonce,
         });
       }
+      if (restoreFailure) {
+        await handles.executor.continueRun(targetRunId, "checkpoint-restore-worker");
+        expect(runtimeRequests).toHaveLength(1);
+        expect(modelRequests).toHaveLength(1);
+        expect(reservations).toBe(1);
+        expect(targetWrites()).toHaveLength(0);
+        const restored = await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        if (restoreFailure === "unsupported") {
+          expect(restored).toMatchObject({
+            status: "failed",
+            leaseOwner: null,
+            leaseFence: 2,
+            error: "Saved turn checkpoint could not be restored",
+          });
+          expect(network).not.toHaveBeenCalled();
+          return;
+        }
+        expect(restoreFailed).toBe(true);
+        expect(restored).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 2,
+          error: null,
+          wakeAt: expect.any(Date),
+        });
+        expect(
+          await prisma.externalEffect.findUniqueOrThrow({ where: { id: checkpoint.id } }),
+        ).toEqual(checkpoint);
+        expect(await prisma.attempt.findMany({ where: { runId: targetRunId, fence: 2 } })).toEqual([
+          expect.objectContaining({ status: "setup_failed", error: null }),
+        ]);
+        await prisma.run.update({
+          where: { id: targetRunId },
+          data: { wakeAt: new Date(Date.now() - 1) },
+        });
+        await handles.executor.continueRun(targetRunId, "checkpoint-restored-worker");
+      }
+      const finalFence = restoreFailure ? 3 : 2;
       await wait(async () =>
         expect(await prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject({
           status: "completed",
           wakeAt: null,
-          leaseFence: 2,
+          leaseFence: finalFence,
           leaseOwner: null,
         }),
       );
@@ -732,7 +812,10 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         }),
       ).toEqual([
         expect.objectContaining({ fence: 1, status: "waiting_input" }),
-        expect.objectContaining({ fence: 2, status: "completed" }),
+        ...(restoreFailure
+          ? [expect.objectContaining({ fence: 2, status: "setup_failed", error: null })]
+          : []),
+        expect.objectContaining({ fence: finalFence, status: "completed" }),
       ]);
       const finalMessages = await prisma.message.findMany({ where: { runId: targetRunId } });
       const finalCards = finalMessages.flatMap((message) =>
@@ -756,6 +839,8 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       await starter?.stop();
       restoreJobs?.();
       await fixture?.close();
+      await restoreDb?.prisma.$disconnect();
+      await restoreDb?.pool.end();
       write.mockRestore();
       network.mockRestore();
       if (previousProvider) models.setProvider(previousProvider);
@@ -1145,6 +1230,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       let targetBotId: string | undefined;
       let injected = false;
       let requeued = false;
+      let requeueWrittenAt: number | undefined;
       const unavailable = Object.assign(new Error("synthetic setup write acknowledgement lost"), {
         code: "P1001",
       });
@@ -1160,6 +1246,13 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           },
           run: {
             async updateMany({ args, query }) {
+              if (
+                targetRunId &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                args.data.wakeAt instanceof Date
+              )
+                requeueWrittenAt ??= Date.now();
               const result = await query(args);
               if (
                 args.where?.id === targetRunId &&
@@ -1231,14 +1324,15 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
             fence: 1,
           }),
         ]);
-        expect(await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } })).toMatchObject(
-          {
-            status: "queued",
-            leaseOwner: null,
-            leaseFence: 1,
-            wakeAt: expect.any(Date),
-          },
-        );
+        const parked = await db.prisma.run.findUniqueOrThrow({ where: { id: targetRunId } });
+        expect(parked).toMatchObject({
+          status: "queued",
+          leaseOwner: null,
+          leaseFence: 1,
+          wakeAt: expect.any(Date),
+        });
+        expect(requeueWrittenAt).toBeDefined();
+        expect(parked.wakeAt!.getTime()).toBeGreaterThan(requeueWrittenAt!);
       } finally {
         await fixture?.close();
         await db.prisma.$disconnect();
@@ -1427,6 +1521,7 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
       let injected = false;
       let claimed = false;
       let recoveryReplyLost = false;
+      let requeueWrittenAt: number | undefined;
       const failure = () => {
         injected = true;
         return new Error(
@@ -1438,6 +1533,13 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
         query: {
           run: {
             async updateMany({ args, query }) {
+              if (
+                targetRunId &&
+                args.where?.id === targetRunId &&
+                args.data.status === "queued" &&
+                args.data.wakeAt instanceof Date
+              )
+                requeueWrittenAt ??= Date.now();
               if (
                 (stage === "start-update" || stage === "collaboration-rollback") &&
                 args.where?.id === targetRunId &&
@@ -1582,6 +1684,8 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
           leaseFence: 1,
           wakeAt: expect.any(Date),
         });
+        expect(requeueWrittenAt).toBeDefined();
+        expect(parked.wakeAt!.getTime()).toBeGreaterThan(requeueWrittenAt!);
         const attempts = await db.prisma.attempt.findMany({ where: { runId: targetRunId } });
         expect(attempts).toEqual([
           expect.objectContaining({

@@ -196,7 +196,6 @@ import {
   historyMyChatsAllowed,
   InvalidSpaceNameError,
   isDatabaseUnavailable,
-  isTooManyDatabaseConnections,
   loadRunHistoryMessages,
   loadRunProgressReset,
   loadRunTurnCheckpoint,
@@ -5826,7 +5825,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           }
         } catch (error) {
-          if (isTooManyDatabaseConnections(error)) throw error;
+          if (isDatabaseUnavailable(error)) throw error;
           // An unreadable or incompatible saved turn must never become a fresh execution.
           getLogger().error("saved turn restoration failed", { runId, error });
           await failRunBeforeModel("Saved turn checkpoint could not be restored");
