@@ -242,6 +242,65 @@ describe("current image send admission", () => {
   });
 
   it.each([
+    { contextWindow: undefined, legacy: undefined, deploymentDefault: false, expected: "unknown" },
+    { contextWindow: 8192, legacy: undefined, deploymentDefault: false, expected: "supported" },
+    { contextWindow: undefined, legacy: 16384, deploymentDefault: false, expected: "unknown" },
+    { contextWindow: undefined, legacy: undefined, deploymentDefault: true, expected: "supported" },
+  ] as const)(
+    "aligns unknown OpenRouter admission with its runtime fallback (%j)",
+    async ({ contextWindow, legacy, deploymentDefault, expected }) => {
+      vi.stubEnv("PI_DEFAULT_PROVIDER", "openrouter");
+      vi.stubEnv(
+        "PI_DEFAULT_MODEL",
+        deploymentDefault ? "synthetic/future-receiver" : "other-default",
+      );
+      try {
+        const { tx } = fixture();
+        tx.bot.findFirst.mockResolvedValue({
+          id: "bot-1",
+          modelProvider: "openrouter",
+          modelId: "synthetic/future-receiver",
+          modelCredentialId: "credential-1",
+        });
+        tx.userModelCredential.findFirst.mockResolvedValue({
+          id: "credential-1",
+          provider: "openrouter",
+          secretId: "secret-1",
+          preferences: [],
+        });
+        const status = await threadModelImageInput(
+          tx as never,
+          { userId: "user-1", spaceId: "space-1" } as Actor,
+          "bot-1",
+          null,
+          {
+            deployment: null,
+            secrets: {
+              load: async () =>
+                JSON.stringify({
+                  kind: "api_key",
+                  key: "synthetic-key",
+                  contextWindow: legacy,
+                  models: { "synthetic/future-receiver": { images: true, contextWindow } },
+                }),
+            },
+          },
+        );
+        const runtime = resolveRuntimeModel({
+          provider: "openrouter",
+          id: "synthetic/future-receiver",
+          acceptsImages: true,
+          contextWindow,
+        });
+        expect(Boolean(runtime.model)).toBe(expected === "supported");
+        expect(status).toBe(expected);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each([
     [false, false, "unsupported"],
     [true, false, "supported"],
     [true, true, "unknown"],

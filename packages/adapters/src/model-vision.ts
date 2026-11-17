@@ -39,6 +39,19 @@ export function modelIdSupportsImages(
   );
 }
 
+/** Match the runtime's fallback for a configured model newer than the catalog. */
+export function canResolveConfiguredOpenRouterModel(
+  modelId: string,
+  contextWindow?: number,
+): boolean {
+  const defaultProvider = process.env.PI_DEFAULT_PROVIDER?.trim() || "openrouter";
+  return Boolean(
+    modelId &&
+      ((defaultProvider === "openrouter" && modelId === process.env.PI_DEFAULT_MODEL?.trim()) ||
+        contextWindow !== undefined),
+  );
+}
+
 /** Resolve capability metadata bound to this connection rather than another account. */
 export function connectionModelImageInput(
   provider: string,
@@ -61,7 +74,12 @@ export function connectionModelImageInput(
   }
   if (catalogKnowsModel(provider, modelId)) return undefined;
   // Only routes the runtime can construct may use connection-declared input.
-  return provider === "openrouter" ||
+  const contextWindow = own
+    ? own.contextWindow
+    : secret.kind !== "oauth"
+      ? secret.contextWindow
+      : undefined;
+  return (provider === "openrouter" && canResolveConfiguredOpenRouterModel(id, contextWindow)) ||
     (provider === CHATGPT_OAUTH_PROVIDER && liveModelSibling(catalogModels(), provider, id))
     ? own?.images
     : undefined;

@@ -82,8 +82,8 @@ export class PiRuntimeCredentialStore implements CredentialStore {
         try {
           const next = await this.refreshOAuth(held, async (stored, signal) => {
             signal.throwIfAborted();
-            // This callback cannot receive a cancellation signal. Once started,
-            // keep the rotating successor owned until persistence completes.
+            // Pi bounds its provider request inside fn; this signal guards startup.
+            // Do not race away an already-started rotating successor before it is saved.
             const refreshed = await fn(toOAuthCredential(stored));
             return refreshed?.type === "oauth" ? refreshed : undefined;
           });

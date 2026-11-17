@@ -256,6 +256,59 @@ describe("PiRuntimeCredentialStore", () => {
     expect(await builtinModels().getAuth("openai-codex")).toBeUndefined();
   });
 
+  it("uses the actual SDK provider deadline inside coordinated runtime refresh", async () => {
+    const held = credential({ expires: 1 });
+    const deadline = new AbortController();
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => (ms === 15_000 ? deadline.signal : originalTimeout(ms)));
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let providerSignal: AbortSignal | undefined;
+    const fetcher = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      providerSignal = init?.signal ?? undefined;
+      entered();
+      return new Promise<Response>((_resolve, reject) => {
+        providerSignal!.addEventListener("abort", () => reject(providerSignal!.reason), {
+          once: true,
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const save = vi.fn();
+    const store = new PiRuntimeCredentialStore(
+      "openai-codex",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, new AbortController().signal);
+        if (next) save(next);
+        return next ?? held;
+      },
+    );
+    try {
+      const auth = builtinModels({ credentials: store }).getAuth("openai-codex");
+      const rejected = expect(auth).rejects.toThrow();
+      await started;
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      expect(providerSignal).toBe(deadline.signal);
+      deadline.abort(new Error("provider deadline"));
+      await rejected;
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(save).not.toHaveBeenCalled();
+      expect(store.accessToken).toBe(held.access);
+    } finally {
+      deadline.abort();
+      timeout.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("bridges an encrypted OAuth credential into the OAuth-only Codex provider", async () => {
     const store = new PiRuntimeCredentialStore("openai-codex", credential());
     const models = builtinModels({ credentials: store });

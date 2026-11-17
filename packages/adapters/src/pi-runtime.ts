@@ -89,6 +89,7 @@ import {
   TransientModelError,
 } from "./model-output-recovery.js";
 import {
+  canResolveConfiguredOpenRouterModel,
   catalogModelWithOpenRouterFallback,
   IMAGE_RETURNING_COMPUTER_TOOLS,
 } from "./model-vision.js";
@@ -1315,7 +1316,6 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
       ? "openrouter"
       : canonicalPiProviderId(modelConfig.provider);
   const envDefaultModel = process.env.PI_DEFAULT_MODEL?.trim();
-  const envDefaultProvider = process.env.PI_DEFAULT_PROVIDER?.trim() || "openrouter";
   const requestedId =
     modelConfig.id === "scripted" ? envDefaultModel || DEFAULT_OPENROUTER_MODEL_ID : modelConfig.id;
   const modelId = usableModelId(requestedId) ?? "";
@@ -1326,9 +1326,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   if (
     !model &&
     provider === "openrouter" &&
-    modelId &&
-    ((envDefaultProvider === "openrouter" && modelId === envDefaultModel) ||
-      modelConfig.contextWindow !== undefined)
+    canResolveConfiguredOpenRouterModel(modelId, modelConfig.contextWindow)
   ) {
     model = configuredOpenRouterModel(modelId, modelConfig.contextWindow);
   }
