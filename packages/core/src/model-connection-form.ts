@@ -26,6 +26,7 @@ import {
   connectionMaxTokensField,
   pickCatalogModelId,
 } from "./model-providers.js";
+import { credentialModelSettings, modelThinkingLevels } from "./model-settings-form.js";
 
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;
 type DefaultModel = { defaultProvider: string | null; defaultModel: string | null };
@@ -87,6 +88,7 @@ export function connectionFormFields(input: {
   credential?: Pick<
     ModelCredential,
     | "modelId"
+    | "modelSettings"
     | "enabledModelIds"
     | "baseUrl"
     | "apiProtocol"
@@ -105,9 +107,7 @@ export function connectionFormFields(input: {
   const { catalog, provider, modelId, credential, presetBaseUrl } = input;
   const compatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
   const supportedThinking = compatible
-    ? credential?.reasoning
-      ? compatibleThinkingLevels(credential?.apiProtocol)
-      : []
+    ? modelThinkingLevels(credential ? { ...credential, provider } : undefined, undefined, modelId)
     : catalog.find(
         (entry) =>
           canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider) &&
@@ -186,7 +186,10 @@ export type ModelConnectRequest =
 export function modelConnectRequest(input: {
   form: ConnectionFormDraft;
   selected: Pick<ModelCatalogEntry, "provider" | "providerName" | "id" | "thinkingLevels">;
-  credential?: Pick<ModelCredential, "provider" | "modelId" | "thinkingLevel">;
+  credential?: Pick<
+    ModelCredential,
+    "provider" | "modelId" | "thinkingLevel" | "modelSettings" | "reasoning"
+  >;
   credentialId: string | null;
   expectedRevision?: number;
   settingsOnly?: boolean;
@@ -260,13 +263,18 @@ export function modelConnectRequest(input: {
   const thinkingLevel = clampCatalogThinkingLevel(
     form.thinkingLevel,
     compatible
-      ? form.reasoning
+      ? (credential ? credentialModelSettings(credential, modelId).reasoning : form.reasoning)
         ? compatibleThinkingLevels(form.apiProtocol)
         : []
       : selected.thinkingLevels,
   ) as ThinkingLevel | null;
   const label = selected.providerName ?? selected.provider;
   if (compatible) {
+    // A hidden effort control must not clear the saved level during an ordinary connection save.
+    const preserveDormantThinking =
+      credential?.modelId === modelId &&
+      !credentialModelSettings(credential, modelId).reasoning &&
+      form.thinkingLevel === null;
     return {
       status: "ready",
       savingLimitOnly,
@@ -280,7 +288,7 @@ export function modelConnectRequest(input: {
         // The server adds the default itself.
         enabledModelIds: form.enabledModelIds.filter((id) => id !== modelId),
         reasoning: form.reasoning,
-        thinkingLevel,
+        ...(preserveDormantThinking ? {} : { thinkingLevel }),
         maxTokens,
         contextWindow,
         supportsImages: form.supportsImages,

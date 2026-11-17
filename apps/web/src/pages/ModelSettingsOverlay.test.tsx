@@ -1598,3 +1598,58 @@ it("retains the settings draft when another refresh supersedes its readback", as
     await view.unmount();
   }
 });
+
+it.each([false, true])(
+  "saves model-enabled effort without changing another model (protocol change %s)",
+  async (changeProtocol) => {
+    const connection = {
+      ...compatibleConnection(),
+      reasoning: false,
+      thinkingLevel: "low" as const,
+      modelSettings: { "model-a": { reasoning: true }, "model-b": { reasoning: false } },
+    };
+    useCompatibleConnections([connection]);
+    const view = await renderSettings();
+    try {
+      await act(async () => thinkingChange.current("high"));
+      if (changeProtocol) await choose(select(view.container, "API protocol"), "responses");
+      const save = buttons(view.container, "Save").find(
+        (button) => !button.closest('[data-testid="model-settings-panel"]'),
+      )!;
+      expect(save.disabled).toBe(false);
+      await act(async () => save.click());
+      expect(models.connect.mock.calls.at(-1)?.[0]).toMatchObject({
+        credentialId: "connection-a",
+        reasoning: false,
+        thinkingLevel: "high",
+      });
+      expect(connection.modelSettings["model-b"].reasoning).toBe(false);
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it("preserves a dormant effort when saving the connection after resetting model settings", async () => {
+  const connection = {
+    ...compatibleConnection(),
+    reasoning: true,
+    thinkingLevel: "low" as const,
+    modelSettings: { "model-a": {} },
+  };
+  useCompatibleConnections([connection]);
+  const view = await renderSettings();
+  try {
+    const save = buttons(view.container, "Save").find(
+      (button) => !button.closest('[data-testid="model-settings-panel"]'),
+    )!;
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
+    const request = models.connect.mock.calls.at(-1)?.[0];
+    expect(request).toMatchObject({ credentialId: "connection-a" });
+    expect(Object.hasOwn(request!, "thinkingLevel")).toBe(false);
+    expect(connection.thinkingLevel).toBe("low");
+  } finally {
+    await view.unmount();
+  }
+});

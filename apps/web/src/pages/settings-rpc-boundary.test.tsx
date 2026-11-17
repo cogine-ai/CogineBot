@@ -127,6 +127,7 @@ vi.mock("@rakazo/ui-web", async (importOriginal) => {
     Field: Pass,
     FieldLabel: Pass,
     ModelThinkingOptions: () => null,
+    ModelSettingsFields: actual.ModelSettingsFields,
     NativeSelect: (props: ComponentProps<"select">) => <select {...props} />,
     NativeSelectOption: (props: ComponentProps<"option">) => <option {...props} />,
   };

@@ -160,6 +160,74 @@ describe("connectionFormFields", () => {
     ).toBeNull();
   });
 
+  it.each([true, false])(
+    "uses the model's thinking support (%s) while preserving legacy connection defaults",
+    (enabled) => {
+      const saved = credential({
+        provider: COMPATIBLE,
+        modelId: "local",
+        apiProtocol: "chat-completions",
+        baseUrl: "https://models.example.test/v1",
+        reasoning: !enabled,
+        thinkingLevel: "high",
+        modelSettings: { local: { reasoning: enabled }, other: { reasoning: !enabled } },
+      });
+      const fields = connectionFormFields({
+        catalog,
+        provider: COMPATIBLE,
+        modelId: "local",
+        credential: saved,
+      });
+      expect(fields.thinkingLevel).toBe(enabled ? "high" : null);
+      const request = modelConnectRequest({
+        form: draft({ ...fields, modelId: "local", thinkingLevel: "high" }),
+        selected: { provider: COMPATIBLE, providerName: "Model server", id: "local" },
+        credential: saved,
+        credentialId: saved.id,
+        expectedRevision: 7,
+      });
+      expect(request.status).toBe("ready");
+      if (request.status !== "ready") return;
+      expect(request.input.thinkingLevel).toBe(enabled ? "high" : null);
+      expect(request.input.reasoning).toBe(!enabled);
+      expect(saved.modelSettings?.other?.reasoning).toBe(!enabled);
+    },
+  );
+
+  it.each(["chat-completions", "responses", "anthropic-messages"] as const)(
+    "preserves an untouched dormant effort when saving a %s connection",
+    (apiProtocol) => {
+      for (const settings of [{}, { reasoning: false }]) {
+        const saved = credential({
+          provider: COMPATIBLE,
+          modelId: "local",
+          apiProtocol,
+          baseUrl: "https://models.example.test/v1",
+          reasoning: true,
+          thinkingLevel: "low",
+          modelSettings: { local: settings },
+        });
+        const fields = connectionFormFields({
+          catalog,
+          provider: COMPATIBLE,
+          modelId: "local",
+          credential: saved,
+        });
+        const request = modelConnectRequest({
+          form: draft({ ...fields, modelId: "local" }),
+          selected: { provider: COMPATIBLE, id: "local" },
+          credential: saved,
+          credentialId: saved.id,
+          expectedRevision: 7,
+        });
+        expect(request.status).toBe("ready");
+        if (request.status !== "ready") return;
+        expect(Object.hasOwn(request.input, "thinkingLevel")).toBe(false);
+        expect(saved.thinkingLevel).toBe("low");
+      }
+    },
+  );
+
   it("keeps a saved protocol and clamps its effort levels to what the protocol runs", () => {
     const saved = credential({
       provider: COMPATIBLE,

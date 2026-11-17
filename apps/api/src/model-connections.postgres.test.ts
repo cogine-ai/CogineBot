@@ -269,6 +269,60 @@ describePostgres("model connection HTTP acceptance", () => {
     expect(replaced.thinkingLevel).toBe("low");
   });
 
+  it.each(["chat-completions", "responses", "anthropic-messages"])(
+    "preserves a dormant Space effort through a %s key replacement",
+    async (apiProtocol) => {
+      for (const settings of [{}, { reasoning: false }]) {
+        const { cookie, actor } = await account();
+        const connected = await rpc<ModelCredential>(
+          cookie,
+          "models/connect",
+          input({
+            apiProtocol,
+            reasoning: true,
+            thinkingLevel: "low",
+          }),
+        );
+        await rpc(cookie, "models/setDefault", {
+          provider,
+          modelId: "same-model",
+          modelCredentialId: connected.id,
+          expectedRevision: connected.connectionRevision,
+          thinkingLevel: "high",
+        });
+        await rpc(cookie, "models/saveModelSettings", {
+          credentialId: connected.id,
+          modelId: "same-model",
+          settings,
+        });
+        const latest = (await rpc<ModelCredential[]>(cookie, "models/credentials")).find(
+          (credential) => credential.id === connected.id,
+        )!;
+        const replaced = await rpc<ModelCredential>(
+          cookie,
+          "models/connect",
+          edit(latest, {
+            apiProtocol,
+            apiKey: "synthetic-replacement-key",
+          }),
+        );
+        const preference = () =>
+          handles.prisma.spaceModelPreference.findFirstOrThrow({
+            where: { ...actor, credentialId: connected.id },
+          });
+        expect((await preference()).thinkingLevel).toBe("high");
+        await rpc(cookie, "models/setDefault", {
+          provider,
+          modelId: "same-model",
+          modelCredentialId: replaced.id,
+          expectedRevision: replaced.connectionRevision,
+          thinkingLevel: null,
+        });
+        expect((await preference()).thinkingLevel).toBeNull();
+      }
+    },
+  );
+
   it("rejects foreign, unavailable and invalid model settings while allowing a removed model to reset", async () => {
     const { cookie } = await account();
     const other = await account();

@@ -425,6 +425,9 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const modelReasoning = credential
+    ? credentialModelSettings(credential, modelId).reasoning === true
+    : reasoning;
   const providerConnections = credentials.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -525,7 +528,7 @@ export function ModelSettingsOverlay({
       (current) =>
         clampCatalogThinkingLevel(
           current,
-          reasoning ? compatibleThinkingLevels(next) : [],
+          modelReasoning ? compatibleThinkingLevels(next) : [],
         ) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
@@ -570,7 +573,9 @@ export function ModelSettingsOverlay({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
+        (credential ? credentialModelSettings(credential, nextModelId).reasoning : reasoning)
+          ? compatibleThinkingLevels(apiProtocol)
+          : [],
       ) as ThinkingLevel | null,
     );
   }
@@ -1864,11 +1869,7 @@ export function ModelSettingsOverlay({
                     ) : null}
                   </div>
                   <ModelThinkingOptions
-                    reasoning={
-                      credential
-                        ? credentialModelSettings(credential, modelId).reasoning === true
-                        : reasoning
-                    }
+                    reasoning={modelReasoning}
                     onReasoningChange={
                       credential
                         ? undefined

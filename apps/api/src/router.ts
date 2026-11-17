@@ -9492,6 +9492,7 @@ async function persistModelCredential(
                 });
           throwIfAborted(input.signal);
           let thinkingLevel = input.thinkingLevel;
+          let preserveDormantThinking = false;
           if (thinkingLevel === undefined) {
             // A stored effort only carries over while it still names this model.
             const previous = await tx.spaceModelPreference.findFirst({
@@ -9504,12 +9505,17 @@ async function persistModelCredential(
             });
             thinkingLevel =
               previous?.modelId === usableModelId(defaultModel) ? previous.thinkingLevel : null;
+            preserveDormantThinking =
+              previous?.modelId === usableModelId(defaultModel) &&
+              input.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
+              allowedThinking?.every((level) => level === "off") === true;
           }
           // Connect and limit saves can still carry an effort chosen for the previous
-          // model. Keep it only when this model supports it; otherwise clamp or clear.
-          thinkingLevel = defaultModel
-            ? clampCatalogThinkingLevel(thinkingLevel, allowedThinking)
-            : null;
+          // model. Preserve an untouched dormant choice only for the same model.
+          if (!preserveDormantThinking)
+            thinkingLevel = defaultModel
+              ? clampCatalogThinkingLevel(thinkingLevel, allowedThinking)
+              : null;
           await selectSpaceModelPreference(tx, actor, credential.id, defaultModel, thinkingLevel);
           throwIfAborted(input.signal);
           if (existing) {

@@ -592,6 +592,9 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const modelReasoning = credential
+    ? credentialModelSettings(credential, modelId).reasoning === true
+    : reasoning;
   const providerConnections = credentials.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -684,7 +687,7 @@ function ModelsForm({
       (current) =>
         clampCatalogThinkingLevel(
           current,
-          reasoning ? compatibleThinkingLevels(next) : [],
+          modelReasoning ? compatibleThinkingLevels(next) : [],
         ) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
@@ -968,7 +971,9 @@ function ModelsForm({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
+        (credential ? credentialModelSettings(credential, nextModelId).reasoning : reasoning)
+          ? compatibleThinkingLevels(apiProtocol)
+          : [],
       ) as ThinkingLevel | null,
     );
   }
@@ -1507,7 +1512,7 @@ function ModelsForm({
           ) : null}
         </>
       ) : null}
-      {credential && credentialModelSettings(credential, modelId).reasoning ? (
+      {credential && modelReasoning ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("Reasoning effort")}
