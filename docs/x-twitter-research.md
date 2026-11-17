@@ -229,7 +229,7 @@ Web／Electron 打开 **MCP servers** 的 **Add server** 表单（不是仅填�
 | 搜索公开帖子 | 官方 MCP 当前提供的只读 post search；先避免一次返回大量结果 |
 | 按 handle／ID 查用户、读其公开帖子 | GET User lookup／user posts；不开放私信、书签、粉丝批量读取或其他无关能力 |
 
-**allowlist 填工具名，不填上表的能力中文名或 API 路径。** 名称以该连接当前发现的工具清单／上游工具定义为准，逐一复制；不要猜名字、使用 `*` 或直接允许所有工具。托管 MCP 与开源 xmcp 的名字可能不同，本轮没有调用真实服务的 `tools/list`，因此不提供冒充已验证的固定名称列表。若暂未取得准确名称，保持 allowlist 为空（不授予工具），不要通过开启全部工具来排障。
+**allowlist 填工具名，不填上表的能力中文名或 API 路径。当前 Web UI 不展示上游发现的工具名清单**，工具权限编辑器只编辑已保存的名称。请从上游 server 的文档取得准确工具名后逐一填写；不要猜名字、使用 `*` 或直接允许所有工具。托管 MCP 与开源 xmcp 的名字可能不同，本轮没有调用真实服务的 `tools/list`，因此不提供冒充已验证的固定名称列表。若上游文档也未提供准确名称，保持 allowlist 为空（不授予 Bot 工具），不要通过开启全部工具来排障；空 allowlist 不会阻止后端发现工具或连接上游。
 
 URL 的 `read_only=true` 是上游写工具过滤，本地 allowlist 是更小的权限范围，App-only token 则没有用户写身份，三者不能互相替代。只读仍可能按返回资源收费；额度、查询范围与用量由用户在 X 自行管理。
 
@@ -239,12 +239,14 @@ URL 的 `read_only=true` 是上游写工具过滤，本地 allowlist 是更小�
 
 | 现象 | 用户核对项 |
 | --- | --- |
-| 401／认证失败 | 是否误填 API key、Bearer 格式是否正确、token 是否已撤销；在凭据表单更换，勿把 token 附在报错截图或讨论里 |
+| 401／认证失败 | 是否误填 API key、Bearer 格式是否正确、token 是否已撤销；此界面不能编辑现有 server 的凭据，按下文步骤重建，勿把 token 附在报错截图或讨论里 |
 | 403／权限不足 | app 是否具备目标 endpoint 资格、是否试图用 app-only token 做 user-context 操作；本地 allowlist 不能扩大 X 权限 |
 | 429／额度相关错误 | 查看 X 控制台的限流／余额／资格；不要通过反复重试或换账号规避，也不要误认为“只读免费” |
 | 保存成功但 Bot 无工具 | server 是否启用，allowlist 是否有准确名称、连接／Bot 是否已授权；空 allowlist 默认不给工具 |
 | OAuth 没有打开登录或不支持 | 此处用静态 Bearer 认证；不要用 OAuth 按钮代替填写 Bearer token |
 | 工具清单变了 | 重新核对上游的具体工具定义，再调整 allowlist；不要开启全部工具绕过权限复核 |
+
+**更换 token 的现有 UI 路径：** MCP servers 的凭据表单只用于 **Add server**，不能修改已保存 server 的 token。先记录该连接的名称、URL、HTTP 类型和允许的工具名称（不抄录旧 token），再对旧连接选择 **Delete → Confirm delete**；按第 8.1 节用新 token 重新添加。新连接默认没有工具权限，须重新填写最小 allowlist，并在需要使用它的 Bot 上重新选择／授权新连接；新 server ID 不会自动继承旧连接绑定。不要把新 token 放入截图、日志或讨论。
 
 这些是对现有通用配置和上游错误的说明，不新增 X 专用错误提示；也没有宣称真实服务验收已通过。本轮只校对文档字段、源码与官方公开说明，不向 X API 发请求。
 
