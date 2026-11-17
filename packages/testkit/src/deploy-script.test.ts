@@ -231,7 +231,9 @@ if (args[0] === 'image' && args[1] === 'inspect' && args.length>=3) {
  out(found);
 }
 if (args[0] === 'container' && args[1] === 'stop') {
- if(args[2]!=='--time' || args[3]!=='120' || args.length<5 || args.slice(4).some(id=>!state.containers[id])) fail('invalid writer stop shape');
+ if(args[2]!=='--time' || args.length!==5 || !state.containers[args[4]]) fail('invalid writer stop shape');
+ const service=state.containers[args[4]].Config.Labels['com.docker.compose.service'];
+ if(args[3] !== (service==='worker' ? '420' : '120')) fail('insufficient writer stop budget');
  if(process.env.FAIL_OLD_WRITER_STOP) fail('old writer stop failed');
  if(!process.env.OLD_WRITER_STOP_NOOP) for(const id of args.slice(4)) state.containers[id].State={Status:'exited',Running:false,ExitCode:0};
  if(process.env.REPLACE_DRAIN_WRITER) {
@@ -330,9 +332,11 @@ if (args[0] === 'compose') {
   state.builds++;state.lastBuiltId=imageId;out('');
  }
  if (op==='stop') {
+  const names=tail.slice(tail.indexOf('--timeout')+2);
+  if(names.includes('worker') ? names.length!==1 || tail[0]!=='--timeout' || tail[1]!=='420' : tail[0]!=='--timeout' || tail[1]!=='120') fail('invalid runtime stop budget');
   if (process.env.FAIL_WRITER_STOP && tail.at(-1)!=='migrate') fail('writer stop failed');
   if (process.env.FAIL_MIGRATION_STOP && tail.at(-1)==='migrate') fail('migration stop failed');
-  for (const c of Object.values(state.containers)) if(c.Config.Labels['com.docker.compose.project']===config.name && tail.includes(c.Config.Labels['com.docker.compose.service'])) c.State={Status:'exited',Running:false,ExitCode:c.State.ExitCode ?? 0};
+  for (const c of Object.values(state.containers)) if(c.Config.Labels['com.docker.compose.project']===config.name && tail.includes(c.Config.Labels['com.docker.compose.service']) && !(process.env.COMPOSE_WORKER_STOP_NOOP && c.Config.Labels['com.docker.compose.service']==='worker')) c.State={Status:'exited',Running:false,ExitCode:c.State.ExitCode ?? 0};
   state.writerStopAttempted=true;
   out('');
  }
@@ -346,6 +350,7 @@ if (args[0] === 'compose') {
  if (op==='up') {
   const canonical=tail.includes('--exit-code-from');
   const requested=tail.filter(x=>Object.hasOwn(config.services,x));
+  if(canonical && process.env.REQUIRE_WORKER_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.project']===config.name && c.Config.Labels['com.docker.compose.service']==='worker' && !['created','exited','dead'].includes(c.State.Status))) fail('worker is still writing before migration');
   if(canonical && process.env.REQUIRE_RETIRED_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.project']===config.name && c.Config.Labels['com.docker.compose.service']==='scheduler' && !['created','exited','dead'].includes(c.State.Status))) fail('retired writer is active');
   if(canonical && process.env.REQUIRE_EXTRA_STOP && Object.values(state.containers).some(c=>c.Config.Labels['com.docker.compose.service']==='scheduler' && c.State.Status==='running')) fail('old extra writer is running');
   if(canonical && process.env.MIGRATION_MISSING_CONTAINER) out('');
@@ -840,7 +845,7 @@ describe("production deploy script", () => {
       true,
     );
     expect(deploy.timeouts()).toContain("--kill-after=30s 15m");
-    expect(deploy.timeouts()).toContain("--kill-after=30s 5m");
+    expect(deploy.timeouts()).toContain("--kill-after=30s 10m");
   });
   it("restores the checkout without restarting untouched runtime when the build fails", () => {
     const deploy = fixture();
@@ -967,6 +972,72 @@ describe("production deploy script", () => {
 });
 
 describe("production deploy admission and capabilities", () => {
+  it.each([
+    { name: "UP_TIMEOUT", value: "479s" },
+    { name: "ROLLBACK_TIMEOUT", value: "7m" },
+    { name: "UP_TIMEOUT", value: "0" },
+    { name: "ROLLBACK_TIMEOUT", value: "bad" },
+  ])("refuses an insufficient worker shutdown command budget: $name=$value", ({ name, value }) => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run({ [`RAKAZO_DEPLOY_${name}`]: value });
+    expectAdmissionFailure(deploy, result);
+    expect(result.stderr).toContain("must allow at least 8 minutes");
+    expect(Object.keys(deploy.state().builders)).toHaveLength(0);
+    expect(imageMutations(deploy)).toHaveLength(0);
+  });
+
+  it("gives worker drain a separate forward command and preserves the minimum outer budget", () => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run({ RAKAZO_DEPLOY_UP_TIMEOUT: "480s" });
+    expect(result.status, result.stderr).toBe(0);
+    const operations = deploy.dockerArguments().map(composeOperation);
+    const worker = operations.findIndex((op) => op.join(" ") === "stop --timeout 420 worker");
+    const other = operations.findIndex((op) => op[0] === "stop" && op.includes("api"));
+    const migration = operations.findIndex((op) => op.includes("--exit-code-from"));
+    expect(worker).toBeGreaterThanOrEqual(0);
+    expect(other).toBeGreaterThan(worker);
+    expect(operations[other]?.slice(0, 3)).toEqual(["stop", "--timeout", "120"]);
+    expect(operations[other]).not.toContain("worker");
+    expect(migration).toBeGreaterThan(other);
+    expect(deploy.timeouts()).toContain("--kill-after=30s 480s");
+  });
+
+  it("uses the full worker stop budget again before rollback verification", () => {
+    const deploy = fixture();
+    prime(deploy);
+    deploy.clearLogs();
+    deploy.next();
+    const result = deploy.run({ FAIL_UP: "1", RAKAZO_DEPLOY_ROLLBACK_TIMEOUT: "8m" });
+    expect(result.status).not.toBe(0);
+    const operations = deploy.dockerArguments().map(composeOperation);
+    expect(operations.filter((op) => op.join(" ") === "stop --timeout 420 worker")).toHaveLength(2);
+    const rollback = operations.findIndex((op) => op.includes("--computer-rollback"));
+    const lastWorkerStop = operations.findLastIndex(
+      (op) => op.join(" ") === "stop --timeout 420 worker",
+    );
+    expect(rollback).toBeGreaterThan(lastWorkerStop);
+    expect(deploy.timeouts()).toContain("--kill-after=30s 8m");
+  });
+
+  it("preserves the worker drain budget when Compose leaves a worker running", () => {
+    const deploy = fixture();
+    deploy.next();
+    const result = deploy.run({ COMPOSE_WORKER_STOP_NOOP: "1", REQUIRE_WORKER_STOP: "1" });
+    expect(result.status, result.stderr).toBe(0);
+    const operations = deploy.dockerArguments().map(dockerOperation);
+    const fallback = operations.findIndex(
+      (op) => op.join(" ") === `container stop --time 420 ${"4".repeat(64)}`,
+    );
+    expect(fallback).toBeGreaterThanOrEqual(0);
+    expect(operations.findIndex((op) => op.includes("--exit-code-from"))).toBeGreaterThan(fallback);
+    expect(deploy.state().containers["4".repeat(64)]?.State.Status).toBe("running");
+    expect(deploy.state().containers["4".repeat(64)]?.Image).toBe(
+      deploy.record().healthy!.services.find((service) => service.service === "worker")!.id,
+    );
+  });
+
   it.each([
     "",
     "08",
@@ -2843,7 +2914,12 @@ describe("retired deployment writers", () => {
       const migrated = operations.findIndex((op) => op.includes("--exit-code-from"));
       expect(stopped).toBeGreaterThanOrEqual(0);
       expect(migrated).toBeGreaterThan(stopped);
-      expect(operations[stopped]!.slice(4).sort()).toEqual(["9".repeat(64), "a".repeat(64)].sort());
+      expect(
+        operations
+          .filter((op) => op[0] === "container" && op[1] === "stop")
+          .flatMap((op) => op.slice(4))
+          .sort(),
+      ).toEqual(["9".repeat(64), "a".repeat(64)].sort());
       for (const id of ["9", "a"])
         expect(deploy.state().containers[id.repeat(64)]!.State.Status).toBe("exited");
       for (const id of ["5", "6", "7"])
