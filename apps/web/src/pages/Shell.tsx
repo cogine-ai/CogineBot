@@ -907,6 +907,7 @@ export function ShellPage() {
   // takeover failures must stay visible even when a URL remains.
   const [computerErrorFromScreen, setComputerErrorFromScreen] = useState(false);
   const [failedComputerRelease, setFailedComputerReleaseState] = useState<{
+    botId: string;
     reason?: ComputerReleaseReason;
   } | null>(null);
   const failedComputerReleaseRef = useRef<typeof failedComputerRelease>(null);
@@ -4681,7 +4682,12 @@ export function ShellPage() {
     if (!id) return false;
     const bot = botsRef.current.find((candidate) => candidate.id === id);
     if (!bot) return false;
-    if (computerBotIdRef.current !== id) invalidateComputerBoot();
+    if (computerBotIdRef.current !== id) {
+      invalidateComputerBoot();
+      setComputerError(null);
+      setComputerErrorFromScreen(false);
+      setFailedComputerRelease(null);
+    }
     computerBotIdRef.current = id;
     setComputerBotId(id);
     const cached = computerCacheRef.current.get(id);
@@ -4730,15 +4736,15 @@ export function ShellPage() {
   }, []);
 
   const releaseComputer = useCallback(
-    async (reason?: ComputerReleaseReason) => {
+    async (reason?: ComputerReleaseReason, expectedBotId?: string) => {
       const botId = computerBotIdRef.current ?? activeBotId.current;
-      if (!botId) return;
+      if (!botId || (expectedBotId && expectedBotId !== botId)) return;
       setComputerError(null);
       setComputerErrorFromScreen(false);
       setFailedComputerRelease(null);
       try {
         await rpc.computer.release({ botId, reason });
-        if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
+        if ((computerBotIdRef.current ?? activeBotId.current) !== botId) return;
         await refreshComputerFor(botId);
         await refreshComputerScreen(botId);
         const groupId = activeGroupId.current;
@@ -4746,10 +4752,10 @@ export function ShellPage() {
           await refreshGroupThreadRef.current(groupId).catch(() => undefined);
         }
       } catch {
-        if (computerBotIdRef.current !== botId && activeBotId.current !== botId) return;
+        if ((computerBotIdRef.current ?? activeBotId.current) !== botId) return;
         setComputerError(t`Could not continue`);
         setComputerErrorFromScreen(false);
-        setFailedComputerRelease({ reason });
+        setFailedComputerRelease({ botId, reason });
       }
     },
     [t],
@@ -4783,7 +4789,8 @@ export function ShellPage() {
           variant="outline"
           size="sm"
           onClick={() => {
-            if (failedComputerRelease) void releaseComputer(failedComputerRelease.reason);
+            if (failedComputerRelease)
+              void releaseComputer(failedComputerRelease.reason, failedComputerRelease.botId);
             else if (computerBot) void refreshComputerScreen(computerBot.id);
           }}
         >

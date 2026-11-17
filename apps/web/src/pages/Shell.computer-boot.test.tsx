@@ -938,6 +938,48 @@ it("retries a screen read without releasing computer control", async () => {
   expect(document.body.textContent).not.toContain("screen unavailable");
 });
 
+it.each(["stopping", "needs_recovery", "quarantined"] as const)(
+  "clears another bot's failed release before opening a %s computer",
+  async (state) => {
+    const start = shellSource.indexOf("  async function openComputer(");
+    const end = shellSource.indexOf("  async function takeComputerControl(", start);
+    const clearFailure = vi.fn();
+    const clearError = vi.fn();
+    const target = status("worker", state);
+    const values = {
+      active: chief,
+      botsRef: { current: bootstrap().bots },
+      computerBotIdRef: { current: "chief" },
+      invalidateComputerBoot: vi.fn(),
+      setComputerBotId: vi.fn(),
+      computerCacheRef: { current: new Map([["worker", { computer: target, screenUrl: null }]]) },
+      computer: status("chief", "running"),
+      screenUrl: "http://localhost/screen",
+      commitComputer: vi.fn(),
+      setScreenUrl: vi.fn(),
+      setComputerOpen: vi.fn(),
+      computerVisible: { current: false },
+      computerStateRequiresRecovery: (value: string) =>
+        ["needs_recovery", "quarantined"].includes(value),
+      userHoldsComputerControl: vi.fn(),
+      computerTakeoverBlocked: vi.fn(),
+      snapshot: null,
+      bootComputer: vi.fn(),
+      setFailedComputerRelease: clearFailure,
+      setComputerError: clearError,
+      setComputerErrorFromScreen: vi.fn(),
+    };
+    const open = new Function(
+      ...Object.keys(values),
+      `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn openComputer;`,
+    )(...Object.values(values));
+    await expect(open("worker")).resolves.toBe(false);
+    expect(clearFailure).toHaveBeenCalledExactlyOnceWith(null);
+    expect(clearError).toHaveBeenCalledExactlyOnceWith(null);
+    expect(values.bootComputer).not.toHaveBeenCalled();
+  },
+);
+
 it.each(["stopped", "suspended", "booting"] as const)(
   "refreshes a visible %s computer immediately after an accepted running event",
   async (initialState) => {
@@ -2752,3 +2794,52 @@ it("resolves combined routine and attention links without restoring consumed que
   expect(params.has("attention")).toBe(false);
   expect(params.get("view")).toBe("later");
 });
+
+it.each(["stale-retry", "late-failure", "late-success"] as const)(
+  "keeps release recovery bound to its original bot (%s)",
+  async (scenario) => {
+    const start = shellSource.indexOf("  const releaseComputer = useCallback(");
+    const end = shellSource.indexOf("  function dismissComposerError()", start);
+    let finish!: () => void;
+    let reject!: (error: Error) => void;
+    const pending = new Promise<void>((resolve, fail) => {
+      finish = resolve;
+      reject = fail;
+    });
+    const released = vi.fn(() => pending);
+    const failure = vi.fn();
+    const values = {
+      useCallback: (fn: unknown) => fn,
+      computerBotIdRef: { current: scenario === "stale-retry" ? "worker" : "chief" },
+      activeBotId: { current: "chief" },
+      setComputerError: vi.fn(),
+      setComputerErrorFromScreen: vi.fn(),
+      setFailedComputerRelease: failure,
+      rpc: { computer: { release: released } },
+      refreshComputerFor: vi.fn(),
+      refreshComputerScreen: vi.fn(),
+      activeGroupId: { current: null },
+      refreshGroupThreadRef: { current: vi.fn() },
+      t: (parts: TemplateStringsArray) => parts.join(""),
+    };
+    const release = new Function(
+      ...Object.keys(values),
+      `${stripTypeScriptTypes(shellSource.slice(start, end))}\nreturn releaseComputer;`,
+    )(...Object.values(values));
+    const work = release("skipped", "chief");
+    if (scenario === "stale-retry") {
+      await work;
+      expect(released).not.toHaveBeenCalled();
+      expect(failure).not.toHaveBeenCalled();
+      return;
+    }
+    values.computerBotIdRef.current = "worker";
+    if (scenario === "late-failure") reject(new Error("release unavailable"));
+    else finish();
+    await work;
+    expect(released).toHaveBeenCalledExactlyOnceWith({ botId: "chief", reason: "skipped" });
+    expect(failure.mock.calls).toEqual([[null]]);
+    expect(values.refreshComputerFor).not.toHaveBeenCalled();
+    expect(values.refreshComputerScreen).not.toHaveBeenCalled();
+  },
+);
