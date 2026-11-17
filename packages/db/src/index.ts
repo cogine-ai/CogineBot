@@ -11,6 +11,7 @@ export * from "./computers.js";
 export * from "./connection-selection.js";
 export * from "./credential-secrets.js";
 export * from "./database-access.js";
+export * from "./database-availability.js";
 export {
   databaseRestoreFence,
   prepareDatabaseRestore,

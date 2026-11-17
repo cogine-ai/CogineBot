@@ -2227,9 +2227,18 @@ description: Prepare standup notes
     "repairs a %s card before acquiring the computer or calling the model",
     async (checkpoint) => {
       const boundary = new Error("stop before computer acquisition");
+      const attempt = {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+        create: vi.fn().mockResolvedValue({ id: "attempt-1" }),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      };
       const tx = {
+        attempt,
         $queryRaw: vi.fn().mockResolvedValue([{ id: "group-thread" }]),
         run: {
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
           findFirst: vi.fn().mockResolvedValue({ status: "running" }),
           findUnique: vi.fn().mockResolvedValue({
             status: "running",
@@ -2252,8 +2261,10 @@ description: Prepare standup notes
         event: { create: vi.fn(async ({ data }) => ({ ...data, threadId: "group-thread" })) },
       };
       const prisma = {
+        attempt,
         $transaction: vi.fn(async (callback) => callback(tx)),
         run: {
+          findFirst: vi.fn().mockResolvedValue(null),
           findUnique: vi.fn().mockResolvedValue({
             id: "run-1",
             spaceId: "space-1",
@@ -2281,10 +2292,21 @@ description: Prepare standup notes
       const runtimeRun = vi.fn();
       const executor = createRunExecutor({
         prisma,
+        secrets: [],
         events: { notify },
         runtime: { describe: () => ({ capabilities: { scripted: false } }), run: runtimeRun },
       } as unknown as Parameters<typeof createRunExecutor>[0]);
-      await expect(executor.continueRun("run-1", "worker-1")).rejects.toBe(boundary);
+      await expect(executor.continueRun("run-1", "worker-1")).rejects.toThrow(
+        "Run setup failed; retrying",
+      );
+      expect(attempt.update).toHaveBeenCalledWith({
+        where: { id: "attempt-1" },
+        data: {
+          status: "setup_failed",
+          error: boundary.message,
+          finishedAt: expect.any(Date),
+        },
+      });
       expect(tx.message.update).toHaveBeenCalledWith({
         where: { id: "card-1" },
         data: {
