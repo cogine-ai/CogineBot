@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { filterPickedAttachments } from "./pick-attachments-filter.js";
 
 describe("filterPickedAttachments", () => {
-  it("skips unsupported mime types and oversize files", () => {
+  it("accepts ZIP and Excel while skipping unsupported mime types and oversize files", () => {
     const result = filterPickedAttachments(0, [
       {
         name: "notes.txt",
@@ -17,6 +17,15 @@ describe("filterPickedAttachments", () => {
         size: 12,
         contentBase64: "UEsDBA==",
       },
+      ...[
+        ["table.xls", "application/vnd.ms-excel"],
+        ["table.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+      ].map(([name, mimeType]) => ({
+        name: name!,
+        mimeType: mimeType!,
+        size: 12,
+        contentBase64: "UEsDBA==",
+      })),
       {
         name: "payload.exe",
         mimeType: null,
@@ -30,12 +39,13 @@ describe("filterPickedAttachments", () => {
         contentBase64: "aGVsbG8=",
       },
     ]);
-    expect(result.attachments.map((item) => item.name)).toEqual(["notes.txt"]);
-    expect(result.skipped.map((item) => item.name)).toEqual([
+    expect(result.attachments.map((item) => item.name)).toEqual([
+      "notes.txt",
       "bundle.zip",
-      "payload.exe",
-      "big.pdf",
+      "table.xls",
+      "table.xlsx",
     ]);
+    expect(result.skipped.map((item) => item.name)).toEqual(["payload.exe", "big.pdf"]);
   });
 
   it("assigns distinct ids to duplicate files", () => {

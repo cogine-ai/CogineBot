@@ -111,6 +111,7 @@ async function runDiscovery(
       ),
     },
     event: { count: vi.fn(async () => 0) },
+    chatGroup: { findMany: vi.fn(async () => []) },
     bot: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === run.botId

@@ -1,8 +1,6 @@
 import { runContinueJob } from "@rakazo/adapter-kit";
 import { MessageBlock } from "@rakazo/contracts";
 import {
-  BOT_MESSAGE_MAX_LENGTH,
-  BOT_MESSAGE_TOO_LONG,
   botMessageContext,
   botMessageHopExhausted,
   nextBotMessageHop,
@@ -44,10 +42,8 @@ export async function handoffToGroupBot(
     files?: Array<Extract<MessageBlock, { kind: "image" | "file" }>>;
   },
 ) {
+  // The file-delivery wrapper bounds the message before it reads or saves files.
   const text = input.message.trim();
-  if (!text)
-    return { error: `message must contain 1 to ${BOT_MESSAGE_MAX_LENGTH} characters` } as const;
-  if (text.length > BOT_MESSAGE_MAX_LENGTH) return { error: BOT_MESSAGE_TOO_LONG } as const;
   const addressedGroup = await deps.prisma.chatGroup.findFirst({
     where: { id: groupId, spaceId: run.spaceId, userId: run.userId, archivedAt: null },
     select: {

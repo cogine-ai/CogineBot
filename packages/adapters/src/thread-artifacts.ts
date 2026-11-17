@@ -41,7 +41,7 @@ export async function readWorkspaceFile(
     botId: string;
     filePath: string;
   },
-): Promise<{ error: string } | { bytes: Uint8Array }> {
+): Promise<{ error: string } | { bytes: Uint8Array; artifacts: ArtifactStore }> {
   if (!deps.artifacts) return { error: "artifact storage unavailable" };
   let bytes: Uint8Array;
   try {
@@ -55,7 +55,7 @@ export async function readWorkspaceFile(
     return { error: "file not found or unreadable" };
   }
   if (!inferAttachmentMimeType(input.filePath)) return { error: "unsupported attachment type" };
-  return { bytes };
+  return { bytes, artifacts: deps.artifacts };
 }
 
 export async function attachWorkspaceFileToThread(

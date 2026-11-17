@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { AdapterContext, ComputerRef } from "@rakazo/adapter-kit";
+import type { AdapterContext, ArtifactStore, ComputerRef } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock } from "@rakazo/contracts";
 import { ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import {
@@ -46,11 +46,11 @@ async function saveWorkspaceFile(
   call: BotFileCall,
   filePath: string,
   bytes: Uint8Array,
+  artifacts: ArtifactStore,
   owner: { botId: string; groupId?: string },
 ) {
-  if (!ctx.deps.artifacts) throw new Error("artifact storage unavailable");
   return attachWorkspaceFileToThread(
-    { prisma: ctx.deps.prisma, artifacts: ctx.deps.artifacts },
+    { prisma: ctx.deps.prisma, artifacts },
     {
       spaceId: ctx.run.spaceId,
       userId: ctx.run.userId,
@@ -100,7 +100,7 @@ async function prepareSentFiles(
     target.computerId === bot.computerId
   )
     return withRecipient(await sharedFiles(ctx, paths), target.id);
-  const read: Array<{ path: string; bytes: Uint8Array }> = [];
+  const read: Array<{ path: string; bytes: Uint8Array; artifacts: ArtifactStore }> = [];
   for (const path of paths) {
     const file = await readWorkspaceFile(ctx, call, path);
     if ("error" in file) {
@@ -108,7 +108,7 @@ async function prepareSentFiles(
       const hint = ZIP_HELPS.has(file.error) ? "; zip it and send the zip" : "";
       return { error: `${path}: ${file.error}${hint}. Nothing was sent.` };
     }
-    read.push({ path, bytes: file.bytes });
+    read.push({ path, bytes: file.bytes, artifacts: file.artifacts });
   }
   const owner = recipient.groupId
     ? { botId: bot.id, groupId: recipient.groupId }
@@ -116,7 +116,9 @@ async function prepareSentFiles(
   const files: AttachmentBlock[] = [];
   for (const file of read) {
     try {
-      files.push((await saveWorkspaceFile(ctx, call, file.path, file.bytes, owner)).block);
+      files.push(
+        (await saveWorkspaceFile(ctx, call, file.path, file.bytes, file.artifacts, owner)).block,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "could not save the file";
       return { error: `${file.path}: ${reason}. Nothing was sent.` };

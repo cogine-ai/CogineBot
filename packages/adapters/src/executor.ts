@@ -8702,11 +8702,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               filePath,
             });
             if ("error" in read) return failAttach(read.error);
-            if (!deps.artifacts) return failAttach("artifact storage unavailable");
             const bytes = read.bytes;
             try {
               const attached = await attachWorkspaceFileToThread(
-                { prisma: deps.prisma, artifacts: deps.artifacts },
+                { prisma: deps.prisma, artifacts: read.artifacts },
                 {
                   spaceId: run.spaceId,
                   userId: run.userId,

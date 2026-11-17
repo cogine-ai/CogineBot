@@ -690,8 +690,20 @@ describeAttachments("chat attachments", () => {
     });
     expect(fetched.contentBase64).toBe(tinyPng.toString("base64"));
 
+    const archive = await rpc<{ id: string; mimeType: string }>(app, cookie, "artifacts/create", {
+      botId: bot.id,
+      name: "bundle.ZIP",
+      mimeType: "application/zip",
+      contentBase64: Buffer.from("PK\x03\x04zip").toString("base64"),
+    });
+    expect(archive.mimeType).toBe("application/zip");
+    const downloaded = await rpc<{ contentBase64: string }>(app, cookie, "artifacts/get", {
+      botId: bot.id,
+      artifactId: archive.id,
+    });
+    expect(downloaded.contentBase64).toBe(Buffer.from("PK\x03\x04zip").toString("base64"));
+
     for (const mimeType of [
-      "application/zip",
       "application/x-zip-compressed",
       "application/x-zip",
       "multipart/x-zip",

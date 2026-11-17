@@ -10,8 +10,9 @@ const mocks = vi.hoisted(() => ({
     note: "Sent",
   })),
   handoffToGroupBot: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
-  readWorkspaceFile: vi.fn(async (..._args: unknown[]) => ({
+  readWorkspaceFile: vi.fn(async (deps: { artifacts?: unknown }) => ({
     bytes: new Uint8Array([1]),
+    artifacts: deps.artifacts,
   })) as ReturnType<typeof vi.fn>,
   saveWorkspaceFile: vi.fn(async (..._args: unknown[]) => ({
     artifactId: "artifact-zip",
