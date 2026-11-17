@@ -1,41 +1,13 @@
 import * as z from "zod";
 import { Id, IsoDate } from "./ids.js";
 
-/** Shared public renderer asset served without account credentials. */
-export const PAGE_RUNTIME_PATH = "/api/v1/assets/page-runtime.js";
-export const SHARED_PAGE_PATH_PREFIX = "/api/v1/pages/shared/";
-
-/** Classify the sensitive API namespace for credentials and logs, never for authorization. */
-export function isPageShareApiPath(pathname: string): boolean {
-  return isSensitiveNamespace(pathname, SHARED_PAGE_PATH_PREFIX.slice(0, -1));
-}
-
-/** Also recognize aliases a server or proxy could normalize into the document route. */
-export function isSensitivePageShareDocumentPath(pathname: string): boolean {
-  return isSensitiveNamespace(pathname, "/p");
-}
-
-function isSensitiveNamespace(pathname: string, prefix: string): boolean {
-  // Decode individual escapes so a malformed suffix cannot hide an encoded namespace.
-  const normalized = pathname
-    .replace(/%([0-9a-f]{2})/gi, (_, byte: string) =>
-      String.fromCharCode(Number.parseInt(byte, 16)),
-    )
-    .toLowerCase()
-    .replace(/[\\/]+/g, "/");
-  const matches = (path: string) => path === prefix || path.startsWith(`${prefix}/`);
-  if (matches(normalized)) return true;
-  return (
-    normalized.startsWith("/") &&
-    /\/\.{1,2}(?:\/|$)/.test(normalized) &&
-    matches(new URL(normalized, "http://localhost").pathname)
-  );
-}
-
-export function isPageShareDocumentPath(pathname: string): boolean {
-  // %70 is the encoded form of the route segment. Encoded separators are not routes.
-  return /^\/(?:p|%70)(?:\/|$)/.test(pathname);
-}
+export {
+  isPageShareApiPath,
+  isPageShareDocumentPath,
+  isSensitivePageShareDocumentPath,
+  PAGE_RUNTIME_PATH,
+  SHARED_PAGE_PATH_PREFIX,
+} from "./page-paths.js";
 
 export const PAGE_TITLE_MAX_LENGTH = 200;
 export const PAGE_LIST_MAX_LIMIT = 60;
