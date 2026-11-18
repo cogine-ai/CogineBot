@@ -105,7 +105,7 @@ async function closeNativeWindow() {
   await expect.poll(async () => (await nativeWindows()).length).toBe(0);
 }
 
-async function nativeDialogs(title?: string) {
+async function nativeDialogs(titles: string[] = []) {
   const { stdout } = await exec("wmctrl", ["-l"]);
   const windows = stdout
     .split("\n")
@@ -120,7 +120,7 @@ async function nativeDialogs(title?: string) {
         "_NET_WM_STATE",
       ]).catch(() => ({ stdout: "" }));
       return /_NET_WM_WINDOW_TYPE_DIALOG|_NET_WM_STATE_MODAL/.test(properties.stdout) ||
-        (title !== undefined && win.title === title)
+        titles.includes(win.title)
         ? win.id
         : null;
     }),
@@ -132,7 +132,7 @@ async function nativeDialog(title: string) {
   let id = "";
   await expect
     .poll(async () => {
-      const dialogs = await nativeDialogs(title);
+      const dialogs = await nativeDialogs([title]);
       id = dialogs.length === 1 ? dialogs[0]! : "";
       return id;
     })
@@ -254,7 +254,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   // A synchronous native error dialog blocks Electron's inspector until dismissed.
   // Close only the dialogs in this disposable test session before app.close().
-  for (const id of await nativeDialogs()) {
+  for (const id of await nativeDialogs(["Error", "CogineBot Dev"])) {
     await exec("xdotool", ["windowactivate", "--sync", id]);
     await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
   }
