@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { hasNewThreadWork, observeMemoryCleanup } from "@rakazo/core";
+import { applyThreadClearReceipt, hasNewThreadWork, observeMemoryCleanup } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileSnapshot } from "./api";
@@ -45,6 +45,8 @@ const code = ts.transpileModule(
 type ClearReceipt = {
   ok: true;
   threadId?: string;
+  clearEventSeq?: number;
+  cancelledRunIds?: string[];
   memoryCleanupUnconfirmed?: true;
   memoryCleanupPending?: boolean;
   memoryCleanupCursor?: number;
@@ -97,6 +99,7 @@ function fixture(
     useCallback: (callback: unknown) => callback,
     seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
     pendingMemoryCleanupClears: { current: new Set<string>() },
+    pendingMemoryCleanupEvents: { current: new Map() },
     memoryCleanupAlertBlocked: blocked,
     memoryCleanupOwner: ownerRef.current,
     memoryCleanupOwnerRef: ownerRef,
@@ -114,6 +117,7 @@ function fixture(
     rpc: vi.fn(async () => nextResponse()),
     observeMemoryCleanup,
     hasNewThreadWork,
+    applyThreadClearReceipt,
     modelPolicyRefusal: false,
     refresh: vi.fn(async () => undefined),
     expandedHistoryThread: { current: null },
@@ -158,6 +162,7 @@ function fixture(
     blocked,
     alert,
     commitSnap,
+    pendingMemoryCleanupEvents: scope.pendingMemoryCleanupEvents,
     rpc: scope.rpc,
     rerenderOwner: (owner: string) => {
       ownerRef.current = owner;
@@ -205,6 +210,31 @@ describe("native memory cleanup outcomes", () => {
     expect(f.snapRef.current.messages).toEqual(newer);
     expect(f.snapRef.current.run?.id).toBe("new-run");
   });
+  it("uses the clear commit boundary without consuming newer messages or the send receipt", async () => {
+    const f = fixture();
+    f.clear();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      cursor: 14,
+      messages: [
+        { id: "before", seq: 2, observedEventSeq: 11, role: "user", blocks: [] },
+        { id: "after", seq: 3, observedEventSeq: 13, role: "user", blocks: [] },
+      ],
+      run: { id: "new-run", status: "queued" },
+      activeRuns: [{ id: "new-run", status: "queued" }],
+    };
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+      memoryCleanupCursor: 20,
+    });
+    expect(f.snapRef.current.messages.map((message) => message.id)).toEqual(["after"]);
+    expect(f.snapRef.current.run?.id).toBe("new-run");
+    expect(f.snapRef.current.cursor).toBe(14);
+    expect(f.snapRef.current.memoryCleanupCursor).toBe(20);
+  });
   it("a provisional native notice cannot consume a later recorded failure", () => {
     const f = fixture();
     f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
@@ -226,7 +256,17 @@ describe("native memory cleanup outcomes", () => {
     f.clear();
     f.clear();
     expect(f.rpc).toHaveBeenCalledOnce();
-    await f.finish({ ok: true, threadId: "thread-one" });
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      memoryCleanupUnconfirmed: true,
+      memoryCleanupCursor: 10,
+    });
+    expect(f.pendingMemoryCleanupEvents.current.get("thread-one")).toMatchObject({
+      owner: "owner-one",
+      seq: 10,
+      unconfirmed: true,
+    });
     expect(f.alert).not.toHaveBeenCalled();
     expect(f.commitSnap).not.toHaveBeenCalled();
     // Exactly one response exists; a second clear now gets a fresh response.
@@ -243,6 +283,34 @@ describe("native memory cleanup outcomes", () => {
     expect(f.alert).toHaveBeenCalledOnce();
   });
 
+  it("rejects a returned thread that conflicts with the known request after its snapshot unloads", async () => {
+    const f = fixture();
+    f.clear();
+    f.snapRef.current = null as unknown as MobileSnapshot;
+    await f.finish({ ok: true, threadId: "other-thread", memoryCleanupUnconfirmed: true });
+    expect(f.pendingMemoryCleanupEvents.current.size).toBe(0);
+    expect(f.alert).not.toHaveBeenCalled();
+  });
+  it("does not replace newer buffered settlement with an older cold receipt", async () => {
+    const f = fixture();
+    f.snapRef.current = null as unknown as MobileSnapshot;
+    f.clear();
+    f.pendingMemoryCleanupEvents.current.set("thread-one", {
+      owner: "owner-one",
+      seq: 20,
+      pending: false,
+    });
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      memoryCleanupCursor: 10,
+      memoryCleanupPending: true,
+    });
+    expect(f.pendingMemoryCleanupEvents.current.get("thread-one")).toMatchObject({
+      seq: 20,
+      pending: false,
+    });
+  });
   it("keeps a pending clear owned when profile readiness changes", async () => {
     const owner = (profileScope: unknown, apiGeneration = 1, spaceEpoch = 1) =>
       new Function(
@@ -423,7 +491,7 @@ describe("native memory cleanup outcomes", () => {
 });
 
 describe("cold jump cleanup metadata commit", () => {
-  it.each(["current", "other-owner", "old-subscription"])(
+  it.each(["current", "receipt", "receipt-clear", "other-owner", "old-subscription"])(
     "applies only the current reader's buffered flag: %s",
     (reader) => {
       expect(commit).not.toBe("");
@@ -431,7 +499,16 @@ describe("cold jump cleanup metadata commit", () => {
         current: new Map([
           [
             "thread-one",
-            { owner: "owner-one", subscription: 1, seq: 10, unconfirmed: true, pending: true },
+            {
+              owner: "owner-one",
+              ...(reader.startsWith("receipt") ? {} : { subscription: 1 }),
+              ...(reader === "receipt-clear"
+                ? { clearEventSeq: 12, cancelledRunIds: ["new-run"] }
+                : {}),
+              seq: 10,
+              unconfirmed: true,
+              pending: true,
+            },
           ],
         ]),
       };
@@ -449,6 +526,7 @@ describe("cold jump cleanup metadata commit", () => {
       }).outputText;
       const scope = {
         pendingMemoryCleanupEvents,
+        applyThreadClearReceipt,
         observeMemoryCleanup,
         snapRef,
         memoryCleanupOwnerRef: { current: reader === "other-owner" ? "owner-two" : "owner-one" },
@@ -461,11 +539,16 @@ describe("cold jump cleanup metadata commit", () => {
       const commitSnapshot = new Function(...Object.keys(scope), source)(...Object.values(scope));
       commitSnapshot(next);
       expect(snapRef.current?.memoryCleanupUnconfirmed).toBe(
-        reader === "current" ? true : undefined,
+        reader === "current" || reader.startsWith("receipt") ? true : undefined,
       );
-      expect(snapRef.current?.cursor).toBe(5);
-      expect(snapRef.current?.messages).toBe(next.messages);
-      expect(snapRef.current?.run).toBe(next.run);
+      expect(snapRef.current?.cursor).toBe(reader === "receipt-clear" ? 12 : 5);
+      if (reader === "receipt-clear") {
+        expect(snapRef.current?.messages).toEqual([]);
+        expect(snapRef.current?.run).toBeNull();
+      } else {
+        expect(snapRef.current?.messages).toBe(next.messages);
+        expect(snapRef.current?.run).toBe(next.run);
+      }
       expect(pendingMemoryCleanupEvents.current.size).toBe(0);
     },
   );

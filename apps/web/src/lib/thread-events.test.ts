@@ -2465,7 +2465,13 @@ it("the Shell reader retains a covered clear barrier without replacing current e
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const body = `${source.slice(start + "      applyEvent: ".length, end)}\n}`;
-  const script = `const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
+  const bufferStart = source.indexOf(
+    "    const bufferCleanupEvent =",
+    source.indexOf("function createThreadReader"),
+  );
+  const bufferEnd = source.indexOf("    return {\n      resume,", bufferStart);
+  const buffer = source.slice(bufferStart, bufferEnd).replace("(event: ProductEvent)", "(event)");
+  const script = `${buffer} const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
   const run = threadRun("current-run", "bot-2");
   const snapRef = {
     current: {
@@ -2477,6 +2483,8 @@ it("the Shell reader retains a covered clear barrier without replacing current e
   };
   const scope = {
     ownsReader: () => true,
+    pendingMemoryCleanupEvents: { current: new Map() },
+    scope: "scope-one",
     snapshotRef: snapRef,
     reduceThreadSnapshot,
     expandedHistoryThread: { current: null },
@@ -2660,4 +2668,22 @@ it("settles pending cleanup by sequence without resetting a sticky failure or cu
   expect(settled.memoryCleanupUnconfirmed).toBe(true);
   expect(settled.run).toBe(initial.run);
   expect(reduceThreadSnapshot(settled, pendingEvent)).toBe(settled);
+});
+
+it("keeps pending cleanup across an omitted refresh until an explicit settlement", () => {
+  const previous = {
+    ...snapshot([]),
+    cursor: 10,
+    memoryCleanupPending: true,
+    memoryCleanupCursor: 10,
+  };
+  const refreshed = mergeThreadSnapshot(previous, { ...snapshot([]), cursor: 25 });
+  expect(refreshed).toMatchObject({ memoryCleanupPending: true, memoryCleanupCursor: 10 });
+  const settled = mergeThreadSnapshot(refreshed, {
+    ...snapshot([]),
+    cursor: 25,
+    memoryCleanupPending: false,
+    memoryCleanupCursor: 12,
+  });
+  expect(settled).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
 });

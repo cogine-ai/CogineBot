@@ -5771,3 +5771,31 @@ it("settles pending cleanup without clearing a recorded failure or reapplying an
   expect(settled.run).toBe(initial.run);
   expect(applyMobileThreadEvent(settled, pendingEvent)).toBe(settled);
 });
+
+it("retains pending cleanup when a same-thread refresh omits the metadata", () => {
+  const previous = {
+    botId: "bot",
+    threadId: "thread",
+    cursor: 10,
+    messages: [],
+    olderCursor: null,
+    run: null,
+    memoryCleanupPending: true,
+    memoryCleanupCursor: 10,
+  };
+  const refreshed = mergeMobileSnapshot(previous, {
+    ...previous,
+    cursor: 25,
+    memoryCleanupPending: undefined,
+    memoryCleanupCursor: undefined,
+  });
+  expect(refreshed).toMatchObject({ memoryCleanupPending: true, memoryCleanupCursor: 10 });
+  expect(
+    mergeMobileSnapshot(refreshed, {
+      ...previous,
+      cursor: 25,
+      memoryCleanupPending: false,
+      memoryCleanupCursor: 12,
+    }),
+  ).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
+});

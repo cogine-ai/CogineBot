@@ -3160,6 +3160,7 @@ for (const width of [1280, 390]) {
       await page.route("**/rpc/threads/clear", async (route) => {
         cleared = true;
         cleanupCursor++;
+        const clearEventSeq = cleanupCursor;
         afterClearMessages.length = 0;
         if (++clearRequests === 1 && width === 1280 && locale === "en") {
           await stream.emit({
@@ -3172,11 +3173,42 @@ for (const width of [1280, 390]) {
             createdAt: stamp,
             payload: { memoryCleanupUnconfirmed: true },
           });
+          const checkpoint: ThreadMessage = {
+            id: "before-receipt-checkpoint",
+            threadId: "thread-chief",
+            seq: 99,
+            role: "user",
+            createdAt: stamp,
+            blocks: [{ kind: "text", text: "Metadata processed before receipt" }],
+          };
+          afterClearMessages.push(checkpoint);
+          await stream.emit({
+            id: "before-receipt-checkpoint-event",
+            spaceId: "space-primary",
+            threadId: "thread-chief",
+            botId: "chief",
+            seq: ++cleanupCursor,
+            type: "thread.message.created",
+            createdAt: stamp,
+            payload: {
+              messageId: checkpoint.id,
+              messageSeq: checkpoint.seq,
+              role: checkpoint.role,
+              blocks: checkpoint.blocks,
+            },
+          });
+          await expect(
+            page
+              .getByTestId("transcript")
+              .getByText("Metadata processed before receipt", { exact: true }),
+          ).toBeVisible();
           await expect(page.getByTestId("composer-error")).toBeHidden();
         }
         return json(route, {
           ok: true,
           threadId: "thread-chief",
+          clearEventSeq,
+          cancelledRunIds: [],
           memoryCleanupUnconfirmed: true,
           memoryCleanupCursor: cleanupCursor,
         });
@@ -3392,6 +3424,8 @@ test("pending cleanup settles without a sticky warning or stale-event redisplay"
     "Messages cleared. External memory cleanup could not be confirmed.",
   );
   await captureScreenshot(page, testInfo, "memory-cleanup-pending");
+  await page.getByTestId("composer-error-dismiss").click();
+  await expect(page.getByTestId("composer-error")).toBeHidden();
   const pending = {
     id: "old-pending",
     spaceId: "space-primary",
@@ -3434,6 +3468,14 @@ test("pending cleanup settles without a sticky warning or stale-event redisplay"
     page.getByTestId("transcript").getByText("Old pending event checkpoint", { exact: true }),
   ).toBeVisible();
   await expect(page.getByTestId("composer-error")).toBeHidden();
+  await stream.emit({ ...pending, id: "new-pending-interval", seq: 154 });
+  await stream.emit(checkpoint(155, "New pending interval checkpoint"));
+  await expect(
+    page.getByTestId("transcript").getByText("New pending interval checkpoint", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("composer-error")).toHaveText(
+    "External memory cleanup could not be confirmed.",
+  );
   expect(state.sends).toEqual([]);
   expect(state.uploads).toEqual([]);
   expect(unknown).toEqual([]);
@@ -3507,12 +3549,15 @@ test("a clear receipt preserves newer messages and Run at an unchanged history e
     completedAt: null,
     createdAt: stamp,
   };
+  const refreshHeld = deferred();
   let advanced = false;
-  state.thread = (route, data) =>
-    json(
+  state.thread = async (route, data) => {
+    if (advanced) await refreshHeld.promise;
+    return json(
       route,
       advanced ? { ...data, cursor: 152, messages: [newer], run, activeRuns: [run] } : data,
     );
+  };
   await page.route("**/rpc/threads/clear", async (route) => {
     started.resolve();
     await held.promise;
@@ -3520,7 +3565,9 @@ test("a clear receipt preserves newer messages and Run at an unchanged history e
       ok: true,
       threadId: "thread-chief",
       memoryCleanupUnconfirmed: true,
-      memoryCleanupCursor: 150,
+      clearEventSeq: 150,
+      cancelledRunIds: [],
+      memoryCleanupCursor: 160,
     });
   });
   await ready(page);
@@ -3530,6 +3577,24 @@ test("a clear receipt preserves newer messages and Run at an unchanged history e
   try {
     await started.promise;
     advanced = true;
+    await stream.emit({
+      id: "pre-clear-other-client",
+      spaceId: "space-primary",
+      threadId: "thread-chief",
+      botId: "chief",
+      seq: 149,
+      type: "thread.message.created",
+      createdAt: stamp,
+      payload: {
+        messageId: "pre-clear-other-client",
+        messageSeq: 2,
+        role: "user",
+        blocks: [{ kind: "text", text: "Other client before the clear" }],
+      },
+    });
+    await expect(
+      page.getByTestId("transcript").getByText("Other client before the clear", { exact: true }),
+    ).toBeVisible();
     await stream.emit({
       id: "new-after-clear-started",
       spaceId: "space-primary",
@@ -3563,12 +3628,16 @@ test("a clear receipt preserves newer messages and Run at an unchanged history e
     held.resolve();
     await clearing;
     await expect(
+      page.getByTestId("transcript").getByText("Other client before the clear", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
       page.getByTestId("transcript").getByText("New work after the clear", { exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
     await captureScreenshot(page, testInfo, "memory-cleanup-preserves-new-run");
     expect(errors).toEqual([]);
   } finally {
+    refreshHeld.resolve();
     held.resolve();
   }
 });
@@ -3588,8 +3657,15 @@ test("cleanup metadata received during a cold search jump reaches the committed 
     createdAt: stamp,
     blocks: [{ kind: "text", text: "The anchored history" }],
   };
-  state.thread = (route, data) =>
-    json(
+  const recoveryHeld = deferred();
+  const recoveryStarted = deferred();
+  let researchReads = 0;
+  state.thread = async (route, data) => {
+    if (data.botId === "research-one" && ++researchReads > 2) {
+      recoveryStarted.resolve();
+      await recoveryHeld.promise;
+    }
+    return json(
       route,
       data.botId === "research-one"
         ? {
@@ -3607,6 +3683,7 @@ test("cleanup metadata received during a cold search jump reaches the committed 
           }
         : data,
     );
+  };
   state.messages = async (route) => {
     started.resolve();
     await held.promise;
@@ -3630,6 +3707,8 @@ test("cleanup metadata received during a cold search jump reaches the committed 
       createdAt: stamp,
       payload: { memoryCleanupUnconfirmed: true },
     });
+    await expect.poll(() => researchReads, { timeout: 5_000 }).toBeGreaterThan(2);
+    await recoveryStarted.promise;
     held.resolve();
     await expect(
       page.getByTestId("transcript").getByText("The anchored history", { exact: true }),
@@ -3644,9 +3723,14 @@ test("cleanup metadata received during a cold search jump reaches the committed 
     await expect(
       page.getByTestId("transcript").getByText("The anchored history", { exact: true }),
     ).toBeInViewport();
+    recoveryHeld.resolve();
+    await expect(
+      page.getByTestId("transcript").getByText("The recent history", { exact: true }),
+    ).toBeVisible();
     await captureScreenshot(page, testInfo, "memory-cleanup-cold-jump");
     expect(errors).toEqual([]);
   } finally {
+    recoveryHeld.resolve();
     held.resolve();
   }
 });

@@ -11,6 +11,43 @@ type ThreadWorkObservation = {
   activeRuns?: Array<{ id: string }>;
 };
 
+/** The clear commit is earlier than cleanup settlement and owns only pre-clear activity. */
+export function applyThreadClearReceipt<
+  T extends ThreadWorkObservation & {
+    messages: Array<{ id: string; observedEventSeq?: number; runId?: string | null }>;
+    olderCursor?: number | null;
+    observedClearSeq?: number;
+  },
+>(
+  snapshot: T,
+  started: ThreadWorkObservation | null,
+  receipt: { clearEventSeq: number; cancelledRunIds?: string[] },
+): T {
+  if (receipt.clearEventSeq < (snapshot.observedClearSeq ?? -1)) return snapshot;
+  const cancelled = new Set(receipt.cancelledRunIds ?? []);
+  const previous = new Set([
+    ...(started?.activeRuns ?? []).map((run) => run.id),
+    ...(started?.run ? [started.run.id] : []),
+  ]);
+  const keepRun = (run: { id: string }) =>
+    !cancelled.has(run.id) &&
+    ((snapshot.cursor ?? -1) > receipt.clearEventSeq ||
+      (started !== null && !previous.has(run.id)));
+  return {
+    ...snapshot,
+    cursor: Math.max(snapshot.cursor ?? -1, receipt.clearEventSeq),
+    observedClearSeq: receipt.clearEventSeq,
+    messages: snapshot.messages.filter(
+      (message) =>
+        (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq &&
+        (!message.runId || !cancelled.has(message.runId)),
+    ),
+    olderCursor: null,
+    run: snapshot.run && keepRun(snapshot.run) ? snapshot.run : null,
+    activeRuns: snapshot.activeRuns?.filter(keepRun),
+  };
+}
+
 /** A send receipt can introduce a Run before its first durable event arrives. */
 export function hasNewThreadWork(
   current: ThreadWorkObservation,

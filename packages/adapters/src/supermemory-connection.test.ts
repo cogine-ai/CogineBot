@@ -284,6 +284,16 @@ describe("readable protocol responses", () => {
       expect(cancel).toHaveBeenCalledOnce();
     },
   );
+  it.each(["[]", '[{"containerTag":"history"}]'])(
+    "rejects incomplete UTF-8 after the closed list %s",
+    async (prefix) => {
+      const bytes = new Uint8Array([...new TextEncoder().encode(prefix), 0xc2]);
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(bytes));
+      await expect(
+        probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
+      ).resolves.toMatchObject({ ok: false });
+    },
+  );
   it("recognizes escaped and multibyte first-item strings across byte boundaries", async () => {
     const bytes = new TextEncoder().encode(
       JSON.stringify([{ nested: { text: '}]["\\\\' }, containerTag: 'synthetic-中文-"\\' }]),

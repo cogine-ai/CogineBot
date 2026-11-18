@@ -12,7 +12,14 @@ export async function clearThreadConversation(
   },
   input: ClearThreadInput,
   context: AdapterContext,
-): Promise<{ ok: true; threadId: string } & MemoryCleanupState> {
+): Promise<
+  {
+    ok: true;
+    threadId: string;
+    clearEventSeq: number;
+    cancelledRunIds: string[];
+  } & MemoryCleanupState
+> {
   let configured: ConfiguredMemoryProvider | null = null;
   let configurationUnknown = false;
   if (!input.groupId) {
@@ -38,6 +45,8 @@ export async function clearThreadConversation(
   if (cleared.cleanup) {
     let unconfirmed = false;
     try {
+      if (cleared.cleanup.connectionId && configured?.connectionId !== cleared.cleanup.connectionId)
+        configured = await deps.memoryProviders.resolve(input.spaceId);
       if (
         !configured ||
         !cleared.cleanup.connectionId ||
@@ -75,5 +84,11 @@ export async function clearThreadConversation(
       };
     }
   }
-  return { ok: true, threadId: input.threadId, ...state };
+  return {
+    ok: true,
+    threadId: input.threadId,
+    clearEventSeq: cleared.event.seq,
+    cancelledRunIds: cleared.cancelledRunIds,
+    ...state,
+  };
 }

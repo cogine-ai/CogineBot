@@ -98,11 +98,20 @@ function fixture() {
 }
 
 describe("clear conversation cleanup outcome", () => {
+  it("resolves a newly enabled connection only when it matches the committed intent", async () => {
+    const f = fixture();
+    f.resolve.mockResolvedValueOnce(null);
+    await expect(f.execute()).resolves.toMatchObject({ memoryCleanupPending: false });
+    expect(f.purgeHistory).toHaveBeenCalledOnce();
+    expect(f.resolve).toHaveBeenCalledTimes(2);
+  });
   it("registers cleanup in the local clear before network work and settles only its actual generation scope", async () => {
     const f = fixture();
     await expect(f.execute()).resolves.toEqual({
       ok: true,
       threadId: input.threadId,
+      clearEventSeq: 1,
+      cancelledRunIds: ["run-one"],
       memoryCleanupCursor: 1,
       memoryCleanupPending: false,
     });
@@ -135,6 +144,8 @@ describe("clear conversation cleanup outcome", () => {
       await expect(f.execute()).resolves.toEqual({
         ok: true,
         threadId: input.threadId,
+        clearEventSeq: 1,
+        cancelledRunIds: ["run-one"],
         memoryCleanupCursor: 1,
         memoryCleanupUnconfirmed: true,
         memoryCleanupPending: false,
@@ -162,6 +173,8 @@ describe("clear conversation cleanup outcome", () => {
     await expect(f.execute()).resolves.toEqual({
       ok: true,
       threadId: input.threadId,
+      clearEventSeq: 1,
+      cancelledRunIds: ["run-one"],
       memoryCleanupCursor: 1,
       memoryCleanupPending: false,
     });
@@ -188,6 +201,8 @@ describe("clear conversation cleanup outcome", () => {
       await expect(f.execute()).resolves.toEqual({
         ok: true,
         threadId: input.threadId,
+        clearEventSeq: 1,
+        cancelledRunIds: ["run-one"],
         memoryCleanupCursor: 1,
         memoryCleanupPending: true,
       });
@@ -206,11 +221,24 @@ describe("clear conversation cleanup outcome", () => {
     f.saved.mockResolvedValue({ secretId: "replacement-connection" });
     await expect(f.execute()).resolves.toMatchObject({ memoryCleanupUnconfirmed: true });
     expect(f.purgeHistory).not.toHaveBeenCalled();
-    expect(f.resolve).toHaveBeenCalledOnce();
+    expect(f.resolve).toHaveBeenCalledTimes(2);
   });
   it("pins the resolved connection instead of loading a replacement after commit", async () => {
     const f = fixture();
+    const configured = await f.resolve.getMockImplementation()!(input.spaceId);
+    const replacementPurge = vi.fn();
+    const clear = f.clearThread.getMockImplementation()!;
+    f.clearThread.mockImplementationOnce(async (scope) => {
+      const result = await clear(scope);
+      f.resolve.mockResolvedValue({
+        ...configured!,
+        connectionId: "replacement",
+        provider: { ...configured!.provider, purgeHistory: replacementPurge },
+      });
+      return result;
+    });
     await f.execute();
+    expect(replacementPurge).not.toHaveBeenCalled();
     expect(f.resolve).toHaveBeenCalledExactlyOnceWith(input.spaceId);
     expect(f.purgeHistory).toHaveBeenCalledOnce();
     expect(f.clearThread).toHaveBeenCalledExactlyOnceWith({

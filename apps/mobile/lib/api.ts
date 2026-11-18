@@ -1465,7 +1465,21 @@ export function mergeMobileSnapshot(
   if (sameThread && prev.memoryCleanupUnconfirmed && !merged.memoryCleanupUnconfirmed) {
     merged = { ...merged, memoryCleanupUnconfirmed: true };
   }
-  merged = observeMemoryCleanup(merged, next, next.memoryCleanupCursor ?? next.cursor ?? -1);
+  const omittedCleanup =
+    prev?.threadId === next.threadId && next.memoryCleanupPending === undefined;
+  if (omittedCleanup)
+    merged = {
+      ...merged,
+      memoryCleanupPending: prev.memoryCleanupPending,
+      memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor ?? -1,
+    };
+  merged = observeMemoryCleanup(
+    merged,
+    next,
+    omittedCleanup
+      ? (prev.memoryCleanupCursor ?? prev.cursor ?? -1)
+      : (next.memoryCleanupCursor ?? next.cursor ?? -1),
+  );
   if (
     prev?.threadId === next.threadId &&
     (prev.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1)

@@ -641,6 +641,8 @@ export const appContract = {
       z.object({
         ok: z.literal(true),
         threadId: Id.optional(),
+        clearEventSeq: z.number().int().nonnegative().optional(),
+        cancelledRunIds: z.array(Id).optional(),
         memoryCleanupUnconfirmed: z.literal(true).optional(),
         memoryCleanupPending: z.boolean().optional(),
         memoryCleanupCursor: z.number().int().min(-1).optional(),

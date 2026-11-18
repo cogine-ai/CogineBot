@@ -89,7 +89,12 @@ function dispatch(url: string) {
 }
 
 async function launch(executablePath: string) {
-  const starting = electron.launch({ executablePath, env, args: ["--no-sandbox"] });
+  const starting = electron.launch({
+    executablePath,
+    env,
+    args: ["--no-sandbox"],
+    timeout: 60_000,
+  });
   pendingLaunches.add(starting);
   try {
     const app = await starting;
@@ -173,20 +178,16 @@ async function nativeDialog(title: string, timeout?: number, applicationPid?: nu
           const at = Date.now();
           const diagnostic = <T>(read: Promise<T>) =>
             read.catch((error: unknown) => ({ error: String(error) }));
-          const [dialogs, x11Dialogs, ewmh, tree] = await Promise.all([
-            nativeDialogs(title, applicationPid),
-            diagnostic(visibleNativeDialogs(exec, title)),
-            diagnostic(nativeWindowList(true)),
-            diagnostic(exec("xwininfo", ["-root", "-tree"])),
-          ]);
-          samples.push({
-            at,
-            observedAt: Date.now(),
-            dialogs,
-            x11Dialogs,
-            ewmh,
-            tree,
+          const diagnosticExec = (file: string, args: string[]) =>
+            exec(file, args, { timeout: 1_000 });
+          void Promise.all([
+            diagnostic(visibleNativeDialogs(diagnosticExec, title)),
+            diagnostic(diagnosticExec("wmctrl", ["-lp"])),
+            diagnostic(diagnosticExec("xwininfo", ["-root", "-tree"])),
+          ]).then(([x11Dialogs, ewmh, tree]) => {
+            samples.push({ at, observedAt: Date.now(), x11Dialogs, ewmh, tree });
           });
+          const dialogs = await nativeDialogs(title, applicationPid);
           id = dialogs.length === 1 ? dialogs[0]! : "";
           return id;
         },
@@ -419,7 +420,10 @@ test.afterEach(async () => {
       await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
     }
     const { stdout: windows } = await nativeWindowList(true);
-    const { stdout: x11Windows } = await exec("xwininfo", ["-root", "-tree"]);
+    const x11Windows = await exec("xwininfo", ["-root", "-tree"], { timeout: 1_000 }).then(
+      ({ stdout }) => stdout,
+      (error: unknown) => ({ error: String(error) }),
+    );
     const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
     await info.attach("native-dispatch-state", {
       body: JSON.stringify(
@@ -853,8 +857,14 @@ test("failed native recovery teardown closes a launcher before attachment settle
     const dialogId = await nativeDialog("CogineBot Dev");
     const launcherWindows = async () =>
       (await nativeWindows("CogineBot Dev")).filter((window) => window.id !== dialogId);
-    await expect.poll(async () => (await launcherWindows()).length).toBe(1);
-    const [failedWindow] = await launcherWindows();
+    let failedWindow: { id: string; pid: number } | undefined;
+    await expect
+      .poll(async () => {
+        const candidates = await launcherWindows();
+        if (candidates.length === 1) failedWindow = candidates[0];
+        return candidates.length;
+      })
+      .toBe(1);
     expect(failedWindow).toBeDefined();
     expect(await closeApplications()).toEqual([]);
     await expect

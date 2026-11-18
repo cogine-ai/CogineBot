@@ -196,7 +196,21 @@ export function mergeThreadSnapshot(
   ) {
     merged = { ...merged, memoryCleanupUnconfirmed: true };
   }
-  merged = observeMemoryCleanup(merged, next, next.memoryCleanupCursor ?? next.cursor);
+  const omittedCleanup =
+    prev?.threadId === next.threadId && next.memoryCleanupPending === undefined;
+  if (omittedCleanup)
+    merged = {
+      ...merged,
+      memoryCleanupPending: prev.memoryCleanupPending,
+      memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor ?? -1,
+    };
+  merged = observeMemoryCleanup(
+    merged,
+    next,
+    omittedCleanup
+      ? (prev.memoryCleanupCursor ?? prev.cursor ?? -1)
+      : (next.memoryCleanupCursor ?? next.cursor),
+  );
   if (
     prev?.threadId === next.threadId &&
     (prev.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1)

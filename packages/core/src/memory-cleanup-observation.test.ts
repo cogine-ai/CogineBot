@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { hasNewThreadWork, observeMemoryCleanup } from "./memory-cleanup-observation.js";
+import {
+  applyThreadClearReceipt,
+  hasNewThreadWork,
+  observeMemoryCleanup,
+} from "./memory-cleanup-observation.js";
 
 describe("cleanup observation ordering", () => {
   it("recognizes a new send receipt before its event cursor advances", () => {
@@ -38,5 +42,48 @@ describe("cleanup observation ordering", () => {
     expect(observeMemoryCleanup(failed, { memoryCleanupPending: false }, 21)).toMatchObject({
       memoryCleanupUnconfirmed: true,
     });
+  });
+});
+
+describe("clear receipt boundaries", () => {
+  it("removes pre-clear events while retaining post-clear messages and work", () => {
+    const started = { threadId: "thread", cursor: 10, run: { id: "cancelled" } };
+    const current = {
+      ...started,
+      cursor: 14,
+      messages: [
+        { id: "old", observedEventSeq: 10 },
+        { id: "before-clear", observedEventSeq: 11 },
+        { id: "after-clear", observedEventSeq: 13 },
+      ],
+      run: { id: "new" },
+      activeRuns: [{ id: "cancelled" }, { id: "new" }],
+      memoryCleanupCursor: 20,
+    };
+    const cleared = applyThreadClearReceipt(current, started, {
+      clearEventSeq: 12,
+      cancelledRunIds: ["cancelled"],
+    });
+    expect(cleared.messages.map((message) => message.id)).toEqual(["after-clear"]);
+    expect(cleared.run?.id).toBe("new");
+    expect(cleared.activeRuns).toEqual([{ id: "new" }]);
+    expect(cleared.cursor).toBe(14);
+    expect(cleared.memoryCleanupCursor).toBe(20);
+  });
+  it("retains an uncancelled send receipt at the original event cursor", () => {
+    const started = { threadId: "thread", cursor: 10, run: null };
+    const current = {
+      ...started,
+      run: { id: "new" },
+      activeRuns: [{ id: "new" }],
+      messages: [{ id: "old", observedEventSeq: 10 }],
+    };
+    const cleared = applyThreadClearReceipt(current, started, {
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+    });
+    expect(cleared.messages).toEqual([]);
+    expect(cleared.run?.id).toBe("new");
+    expect(cleared.cursor).toBe(12);
   });
 });

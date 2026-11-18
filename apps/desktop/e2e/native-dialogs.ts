@@ -45,6 +45,10 @@ export async function visibleNativeDialogs(exec: Execute, title?: string): Promi
             "_NET_WM_WINDOW_TYPE",
             "_NET_WM_STATE",
           ]);
+          if (title !== undefined) {
+            const actual = /^WM_NAME[^\n]* = (".*")$/m.exec(properties.stdout)?.[1];
+            if (!actual || JSON.parse(actual) !== title) return null;
+          }
           return /_NET_WM_WINDOW_TYPE_DIALOG|_NET_WM_STATE_MODAL|^WM_NAME[^\n]* = "Error"$/m.test(
             properties.stdout,
           )

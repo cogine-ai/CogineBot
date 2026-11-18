@@ -55,6 +55,16 @@ describe("native dialog observation", () => {
     await expect(visibleNativeDialogs(exec)).resolves.toEqual(["22"]);
   });
 
+  it("rejects a case-insensitive search match with a different actual title", async () => {
+    const exec = vi.fn(async (file: string) => ({
+      stdout:
+        file === "xdotool"
+          ? "42\n"
+          : 'WM_NAME(STRING) = "coginebot dev"\n_NET_WM_STATE(ATOM) = _NET_WM_STATE_MODAL',
+    }));
+    await expect(visibleNativeDialogs(exec, "CogineBot Dev")).resolves.toEqual([]);
+    await expect(visibleNativeDialogs(exec, "coginebot dev")).resolves.toEqual(["42"]);
+  });
   it("escapes the entire exact title", async () => {
     const exec = vi.fn(async () => ({ stdout: "" }));
     await visibleNativeDialogs(exec, "App (Dev)+");

@@ -433,7 +433,7 @@ async function readContainerListSignature(response: Response, signal: AbortSigna
     for (;;) {
       const { done, value } = await withAbort(reader.read(), signal);
       if (done) {
-        if (empty) return;
+        if (empty && /^[ \t\n\r]*$/.test(decoder.decode())) return;
         throw new SyntaxError("Incomplete list signature");
       }
       const take = Math.min(value.byteLength, MAX_SUPERMEMORY_RESPONSE_BYTES - bytes);

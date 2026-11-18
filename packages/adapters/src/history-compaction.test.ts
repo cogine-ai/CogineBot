@@ -975,6 +975,39 @@ describe("compactHistory", () => {
     expect(h.purgeHistory).not.toHaveBeenCalled();
     expect(h.pendingSaves.get("save:0:49")).toBe(0);
   });
+  it("purges a known stale save even when the final backlog read fails", async () => {
+    const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    h.saveMemory.mockImplementationOnce(async () => {
+      h.thread.historyCompactionGeneration = 1;
+      h.prisma.thread.findUniqueOrThrow.mockRejectedValue(new Error("backlog unavailable"));
+      return { ok: true, value: undefined };
+    });
+    await expect(compactHistory(h.deps, "thread-1")).rejects.toThrow("backlog unavailable");
+    expect(h.purgeHistory).toHaveBeenCalledExactlyOnceWith(
+      { botId: "bot-1", generations: [0] },
+      expect.any(Object),
+    );
+    expect(h.pendingSaves.size).toBe(0);
+  });
+  it("retains the original provider's responsibility through the final generation read", async () => {
+    const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    h.saveMemory.mockImplementationOnce(async () => {
+      h.prisma.thread.findUniqueOrThrow.mockImplementationOnce(async () => {
+        h.thread.historyCompactionGeneration = 1;
+        h.deps.memoryProviders.resolve = vi.fn(async () => null);
+        return { ...h.thread };
+      });
+      return { ok: true, value: undefined };
+    });
+    h.purgeHistory.mockResolvedValueOnce({ ok: false, error: "denied" });
+    await compactHistory(h.deps, "thread-1");
+    expect(h.purgeHistory).toHaveBeenCalledExactlyOnceWith(
+      { botId: "bot-1", generations: [0] },
+      expect.any(Object),
+    );
+    expect(h.thread.memoryCleanupUnconfirmed).toBe(true);
+    expect(h.pendingSaves.size).toBe(0);
+  });
   it("preserves the existing deleted-thread external-save boundary", async () => {
     const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
     h.saveMemory.mockImplementationOnce(async () => {
