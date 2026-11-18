@@ -1595,7 +1595,7 @@ function Thread({
                 memoryCleanupOwnerRef.current === owner &&
                 activeBotId.current === botId &&
                 (!targetThreadId || snapRef.current?.threadId === targetThreadId) &&
-                snapRef.current?.memoryCleanupUnconfirmed
+                (snapRef.current?.memoryCleanupUnconfirmed || snapRef.current?.memoryCleanupPending)
               )
                 showMemoryCleanupNotice(snapRef.current.threadId, false);
             },
@@ -2126,7 +2126,8 @@ function Thread({
                 event.type === "thread.subagent" ||
                 event.type === "thread.cloud_agent" ||
                 (event.type === "thread.meta" &&
-                  event.payload?.memoryCleanupUnconfirmed === true) ||
+                  (event.payload?.memoryCleanupUnconfirmed === true ||
+                    typeof event.payload?.memoryCleanupPending === "boolean")) ||
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
                 event.type === "run.waiting_limit" ||

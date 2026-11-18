@@ -172,12 +172,22 @@ describe("native memory cleanup outcomes", () => {
     await f.finish({ ok: true, memoryCleanupPending: false, memoryCleanupCursor: 20 });
     expect(f.snapRef.current.memoryCleanupPending).toBe(true);
   });
-  it.each([false, true])(
-    "rechecks cleanup after dismissing a lost-response error (owner changes: %s)",
-    async (ownerChanges) => {
+  it.each([
+    ["sticky", false],
+    ["sticky", true],
+    ["pending", false],
+    ["pending", true],
+  ] as const)(
+    "rechecks %s cleanup after dismissing a lost-response error (owner changes: %s)",
+    async (kind, ownerChanges) => {
       const f = fixture();
       f.clear();
-      f.snapRef.current = { ...f.snapRef.current, memoryCleanupUnconfirmed: true };
+      f.snapRef.current = {
+        ...f.snapRef.current,
+        ...(kind === "sticky"
+          ? { memoryCleanupUnconfirmed: true as const }
+          : { memoryCleanupPending: true }),
+      };
       f.notify("thread-one", false);
       expect(f.alert).not.toHaveBeenCalled();
       await f.fail();

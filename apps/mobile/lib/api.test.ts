@@ -5251,6 +5251,25 @@ describe("mobile screen released-event callback", () => {
     });
   });
 
+  it("routes pending-only cleanup settlement through the actual visible screen callback", () => {
+    const h = screenCallback();
+    const run = h.snapRef.current?.run;
+    const event = {
+      type: "thread.meta",
+      threadId: "thread-1",
+      botId: "bot-1",
+      seq: 11,
+      payload: { memoryCleanupPending: true },
+    };
+    h.handler(event);
+    expect(h.snapRef.current?.memoryCleanupPending).toBe(true);
+    h.handler({ ...event, seq: 12, payload: { memoryCleanupPending: false } });
+    expect(h.snapRef.current?.memoryCleanupPending).toBe(false);
+    expect(h.snapRef.current?.memoryCleanupUnconfirmed).toBeUndefined();
+    expect(h.snapRef.current?.run).toBe(run);
+    expect(h.commitSnap).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["abort", "reader", "target", "Space", "session"])(
     "does not apply an old screen callback after %s changes",
     (change) => {
