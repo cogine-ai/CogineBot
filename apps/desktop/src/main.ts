@@ -235,6 +235,8 @@ async function resolveSessionForTarget(targetUrl: string) {
   if (partition === null) {
     return { partition: null, value: session.defaultSession };
   }
+  // Workspace profiles are new and have no pre-partition installation to migrate.
+  if (development !== null) return { partition, value: session.fromPartition(partition) };
   if (existsSync(legacyDefaultSessionFlag(partition))) {
     return { partition: null, value: session.defaultSession };
   }

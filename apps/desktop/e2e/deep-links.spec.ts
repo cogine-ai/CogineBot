@@ -691,6 +691,8 @@ test("development startup rejects another origin but permits a same-origin redir
   const address = unexpected.address();
   if (address === null || typeof address === "string") throw new Error("Missing redirect port.");
   try {
+    // Legacy production markers must not send a Dev profile through a hidden probe.
+    await mkdir(path.join(developmentProfile, "Local Storage"), { recursive: true });
     failureMode = "redirect";
     redirectTarget = `http://127.0.0.1:${address.port}/`;
     const development = await launch(devExecutable);
