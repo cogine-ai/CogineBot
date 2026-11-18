@@ -15,26 +15,34 @@ const context: AdapterContext = {
 };
 function fixture() {
   const phases: string[] = [];
-  const receipt = {
-    cancelledRunIds: ["run-one"],
-    historyCompactionGeneration: 3,
-    memoryCleanupUnconfirmed: undefined as true | undefined,
-    event: {
-      ...input,
-      id: "clear-event",
-      seq: 1,
-      type: "thread.cleared" as const,
-      createdAt: new Date(0).toISOString(),
-      payload: {},
-    },
-  };
-  const clearThread = vi.fn<ThreadEvents["clearThread"]>(async () => {
+  let sticky = false;
+  const cleanup = { token: "clear:4", kind: "clear" as const, generations: [2, 3] };
+  const clearThread = vi.fn<ThreadEvents["clearThread"]>(async (scope) => {
     phases.push("local commit");
-    return receipt;
+    return {
+      cancelledRunIds: ["run-one"],
+      historyCompactionGeneration: 3,
+      ...(sticky ? { memoryCleanupUnconfirmed: true as const } : {}),
+      ...(scope.memoryCleanupExpected
+        ? { cleanup, memoryCleanupPending: true }
+        : { memoryCleanupPending: false }),
+      event: {
+        ...input,
+        id: "clear-event",
+        seq: 1,
+        type: "thread.cleared",
+        createdAt: new Date(0).toISOString(),
+        payload: {},
+      },
+    };
   });
-  const markMemoryCleanupUnconfirmed = vi.fn(async () => {
-    phases.push("uncertainty commit");
-  });
+  const settleMemoryCleanup = vi.fn<ThreadEvents["settleMemoryCleanup"]>(
+    async ({ unconfirmed }) => {
+      phases.push("settlement commit");
+      sticky ||= unconfirmed;
+      return { ...(sticky ? { memoryCleanupUnconfirmed: true } : {}), memoryCleanupPending: false };
+    },
+  );
   const purgeHistory = vi.fn<SemanticMemoryProvider["purgeHistory"]>(async () => {
     phases.push("external purge");
     return { ok: true, value: undefined };
@@ -53,11 +61,11 @@ function fixture() {
     },
     defaultScope: "isolated",
   }));
-  const saved = vi.fn(async () => null as { spaceId: string } | null);
+  const saved = vi.fn(async () => ({ spaceId: input.spaceId }) as { spaceId: string } | null);
   const cancel = vi.fn(async () => false);
   const deps = {
     prisma: { spaceMemoryConfig: { findUnique: saved } },
-    events: { clearThread, markMemoryCleanupUnconfirmed },
+    events: { clearThread, settleMemoryCleanup },
     jobs: { cancel },
     memoryProviders: { resolve },
   };
@@ -69,86 +77,123 @@ function fixture() {
     );
   return {
     execute,
-    receipt,
     phases,
     clearThread,
-    markMemoryCleanupUnconfirmed,
+    settleMemoryCleanup,
     purgeHistory,
     resolve,
     saved,
     cancel,
+    setSticky: () => {
+      sticky = true;
+    },
   };
 }
 
 describe("clear conversation cleanup outcome", () => {
-  it("commits the local clear before network cleanup and keeps the actual generation scope", async () => {
+  it("registers cleanup in the local clear before network work and settles only its actual generation scope", async () => {
     const f = fixture();
-    await expect(f.execute()).resolves.toEqual({ ok: true });
-    expect(f.phases).toEqual(["local commit", "external purge"]);
-    expect(f.purgeHistory).toHaveBeenCalledWith(
+    await expect(f.execute()).resolves.toEqual({
+      ok: true,
+      threadId: input.threadId,
+      memoryCleanupCursor: 1,
+      memoryCleanupPending: false,
+    });
+    expect(f.phases).toEqual(["local commit", "external purge", "settlement commit"]);
+    expect(f.clearThread).toHaveBeenCalledExactlyOnceWith({
+      ...input,
+      memoryCleanupExpected: true,
+    });
+    expect(f.purgeHistory).toHaveBeenCalledExactlyOnceWith(
       { botId: input.botId, generations: [2, 3] },
       context,
     );
+    expect(f.settleMemoryCleanup).toHaveBeenCalledExactlyOnceWith({
+      ...input,
+      token: "clear:4",
+      unconfirmed: false,
+    });
     expect(f.cancel).toHaveBeenCalledExactlyOnceWith(runJobKey("run-one"));
-    expect(f.markMemoryCleanupUnconfirmed).not.toHaveBeenCalled();
   });
   it.each(["denied", "throws", "resolution fails", "disabled", "config lookup fails"])(
-    "exposes an unconfirmed cleanup when %s",
+    "retains an unconfirmed cleanup when %s",
     async (mode) => {
       const f = fixture();
       if (mode === "denied")
-        f.purgeHistory.mockResolvedValue({
-          ok: false,
-          error: "synthetic secret must not be returned",
-        });
-      if (mode === "throws")
-        f.purgeHistory.mockRejectedValue(new Error("synthetic secret must not be returned"));
+        f.purgeHistory.mockResolvedValue({ ok: false, error: "synthetic private error" });
+      if (mode === "throws") f.purgeHistory.mockRejectedValue(new Error("synthetic private error"));
       if (mode === "resolution fails")
-        f.resolve.mockRejectedValue(new Error("synthetic secret must not be returned"));
+        f.resolve.mockRejectedValue(new Error("synthetic private error"));
       if (mode === "disabled" || mode === "config lookup fails") f.resolve.mockResolvedValue(null);
-      if (mode === "disabled") f.saved.mockResolvedValue({ spaceId: input.spaceId });
       if (mode === "config lookup fails")
         f.saved.mockRejectedValue(new Error("configuration unavailable"));
-      await expect(f.execute()).resolves.toEqual({ ok: true, memoryCleanupUnconfirmed: true });
-      expect(f.markMemoryCleanupUnconfirmed).toHaveBeenCalledExactlyOnceWith(input);
-      expect(f.phases.at(-1)).toBe("uncertainty commit");
+      await expect(f.execute()).resolves.toEqual({
+        ok: true,
+        threadId: input.threadId,
+        memoryCleanupCursor: 1,
+        memoryCleanupUnconfirmed: true,
+        memoryCleanupPending: false,
+      });
+      expect(f.settleMemoryCleanup).toHaveBeenCalledExactlyOnceWith({
+        ...input,
+        token: "clear:4",
+        unconfirmed: true,
+      });
     },
   );
-  it("keeps a prior uncertainty when the requested newer generations now succeed", async () => {
+  it("retains a prior failure after another cleanup succeeds", async () => {
     const f = fixture();
-    f.clearThread.mockResolvedValue({
-      ...f.receipt,
-      cancelledRunIds: [],
-      historyCompactionGeneration: 5,
+    f.setSticky();
+    await expect(f.execute()).resolves.toMatchObject({
+      ok: true,
       memoryCleanupUnconfirmed: true,
+      memoryCleanupPending: false,
     });
-    await expect(f.execute()).resolves.toEqual({ ok: true, memoryCleanupUnconfirmed: true });
-    expect(f.purgeHistory).toHaveBeenCalledOnce();
-    expect(f.markMemoryCleanupUnconfirmed).toHaveBeenCalledOnce();
   });
-  it("does not invent a failure when no provider is configured", async () => {
+  it("does not create cleanup work when no provider is configured", async () => {
     const f = fixture();
-    f.resolve.mockResolvedValue(null);
-    await expect(f.execute()).resolves.toEqual({ ok: true });
-    expect(f.saved).toHaveBeenCalledExactlyOnceWith({
-      where: { spaceId: input.spaceId },
-      select: { spaceId: true },
+    f.saved.mockResolvedValue(null);
+    await expect(f.execute()).resolves.toEqual({
+      ok: true,
+      threadId: input.threadId,
+      memoryCleanupCursor: 1,
+      memoryCleanupPending: false,
     });
-    expect(f.markMemoryCleanupUnconfirmed).not.toHaveBeenCalled();
+    expect(f.clearThread).toHaveBeenCalledExactlyOnceWith(input);
+    expect(f.resolve).not.toHaveBeenCalled();
+    expect(f.settleMemoryCleanup).not.toHaveBeenCalled();
   });
   it("does not probe or clear external history for a group", async () => {
     const f = fixture();
-    await expect(f.execute({ ...input, groupId: "group-one" })).resolves.toEqual({
+    await expect(f.execute({ ...input, groupId: "group-one" })).resolves.toMatchObject({
       ok: true,
+      memoryCleanupPending: false,
     });
     expect(f.resolve).not.toHaveBeenCalled();
     expect(f.saved).not.toHaveBeenCalled();
     expect(f.purgeHistory).not.toHaveBeenCalled();
   });
-  it("does not report a recorded failure when its persistence transaction fails", async () => {
+  it.each([false, true])(
+    "returns the committed local clear when settlement fails (purge failed: %s)",
+    async (failed) => {
+      const f = fixture();
+      if (failed) f.purgeHistory.mockResolvedValue({ ok: false, error: "denied" });
+      f.settleMemoryCleanup.mockRejectedValue(new Error("state transaction failed"));
+      await expect(f.execute()).resolves.toEqual({
+        ok: true,
+        threadId: input.threadId,
+        memoryCleanupCursor: 1,
+        memoryCleanupPending: true,
+        ...(failed ? { memoryCleanupUnconfirmed: true } : {}),
+      });
+      expect(f.purgeHistory).toHaveBeenCalledOnce();
+    },
+  );
+  it("does not call a provider if registering the destructive clear fails", async () => {
     const f = fixture();
-    f.purgeHistory.mockRejectedValue(new Error("denied"));
-    f.markMemoryCleanupUnconfirmed.mockRejectedValue(new Error("state transaction failed"));
-    await expect(f.execute()).rejects.toThrow("state transaction failed");
+    f.clearThread.mockRejectedValue(new Error("transaction failed"));
+    await expect(f.execute()).rejects.toThrow("transaction failed");
+    expect(f.resolve).not.toHaveBeenCalled();
+    expect(f.purgeHistory).not.toHaveBeenCalled();
   });
 });

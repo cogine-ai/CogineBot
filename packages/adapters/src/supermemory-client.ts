@@ -4,12 +4,12 @@ import { isLocalMcpHost } from "@rakazo/contracts";
 import { sanitizeConnectorError } from "./connector-safety.js";
 import type { ResolvedAddress, ResolveHostname } from "./network-address.js";
 import { createPrivateNetworkFetch } from "./remote-mcp.js";
-import { readBodyCapped } from "./web-ssrf.js";
+import { readBodyCapped, withAbort } from "./web-ssrf.js";
 
 const SUPERMEMORY_TIMEOUT_MS = 15_000;
 export const SUPERMEMORY_CLOUD_BASE_URL = "https://api.supermemory.ai";
 
-/** Shared bound for search results, connection lists and cleanup acknowledgments. */
+/** Bound for search results, cleanup acknowledgments and the first probe-list entry. */
 export const MAX_SUPERMEMORY_RESPONSE_BYTES = 1024 * 1024;
 
 /** How many recalled memories a search asks for, and the most that are ever injected into a run. */
@@ -333,7 +333,13 @@ export async function deleteSupermemoryContainer(
           data &&
           typeof data === "object" &&
           (data as { success?: unknown }).success === true &&
-          (data as { containerTag?: unknown }).containerTag === containerTag
+          (data as { containerTag?: unknown }).containerTag === containerTag &&
+          typeof (data as { deletedDocumentsCount?: unknown }).deletedDocumentsCount === "number" &&
+          Number.isInteger((data as { deletedDocumentsCount: number }).deletedDocumentsCount) &&
+          (data as { deletedDocumentsCount: number }).deletedDocumentsCount >= 0 &&
+          typeof (data as { deletedMemoriesCount?: unknown }).deletedMemoriesCount === "number" &&
+          Number.isInteger((data as { deletedMemoriesCount: number }).deletedMemoriesCount) &&
+          (data as { deletedMemoriesCount: number }).deletedMemoriesCount >= 0
         )
           return { ok: true };
         return { ok: false, error: "Supermemory returned an invalid deletion acknowledgment." };
@@ -408,6 +414,86 @@ export async function saveSupermemoryMemoryToContainers(
       };
 }
 
+/** Probe only the first list entry: account size must not determine connection validity. */
+async function readContainerListSignature(response: Response, signal: AbortSignal): Promise<void> {
+  if (!response.body) throw new SyntaxError("Missing list body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let prefix = "";
+  let bytes = 0;
+  let scanned = 0;
+  let opened = false;
+  let start = -1;
+  let end = -1;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let empty = false;
+  try {
+    for (;;) {
+      const { done, value } = await withAbort(reader.read(), signal);
+      if (done) {
+        if (empty) return;
+        throw new SyntaxError("Incomplete list signature");
+      }
+      const take = Math.min(value.byteLength, MAX_SUPERMEMORY_RESPONSE_BYTES - bytes);
+      prefix += decoder.decode(value.subarray(0, take), { stream: true });
+      bytes += take;
+      for (; scanned < prefix.length; scanned++) {
+        const char = prefix[scanned]!;
+        const whitespace = /[ \t\n\r]/.test(char);
+        if (empty) {
+          if (!whitespace) throw new SyntaxError("Invalid empty list");
+          continue;
+        }
+        if (!opened) {
+          if (whitespace) continue;
+          if (char !== "[") throw new SyntaxError("Invalid list opening");
+          opened = true;
+          continue;
+        }
+        if (start < 0) {
+          if (whitespace) continue;
+          if (char === "]") {
+            empty = true;
+            continue;
+          }
+          if (char !== "{") throw new SyntaxError("Invalid first list entry");
+          start = scanned;
+          depth = 1;
+          continue;
+        }
+        if (end >= 0) {
+          if (whitespace) continue;
+          if (char !== "," && char !== "]") throw new SyntaxError("Invalid list separator");
+          const item: unknown = JSON.parse(prefix.slice(start, end));
+          if (
+            !item ||
+            typeof item !== "object" ||
+            typeof (item as { containerTag?: unknown }).containerTag !== "string"
+          )
+            throw new SyntaxError("Invalid container signature");
+          return;
+        }
+        if (quoted) {
+          if (escaped) escaped = false;
+          else if (char === "\\") escaped = true;
+          else if (char === '"') quoted = false;
+        } else if (char === '"') quoted = true;
+        else if (char === "{" || char === "[") depth++;
+        else if (char === "}" || char === "]") {
+          depth--;
+          if (depth === 0) end = scanned + 1;
+        }
+      }
+      if (bytes === MAX_SUPERMEMORY_RESPONSE_BYTES)
+        throw new Error("Supermemory response is too large.");
+    }
+  } finally {
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
 export async function probeSupermemory(
   config: SupermemoryConnectionConfig,
 ): Promise<SupermemoryProbeResponse> {
@@ -427,17 +513,7 @@ export async function probeSupermemory(
       if (!response.ok) {
         return { ok: false, error: `Supermemory rejected the connection: ${response.status}` };
       }
-      const data = await readSupermemoryJson(response, requestAbort);
-      if (
-        !Array.isArray(data) ||
-        !data.every(
-          (item: unknown) =>
-            item &&
-            typeof item === "object" &&
-            typeof (item as { containerTag?: unknown }).containerTag === "string",
-        )
-      )
-        return { ok: false, error: "Supermemory returned an invalid container list." };
+      await readContainerListSignature(response, requestAbort);
       return { ok: true };
     } finally {
       await releaseUnreadBody(response);

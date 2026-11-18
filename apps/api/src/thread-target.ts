@@ -51,6 +51,7 @@ import {
   eligibleWaitingTextAnswer,
   expireComputerExecutionLeases,
   groupMemberOrderBy,
+  hasPendingMemoryCleanup,
   IsolationError,
   loadThreadAttention,
   lockOwnedGroup,
@@ -394,8 +395,14 @@ export async function threadSnapshot(
       }),
       deps.prisma.$transaction(
         async (tx) => {
-          const [cleanupState] = await tx.$queryRaw<Array<{ memoryCleanupUnconfirmed: boolean }>>`
-            SELECT id, "memoryCleanupUnconfirmed" FROM threads WHERE id = ${target.threadId} FOR SHARE
+          const [cleanupState] = await tx.$queryRaw<
+            Array<{
+              memoryCleanupUnconfirmed: boolean;
+              memoryCleanupIntents: Prisma.JsonValue;
+              historyCompactionGeneration: number;
+            }>
+          >`
+            SELECT id, "memoryCleanupUnconfirmed", "memoryCleanupIntents", "historyCompactionGeneration" FROM threads WHERE id = ${target.threadId} FOR SHARE
           `;
           const [messagePage, last, waitingRun, busyOrFailed, quotaRuns, attention] =
             await Promise.all([
@@ -488,6 +495,10 @@ export async function threadSnapshot(
             liveEvents,
             attention,
             cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
+            cleanupPending: hasPendingMemoryCleanup(
+              cleanupState?.memoryCleanupIntents ?? [],
+              cleanupState?.historyCompactionGeneration ?? 0,
+            ),
           };
         },
         { timeout: 15_000, maxWait: 5_000 },
@@ -504,6 +515,7 @@ export async function threadSnapshot(
       botId: target.botId,
       threadId: target.threadId,
       ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+      memoryCleanupPending: core.cleanupPending,
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
@@ -518,8 +530,14 @@ export async function threadSnapshot(
 
   const core = await deps.prisma.$transaction(
     async (tx) => {
-      const [cleanupState] = await tx.$queryRaw<Array<{ memoryCleanupUnconfirmed: boolean }>>`
-            SELECT id, "memoryCleanupUnconfirmed" FROM threads WHERE id = ${target.threadId} FOR SHARE
+      const [cleanupState] = await tx.$queryRaw<
+        Array<{
+          memoryCleanupUnconfirmed: boolean;
+          memoryCleanupIntents: Prisma.JsonValue;
+          historyCompactionGeneration: number;
+        }>
+      >`
+            SELECT id, "memoryCleanupUnconfirmed", "memoryCleanupIntents", "historyCompactionGeneration" FROM threads WHERE id = ${target.threadId} FOR SHARE
           `;
       const [messagePage, last, activeRuns, recentTerminals, attention] = await Promise.all([
         loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
@@ -583,6 +601,10 @@ export async function threadSnapshot(
         liveEvents,
         attention,
         cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
+        cleanupPending: hasPendingMemoryCleanup(
+          cleanupState?.memoryCleanupIntents ?? [],
+          cleanupState?.historyCompactionGeneration ?? 0,
+        ),
       };
     },
     { timeout: 15_000, maxWait: 5_000 },
@@ -594,6 +616,7 @@ export async function threadSnapshot(
     members: target.members,
     threadId: target.threadId,
     ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    memoryCleanupPending: core.cleanupPending,
     cursor: core.last?.seq ?? -1,
     messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
     olderCursor: core.messagePage.olderCursor,

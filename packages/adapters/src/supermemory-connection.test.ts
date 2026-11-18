@@ -212,24 +212,90 @@ describe("readable protocol responses", () => {
     },
   );
 
-  it.each([false, true])("bounds the list response with declared size %s", async (declared) => {
-    const cancel = vi.fn();
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new Uint8Array(MAX_SUPERMEMORY_RESPONSE_BYTES + 1));
-      },
-      cancel,
-    });
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () =>
-        new Response(body, {
-          headers: declared ? { "content-length": String(MAX_SUPERMEMORY_RESPONSE_BYTES + 1) } : {},
-        }),
+  it.each([false, true])(
+    "bounds an incomplete first list entry with declared size %s",
+    async (declared) => {
+      const cancel = vi.fn();
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              `[{"description":"${"a".repeat(MAX_SUPERMEMORY_RESPONSE_BYTES)}`,
+            ),
+          );
+        },
+        cancel,
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(body, {
+            headers: declared
+              ? { "content-length": String(MAX_SUPERMEMORY_RESPONSE_BYTES + 1) }
+              : {},
+          }),
+      );
+      await expect(
+        probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
+      ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("too large") });
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+  it.each([false, true])(
+    "accepts a large list after one complete signature (declared size: %s)",
+    async (declared) => {
+      const payload = JSON.stringify(
+        Array.from({ length: 50_000 }, () => ({ containerTag: "synthetic-container" })),
+      );
+      expect(payload.length).toBeGreaterThan(MAX_SUPERMEMORY_RESPONSE_BYTES);
+      const boundary = payload.indexOf("},") + 2;
+      let reads = 0;
+      const cancel = vi.fn();
+      const body = new ReadableStream(
+        {
+          pull(controller) {
+            reads++;
+            controller.enqueue(
+              new TextEncoder().encode(
+                reads === 1 ? payload.slice(0, boundary) : payload.slice(boundary),
+              ),
+            );
+            if (reads > 1) controller.close();
+          },
+          cancel,
+        },
+        { highWaterMark: 0 },
+      );
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(body, {
+            headers: declared ? { "content-length": String(payload.length) } : {},
+          }),
+      );
+      await expect(
+        probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
+      ).resolves.toEqual({ ok: true });
+      expect(reads).toBe(1);
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+  it("recognizes escaped and multibyte first-item strings across byte boundaries", async () => {
+    const bytes = new TextEncoder().encode(
+      JSON.stringify([{ nested: { text: '}]["\\\\' }, containerTag: 'synthetic-中文-"\\' }]),
     );
+    let offset = 0;
+    const body = new ReadableStream(
+      {
+        pull(controller) {
+          if (offset === bytes.length) controller.close();
+          else controller.enqueue(bytes.subarray(offset, ++offset));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
     await expect(
       probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
-    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("too large") });
-    expect(cancel).toHaveBeenCalledOnce();
+    ).resolves.toEqual({ ok: true });
   });
 });
 
@@ -261,6 +327,11 @@ describe("confirmed cleanup responses", () => {
     JSON.stringify({ ...receipt, success: false }),
     JSON.stringify({ containerTag: tag }),
     JSON.stringify({ ...receipt, containerTag: "another-container" }),
+    JSON.stringify({ success: true, containerTag: tag }),
+    JSON.stringify({ ...receipt, deletedDocumentsCount: undefined }),
+    JSON.stringify({ ...receipt, deletedMemoriesCount: undefined }),
+    JSON.stringify({ ...receipt, deletedDocumentsCount: -1 }),
+    JSON.stringify({ ...receipt, deletedMemoriesCount: "0" }),
   ])("rejects an unconfirmed successful cleanup %s", async (body) => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
     await expect(
@@ -308,7 +379,7 @@ it.each(["probe", "delete"] as const)(
       pulled = resolve;
     });
     const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response(new ReadableStream({ pull: pulled, cancel })),
+      async () => new Response(new ReadableStream({ pull: pulled, cancel }, { highWaterMark: 0 })),
     );
     try {
       const connection = { baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch };

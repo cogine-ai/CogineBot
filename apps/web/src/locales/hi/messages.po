@@ -7570,8 +7570,8 @@ msgstr "मॉडल कनेक्शन बदल गया है। फि�
 
 #: src/pages/Shell.tsx
 msgid "Messages cleared. External memory cleanup could not be confirmed."
-msgstr "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "संदेश मिटा दिए गए। बाहरी मेमोरी की सफ़ाई की पुष्टि नहीं हो सकी।"
 
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
-msgstr "External memory cleanup could not be confirmed."
+msgstr "बाहरी मेमोरी की सफ़ाई की पुष्टि नहीं हो सकी।"

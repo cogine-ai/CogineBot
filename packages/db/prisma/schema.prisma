@@ -712,6 +712,7 @@ model Thread {
   historyCompactionGeneration Int        @default(0)
   historyCompactionRetryAfterSeq Int?
   memoryCleanupUnconfirmed    Boolean    @default(false)
+  memoryCleanupIntents        Json       @default("[]")
   unread                      Boolean    @default(false)
   messages                    Message[]
   events                      Event[]

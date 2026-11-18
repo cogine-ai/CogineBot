@@ -823,6 +823,12 @@ function Thread({
   const snapRef = useRef<MobileSnapshot | null>(null);
   const seenMemoryCleanupNotices = useRef(new Set<string>());
   const pendingMemoryCleanupClears = useRef(new Set<string>());
+  const pendingMemoryCleanupEvents = useRef(
+    new Map<
+      string,
+      { seq: number; owner: string; subscription: number; unconfirmed?: true; pending?: boolean }
+    >(),
+  );
   const memoryCleanupAlertBlocked = useRef(false);
   const memoryCleanupOwner = JSON.stringify([ownerUserId, sessionEpoch, profileScope]);
   const memoryCleanupOwnerRef = useRef(memoryCleanupOwner);
@@ -832,7 +838,7 @@ function Thread({
       if (memoryCleanupAlertBlocked.current) return;
       const key = JSON.stringify([memoryCleanupOwner, id]);
       if (!immediate && pendingMemoryCleanupClears.current.has(key)) return;
-      if (seenMemoryCleanupNotices.current.has(key)) return;
+      if (!immediate && seenMemoryCleanupNotices.current.has(key)) return;
       seenMemoryCleanupNotices.current.add(key);
       Alert.alert(
         t("Clear conversation"),
@@ -856,6 +862,22 @@ function Thread({
   streamResponsesRef.current = streamResponses;
 
   function commitSnap(next: MobileSnapshot | null) {
+    if (next) {
+      const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
+      if (
+        cleanup?.owner === memoryCleanupOwnerRef.current &&
+        cleanup.subscription === liveSubscriptionGeneration.current
+      ) {
+        next = {
+          ...next,
+          ...(cleanup.unconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
+          ...(cleanup.seq >= (next.cursor ?? -1) && cleanup.pending !== undefined
+            ? { memoryCleanupPending: cleanup.pending }
+            : {}),
+        };
+      }
+      pendingMemoryCleanupEvents.current.delete(next.threadId);
+    }
     snapRef.current = next;
     const visible = withLiveStreamingProgress(next, streamResponsesRef.current);
     setSnap((previous) => reconcileVisibleThreadSnapshot(previous, visible));
@@ -1507,21 +1529,48 @@ function Thread({
     const owner = memoryCleanupOwner;
     const targetThreadId = snapRef.current?.threadId;
     const cleanupKey = targetThreadId ? JSON.stringify([owner, targetThreadId]) : null;
-    if (cleanupKey) pendingMemoryCleanupClears.current.add(cleanupKey);
+    if (cleanupKey) {
+      pendingMemoryCleanupClears.current.add(cleanupKey);
+      seenMemoryCleanupNotices.current.delete(cleanupKey);
+    }
     const epoch = historyEpoch.current;
-    void rpc<{ ok: true; memoryCleanupUnconfirmed?: true }>("threads/clear", { botId })
+    void rpc<{
+      ok: true;
+      threadId?: string;
+      memoryCleanupUnconfirmed?: true;
+      memoryCleanupPending?: boolean;
+      memoryCleanupCursor?: number;
+    }>("threads/clear", { botId })
       .then((result) => {
         if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
         if (
           memoryCleanupOwnerRef.current !== owner ||
           activeBotId.current !== botId ||
-          (targetThreadId && snapRef.current?.threadId !== targetThreadId)
+          (targetThreadId && snapRef.current?.threadId !== targetThreadId) ||
+          (result.threadId && snapRef.current?.threadId !== result.threadId)
         )
           return;
-        if (result.memoryCleanupUnconfirmed && snapRef.current) {
+        if (snapRef.current) {
+          commitSnap({
+            ...snapRef.current,
+            ...(result.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
+            ...(result.memoryCleanupPending === undefined ||
+            (result.memoryCleanupCursor !== undefined &&
+              result.memoryCleanupCursor < (snapRef.current.cursor ?? -1))
+              ? {}
+              : { memoryCleanupPending: result.memoryCleanupPending }),
+          });
+        }
+        if (
+          (snapRef.current?.memoryCleanupUnconfirmed || snapRef.current?.memoryCleanupPending) &&
+          (result.memoryCleanupUnconfirmed || result.memoryCleanupPending) &&
+          snapRef.current
+        ) {
           showMemoryCleanupNotice(snapRef.current.threadId, true);
-          commitSnap({ ...snapRef.current, memoryCleanupUnconfirmed: true });
-        } else if (snapRef.current?.memoryCleanupUnconfirmed) {
+        } else if (
+          snapRef.current?.memoryCleanupUnconfirmed ||
+          snapRef.current?.memoryCleanupPending
+        ) {
           showMemoryCleanupNotice(snapRef.current.threadId, false);
         }
         if (epoch !== historyEpoch.current) return;
@@ -1536,11 +1585,22 @@ function Thread({
             : snapRef.current,
         );
       })
-      .catch((err: unknown) =>
-        Alert.alert(t("Could not clear conversation"), errorText(err, t("Try again."))),
-      )
-      .finally(() => {
-        if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
+      .catch((err: unknown) => {
+        Alert.alert(t("Could not clear conversation"), errorText(err, t("Try again.")), [
+          {
+            text: t("Close"),
+            onPress: () => {
+              if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
+              if (
+                memoryCleanupOwnerRef.current === owner &&
+                activeBotId.current === botId &&
+                (!targetThreadId || snapRef.current?.threadId === targetThreadId) &&
+                snapRef.current?.memoryCleanupUnconfirmed
+              )
+                showMemoryCleanupNotice(snapRef.current.threadId, false);
+            },
+          },
+        ]);
       });
   }
 
@@ -2016,13 +2076,45 @@ function Thread({
                 activeGroupId.current !== groupId ||
                 (event.threadId &&
                   snapRef.current?.threadId &&
-                  event.threadId !== snapRef.current.threadId)
+                  event.threadId !== snapRef.current.threadId &&
+                  !(
+                    event.type === "thread.meta" &&
+                    (event.payload?.memoryCleanupUnconfirmed === true ||
+                      typeof event.payload?.memoryCleanupPending === "boolean")
+                  ))
               )
                 return;
               replyEventObserver.current(event);
               if (event.type === "thread.message.updated") refreshDelegatedApprovals.current();
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
+              if (
+                event.type === "thread.meta" &&
+                event.threadId &&
+                (event.payload?.memoryCleanupUnconfirmed === true ||
+                  typeof event.payload?.memoryCleanupPending === "boolean") &&
+                snapRef.current?.threadId !== event.threadId
+              ) {
+                const entry = pendingMemoryCleanupEvents.current.get(event.threadId);
+                const previous =
+                  entry?.owner === memoryCleanupOwnerRef.current &&
+                  entry.subscription === subscriptionGeneration
+                    ? entry
+                    : undefined;
+                if (previous && (event.seq ?? -1) <= previous.seq) return;
+                pendingMemoryCleanupEvents.current.set(event.threadId, {
+                  seq: event.seq ?? -1,
+                  owner: memoryCleanupOwnerRef.current,
+                  subscription: subscriptionGeneration,
+                  ...(previous?.unconfirmed || event.payload?.memoryCleanupUnconfirmed === true
+                    ? { unconfirmed: true }
+                    : {}),
+                  ...(typeof event.payload?.memoryCleanupPending === "boolean"
+                    ? { pending: event.payload.memoryCleanupPending }
+                    : {}),
+                });
+                return;
+              }
               if (
                 event.type === "thread.progress" ||
                 event.type === "agent.tool.called" ||
@@ -2612,7 +2704,13 @@ function Thread({
   memoryCleanupAlertBlocked.current = Boolean(error || runError || !focused);
   useEffect(() => {
     const sameTarget = botId ? snap?.botId === botId : snap?.groupId === groupId;
-    if (focused && !error && !runError && sameTarget && snap?.memoryCleanupUnconfirmed) {
+    if (
+      focused &&
+      !error &&
+      !runError &&
+      sameTarget &&
+      (snap?.memoryCleanupUnconfirmed || snap?.memoryCleanupPending)
+    ) {
       showMemoryCleanupNotice(snap.threadId, false);
     }
   }, [
@@ -2625,6 +2723,7 @@ function Thread({
     snap?.groupId,
     snap?.threadId,
     snap?.memoryCleanupUnconfirmed,
+    snap?.memoryCleanupPending,
     showMemoryCleanupNotice,
   ]);
   useSyncExternalStore(

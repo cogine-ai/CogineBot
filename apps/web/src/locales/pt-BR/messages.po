@@ -7570,8 +7570,8 @@ msgstr "A conexão do modelo mudou. Recarregue e tente novamente."
 
 #: src/pages/Shell.tsx
 msgid "Messages cleared. External memory cleanup could not be confirmed."
-msgstr "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Mensagens apagadas. Não foi possível confirmar a limpeza da memória externa."
 
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
-msgstr "External memory cleanup could not be confirmed."
+msgstr "Não foi possível confirmar a limpeza da memória externa."

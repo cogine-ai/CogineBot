@@ -88,6 +88,7 @@ describe("createBackgroundJobHandlers", () => {
     const jobs = {} as unknown as JobPublisher;
     const secretStore = {} as unknown as EncryptedSecretStore;
     const memoryProviders = { resolve: vi.fn(async () => null) };
+    const events = {} as unknown as ThreadEvents;
     const resolveModel = vi.fn();
     const handlers = createBackgroundJobHandlers({
       executor: { resolveModel, contextStrategy: "current" } as unknown as ReturnType<
@@ -97,7 +98,7 @@ describe("createBackgroundJobHandlers", () => {
       sandbox: {} as unknown as SandboxProvider,
       home: {} as unknown as AgentHomeStore,
       jobs,
-      events: {} as unknown as ThreadEvents,
+      events,
       workerId: "worker-1",
       runtime,
       secretStore,
@@ -113,7 +114,9 @@ describe("createBackgroundJobHandlers", () => {
         prisma,
         runtime,
         jobs,
+        events,
         memoryProviders,
+        platformModelAllowlist: undefined,
         deploymentModelKey: "openrouter-key",
         deploymentModelConfigured: true,
         resolveModel,

@@ -11,6 +11,7 @@ import { build, Platform } from "electron-builder";
 import type { ViteDevServer } from "vite";
 import { createServer } from "vite";
 import { developmentBuildConfiguration } from "../src/development-build.js";
+import { closePendingApplications } from "./application-teardown.js";
 
 // Native OS associations belong only to this disposable Linux CI session.
 test.skip(
@@ -125,7 +126,14 @@ async function consoleWindow(app: ElectronApplication): Promise<Page> {
 }
 
 async function close(app: ElectronApplication) {
-  await app.close();
+  const process = app.process();
+  if (process.exitCode === null && process.signalCode === null) {
+    try {
+      await app.close();
+    } catch (error) {
+      if (process.exitCode === null && process.signalCode === null) throw error;
+    }
+  }
   apps.delete(app);
 }
 
@@ -134,12 +142,13 @@ async function closeNativeWindow() {
   await expect.poll(async () => (await nativeWindows()).length).toBe(0);
 }
 
-async function nativeDialogs() {
+async function nativeDialogs(windowTitle?: string) {
   const { stdout } = await nativeWindowList();
   const windows = stdout
     .split("\n")
     .filter(Boolean)
-    .map((line) => ({ id: line.split(/\s+/)[0]!, title: line.split(/\s+/).slice(3).join(" ") }));
+    .map((line) => ({ id: line.split(/\s+/)[0]!, title: line.split(/\s+/).slice(3).join(" ") }))
+    .filter((win) => windowTitle === undefined || win.title === windowTitle);
   const inspected = await Promise.all(
     windows.map(async (win) => {
       const properties = await exec("xprop", [
@@ -162,7 +171,7 @@ async function nativeDialog(title: string, timeout?: number) {
   await expect
     .poll(
       async () => {
-        const dialogs = await nativeDialogs();
+        const dialogs = await nativeDialogs(title);
         id = dialogs.length === 1 ? dialogs[0]! : "";
         return id;
       },
@@ -200,15 +209,23 @@ async function dismissDialog(title: string, screenshot: string, retry = true) {
 }
 
 async function closeApplications() {
-  // A synchronous native error dialog blocks Electron's inspector until dismissed.
-  // Close only the dialogs in this disposable test session before app.close().
-  for (const id of await nativeDialogs()) {
-    await exec("xdotool", ["windowactivate", "--sync", id]);
-    await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
+  const errors: unknown[] = [];
+  for (let pass = 0; pass < 2; pass++) {
+    try {
+      for (const id of await nativeDialogs()) {
+        try {
+          await exec("xdotool", ["windowactivate", "--sync", id]);
+          await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
+        } catch (error) {
+          if (!(error as { stderr?: string }).stderr?.includes("BadWindow")) errors.push(error);
+        }
+      }
+    } catch (error) {
+      errors.push(error);
+    }
   }
-  // Dismissing native dialogs above lets pending attachment settle before closing its app.
-  await Promise.allSettled([...pendingLaunches]);
-  for (const app of apps) await close(app).catch(() => undefined);
+  errors.push(...(await closePendingApplications(pendingLaunches, apps, close)));
+  return errors;
 }
 
 async function startFixtureServer(port = 0) {
@@ -336,83 +353,101 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await closeApplications();
+  const errors = await closeApplications();
+  const cleanup = async (operation: () => unknown) => {
+    try {
+      await operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
   if (root) {
-    await closeNativeWindow();
-    await exec(process.execPath, ["scripts/development.mjs", "unregister"], {
-      cwd: desktop,
-      env,
-      timeout: 30_000,
-    });
-    for (const response of stalledResponses) response.destroy();
-    await vite?.close();
-    for (const child of dispatches) if (child.exitCode === null) child.kill();
-    await rm(root, { recursive: true, force: true });
+    await cleanup(closeNativeWindow);
+    await cleanup(() =>
+      exec(process.execPath, ["scripts/development.mjs", "unregister"], {
+        cwd: desktop,
+        env,
+        timeout: 30_000,
+      }),
+    );
+    for (const response of stalledResponses) await cleanup(() => response.destroy());
+    await cleanup(() => vite?.close());
+    for (const child of dispatches) if (child.exitCode === null) await cleanup(() => child.kill());
+    await cleanup(() => rm(root, { recursive: true, force: true }));
   }
+  if (errors.length) throw new AggregateError(errors, "Desktop fixture cleanup failed.");
 });
 
 test.afterEach(async () => {
   const info = test.info();
   if (info.status === info.expectedStatus) return;
-  const nativeScreenshot = info.outputPath("native-failure.png");
-  if (
-    await exec("scrot", [nativeScreenshot]).then(
-      () => true,
-      () => false,
-    )
-  ) {
-    await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
-  }
-  const { stdout: windows } = await nativeWindowList(true);
-  const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
-  await info.attach("native-dispatch-state", {
-    body: JSON.stringify(
-      {
-        windows,
-        documents: documentRequests,
-        fixtureListening: vite?.httpServer?.listening,
-        applications: await Promise.all(
-          [...apps].map(async (application) => ({
-            pid: application.process().pid,
-            exit: application.process().exitCode,
-            stderr: applicationErrors.get(application),
-            pages: application
-              .windows()
-              .map((page) => ({ url: page.url(), closed: page.isClosed() })),
-            main: await Promise.race([
-              application
-                .evaluate(({ app, BrowserWindow }) => ({
-                  ready: app.isReady(),
-                  windows: BrowserWindow.getAllWindows().map((win) => ({
-                    id: win.id,
-                    bounds: win.getBounds(),
-                    visible: win.isVisible(),
-                    url: win.webContents.getURL(),
-                    loading: win.webContents.isLoading(),
-                  })),
-                  marks: performance
-                    .getEntriesByType("mark")
-                    .map(({ name, startTime }) => ({ name, startTime })),
-                }))
-                .catch((error: Error) => ({ error: error.message })),
-              // A synchronous native error box can block main-process RPC.
-              delay(1_000, { error: "Main-process diagnostics timed out." }),
-            ]),
+  const errors: unknown[] = [];
+  try {
+    const nativeScreenshot = info.outputPath("native-failure.png");
+    if (
+      await exec("scrot", [nativeScreenshot]).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
+    }
+    const { stdout: windows } = await nativeWindowList(true);
+    const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
+    await info.attach("native-dispatch-state", {
+      body: JSON.stringify(
+        {
+          windows,
+          documents: documentRequests,
+          fixtureListening: vite?.httpServer?.listening,
+          applications: await Promise.all(
+            [...apps].map(async (application) => ({
+              pid: application.process().pid,
+              exit: application.process().exitCode,
+              stderr: applicationErrors.get(application),
+              pages: application
+                .windows()
+                .map((page) => ({ url: page.url(), closed: page.isClosed() })),
+              main: await Promise.race([
+                application
+                  .evaluate(({ app, BrowserWindow }) => ({
+                    ready: app.isReady(),
+                    windows: BrowserWindow.getAllWindows().map((win) => ({
+                      id: win.id,
+                      bounds: win.getBounds(),
+                      visible: win.isVisible(),
+                      url: win.webContents.getURL(),
+                      loading: win.webContents.isLoading(),
+                    })),
+                    marks: performance
+                      .getEntriesByType("mark")
+                      .map(({ name, startTime }) => ({ name, startTime })),
+                  }))
+                  .catch((error: Error) => ({ error: error.message })),
+                // A synchronous native error box can block main-process RPC.
+                delay(1_000, { error: "Main-process diagnostics timed out." }),
+              ]),
+            })),
+          ),
+          processes: processes
+            .split("\n")
+            .filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
+          children: dispatches.map((child) => ({
+            pid: child.pid,
+            exit: child.exitCode,
+            signal: child.signalCode,
           })),
-        ),
-        processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
-        children: dispatches.map((child) => ({
-          pid: child.pid,
-          exit: child.exitCode,
-          signal: child.signalCode,
-        })),
-      },
-      null,
-      2,
-    ),
-    contentType: "application/json",
-  });
-  await closeApplications();
+        },
+        null,
+        2,
+      ),
+      contentType: "application/json",
+    });
+  } catch (error) {
+    errors.push(error);
+  }
+  errors.push(...(await closeApplications()));
+  if (errors.length) throw new AggregateError(errors, "Desktop failure cleanup failed.");
 });
 
 test("a system link restores first-run setup without bypassing it", async () => {
@@ -779,7 +814,7 @@ test("failed native recovery teardown closes a launcher before attachment settle
     await expect.poll(async () => (await nativeWindows("CogineBot Dev")).length).toBe(1);
     const [failedWindow] = await nativeWindows("CogineBot Dev");
     expect(failedWindow).toBeDefined();
-    await closeApplications();
+    expect(await closeApplications()).toEqual([]);
     await expect
       .poll(() => {
         try {

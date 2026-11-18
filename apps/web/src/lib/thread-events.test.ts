@@ -2565,6 +2565,7 @@ it("announces an actual completion reduction after it removes the primary Run", 
 describe("external memory cleanup uncertainty", () => {
   it("applies a late metadata warning without erasing messages or current work", () => {
     const initial = snapshot([message("new-message", [{ kind: "text", text: "After clear" }])]);
+    initial.run = threadRun("active-after-clear");
     const update = event({ type: "thread.meta", payload: { memoryCleanupUnconfirmed: true } });
     expect(isThreadSnapshotEvent(update)).toBe(true);
     const next = reduceThreadSnapshot(initial, update)!;
@@ -2597,4 +2598,27 @@ describe("external memory cleanup uncertainty", () => {
         .memoryCleanupUnconfirmed,
     ).toBeUndefined();
   });
+});
+
+it("settles pending cleanup by sequence without resetting a sticky failure or current Run", () => {
+  const initial = {
+    ...snapshot([]),
+    run: threadRun("still-running"),
+    memoryCleanupUnconfirmed: true as const,
+  };
+  const pendingEvent = event({
+    type: "thread.meta",
+    seq: 4,
+    payload: { memoryCleanupPending: true },
+  });
+  const pending = reduceThreadSnapshot(initial, pendingEvent)!;
+  expect(pending.memoryCleanupPending).toBe(true);
+  const settled = reduceThreadSnapshot(
+    pending,
+    event({ type: "thread.meta", seq: 5, payload: { memoryCleanupPending: false } }),
+  )!;
+  expect(settled.memoryCleanupPending).toBe(false);
+  expect(settled.memoryCleanupUnconfirmed).toBe(true);
+  expect(settled.run).toBe(initial.run);
+  expect(reduceThreadSnapshot(settled, pendingEvent)).toBe(settled);
 });

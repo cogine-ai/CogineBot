@@ -5151,6 +5151,8 @@ describe("mobile screen released-event callback", () => {
     };
     const activeBotId = { current: "bot-1" as string | undefined };
     const liveSubscriptionGeneration = { current: 1 };
+    const pendingMemoryCleanupEvents = { current: new Map() };
+    const memoryCleanupOwnerRef = { current: "owner-one" };
     const commitSnap = vi.fn((next: MobileSnapshot | null) => {
       snapRef.current = next;
     });
@@ -5166,6 +5168,8 @@ describe("mobile screen released-event callback", () => {
       activeBotId,
       activeGroupId: { current: undefined },
       liveSubscriptionGeneration,
+      pendingMemoryCleanupEvents,
+      memoryCleanupOwnerRef,
       snapRef,
       replyEventObserver: { current: vi.fn() },
       commitSnap,
@@ -5186,7 +5190,16 @@ describe("mobile screen released-event callback", () => {
       ...Object.keys(scope),
       `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
     )(...Object.values(scope)) as (event: Parameters<typeof applyMobileThreadEvent>[1]) => void;
-    return { handler, snapRef, commitSnap, state, abort, activeBotId, liveSubscriptionGeneration };
+    return {
+      handler,
+      snapRef,
+      commitSnap,
+      state,
+      abort,
+      activeBotId,
+      liveSubscriptionGeneration,
+      pendingMemoryCleanupEvents,
+    };
   }
 
   it("routes the screen's real released callback into the thread reducer", () => {
@@ -5216,6 +5229,26 @@ describe("mobile screen released-event callback", () => {
     expect(h.snapRef.current?.cursor).toBe(11);
     expect(h.snapRef.current?.run).toBe(currentRun);
     expect(h.commitSnap).toHaveBeenCalledOnce();
+  });
+
+  it("retains metadata before a cold jump commits its first snapshot", () => {
+    const h = screenCallback();
+    h.snapRef.current = null;
+    h.handler({
+      type: "thread.meta",
+      threadId: "thread-1",
+      botId: "bot-1",
+      seq: 11,
+      payload: { memoryCleanupUnconfirmed: true, memoryCleanupPending: true },
+    });
+    expect(h.commitSnap).not.toHaveBeenCalled();
+    expect(h.pendingMemoryCleanupEvents.current.get("thread-1")).toEqual({
+      seq: 11,
+      owner: "owner-one",
+      subscription: 1,
+      unconfirmed: true,
+      pending: true,
+    });
   });
 
   it.each(["abort", "reader", "target", "Space", "session"])(
@@ -5669,4 +5702,24 @@ describe("mobile external memory cleanup uncertainty", () => {
         .memoryCleanupUnconfirmed,
     ).toBeUndefined();
   });
+});
+
+it("settles pending cleanup without clearing a recorded failure or reapplying an older pending event", () => {
+  const initial = { ...snapshot(), memoryCleanupUnconfirmed: true as const };
+  const pendingEvent = {
+    type: "thread.meta",
+    threadId: initial.threadId,
+    seq: 4,
+    payload: { memoryCleanupPending: true },
+  };
+  const pending = applyMobileThreadEvent(initial, pendingEvent)!;
+  const settled = applyMobileThreadEvent(pending, {
+    ...pendingEvent,
+    seq: 5,
+    payload: { memoryCleanupPending: false },
+  })!;
+  expect(settled.memoryCleanupPending).toBe(false);
+  expect(settled.memoryCleanupUnconfirmed).toBe(true);
+  expect(settled.run).toBe(initial.run);
+  expect(applyMobileThreadEvent(settled, pendingEvent)).toBe(settled);
 });

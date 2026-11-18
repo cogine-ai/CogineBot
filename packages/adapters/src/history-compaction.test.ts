@@ -7,7 +7,7 @@ import type {
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { PlatformModelForbiddenError } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import type { MemoryCleanupSettlement, MemorySaveIntentInput, PrismaClient } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger, wrapJobPayload } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -412,9 +412,25 @@ function compactionHarness(
     ),
   };
   const jobs = { enqueue: vi.fn(async () => undefined) };
+  const pendingSaves = new Map<string, number>();
   const events = {
-    markMemoryCleanupUnconfirmed: vi.fn(async () => {
-      thread.memoryCleanupUnconfirmed = true;
+    beginMemorySave: vi.fn(async ({ token, generation }: MemorySaveIntentInput) => {
+      if (thread.historyCompactionGeneration !== generation) return false;
+      pendingSaves.set(token, generation);
+      return true;
+    }),
+    finishMemorySave: vi.fn(async ({ token, generation }: MemorySaveIntentInput) => {
+      if (thread.historyCompactionGeneration !== generation) return true;
+      pendingSaves.delete(token);
+      return false;
+    }),
+    settleMemoryCleanup: vi.fn(async ({ token, unconfirmed }: MemoryCleanupSettlement) => {
+      pendingSaves.delete(token);
+      if (unconfirmed) thread.memoryCleanupUnconfirmed = true;
+      return {
+        ...(thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+        memoryCleanupPending: pendingSaves.size > 0,
+      };
     }),
   };
   const deps = {
@@ -430,6 +446,7 @@ function compactionHarness(
     ...(options.resolveModel ? { resolveModel: options.resolveModel } : {}),
   };
   return {
+    pendingSaves,
     thread,
     messages,
     prisma,
@@ -900,9 +917,61 @@ describe("compactHistory", () => {
     });
     harness.purgeHistory.mockResolvedValueOnce({ ok: false, error: "permission denied" });
     await compactHistory(harness.deps, "thread-1");
-    expect(harness.events.markMemoryCleanupUnconfirmed).toHaveBeenCalledOnce();
+    expect(harness.purgeHistory).toHaveBeenCalledExactlyOnceWith(
+      { botId: "bot-1", generations: [0] },
+      expect.any(Object),
+    );
+    expect(harness.events.settleMemoryCleanup).toHaveBeenCalledExactlyOnceWith({
+      spaceId: harness.thread.spaceId,
+      threadId: "thread-1",
+      botId: "bot-1",
+      generation: 0,
+      token: "save:0:49",
+      unconfirmed: true,
+    });
     expect(harness.thread.memoryCleanupUnconfirmed).toBe(true);
     expect(harness.saveMemory).toHaveBeenCalledOnce();
+  });
+
+  it.each(["register", "finish", "settle"])(
+    "retains responsibility and drains the backlog when %s fails",
+    async (phase) => {
+      const h = compactionHarness({
+        deploymentModelKey: "synthetic-model-key",
+        nextMessageSeq: 150,
+      });
+      if (phase === "register")
+        h.events.beginMemorySave.mockRejectedValueOnce(new Error("database unavailable"));
+      else {
+        h.saveMemory.mockImplementationOnce(async () => {
+          h.thread.historyCompactionGeneration = 1;
+          return { ok: true, value: undefined };
+        });
+        if (phase === "finish")
+          h.events.finishMemorySave.mockRejectedValueOnce(new Error("database unavailable"));
+        else {
+          h.purgeHistory.mockResolvedValueOnce({ ok: false, error: "denied" });
+          h.events.settleMemoryCleanup.mockRejectedValueOnce(new Error("database unavailable"));
+        }
+      }
+      await expect(compactHistory(h.deps, "thread-1")).resolves.toBeUndefined();
+      expect(h.jobs.enqueue).toHaveBeenCalledWith(historyCompactJob("thread-1"));
+      expect(h.saveMemory).toHaveBeenCalledTimes(phase === "register" ? 0 : 1);
+      if (phase !== "register") expect(h.pendingSaves.get("save:0:49")).toBe(0);
+      if (phase === "settle")
+        expect(h.purgeHistory).toHaveBeenCalledExactlyOnceWith(
+          { botId: "bot-1", generations: [0] },
+          expect.any(Object),
+        );
+    },
+  );
+
+  it("does not save history when registration observes that clear already advanced the generation", async () => {
+    const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    h.events.beginMemorySave.mockResolvedValueOnce(false);
+    await compactHistory(h.deps, "thread-1");
+    expect(h.saveMemory).not.toHaveBeenCalled();
+    expect(h.purgeHistory).not.toHaveBeenCalled();
   });
 
   it("continues draining the backlog when a stale-history purge throws", async () => {
@@ -920,10 +989,13 @@ describe("compactHistory", () => {
 
     await expect(compactHistory(harness.deps, "thread-1")).resolves.toBeUndefined();
 
-    expect(harness.events.markMemoryCleanupUnconfirmed).toHaveBeenCalledExactlyOnceWith({
+    expect(harness.events.settleMemoryCleanup).toHaveBeenCalledExactlyOnceWith({
       spaceId: harness.thread.spaceId,
       threadId: "thread-1",
       botId: "bot-1",
+      token: "save:0:49",
+      generation: 0,
+      unconfirmed: true,
     });
     expect(harness.thread.memoryCleanupUnconfirmed).toBe(true);
     expect(harness.jobs.enqueue).toHaveBeenCalledWith(historyCompactJob("thread-1"));

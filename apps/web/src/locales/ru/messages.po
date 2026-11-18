@@ -7626,8 +7626,8 @@ msgstr "Подключение модели изменилось. Перезаг
 
 #: src/pages/Shell.tsx
 msgid "Messages cleared. External memory cleanup could not be confirmed."
-msgstr "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Сообщения удалены. Не удалось подтвердить очистку внешней памяти."
 
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
-msgstr "External memory cleanup could not be confirmed."
+msgstr "Не удалось подтвердить очистку внешней памяти."
