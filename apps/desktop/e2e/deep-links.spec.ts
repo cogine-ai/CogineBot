@@ -23,6 +23,7 @@ const desktop = path.resolve(import.meta.dirname, "..");
 const screenshotRoot = path.join(desktop, "e2e/screenshots");
 const title = "CogineBot Console fixture";
 const apps = new Set<ElectronApplication>();
+const applicationErrors = new Map<ElectronApplication, string>();
 const dispatches: ReturnType<typeof spawn>[] = [];
 let root: string;
 let env: Record<string, string>;
@@ -84,6 +85,10 @@ async function launch(executablePath: string) {
     args: ["--no-sandbox"],
   });
   apps.add(app);
+  applicationErrors.set(app, "");
+  app.process().stderr?.on("data", (chunk) => {
+    applicationErrors.set(app, `${applicationErrors.get(app)}${chunk}`.slice(-16_384));
+  });
   return app;
 }
 
@@ -324,13 +329,28 @@ test.afterEach(async () => {
         windows,
         documents: documentRequests,
         fixtureListening: vite?.httpServer?.listening,
-        applications: [...apps].map((application) => ({
-          pid: application.process().pid,
-          exit: application.process().exitCode,
-          pages: application
-            .windows()
-            .map((page) => ({ url: page.url(), closed: page.isClosed() })),
-        })),
+        applications: await Promise.all(
+          [...apps].map(async (application) => ({
+            pid: application.process().pid,
+            exit: application.process().exitCode,
+            stderr: applicationErrors.get(application),
+            pages: application
+              .windows()
+              .map((page) => ({ url: page.url(), closed: page.isClosed() })),
+            main: await application
+              .evaluate(({ app, BrowserWindow }) => ({
+                ready: app.isReady(),
+                windows: BrowserWindow.getAllWindows().map((win) => ({
+                  id: win.id,
+                  bounds: win.getBounds(),
+                  visible: win.isVisible(),
+                  url: win.webContents.getURL(),
+                  loading: win.webContents.isLoading(),
+                })),
+              }))
+              .catch((error: Error) => ({ error: error.message })),
+          })),
+        ),
         processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
         children: dispatches.map((child) => ({
           pid: child.pid,
