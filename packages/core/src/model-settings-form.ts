@@ -97,9 +97,10 @@ export function credentialModelSettings(
   credential: SettingsCredential,
   modelId: string,
 ): ModelSettings {
+  const id = modelId.trim();
   const own =
-    credential.modelSettings && Object.hasOwn(credential.modelSettings, modelId)
-      ? credential.modelSettings[modelId]
+    credential.modelSettings && Object.hasOwn(credential.modelSettings, id)
+      ? credential.modelSettings[id]
       : undefined;
   if (own) return own;
   const compatible = credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID;
@@ -107,7 +108,7 @@ export function credentialModelSettings(
     ...(credential.maxTokens !== undefined ? { maxTokens: credential.maxTokens } : {}),
     ...(credential.contextWindow !== undefined ? { contextWindow: credential.contextWindow } : {}),
     ...(compatible && credential.reasoning ? { reasoning: true } : {}),
-    ...(compatible && credential.visionModelIds?.includes(modelId) ? { images: true } : {}),
+    ...(compatible && credential.visionModelIds?.includes(id) ? { images: true } : {}),
     ...(compatible && credential.maxImagesPerPrompt !== undefined
       ? { maxImagesPerPrompt: credential.maxImagesPerPrompt }
       : {}),

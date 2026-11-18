@@ -1,8 +1,10 @@
+import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { resolveRuntimeModel } from "@rakazo/adapters";
+import { PiAgentRuntime, resolveRuntimeModel } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { startModelEmulator } from "../../../packages/testkit/src/model-emulator.js";
 import { threadModelImageInput } from "./thread-image-admission.js";
 import type { ThreadTarget } from "./thread-target.js";
 import { sendThreadMessage, threadImageInputStatus } from "./thread-target.js";
@@ -204,7 +206,7 @@ describe("current image send admission", () => {
     },
   );
 
-  it("admits an unknown model's declared image input on its exact connection", async () => {
+  it("does not admit images for an unknown model the runtime cannot resolve", async () => {
     const { tx } = fixture();
     tx.bot.findFirst.mockResolvedValue({
       id: "bot-1",
@@ -235,8 +237,123 @@ describe("current image send admission", () => {
         },
       },
     );
-    expect(status).toBe("supported");
+    expect(
+      resolveRuntimeModel({ provider: "anthropic", id: "custom-receiver" }).model,
+    ).toBeUndefined();
+    expect(status).toBe("unknown");
   });
+
+  it.each([
+    { contextWindow: undefined, legacy: undefined, deploymentDefault: false, expected: "unknown" },
+    { contextWindow: 8192, legacy: undefined, deploymentDefault: false, expected: "supported" },
+    { contextWindow: undefined, legacy: 16384, deploymentDefault: false, expected: "unknown" },
+    { contextWindow: undefined, legacy: undefined, deploymentDefault: true, expected: "supported" },
+  ] as const)(
+    "aligns unknown OpenRouter admission with its runtime fallback (%j)",
+    async ({ contextWindow, legacy, deploymentDefault, expected }) => {
+      vi.stubEnv("PI_DEFAULT_PROVIDER", "openrouter");
+      vi.stubEnv(
+        "PI_DEFAULT_MODEL",
+        deploymentDefault ? "synthetic/future-receiver" : "other-default",
+      );
+      try {
+        const { tx } = fixture();
+        tx.bot.findFirst.mockResolvedValue({
+          id: "bot-1",
+          modelProvider: "openrouter",
+          modelId: "synthetic/future-receiver",
+          modelCredentialId: "credential-1",
+        });
+        tx.userModelCredential.findFirst.mockResolvedValue({
+          id: "credential-1",
+          provider: "openrouter",
+          secretId: "secret-1",
+          preferences: [],
+        });
+        const status = await threadModelImageInput(
+          tx as never,
+          { userId: "user-1", spaceId: "space-1" } as Actor,
+          "bot-1",
+          null,
+          {
+            deployment: null,
+            secrets: {
+              load: async () =>
+                JSON.stringify({
+                  kind: "api_key",
+                  key: "synthetic-key",
+                  contextWindow: legacy,
+                  models: { "synthetic/future-receiver": { images: true, contextWindow } },
+                }),
+            },
+          },
+        );
+        const runtime = resolveRuntimeModel({
+          provider: "openrouter",
+          id: "synthetic/future-receiver",
+          acceptsImages: true,
+          contextWindow,
+        });
+        expect(Boolean(runtime.model)).toBe(expected === "supported");
+        expect(status).toBe(expected);
+        if (status === "supported") {
+          const emulator = await startModelEmulator({
+            modelId: "synthetic/future-receiver",
+            apiKey: "synthetic-key",
+            steps: [
+              {
+                expect: () => undefined,
+                response: { type: "text", text: "admitted model completed" },
+              },
+            ],
+          });
+          const nativeFetch = globalThis.fetch;
+          const transport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            expect(String(input)).toBe("https://openrouter.ai/api/v1/chat/completions");
+            return nativeFetch(`${emulator.baseUrl}/chat/completions`, init);
+          });
+          vi.stubGlobal("fetch", transport);
+          try {
+            const events: AgentRuntimeEvent[] = [];
+            for await (const event of new PiAgentRuntime().run(
+              {
+                botId: "bot-1",
+                threadId: "thread-1",
+                runId: "run-1",
+                prompt: "Confirm this model works.",
+                history: [],
+                tools: [],
+                model: {
+                  provider: "openrouter",
+                  id: "synthetic/future-receiver",
+                  apiKey: "synthetic-key",
+                  contextWindow,
+                  acceptsImages: true,
+                },
+              },
+              {
+                operationId: "op-1",
+                traceId: "trace-1",
+                userId: "user-1",
+                spaceId: "space-1",
+                signal: AbortSignal.timeout(10_000),
+              },
+            ))
+              events.push(event);
+            expect(events).toContainEqual(
+              expect.objectContaining({ type: "done", text: "admitted model completed" }),
+            );
+            expect(transport).toHaveBeenCalledOnce();
+          } finally {
+            vi.unstubAllGlobals();
+            await emulator.close();
+          }
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it.each([
     [false, false, "unsupported"],

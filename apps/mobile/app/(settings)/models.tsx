@@ -273,7 +273,10 @@ function ModelsForm({
     setError(null);
   }
 
-  function acceptSavedBackupConnection(saved: MobileModelCredential) {
+  function acceptSavedBackupConnection(
+    saved: MobileModelCredential,
+    currentCatalog: MobileModel[],
+  ) {
     clearStaleSavedBackupOptions();
     savedBackupOwnerRef.current = {
       apiBase: currentApiBase(),
@@ -283,7 +286,10 @@ function ModelsForm({
     savedBackupOptionsRef.current.set(
       saved.id,
       new Map(
-        connectedBackupOptions(catalog, [saved]).map((option) => [backupChoiceKey(option), option]),
+        connectedBackupOptions(currentCatalog, [saved]).map((option) => [
+          backupChoiceKey(option),
+          option,
+        ]),
       ),
     );
     setBackupModels((current) => current.map(reconcileSavedBackupChoice));
@@ -341,7 +347,13 @@ function ModelsForm({
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
-    if (preferred.keepForm) return nextMe;
+    if (preferred.keepForm) {
+      const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
+      setConnectionRevision(current?.connectionRevision);
+      setSavedBaseUrl(current?.baseUrl);
+      if (current) acceptSavedBackupConnection(current, nextCatalog);
+      return nextMe;
+    }
     const nextProvider =
       (preferred.provider &&
       nextCatalog.some(
@@ -615,11 +627,13 @@ function ModelsForm({
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel =
-    (currentEntry?.thinkingLevels ?? []).some((level) => level !== "off") ||
-    activeCredential?.reasoning
-      ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
-      : null;
+  const activeThinkingLabel = modelThinkingLevels(
+    activeCredential,
+    currentEntry,
+    me?.defaultModel,
+  ).some((level) => level !== "off")
+    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
+    : null;
   const compatibleRows = compatibleModelRows(
     savedCompatibleModelIds(credential, baseUrl),
     enabledModelIds,
@@ -687,10 +701,7 @@ function ModelsForm({
     setApiProtocol(next);
     setThinkingLevel(
       (current) =>
-        clampCatalogThinkingLevel(
-          current,
-          modelReasoning ? compatibleThinkingLevels(next) : [],
-        ) as ThinkingLevel | null,
+        clampCatalogThinkingLevel(current, compatibleThinkingLevels(next)) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
     clearFeedback();
@@ -973,9 +984,7 @@ function ModelsForm({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        (credential ? credentialModelSettings(credential, nextModelId).reasoning : reasoning)
-          ? compatibleThinkingLevels(apiProtocol)
-          : [],
+        compatibleThinkingLevels(apiProtocol),
       ) as ThinkingLevel | null,
     );
   }
@@ -1045,7 +1054,7 @@ function ModelsForm({
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      acceptSavedBackupConnection(savedConnection);
+      acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
       await load({ provider, modelId, connectionId: savedConnection.id });
@@ -1087,7 +1096,7 @@ function ModelsForm({
     if (!isCurrent()) return;
     oauthLoginIdRef.current = null;
     setOauth(null);
-    acceptSavedBackupConnection(savedConnection);
+    acceptSavedBackupConnection(savedConnection, catalog);
     await load({ provider, modelId, connectionId: savedConnection.id });
     if (!isCurrent()) return;
     publishFeedback("connection", {

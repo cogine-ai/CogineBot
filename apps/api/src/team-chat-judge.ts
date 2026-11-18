@@ -7,15 +7,18 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import {
+  CHATGPT_PLAN_PROVIDER_ID,
   canUsePlatformModel,
+  connectionModelImageInput,
+  connectionModelSettings,
   enabledOpenAiCompatibleModelIds,
   formatCurrentTimeInstruction,
   LOCAL_PROVIDER_ID,
   matchesFailedOAuthSecret,
+  persistRefreshedModelCredential,
   platformModelAuthorization,
-  resolveModelAuth,
-  serializeModelSecret,
-  toOAuthCredential,
+  refreshStoredModelCredential,
+  resolveStoredModelAuth,
 } from "@rakazo/adapters";
 import { usableModelId } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
@@ -287,24 +290,6 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
       where: { id: credential.secretId, userId: bot.userId, spaceId: null },
     });
     if (!secret) return null;
-    const persist = async (plaintext: string) => {
-      const stored = await this.deps.secrets.put(
-        plaintext,
-        {
-          operationId: "team-chat-judge-credential",
-          traceId: "team-chat-judge-credential",
-          spaceId: bot.spaceId,
-          userId: bot.userId,
-          botId: bot.id,
-          signal: new AbortController().signal,
-        },
-        { recordId: secret.id },
-      );
-      await this.deps.prisma.secret.update({
-        where: { id: secret.id },
-        data: { ciphertext: stored.ciphertext },
-      });
-    };
     // Same fences as the run path: a stale failure must not delete material a
     // concurrent refresh or reconnect already persisted.
     const retire = (
@@ -324,7 +309,15 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
           : undefined,
       });
     const plaintext = await this.deps.secrets.load(secret.ciphertext, secret.id);
-    const auth = await resolveModelAuth(plaintext, provider, { persist, retire });
+    const auth = await resolveStoredModelAuth(
+      this.deps.prisma,
+      this.deps.secrets,
+      scope,
+      secret.id,
+      plaintext,
+      provider,
+      { retire },
+    );
     const parsed = auth.secret;
     if (
       provider === "openai-compatible" &&
@@ -332,13 +325,19 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
         !enabledOpenAiCompatibleModelIds(parsed, credential.defaultModel).includes(modelId))
     )
       return null;
-    const limit = parsed.maxTokens !== undefined ? { maxTokens: parsed.maxTokens } : {};
+    const settings = connectionModelSettings(parsed, provider, modelId, credential);
+    const limit = {
+      maxTokens: settings.maxTokens,
+      contextWindow: settings.contextWindow,
+      reasoning: settings.reasoning,
+      maxImagesPerPrompt: settings.maxImagesPerPrompt,
+      acceptsImages: connectionModelImageInput(provider, modelId, credential, parsed),
+    };
     const context =
       parsed.kind === "oauth"
         ? {}
         : {
             cacheCapabilities: parsed.cacheCapabilities,
-            contextWindow: parsed.contextWindow,
           };
     if (parsed.kind === "oauth") {
       return {
@@ -349,15 +348,24 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
           ...limit,
           oauth: {
             credential: { ...parsed.credential },
-            persist: async (credential) => {
-              await persist(
-                serializeModelSecret({
-                  kind: "oauth",
-                  credential: toOAuthCredential(credential),
-                  ...limit,
-                }),
-              );
-            },
+            persist: persistRefreshedModelCredential(
+              this.deps.prisma,
+              this.deps.secrets,
+              scope,
+              secret.id,
+              provider,
+            ),
+            refresh:
+              provider !== CHATGPT_PLAN_PROVIDER_ID
+                ? refreshStoredModelCredential(
+                    this.deps.prisma,
+                    this.deps.secrets,
+                    scope,
+                    secret.id,
+                    provider,
+                    { retire },
+                  )
+                : undefined,
             retire,
           },
         },

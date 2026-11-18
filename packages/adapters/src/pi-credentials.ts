@@ -20,7 +20,6 @@ import {
   RetiredModelCredentialError,
   terminalOAuthRefreshErrorMarker,
 } from "./pi-oauth.js";
-import { withAbort } from "./web-ssrf.js";
 
 export function toOAuthCredential(value: AgentModelOAuthCredential): OAuthCredential {
   return { ...value, type: "oauth" };
@@ -82,11 +81,14 @@ export class PiRuntimeCredentialStore implements CredentialStore {
       if (this.refreshOAuth && held?.type === "oauth") {
         try {
           const next = await this.refreshOAuth(held, async (stored, signal) => {
-            const refreshed = await withAbort(fn(toOAuthCredential(stored)), signal);
+            signal.throwIfAborted();
+            // Pi bounds its provider request inside fn; this signal guards startup.
+            // Do not race away an already-started rotating successor before it is saved.
+            const refreshed = await fn(toOAuthCredential(stored));
             return refreshed?.type === "oauth" ? refreshed : undefined;
           });
-          options?.signal?.throwIfAborted();
           this.credential = toOAuthCredential(next);
+          options?.signal?.throwIfAborted();
         } catch (error) {
           if (isRetiredModelCredentialError(error)) this.credential = undefined;
           throw error;

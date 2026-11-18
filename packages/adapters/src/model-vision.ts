@@ -8,7 +8,7 @@ import {
 } from "./chatgpt-plan-provider.js";
 import { DEFAULT_OPENROUTER_MODEL_ID } from "./deployment-model.js";
 import { supplementPiModels } from "./pi-current-models.js";
-import { withLiveImageInput } from "./pi-live-model.js";
+import { liveModelSibling, withLiveImageInput } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER } from "./pi-oauth.js";
@@ -39,6 +39,19 @@ export function modelIdSupportsImages(
   );
 }
 
+/** Match the runtime's fallback for a configured model newer than the catalog. */
+export function canResolveConfiguredOpenRouterModel(
+  modelId: string,
+  contextWindow?: number,
+): boolean {
+  const defaultProvider = process.env.PI_DEFAULT_PROVIDER?.trim() || "openrouter";
+  return Boolean(
+    modelId &&
+      ((defaultProvider === "openrouter" && modelId === process.env.PI_DEFAULT_MODEL?.trim()) ||
+        contextWindow !== undefined),
+  );
+}
+
 /** Resolve capability metadata bound to this connection rather than another account. */
 export function connectionModelImageInput(
   provider: string,
@@ -59,7 +72,17 @@ export function connectionModelImageInput(
       return modelIdSupportsImages(secret.visionModelIds, modelId);
     return compatibleModelSeesImages(credential, secret, modelId) ? true : undefined;
   }
-  return catalogKnowsModel(provider, modelId) ? undefined : own?.images;
+  if (catalogKnowsModel(provider, modelId)) return undefined;
+  // Only routes the runtime can construct may use connection-declared input.
+  const contextWindow = own
+    ? own.contextWindow
+    : secret.kind !== "oauth"
+      ? secret.contextWindow
+      : undefined;
+  return (provider === "openrouter" && canResolveConfiguredOpenRouterModel(id, contextWindow)) ||
+    (provider === CHATGPT_OAUTH_PROVIDER && liveModelSibling(catalogModels(), provider, id))
+    ? own?.images
+    : undefined;
 }
 
 /** Whether a compatible connection lists the model as seeing images. */

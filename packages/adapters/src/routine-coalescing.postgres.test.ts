@@ -111,6 +111,74 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     expect(results[0]!.id).toBe(results[1]!.id);
     expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
   });
+
+  it.each(["pause", "delete", "reschedule"] as const)(
+    "rejects a worker's stale tick when %s commits after its first read",
+    async (change) => {
+      const { routine } = await fixture();
+      const dueAt = new Date(Date.now() - 60_000);
+      const newDueAt = new Date(dueAt.getTime() + 1_000);
+      await system.routine.update({ where: { id: routine.id }, data: { nextRunAt: dueAt } });
+      const jobs = { enqueue: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined) };
+      let observed = false;
+      const prisma = system.$extends({
+        query: {
+          routine: {
+            async findUnique({ args, query }) {
+              const read = await query(args);
+              if (observed || args.where.id !== routine.id) return read;
+              observed = true;
+              expect(read).toMatchObject({ active: true, nextRunAt: dueAt });
+              if (change === "delete") await system.routine.delete({ where: { id: routine.id } });
+              else {
+                await system.routine.update({
+                  where: { id: routine.id },
+                  data:
+                    change === "pause"
+                      ? { active: false, nextRunAt: null }
+                      : {
+                          nextRunAt: newDueAt,
+                          prompt: "Use the updated instructions",
+                          authorizedInstructions: "Use the updated instructions",
+                        },
+                });
+              }
+              return read;
+            },
+          },
+        },
+      }) as PrismaClient;
+      const executor = createRunExecutor({
+        prisma,
+        secrets: [],
+        jobs,
+        events: {
+          append: (input: Parameters<typeof appendEvent>[1]) => appendEvent(system, input),
+          notify: async () => undefined,
+        },
+      } as unknown as Parameters<typeof createRunExecutor>[0]);
+      await executor.wakeRoutine(routine.id, dueAt.toISOString());
+      expect(observed).toBe(true);
+      expect(jobs.enqueue).not.toHaveBeenCalled();
+      expect(
+        await system.run.count({
+          where: { spaceId, clientNonce: routineTimerNonce(routine.id, dueAt.toISOString()) },
+        }),
+      ).toBe(0);
+      if (change !== "reschedule") return;
+
+      await executor.wakeRoutine(routine.id, newDueAt.toISOString());
+      const current = await system.run.findFirstOrThrow({
+        where: { routineId: routine.id },
+        include: { task: true },
+      });
+      expect(current.task).toMatchObject({
+        prompt: "Use the updated instructions",
+        routineInstructions: "Use the updated instructions",
+      });
+      expect(current.clientNonce).toBe(routineTimerNonce(routine.id, newDueAt.toISOString()));
+    },
+  );
   it.each([
     { routineInstructions: "different owner instructions" },
     { routineInstructions: null },

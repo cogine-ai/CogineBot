@@ -298,7 +298,11 @@ export function ModelSettingsOverlay({
     );
     setMe(nextMe);
     if (selectionRevision === selectionRevisionRef.current) {
-      if (keepForm) return true;
+      if (keepForm) {
+        setConnectionRevision(nextCredential?.connectionRevision);
+        setSavedBaseUrl(nextCredential?.baseUrl);
+        return true;
+      }
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
       setProvider(nextProvider);
@@ -450,11 +454,13 @@ export function ModelSettingsOverlay({
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel =
-    (currentEntry?.thinkingLevels ?? []).some((level) => level !== "off") ||
-    activeCredential?.reasoning
-      ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
-      : null;
+  const activeThinkingLabel = modelThinkingLevels(
+    activeCredential,
+    currentEntry,
+    me?.defaultModel,
+  ).some((level) => level !== "off")
+    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
+    : null;
   const isActive =
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
@@ -530,10 +536,7 @@ export function ModelSettingsOverlay({
     setApiProtocol(next);
     setThinkingLevel(
       (current) =>
-        clampCatalogThinkingLevel(
-          current,
-          modelReasoning ? compatibleThinkingLevels(next) : [],
-        ) as ThinkingLevel | null,
+        clampCatalogThinkingLevel(current, compatibleThinkingLevels(next)) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -577,9 +580,7 @@ export function ModelSettingsOverlay({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        (credential ? credentialModelSettings(credential, nextModelId).reasoning : reasoning)
-          ? compatibleThinkingLevels(apiProtocol)
-          : [],
+        compatibleThinkingLevels(apiProtocol),
       ) as ThinkingLevel | null,
     );
   }

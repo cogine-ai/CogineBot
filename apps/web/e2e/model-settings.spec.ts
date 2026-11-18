@@ -1410,5 +1410,38 @@ for (const width of [1280, 390]) {
     await expect(page.getByTestId("model-settings-panel").locator("summary")).toHaveText(
       "Advanced · Default",
     );
+    await settings.getByLabel("Models from server", { exact: true }).selectOption("model-a");
+    await panel.locator("summary").click();
+    await expect(
+      panel.getByRole("checkbox", { name: "Supports thinking", exact: true }),
+    ).toBeChecked();
+    if (width === 1280) {
+      await panel.getByRole("checkbox", { name: "Supports thinking", exact: true }).uncheck();
+      await panel.getByRole("button", { name: "Save", exact: true }).click();
+    } else await panel.getByRole("button", { name: "Reset to defaults", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await expect(
+      settings.getByRole("combobox", { name: "Reasoning effort", exact: true }),
+    ).toBeHidden();
+    const connectionSave = page.waitForResponse(
+      (response) => response.url().includes("/rpc/models/connect") && response.ok(),
+    );
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await connectionSave;
+    const reconnected = await read();
+    expect(reconnected.find((entry) => entry.id === connections[0]!.id)?.thinkingLevel).toBe("low");
+    expect(
+      reconnected.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-b"],
+    ).toEqual({});
+    expect(
+      reconnected.find((entry) => entry.id === connections[1]!.id)?.modelSettings,
+    ).toBeUndefined();
+    await panel.getByRole("checkbox", { name: "Supports thinking", exact: true }).check();
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await settings.getByText("Thinking", { exact: true }).click();
+    await expect(
+      settings.getByRole("combobox", { name: "Reasoning effort", exact: true }),
+    ).toHaveValue("low");
   });
 }
