@@ -105,16 +105,35 @@ async function closeNativeWindow() {
   await expect.poll(async () => (await nativeWindows()).length).toBe(0);
 }
 
+async function nativeDialogs(title?: string) {
+  const { stdout } = await exec("wmctrl", ["-l"]);
+  const windows = stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => ({ id: line.split(/\s+/)[0]!, title: line.split(/\s+/).slice(3).join(" ") }));
+  const inspected = await Promise.all(
+    windows.map(async (win) => {
+      const properties = await exec("xprop", [
+        "-id",
+        win.id,
+        "_NET_WM_WINDOW_TYPE",
+        "_NET_WM_STATE",
+      ]).catch(() => ({ stdout: "" }));
+      return /_NET_WM_WINDOW_TYPE_DIALOG|_NET_WM_STATE_MODAL/.test(properties.stdout) ||
+        (title !== undefined && win.title === title)
+        ? win.id
+        : null;
+    }),
+  );
+  return inspected.filter((id): id is string => id !== null);
+}
+
 async function nativeDialog(title: string) {
   let id = "";
   await expect
     .poll(async () => {
-      const { stdout } = await exec("wmctrl", ["-l"]);
-      id =
-        stdout
-          .split("\n")
-          .find((line) => line.endsWith(` ${title}`))
-          ?.split(/\s+/)[0] ?? "";
+      const dialogs = await nativeDialogs(title);
+      id = dialogs.length === 1 ? dialogs[0]! : "";
       return id;
     })
     .not.toBe("");
@@ -233,6 +252,12 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  // A synchronous native error dialog blocks Electron's inspector until dismissed.
+  // Close only the dialogs in this disposable test session before app.close().
+  for (const id of await nativeDialogs()) {
+    await exec("xdotool", ["windowactivate", "--sync", id]);
+    await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
+  }
   for (const app of apps) await app.close().catch(() => undefined);
   if (root) {
     await closeNativeWindow();
@@ -250,6 +275,15 @@ test.afterAll(async () => {
 test.afterEach(async () => {
   const info = test.info();
   if (info.status === info.expectedStatus) return;
+  const nativeScreenshot = info.outputPath("native-failure.png");
+  if (
+    await exec("scrot", [nativeScreenshot]).then(
+      () => true,
+      () => false,
+    )
+  ) {
+    await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
+  }
   const { stdout: windows } = await exec("wmctrl", ["-lp"]);
   const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
   await info.attach("native-dispatch-state", {
@@ -387,7 +421,8 @@ test("installed AppImage and development launcher coexist and OS links restore w
     path: path.join(screenshotRoot, "deep-links-development-restored.png"),
   });
   const delivered = dispatch("coginebot-dev://bot/?target=https://example.test");
-  await dismissDialog("Invalid CogineBot link", "deep-links-invalid-entry.png");
+  // Linux showErrorBox displays its supplied title in the body; its WM title is Error.
+  await dismissDialog("Error", "deep-links-invalid-entry.png");
   await delivered();
   await expect(window.getByLabel("Draft")).toHaveValue("Development draft");
   expect(window.url()).toBe(`${origin}/`);
