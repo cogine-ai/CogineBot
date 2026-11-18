@@ -433,6 +433,8 @@ export interface MemoryCapabilities {
 export type DurableMemoryScope = "isolated" | "shared";
 
 export interface SemanticMemoryCapabilities {
+  /** False when the configured connection disables an otherwise supported forget verb. */
+  forget?: boolean;
   recall: true;
   save: true;
   purgeHistory: true;

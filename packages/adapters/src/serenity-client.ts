@@ -424,7 +424,7 @@ export async function recallSerenity(
       },
       options.network,
     );
-    return { ok: true, value: parseRecallFacts(payload).slice(0, MAX_SERENITY_RECALL_LIMIT) };
+    return { ok: true, value: parseRecallFacts(payload) };
   } catch (error) {
     return {
       ok: false,
@@ -594,6 +594,7 @@ function parseRecallFacts(payload: unknown): SerenityRecallFact[] {
         ? { entitySlug: row.entity_slug }
         : {}),
     });
+    if (parsed.length === MAX_SERENITY_RECALL_LIMIT) break;
   }
   return parsed;
 }

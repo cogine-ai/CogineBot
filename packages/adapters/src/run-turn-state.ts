@@ -8,6 +8,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
 import { approvedEffectOccurrence } from "./approval-effect.js";
 import { FIND_TOOL, USE_TOOL } from "./builtin-tool-bridge.js";
+import { SEMANTIC_MEMORY_MUTATION_TOOLS } from "./memory-tools.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
 import { namedAgentTools, partitionRuntimeTools } from "./pi-runtime.js";
 import { createProtectedToolTranscriptSanitizer } from "./protected-tool-checkpoint.js";
@@ -94,7 +95,7 @@ export function createRunTurnCheckpointState(input: {
   instructionsBaseline: string;
   counts?: Map<string, number>;
   recoveredMemoryApprovals?: ReadonlyMap<string, { value: unknown; isError: boolean }>;
-  memorySaveUnavailable?: boolean;
+  unavailableMemoryTools?: ReadonlySet<string>;
 }): RunTurnCheckpointState {
   const connectionApproval =
     input.blob === undefined ? undefined : readConnectionApprovalCheckpoint(input.blob);
@@ -139,10 +140,11 @@ export function createRunTurnCheckpointState(input: {
     if (saved.executionMode !== "sequential" && call.id !== saved.pendingToolCallId) continue;
     const tool = available.get(call.name);
     if (tool && call.argumentsError && call.id !== saved.pendingToolCallId) continue;
+    const memoryToolName = call.name === USE_TOOL ? call.arguments.name : call.name;
     if (
       !call.argumentsError &&
-      (call.name === "save_memory" ||
-        (call.name === USE_TOOL && call.arguments.name === "save_memory"))
+      typeof memoryToolName === "string" &&
+      SEMANTIC_MEMORY_MUTATION_TOOLS.has(memoryToolName)
     ) {
       const executionId = JSON.stringify(["pi-tool", "main", call.id]);
       const occurrence =
@@ -151,13 +153,16 @@ export function createRunTurnCheckpointState(input: {
           : undefined;
       const receipt =
         occurrence && input.recoveredMemoryApprovals?.get(assignedEffectKey(occurrence));
-      if (receipt || (input.memorySaveUnavailable && call.id !== saved.pendingToolCallId)) {
+      if (
+        receipt ||
+        (input.unavailableMemoryTools?.has(memoryToolName) && call.id !== saved.pendingToolCallId)
+      ) {
         state.recoveredMemoryToolResults ??= {};
         state.recoveredMemoryToolResults[executionId] = receipt ?? {
           value: { error: "This tool is no longer available.", unchanged: true },
           isError: true,
         };
-        if (call.id === saved.pendingToolCallId) state.pendingToolName = "save_memory";
+        if (call.id === saved.pendingToolCallId) state.pendingToolName = memoryToolName;
         continue;
       }
     }
