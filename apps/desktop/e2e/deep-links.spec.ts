@@ -327,7 +327,9 @@ test.afterEach(async () => {
         applications: [...apps].map((application) => ({
           pid: application.process().pid,
           exit: application.process().exitCode,
-          pages: application.windows().map((page) => ({ url: page.url(), closed: page.isClosed() })),
+          pages: application
+            .windows()
+            .map((page) => ({ url: page.url(), closed: page.isClosed() })),
         })),
         processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
         children: dispatches.map((child) => ({
