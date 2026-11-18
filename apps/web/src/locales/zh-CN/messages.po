@@ -7726,3 +7726,11 @@ msgstr "最大输出 token 数必须小于上下文上限。"
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "模型连接已更改，请重新加载后重试。"
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "消息已清除，但无法确认外部记忆已清理。"
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "无法确认外部记忆已清理。"

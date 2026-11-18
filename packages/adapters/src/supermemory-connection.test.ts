@@ -2,6 +2,7 @@ import type { AdapterContext } from "@rakazo/adapter-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteSupermemoryContainer,
+  MAX_SUPERMEMORY_RESPONSE_BYTES,
   probeSupermemory,
   SUPERMEMORY_CLOUD_BASE_URL,
   SUPERMEMORY_DELETE_FORBIDDEN_ERROR,
@@ -149,23 +150,20 @@ describe("empty semantic queries", () => {
   });
 });
 
-it.each([200, 404, 403, 500])(
-  "releases the unread delete response for status %s",
-  async (status) => {
-    const cancel = vi.fn();
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response(new ReadableStream({ cancel }), { status }),
-    );
-    await expect(
-      deleteSupermemoryContainer("synthetic-container", {
-        baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
-        ...credentials,
-        fetch,
-      }),
-    ).resolves.toMatchObject({ ok: status === 200 });
-    expect(cancel).toHaveBeenCalledOnce();
-  },
-);
+it.each([404, 403, 500])("releases the unread delete response for status %s", async (status) => {
+  const cancel = vi.fn();
+  const fetch = vi.fn<typeof globalThis.fetch>(
+    async () => new Response(new ReadableStream({ cancel }), { status }),
+  );
+  await expect(
+    deleteSupermemoryContainer("synthetic-container", {
+      baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+      ...credentials,
+      fetch,
+    }),
+  ).resolves.toMatchObject({ ok: false });
+  expect(cancel).toHaveBeenCalledOnce();
+});
 
 it.each(["probe", "delete", "search", "save"] as const)(
   "keeps native header errors useful without reflecting credentials for %s",
@@ -188,5 +186,147 @@ it.each(["probe", "delete", "search", "save"] as const)(
     expect(JSON.stringify(result)).toContain("invalid header value");
     expect(JSON.stringify(result)).not.toContain("synthetic-key-with");
     expect(JSON.stringify(result)).not.toContain("newline");
+  },
+);
+
+describe("readable protocol responses", () => {
+  it.each(["[]", '[{"containerTag":"synthetic-container"}]'])(
+    "accepts a recognizable list %s without changing external data",
+    async (body) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
+      await expect(
+        probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
+      ).resolves.toEqual({ ok: true });
+      expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(["GET"]);
+    },
+  );
+
+  it.each(["<html>Fallback</html>", "", "{}", "null", "[null]", "[1]", '[{"name":"fallback"}]'])(
+    "rejects an unrecognized successful list response %s",
+    async (body) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
+      await expect(
+        prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
+      ).rejects.toThrow(/container list/);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([false, true])("bounds the list response with declared size %s", async (declared) => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_SUPERMEMORY_RESPONSE_BYTES + 1));
+      },
+      cancel,
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(body, {
+          headers: declared ? { "content-length": String(MAX_SUPERMEMORY_RESPONSE_BYTES + 1) } : {},
+        }),
+    );
+    await expect(
+      probeSupermemory({ baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch }),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("too large") });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe("confirmed cleanup responses", () => {
+  const tag = "synthetic-container";
+  const receipt = {
+    success: true,
+    containerTag: tag,
+    deletedDocumentsCount: 0,
+    deletedMemoriesCount: 0,
+  };
+  it("accepts a confirmed zero-count cleanup", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(receipt));
+    await expect(
+      deleteSupermemoryContainer(tag, {
+        baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+        ...credentials,
+        fetch,
+      }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it.each([
+    "",
+    "<html>Fallback</html>",
+    "null",
+    "[]",
+    "{}",
+    JSON.stringify({ ...receipt, success: false }),
+    JSON.stringify({ containerTag: tag }),
+    JSON.stringify({ ...receipt, containerTag: "another-container" }),
+  ])("rejects an unconfirmed successful cleanup %s", async (body) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
+    await expect(
+      deleteSupermemoryContainer(tag, {
+        baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+        ...credentials,
+        fetch,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("acknowledgment") });
+  });
+
+  it.each([false, true])("bounds the cleanup receipt with declared size %s", async (declared) => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_SUPERMEMORY_RESPONSE_BYTES + 1));
+      },
+      cancel,
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(body, {
+          headers: declared ? { "content-length": String(MAX_SUPERMEMORY_RESPONSE_BYTES + 1) } : {},
+        }),
+    );
+    await expect(
+      deleteSupermemoryContainer(tag, {
+        baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+        ...credentials,
+        fetch,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("too large") });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+});
+
+it.each(["probe", "delete"] as const)(
+  "shares the operation deadline while reading the %s body",
+  async (operation) => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const cancel = vi.fn();
+    let pulled!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      pulled = resolve;
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(new ReadableStream({ pull: pulled, cancel })),
+    );
+    try {
+      const connection = { baseUrl: SUPERMEMORY_CLOUD_BASE_URL, ...credentials, fetch };
+      const pending =
+        operation === "probe"
+          ? probeSupermemory(connection)
+          : deleteSupermemoryContainer("synthetic-container", connection);
+      await reading;
+      controller.abort(new Error("synthetic body deadline"));
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("synthetic body deadline"),
+      });
+      expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+      expect(timeout).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      timeout.mockRestore();
+    }
   },
 );

@@ -65,6 +65,7 @@ async function main() {
     "packages/db/src/history-retrieval.postgres.test.ts",
     "packages/db/src/tool-result-history.postgres.test.ts",
     "packages/db/src/run-turn-checkpoint.postgres.test.ts",
+    "packages/db/src/memory-cleanup.postgres.test.ts",
     "packages/testkit/src/agent-turn-checkpoint.postgres.test.ts",
     "packages/testkit/src/history-retrieval.postgres.test.ts",
     "packages/testkit/src/tool-result-history.postgres.test.ts",

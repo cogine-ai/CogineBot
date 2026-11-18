@@ -104,6 +104,7 @@ export interface ThreadEvents {
   append(input: AppendEventInput): Promise<ProductEvent>;
   claimSteering(input: ClaimSteeringInput): Promise<ClaimedSteeringMessage[]>;
   clearThread(input: ClearThreadInput): Promise<ClearThreadResult>;
+  markMemoryCleanupUnconfirmed(input: Omit<ClearThreadInput, "groupId">): Promise<void>;
   finalizeComputerControlRelease(
     input: FinalizeComputerControlReleaseInput,
   ): Promise<FinalizeComputerControlReleaseResult | false>;
@@ -138,6 +139,7 @@ export interface ClearThreadResult {
   event: ProductEvent;
   cancelledRunIds: string[];
   historyCompactionGeneration: number;
+  memoryCleanupUnconfirmed?: true;
 }
 
 export interface FinalizeComputerControlReleaseInput {
@@ -416,6 +418,7 @@ export function createThreadEvents(
     append: (input) => appendEvent(prisma, input, realtime),
     claimSteering: (input) => claimSteering(prisma, input),
     clearThread: (input) => clearThread(prisma, input, realtime),
+    markMemoryCleanupUnconfirmed: (input) => markMemoryCleanupUnconfirmed(prisma, input, realtime),
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
     finalizeRun: (input) => finalizeRun(prisma, input, realtime),
@@ -457,7 +460,11 @@ export async function clearThread(
         ...(input.groupId ? { groupId: input.groupId } : { botId: input.botId }),
       },
       data: { unread: false },
-      select: { nextMessageSeq: true, historyCompactionGeneration: true },
+      select: {
+        nextMessageSeq: true,
+        historyCompactionGeneration: true,
+        memoryCleanupUnconfirmed: true,
+      },
     });
     const activeRuns = await tx.run.findMany({
       where: {
@@ -507,12 +514,13 @@ export async function clearThread(
     const event = await appendEventInTransaction(tx, {
       ...input,
       type: "thread.cleared",
-      payload: {},
+      payload: thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {},
     });
     return {
       event,
       cancelledRunIds: runIds,
       historyCompactionGeneration: thread.historyCompactionGeneration,
+      ...(thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
     };
   });
   await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
@@ -525,7 +533,34 @@ export async function clearThread(
     event: mapProductEvent(committed.event),
     cancelledRunIds: committed.cancelledRunIds,
     historyCompactionGeneration: committed.historyCompactionGeneration,
+    ...(committed.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
   };
+}
+
+/** Retain an unconfirmed external cleanup even when a later clear removes old events. */
+export async function markMemoryCleanupUnconfirmed(
+  prisma: PrismaClient,
+  input: Omit<ClearThreadInput, "groupId">,
+  realtime?: RealtimeFanout,
+): Promise<void> {
+  const event = await prisma.$transaction(async (tx) => {
+    const updated = await tx.thread.updateMany({
+      where: {
+        id: input.threadId,
+        spaceId: input.spaceId,
+        botId: input.botId,
+        memoryCleanupUnconfirmed: false,
+      },
+      data: { memoryCleanupUnconfirmed: true },
+    });
+    if (updated.count === 0) return null;
+    return appendEventInTransaction(tx, {
+      ...input,
+      type: "thread.meta",
+      payload: { memoryCleanupUnconfirmed: true },
+    });
+  });
+  if (event) await notifyRealtime(realtime, event.threadId, event.seq);
 }
 
 async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUserMessageInput) {

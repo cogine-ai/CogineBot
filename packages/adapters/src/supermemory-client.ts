@@ -9,7 +9,7 @@ import { readBodyCapped } from "./web-ssrf.js";
 const SUPERMEMORY_TIMEOUT_MS = 15_000;
 export const SUPERMEMORY_CLOUD_BASE_URL = "https://api.supermemory.ai";
 
-/** Search responses contain at most five bounded memories plus small metadata. */
+/** Shared bound for search results, connection lists and cleanup acknowledgments. */
 export const MAX_SUPERMEMORY_RESPONSE_BYTES = 1024 * 1024;
 
 /** How many recalled memories a search asks for, and the most that are ever injected into a run. */
@@ -315,6 +315,7 @@ export async function deleteSupermemoryContainer(
   signal?: AbortSignal,
 ): Promise<SupermemorySaveResponse> {
   try {
+    const requestAbort = requestSignal(signal);
     const response = await fetchSupermemory(
       config,
       requestUrl(config.baseUrl, `/v3/container-tags/${encodeURIComponent(containerTag)}`),
@@ -322,17 +323,30 @@ export async function deleteSupermemoryContainer(
         method: "DELETE",
         headers: { Authorization: `Bearer ${config.apiKey}` },
         redirect: "error",
-        signal: requestSignal(signal),
+        signal: requestAbort,
       },
     );
     try {
-      if (response.ok) return { ok: true };
+      if (response.ok) {
+        const data = await readSupermemoryJson(response, requestAbort);
+        if (
+          data &&
+          typeof data === "object" &&
+          (data as { success?: unknown }).success === true &&
+          (data as { containerTag?: unknown }).containerTag === containerTag
+        )
+          return { ok: true };
+        return { ok: false, error: "Supermemory returned an invalid deletion acknowledgment." };
+      }
       if (response.status === 403) return { ok: false, error: SUPERMEMORY_DELETE_FORBIDDEN_ERROR };
       return { ok: false, error: `Supermemory container delete failed: ${response.status}` };
     } finally {
       await releaseUnreadBody(response);
     }
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return { ok: false, error: "Supermemory returned an invalid deletion acknowledgment." };
+    }
     return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }
@@ -398,6 +412,7 @@ export async function probeSupermemory(
   config: SupermemoryConnectionConfig,
 ): Promise<SupermemoryProbeResponse> {
   try {
+    const requestAbort = requestSignal();
     const response = await fetchSupermemory(
       config,
       requestUrl(config.baseUrl, "/v3/container-tags/list"),
@@ -405,18 +420,32 @@ export async function probeSupermemory(
         method: "GET",
         headers: authHeaders(config),
         redirect: "error",
-        signal: AbortSignal.timeout(SUPERMEMORY_TIMEOUT_MS),
+        signal: requestAbort,
       },
     );
     try {
       if (!response.ok) {
         return { ok: false, error: `Supermemory rejected the connection: ${response.status}` };
       }
+      const data = await readSupermemoryJson(response, requestAbort);
+      if (
+        !Array.isArray(data) ||
+        !data.every(
+          (item: unknown) =>
+            item &&
+            typeof item === "object" &&
+            typeof (item as { containerTag?: unknown }).containerTag === "string",
+        )
+      )
+        return { ok: false, error: "Supermemory returned an invalid container list." };
       return { ok: true };
     } finally {
       await releaseUnreadBody(response);
     }
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return { ok: false, error: "Supermemory returned an invalid container list." };
+    }
     return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }

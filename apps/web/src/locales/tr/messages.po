@@ -7567,3 +7567,11 @@ msgstr "Maksimum çıktı belirteci sayısı bağlam sınırından küçük olma
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "Model bağlantısı değişti. Yeniden yükleyip tekrar deneyin."
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Messages cleared. External memory cleanup could not be confirmed."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "External memory cleanup could not be confirmed."

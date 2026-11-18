@@ -394,7 +394,9 @@ export async function threadSnapshot(
       }),
       deps.prisma.$transaction(
         async (tx) => {
-          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
+          const [cleanupState] = await tx.$queryRaw<Array<{ memoryCleanupUnconfirmed: boolean }>>`
+            SELECT id, "memoryCleanupUnconfirmed" FROM threads WHERE id = ${target.threadId} FOR SHARE
+          `;
           const [messagePage, last, waitingRun, busyOrFailed, quotaRuns, attention] =
             await Promise.all([
               loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
@@ -478,7 +480,15 @@ export async function threadSnapshot(
                   orderBy: { seq: "asc" },
                 })
               : [];
-          return { messagePage, last, run: currentRun, quotaRuns, liveEvents, attention };
+          return {
+            messagePage,
+            last,
+            run: currentRun,
+            quotaRuns,
+            liveEvents,
+            attention,
+            cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
+          };
         },
         { timeout: 15_000, maxWait: 5_000 },
       ),
@@ -493,6 +503,7 @@ export async function threadSnapshot(
     return {
       botId: target.botId,
       threadId: target.threadId,
+      ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
@@ -507,7 +518,9 @@ export async function threadSnapshot(
 
   const core = await deps.prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
+      const [cleanupState] = await tx.$queryRaw<Array<{ memoryCleanupUnconfirmed: boolean }>>`
+            SELECT id, "memoryCleanupUnconfirmed" FROM threads WHERE id = ${target.threadId} FOR SHARE
+          `;
       const [messagePage, last, activeRuns, recentTerminals, attention] = await Promise.all([
         loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
         tx.event.findFirst({
@@ -569,6 +582,7 @@ export async function threadSnapshot(
         terminalRun: pickLatestTerminalRun(recentTerminals),
         liveEvents,
         attention,
+        cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
       };
     },
     { timeout: 15_000, maxWait: 5_000 },
@@ -579,6 +593,7 @@ export async function threadSnapshot(
     groupName: target.groupName,
     members: target.members,
     threadId: target.threadId,
+    ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
     cursor: core.last?.seq ?? -1,
     messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
     olderCursor: core.messagePage.olderCursor,

@@ -5614,3 +5614,43 @@ it("announces the committed final message after the actual mobile reducer clears
   expect(announcements.update("scope", true, current)).toEqual(["Committed native reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
 });
+
+describe("mobile external memory cleanup uncertainty", () => {
+  it("keeps current messages and work when late cleanup metadata arrives", () => {
+    const initial = snapshot([
+      mobileMessage("new-message", [{ kind: "text", text: "After clear" }], 3),
+    ]);
+    const event = {
+      type: "thread.meta",
+      threadId: initial.threadId,
+      seq: 4,
+      payload: { memoryCleanupUnconfirmed: true },
+    };
+    const next = applyMobileThreadEvent(initial, event)!;
+    expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect(next.messages).toHaveLength(initial.messages.length);
+    expect(next.messages).toMatchObject(initial.messages);
+    expect(next.run).toEqual(initial.run);
+    expect(applyMobileThreadEvent(next, event)).toBe(next);
+    expect(applyMobileThreadEvent(next, { ...event, threadId: "another-thread", seq: 5 })).toBe(
+      next,
+    );
+  });
+  it("retains uncertainty on clear and refresh but isolates another thread", () => {
+    const initial = { ...snapshot(), memoryCleanupUnconfirmed: true as const };
+    const cleared = applyMobileThreadEvent(initial, {
+      type: "thread.cleared",
+      threadId: initial.threadId,
+      seq: 4,
+      payload: {},
+    })!;
+    expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+    expect(
+      mergeMobileSnapshot(cleared, { ...snapshot(), cursor: 5 }).memoryCleanupUnconfirmed,
+    ).toBe(true);
+    expect(
+      mergeMobileSnapshot(cleared, { ...snapshot(), threadId: "another-thread", cursor: 5 })
+        .memoryCleanupUnconfirmed,
+    ).toBeUndefined();
+  });
+});

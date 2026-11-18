@@ -2561,3 +2561,40 @@ it("announces an actual completion reduction after it removes the primary Run", 
   expect(announcements.update("scope", true, current)).toEqual(["Committed reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
 });
+
+describe("external memory cleanup uncertainty", () => {
+  it("applies a late metadata warning without erasing messages or current work", () => {
+    const initial = snapshot([message("new-message", [{ kind: "text", text: "After clear" }])]);
+    const update = event({ type: "thread.meta", payload: { memoryCleanupUnconfirmed: true } });
+    expect(isThreadSnapshotEvent(update)).toBe(true);
+    const next = reduceThreadSnapshot(initial, update)!;
+    expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect(next.messages).toHaveLength(initial.messages.length);
+    expect(next.messages).toMatchObject(initial.messages);
+    expect(next.run).toEqual(initial.run);
+    expect(reduceThreadSnapshot(next, update)).toBe(next);
+    expect(
+      reduceThreadSnapshot(
+        next,
+        event({
+          threadId: "another-thread",
+          seq: 5,
+          type: "thread.meta",
+          payload: { memoryCleanupUnconfirmed: true },
+        }),
+      ),
+    ).toBe(next);
+  });
+  it("retains uncertainty across clear and same-thread refresh without leaking to another thread", () => {
+    const initial = { ...snapshot([]), memoryCleanupUnconfirmed: true as const };
+    const cleared = reduceThreadSnapshot(initial, event({ type: "thread.cleared", payload: {} }))!;
+    expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+    expect(
+      mergeThreadSnapshot(cleared, { ...snapshot([]), cursor: 5 }).memoryCleanupUnconfirmed,
+    ).toBe(true);
+    expect(
+      mergeThreadSnapshot(cleared, { ...snapshot([]), threadId: "another-thread", cursor: 5 })
+        .memoryCleanupUnconfirmed,
+    ).toBeUndefined();
+  });
+});

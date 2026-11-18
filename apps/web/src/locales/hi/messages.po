@@ -7567,3 +7567,11 @@ msgstr "अधिकतम आउटपुट टोकन संदर्भ �
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "मॉडल कनेक्शन बदल गया है। फिर से लोड करके दोबारा कोशिश करें।"
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Messages cleared. External memory cleanup could not be confirmed."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "External memory cleanup could not be confirmed."

@@ -516,6 +516,11 @@ export function ShellPage() {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [memoryCleanupNotice, setMemoryCleanupNotice] = useState<{
+    scope: string;
+    message: string;
+  } | null>(null);
+  const seenMemoryCleanupNotices = useRef(new Set<string>());
   const [imageSendRefusal, setImageSendRefusal] = useState<{
     draftKey: string;
     version: number;
@@ -3294,7 +3299,40 @@ export function ShellPage() {
     refreshTemplateExample((value) => value + 1);
   }
 
+  const memoryCleanupScope = activeSnapshot
+    ? JSON.stringify([
+        groupSettingsActor.current.userId,
+        selectedSpaceId() ?? groupSettingsActor.current.spaceId,
+        activeSnapshot.threadId,
+      ])
+    : undefined;
+  const showMemoryCleanupNotice = useCallback(
+    (scope: string, immediate: boolean) => {
+      if (seenMemoryCleanupNotices.current.has(scope)) return;
+      seenMemoryCleanupNotices.current.add(scope);
+      setMemoryCleanupNotice({
+        scope,
+        message: immediate
+          ? t`Messages cleared. External memory cleanup could not be confirmed.`
+          : t`External memory cleanup could not be confirmed.`,
+      });
+    },
+    [t],
+  );
+  useEffect(() => {
+    if (activeSnapshot?.memoryCleanupUnconfirmed && memoryCleanupScope) {
+      showMemoryCleanupNotice(memoryCleanupScope, false);
+    }
+  }, [activeSnapshot?.memoryCleanupUnconfirmed, memoryCleanupScope, showMemoryCleanupNotice]);
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
+  const cleanupError =
+    memoryCleanupNotice &&
+    memoryCleanupNotice.scope === memoryCleanupScope &&
+    !sendError &&
+    !runError &&
+    !composerDraft.deliveryNotice
+      ? memoryCleanupNotice.message
+      : null;
   const displayedRunError = !sendError && !composerDraft.deliveryNotice ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
   const handleRunErrorPresented = useCallback((runId: string) => {
@@ -4787,6 +4825,10 @@ export function ShellPage() {
   );
 
   function dismissComposerError() {
+    if (cleanupError) {
+      setMemoryCleanupNotice(null);
+      return;
+    }
     // The strip shows one message at a time, so only dismiss the run failure when it is the
     // one on screen; otherwise a live run would be silenced before it has even failed.
     const failedRunId = displayedRunErrorId;
@@ -6303,7 +6345,7 @@ export function ShellPage() {
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
               }
-              sendError={sendError}
+              sendError={sendError ?? cleanupError}
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
@@ -7275,23 +7317,34 @@ export function ShellPage() {
               const actor = groupSettingsActor.current;
               const spaceId = selectedSpaceId() ?? actor.spaceId;
               const epoch = historyEpoch.current;
-              await rpc.threads.clear(
+              const cleared = await rpc.threads.clear(
                 clearTarget.kind === "bot"
                   ? { botId: clearTarget.chat.id }
                   : { groupId: clearTarget.chat.id },
               );
-              if (
-                epoch === historyEpoch.current &&
+              const stillTarget =
                 actor.userId === groupSettingsActor.current.userId &&
                 actor.spaceId === groupSettingsActor.current.spaceId &&
                 spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId) &&
                 ((clearTarget.kind === "bot" && activeBotId.current === clearTarget.chat.id) ||
-                  (clearTarget.kind === "group" && activeGroupId.current === clearTarget.chat.id))
-              ) {
+                  (clearTarget.kind === "group" && activeGroupId.current === clearTarget.chat.id));
+              if (epoch === historyEpoch.current && stillTarget) {
                 clearHistoryWindow();
                 updateSnapshot((current) =>
                   current ? { ...current, messages: [], olderCursor: null, run: null } : current,
                 );
+              }
+              if (stillTarget && cleared.memoryCleanupUnconfirmed) {
+                const current = snapshotRef.current;
+                if (current) {
+                  showMemoryCleanupNotice(
+                    JSON.stringify([actor.userId, spaceId, current.threadId]),
+                    true,
+                  );
+                  updateSnapshot((snap) =>
+                    snap ? { ...snap, memoryCleanupUnconfirmed: true } : snap,
+                  );
+                }
               }
               setClearTarget(null);
               await refreshBots();

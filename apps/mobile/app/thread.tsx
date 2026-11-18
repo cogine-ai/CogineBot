@@ -821,6 +821,26 @@ function Thread({
   );
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
   const snapRef = useRef<MobileSnapshot | null>(null);
+  const seenMemoryCleanupNotices = useRef(new Set<string>());
+  const memoryCleanupAlertBlocked = useRef(false);
+  const memoryCleanupOwner = JSON.stringify([ownerUserId, sessionEpoch, profileScope]);
+  const memoryCleanupOwnerRef = useRef(memoryCleanupOwner);
+  memoryCleanupOwnerRef.current = memoryCleanupOwner;
+  const showMemoryCleanupNotice = useCallback(
+    (id: string, immediate: boolean) => {
+      if (memoryCleanupAlertBlocked.current) return;
+      const key = JSON.stringify([memoryCleanupOwner, id]);
+      if (seenMemoryCleanupNotices.current.has(key)) return;
+      seenMemoryCleanupNotices.current.add(key);
+      Alert.alert(
+        t("Clear conversation"),
+        immediate
+          ? t("Messages cleared. External memory cleanup could not be confirmed.")
+          : t("External memory cleanup could not be confirmed."),
+      );
+    },
+    [memoryCleanupOwner, t],
+  );
   // The copy saved on this device stays on screen until a live snapshot replaces it.
   const [showingSaved, setShowingSaved] = useState(false);
   const snapshotOrigin = useRef<SavedChatsScope | null>(null);
@@ -1482,8 +1502,22 @@ function Thread({
 
   function clearConversation() {
     if (!botId) return;
-    void rpc("threads/clear", { botId })
-      .then(() => {
+    const owner = memoryCleanupOwner;
+    const targetThreadId = snapRef.current?.threadId;
+    const epoch = historyEpoch.current;
+    void rpc<{ ok: true; memoryCleanupUnconfirmed?: true }>("threads/clear", { botId })
+      .then((result) => {
+        if (
+          memoryCleanupOwnerRef.current !== owner ||
+          activeBotId.current !== botId ||
+          (targetThreadId && snapRef.current?.threadId !== targetThreadId)
+        )
+          return;
+        if (result.memoryCleanupUnconfirmed && snapRef.current) {
+          showMemoryCleanupNotice(snapRef.current.threadId, true);
+          commitSnap({ ...snapRef.current, memoryCleanupUnconfirmed: true });
+        }
+        if (epoch !== historyEpoch.current) return;
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
         jumpScrollTarget.current = null;
@@ -2563,6 +2597,24 @@ function Thread({
     error === "platform_model_forbidden" ||
     feedback.unsentSends.some((attempt) => attempt.error === "platform_model_forbidden");
   const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
+  memoryCleanupAlertBlocked.current = Boolean(error || runError || !focused);
+  useEffect(() => {
+    const sameTarget = botId ? snap?.botId === botId : snap?.groupId === groupId;
+    if (focused && !error && !runError && sameTarget && snap?.memoryCleanupUnconfirmed) {
+      showMemoryCleanupNotice(snap.threadId, false);
+    }
+  }, [
+    botId,
+    groupId,
+    focused,
+    error,
+    runError,
+    snap?.botId,
+    snap?.groupId,
+    snap?.threadId,
+    snap?.memoryCleanupUnconfirmed,
+    showMemoryCleanupNotice,
+  ]);
   useSyncExternalStore(
     subscribeRejectedSessionDraft,
     rejectedSessionDraftRevision,

@@ -26,6 +26,7 @@ const desktop = path.resolve(import.meta.dirname, "..");
 const screenshotRoot = path.join(desktop, "e2e/screenshots");
 const title = "CogineBot Console fixture";
 const apps = new Set<ElectronApplication>();
+const pendingLaunches = new Set<Promise<ElectronApplication>>();
 const applicationErrors = new Map<ElectronApplication, string>();
 const dispatches: ReturnType<typeof spawn>[] = [];
 let root: string;
@@ -86,17 +87,19 @@ function dispatch(url: string) {
 }
 
 async function launch(executablePath: string) {
-  const app = await electron.launch({
-    executablePath,
-    env,
-    args: ["--no-sandbox"],
-  });
-  apps.add(app);
-  applicationErrors.set(app, "");
-  app.process().stderr?.on("data", (chunk) => {
-    applicationErrors.set(app, `${applicationErrors.get(app)}${chunk}`.slice(-16_384));
-  });
-  return app;
+  const starting = electron.launch({ executablePath, env, args: ["--no-sandbox"] });
+  pendingLaunches.add(starting);
+  try {
+    const app = await starting;
+    apps.add(app);
+    applicationErrors.set(app, "");
+    app.process().stderr?.on("data", (chunk) => {
+      applicationErrors.set(app, `${applicationErrors.get(app)}${chunk}`.slice(-16_384));
+    });
+    return app;
+  } finally {
+    pendingLaunches.delete(starting);
+  }
 }
 
 async function consoleWindow(app: ElectronApplication): Promise<Page> {
@@ -194,6 +197,18 @@ async function dismissDialog(title: string, screenshot: string, retry = true) {
     await exec("scrot", [path.join(screenshotRoot, screenshot)]);
     await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
   }
+}
+
+async function closeApplications() {
+  // A synchronous native error dialog blocks Electron's inspector until dismissed.
+  // Close only the dialogs in this disposable test session before app.close().
+  for (const id of await nativeDialogs()) {
+    await exec("xdotool", ["windowactivate", "--sync", id]);
+    await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
+  }
+  // Dismissing native dialogs above lets pending attachment settle before closing its app.
+  await Promise.allSettled([...pendingLaunches]);
+  for (const app of apps) await close(app).catch(() => undefined);
 }
 
 async function startFixtureServer(port = 0) {
@@ -321,13 +336,7 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  // A synchronous native error dialog blocks Electron's inspector until dismissed.
-  // Close only the dialogs in this disposable test session before app.close().
-  for (const id of await nativeDialogs()) {
-    await exec("xdotool", ["windowactivate", "--sync", id]);
-    await exec("xdotool", ["key", "--clearmodifiers", "Escape"]);
-  }
-  for (const app of apps) await app.close().catch(() => undefined);
+  await closeApplications();
   if (root) {
     await closeNativeWindow();
     await exec(process.execPath, ["scripts/development.mjs", "unregister"], {
@@ -403,6 +412,7 @@ test.afterEach(async () => {
     ),
     contentType: "application/json",
   });
+  await closeApplications();
 });
 
 test("a system link restores first-run setup without bypassing it", async () => {
@@ -757,5 +767,33 @@ test("a development server that never responds is cancelled before native Retry"
   } finally {
     failureMode = "ready";
     for (const response of stalledResponses) response.destroy();
+  }
+});
+
+test("failed native recovery teardown closes a launcher before attachment settles", async () => {
+  await vite.close();
+  const starting = launch(devExecutable);
+  void starting.catch(() => undefined);
+  try {
+    await nativeDialog("CogineBot Dev");
+    await expect.poll(async () => (await nativeWindows("CogineBot Dev")).length).toBe(1);
+    const [failedWindow] = await nativeWindows("CogineBot Dev");
+    expect(failedWindow).toBeDefined();
+    await closeApplications();
+    await expect
+      .poll(() => {
+        try {
+          process.kill(failedWindow!.pid, 0);
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+          throw error;
+        }
+      })
+      .toBe(false);
+    expect(pendingLaunches.size).toBe(0);
+    expect(apps.size).toBe(0);
+  } finally {
+    vite = await startFixtureServer(Number(new URL(origin).port));
   }
 });

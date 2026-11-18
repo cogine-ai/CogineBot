@@ -7567,3 +7567,11 @@ msgstr "Le nombre maximal de jetons de sortie doit être inférieur à la limite
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "La connexion du modèle a changé. Rechargez puis réessayez."
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Messages cleared. External memory cleanup could not be confirmed."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "External memory cleanup could not be confirmed."

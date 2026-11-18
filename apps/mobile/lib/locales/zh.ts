@@ -1,4 +1,8 @@
 export const ZH_MESSAGES: Record<string, string> = {
+  "Messages cleared. External memory cleanup could not be confirmed.":
+    "消息已清除，但无法确认外部记忆已清理。",
+  "External memory cleanup could not be confirmed.": "无法确认外部记忆已清理。",
+
   "Ask the recipient to send a new WhatsApp message before replying.":
     "请让收件人先发一条新的 WhatsApp 消息，再回复。",
   "An attachment could not be sent.": "有一个附件发送失败。",

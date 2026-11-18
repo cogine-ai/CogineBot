@@ -276,6 +276,7 @@ function compactionHarness(
     historyCompactionSummary: options.historyCompactionSummary ?? (null as string | null),
     historyCompactionGeneration: options.historyCompactionGeneration ?? 0,
     historyCompactionRetryAfterSeq: null as number | null,
+    memoryCleanupUnconfirmed: false,
   };
   const memoryConfig =
     options.memoryConfig === undefined
@@ -411,11 +412,17 @@ function compactionHarness(
     ),
   };
   const jobs = { enqueue: vi.fn(async () => undefined) };
+  const events = {
+    markMemoryCleanupUnconfirmed: vi.fn(async () => {
+      thread.memoryCleanupUnconfirmed = true;
+    }),
+  };
   const deps = {
     prisma: prisma as unknown as PrismaClient,
     runtime: runtime as unknown as AgentRuntime,
     jobs: jobs as unknown as JobPublisher,
     memoryProviders,
+    events,
     platformModelAllowlist: options.platformModelAllowlist,
     deploymentModelKey: options.deploymentModelKey,
     deploymentModelConfigured:
@@ -430,6 +437,7 @@ function compactionHarness(
     saveMemory,
     purgeHistory,
     memoryProviders,
+    events,
     jobs,
     deps,
   };
@@ -884,6 +892,19 @@ describe("compactHistory", () => {
     );
   });
 
+  it("records a rejected late purge without repeating the external save", async () => {
+    const harness = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    harness.saveMemory.mockImplementationOnce(async () => {
+      harness.thread.historyCompactionGeneration = 1;
+      return { ok: true, value: undefined };
+    });
+    harness.purgeHistory.mockResolvedValueOnce({ ok: false, error: "permission denied" });
+    await compactHistory(harness.deps, "thread-1");
+    expect(harness.events.markMemoryCleanupUnconfirmed).toHaveBeenCalledOnce();
+    expect(harness.thread.memoryCleanupUnconfirmed).toBe(true);
+    expect(harness.saveMemory).toHaveBeenCalledOnce();
+  });
+
   it("continues draining the backlog when a stale-history purge throws", async () => {
     const harness = compactionHarness({
       deploymentModelKey: "openrouter-key",
@@ -899,6 +920,12 @@ describe("compactHistory", () => {
 
     await expect(compactHistory(harness.deps, "thread-1")).resolves.toBeUndefined();
 
+    expect(harness.events.markMemoryCleanupUnconfirmed).toHaveBeenCalledExactlyOnceWith({
+      spaceId: harness.thread.spaceId,
+      threadId: "thread-1",
+      botId: "bot-1",
+    });
+    expect(harness.thread.memoryCleanupUnconfirmed).toBe(true);
     expect(harness.jobs.enqueue).toHaveBeenCalledWith(historyCompactJob("thread-1"));
     expect(
       sink.events.some(

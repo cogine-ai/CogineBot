@@ -711,6 +711,7 @@ model Thread {
   historyCompactionSummary    String?    @db.Text
   historyCompactionGeneration Int        @default(0)
   historyCompactionRetryAfterSeq Int?
+  memoryCleanupUnconfirmed    Boolean    @default(false)
   unread                      Boolean    @default(false)
   messages                    Message[]
   events                      Event[]

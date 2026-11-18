@@ -20,6 +20,7 @@ import {
 } from "@rakazo/contracts";
 import { RESPONSE_STREAMING_STORAGE_KEY } from "@rakazo/core";
 import { TOOL_ACTIVITY_STORAGE_KEY } from "../src/lib/tool-activity-preference";
+import { UI_LOCALE_STORAGE_KEY } from "../src/lib/ui-locale";
 import { captureScreenshot, openNewBot } from "./helpers";
 
 // Exercise the real app with synthetic HTTP contracts; no API, database or model is contacted.
@@ -3089,6 +3090,135 @@ test("a computer provider limit keeps computer retry advice without starting ano
   await expect(failure).not.toContainText("model provider");
   await expect(failure.getByRole("link", { name: "Manage usage", exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "b43-computer-rate-limit");
+  expect(state.sends).toEqual([]);
+  expect(state.uploads).toEqual([]);
+  expect(unknown).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+for (const width of [1280, 390]) {
+  for (const locale of ["en", "zh-CN"] as const) {
+    test(`memory cleanup uncertainty survives clear and reload at ${width}px in ${locale}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.addInitScript(({ key, locale }) => window.localStorage.setItem(key, locale), {
+        key: UI_LOCALE_STORAGE_KEY,
+        locale,
+      });
+      const { state, errors } = await mockChat(page);
+      const stream = await controlledStream(page);
+      let cleared = false;
+      let cleanupCursor = 150;
+      const project = (data: ThreadSnapshot): ThreadSnapshot => ({
+        ...data,
+        ...(cleared
+          ? {
+              memoryCleanupUnconfirmed: true as const,
+              cursor: cleanupCursor,
+              messages: [],
+              olderCursor: null,
+              run: null,
+            }
+          : {}),
+      });
+      state.bootstrap = (route, data) => json(route, { ...data, thread: project(data.thread!) });
+      state.thread = (route, data) => json(route, project(data));
+      await page.route("**/rpc/threads/clear", (route) => {
+        cleared = true;
+        return json(route, { ok: true, memoryCleanupUnconfirmed: true });
+      });
+      await page.goto("/app/chief");
+      await expect(page.getByTestId("shell-root")).toHaveAttribute("data-ready", "true");
+      const composer = page.getByRole("combobox").first();
+      await composer.fill("Keep this draft");
+      await page
+        .getByTestId("bots-sidebar")
+        .locator('[data-roster-bot-id="chief"]')
+        .click({ button: "right" });
+      await page
+        .getByRole("menuitem", {
+          name: locale === "en" ? "Clear conversation" : "清空对话",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("alertdialog")
+        .getByRole("button", { name: locale === "en" ? "Clear" : "清空", exact: true })
+        .click();
+      const immediate =
+        locale === "en"
+          ? "Messages cleared. External memory cleanup could not be confirmed."
+          : "消息已清除，但无法确认外部记忆已清理。";
+      const generic =
+        locale === "en"
+          ? "External memory cleanup could not be confirmed."
+          : "无法确认外部记忆已清理。";
+      await page.setViewportSize({ width, height: 900 });
+      await expect(page.getByText(immediate, { exact: true })).toBeVisible();
+      await expect(page.getByRole("alertdialog")).toHaveCount(0);
+      await expect(composer).toHaveValue("Keep this draft");
+      await captureScreenshot(page, testInfo, `memory-cleanup-clear-${width}-${locale}`);
+      await page.getByTestId("composer-error-dismiss").click();
+      cleanupCursor = 151;
+      await stream.emit({
+        id: "cleanup-repeat",
+        spaceId: "space-primary",
+        threadId: "thread-chief",
+        botId: "chief",
+        seq: cleanupCursor,
+        type: "thread.meta",
+        createdAt: stamp,
+        payload: { memoryCleanupUnconfirmed: true },
+      });
+      await expect(page.getByText(generic, { exact: true })).toHaveCount(0);
+      await page.reload();
+      await expect(page.getByText(generic, { exact: true })).toBeVisible();
+      await expect(page.getByTestId("composer-error-dismiss")).toHaveCount(1);
+      await captureScreenshot(page, testInfo, `memory-cleanup-reload-${width}-${locale}`);
+      expect(errors).toEqual([]);
+    });
+  }
+}
+
+test("a late cleanup warning waits for an existing run error without replacing it", async ({
+  page,
+}, testInfo) => {
+  const { state, errors, unknown } = await mockChat(page);
+  const stream = await controlledStream(page);
+  const failed = {
+    id: "run-before-cleanup-warning",
+    botId: "chief",
+    status: "failed" as const,
+    trigger: "user" as const,
+    error: "The model provider is unavailable. Try again later.",
+  };
+  state.bootstrap = (route, data) =>
+    json(route, { ...data, thread: { ...data.thread!, run: failed } });
+  state.thread = (route, data) => json(route, { ...data, run: failed });
+  await ready(page);
+  const composer = page.getByRole("combobox").first();
+  await composer.fill("Keep the next request");
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toContainText(failed.error);
+  await stream.emit({
+    id: "late-cleanup-failure",
+    spaceId: "space-primary",
+    threadId: "thread-chief",
+    botId: "chief",
+    seq: 150,
+    type: "thread.meta",
+    createdAt: stamp,
+    payload: { memoryCleanupUnconfirmed: true },
+  });
+  await expect(failure).toContainText(failed.error);
+  await expect(failure).not.toContainText("External memory cleanup");
+  await page.getByTestId("composer-error-dismiss").click();
+  await expect(failure).toHaveText("External memory cleanup could not be confirmed.");
+  await expect(composer).toHaveValue("Keep the next request");
+  await captureScreenshot(page, testInfo, "memory-cleanup-after-run-error");
+  await page.getByTestId("composer-error-dismiss").click();
+  await expect(failure).toBeHidden();
   expect(state.sends).toEqual([]);
   expect(state.uploads).toEqual([]);
   expect(unknown).toEqual([]);

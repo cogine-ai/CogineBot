@@ -3,7 +3,7 @@ import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
 import { blocksToAgentHistoryText, PlatformModelForbiddenError } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { recordUsage, runAsSystem } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
 import { formatCurrentTimeInstruction } from "./current-time.js";
@@ -217,6 +217,7 @@ export interface CompactHistoryDeps {
   runtime: AgentRuntime;
   jobs: JobPublisher;
   memoryProviders: MemoryProviderResolver;
+  events: Pick<ThreadEvents, "markMemoryCleanupUnconfirmed">;
   platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   deploymentModelConfigured?: boolean;
@@ -547,18 +548,28 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     semanticMemory &&
     latest.historyCompactionGeneration !== previousGeneration
   ) {
+    let cleanupUnconfirmed = false;
     try {
       const removed = await semanticMemory.provider.purgeHistory(
         { botId: thread.botId, generations: [previousGeneration] },
         memoryContext,
       );
       if (!removed.ok) {
+        cleanupUnconfirmed = true;
         getLogger().error(
           `history.compact could not purge stale semantic memory: ${removed.error}`,
         );
       }
     } catch (error) {
+      cleanupUnconfirmed = true;
       getLogger().error("history.compact could not purge stale semantic memory", error);
+    }
+    if (cleanupUnconfirmed) {
+      await deps.events.markMemoryCleanupUnconfirmed({
+        spaceId: thread.spaceId,
+        threadId,
+        botId: thread.botId,
+      });
     }
   }
 

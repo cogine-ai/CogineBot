@@ -183,11 +183,18 @@ export function mergeThreadSnapshot(
   // A threads.get started before SSE caught up must not wipe newer live state
   // (e.g. ask cards applied after send's post-refresh request was already in flight).
   if (prev && prev.threadId === next.threadId && prev.cursor > next.cursor) return prev;
-  const merged = mergeThreadHistory(
+  let merged = mergeThreadHistory(
     prev ? observeThreadMessages(prev) : null,
     observeThreadMessages(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
+  if (
+    prev?.threadId === next.threadId &&
+    prev.memoryCleanupUnconfirmed &&
+    !merged.memoryCleanupUnconfirmed
+  ) {
+    merged = { ...merged, memoryCleanupUnconfirmed: true };
+  }
   const clearSeq = Math.max(
     prev?.threadId === next.threadId ? (threadClearSeq(prev) ?? -1) : -1,
     threadClearSeq(next) ?? -1,
@@ -302,6 +309,7 @@ export function prependThreadMessagePage(
 
 export function isThreadSnapshotEvent(event: ProductEvent): boolean {
   return (
+    (event.type === "thread.meta" && event.payload.memoryCleanupUnconfirmed === true) ||
     event.type === "thread.cleared" ||
     event.type === "thread.progress" ||
     event.type === "thread.subagent" ||
@@ -361,6 +369,9 @@ export function reduceThreadSnapshot(
     return prev;
   const cursor = Math.max(prev.cursor, event.seq);
   prev = observeThreadMessages(observeThreadClear(prev, clearSeq));
+  if (event.type === "thread.meta" && event.payload.memoryCleanupUnconfirmed === true) {
+    return { ...prev, cursor, memoryCleanupUnconfirmed: true };
+  }
   if (event.type === "thread.cleared") {
     return observeThreadClear(
       {
@@ -370,6 +381,9 @@ export function reduceThreadSnapshot(
         olderCursor: null,
         run: null,
         activeRuns: [],
+        ...(event.payload.memoryCleanupUnconfirmed === true
+          ? { memoryCleanupUnconfirmed: true as const }
+          : {}),
       },
       event.seq,
     );

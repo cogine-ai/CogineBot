@@ -637,7 +637,11 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
-    clear: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    clear: oc
+      .input(threadTarget)
+      .output(
+        z.object({ ok: z.literal(true), memoryCleanupUnconfirmed: z.literal(true).optional() }),
+      ),
     delegatedApprovals: oc
       .input(botId.extend({ dispatchMessageIds: z.array(Id).max(100) }))
       .output(z.array(DelegatedApprovalSchema)),

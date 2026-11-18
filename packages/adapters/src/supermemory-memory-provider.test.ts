@@ -112,10 +112,19 @@ describe("SupermemoryMemoryProvider", () => {
   });
 
   it("purges only requested history generations", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async (url) =>
+      Response.json({
+        success: true,
+        containerTag: decodeURIComponent(new URL(String(url)).pathname.split("/").at(-1)!),
+        deletedDocumentsCount: 0,
+        deletedMemoriesCount: 0,
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    await provider().purgeHistory({ botId: "bot-1", generations: [2, 3, 3] }, context);
+    await expect(
+      provider().purgeHistory({ botId: "bot-1", generations: [2, 3, 3] }, context),
+    ).resolves.toEqual({ ok: true, value: undefined });
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "http://localhost:6767/v3/container-tags/rakazo%3Abot-1%3Ahistory%3A2",

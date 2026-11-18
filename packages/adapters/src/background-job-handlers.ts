@@ -221,6 +221,7 @@ export function createBackgroundJobHandlers(deps: {
           runtime: deps.runtime,
           jobs: deps.jobs,
           memoryProviders: deps.memoryProviders,
+          events: deps.events,
           platformModelAllowlist: deps.platformModelAllowlist,
           deploymentModelKey: deps.deploymentModelKey,
           deploymentModelConfigured: deps.deploymentModelConfigured,

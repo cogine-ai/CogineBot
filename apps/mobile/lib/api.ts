@@ -1362,6 +1362,7 @@ export type MobileSnapshot = {
   groupId?: string;
   groupName?: string;
   threadId: string;
+  memoryCleanupUnconfirmed?: true;
   cursor?: number;
   observedClearSeq?: number;
   messages: MobileMessage[];
@@ -1458,6 +1459,9 @@ export function mergeMobileSnapshot(
     observeMobileMessages(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
+  if (sameThread && prev.memoryCleanupUnconfirmed && !merged.memoryCleanupUnconfirmed) {
+    merged = { ...merged, memoryCleanupUnconfirmed: true };
+  }
   if (
     sameThread &&
     prev.cursor === merged.cursor &&
@@ -1706,6 +1710,9 @@ export function applyMobileThreadEvent(
     return prev;
   const cursor = event.seq === undefined ? prev.cursor : Math.max(prev.cursor ?? -1, event.seq);
   prev = observeMobileMessages(observeMobileClear(prev, clearSeq));
+  if (event.type === "thread.meta" && event.payload?.memoryCleanupUnconfirmed === true) {
+    return { ...prev, cursor, memoryCleanupUnconfirmed: true };
+  }
   if (event.type === "thread.cleared") {
     return observeMobileClear(
       {
@@ -1715,6 +1722,9 @@ export function applyMobileThreadEvent(
         olderCursor: null,
         run: null,
         activeRuns: [],
+        ...(event.payload?.memoryCleanupUnconfirmed === true
+          ? { memoryCleanupUnconfirmed: true as const }
+          : {}),
       },
       event.seq ?? cursor,
     );
