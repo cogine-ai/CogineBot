@@ -453,6 +453,9 @@ export interface SemanticMemoryResult {
 
 export interface SemanticMemoryForgetRequest {
   id: string;
+  /** Same scope as recall: providers delete only facts inside these namespaces. */
+  scope: DurableMemoryScope;
+  botId: string;
   reason?: string;
   /** Entity/namespace from a prior recall citation, when the backend scopes deletes. */
   entity?: string;

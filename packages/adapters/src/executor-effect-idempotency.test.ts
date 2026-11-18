@@ -1099,6 +1099,39 @@ describe("mutating tool effect idempotency keys", () => {
     expect(f.effects[0]).toMatchObject({ status: "completed", result: { ok: true } });
   });
 
+  it("passes the actual Run Bot and configured scope to semantic forgetting", async () => {
+    const forget = vi
+      .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
+      .mockResolvedValue({ ok: true, value: { id: "fact-1", expired: true, reason: null } });
+    const f = fixture("run-scoped-forget", {
+      semanticMemory: {
+        describe: () => ({
+          id: "fixture",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+        }),
+        recall: async () => ({ ok: true, value: [] }),
+        save: async () => ({ ok: true, value: undefined }),
+        purgeHistory: async () => ({ ok: true, value: undefined }),
+        forget,
+      },
+    });
+    f.setCalls([
+      {
+        name: "forget_memory",
+        args: { id: "fact-1", entity: "bot/synthetic", scope: "shared", botId: "another-bot" },
+        executionId: "forget-once",
+      },
+    ]);
+    await f.run();
+    expect(forget).toHaveBeenCalledOnce();
+    expect(forget).toHaveBeenCalledWith(
+      { id: "fact-1", entity: "bot/synthetic", scope: "isolated", botId: "bot-1" },
+      expect.objectContaining({ userId: "user-1", spaceId: "space-1", botId: "bot-1" }),
+    );
+  });
+
   it("restores approval for a legacy forget intent without calling the provider", async () => {
     const forget = vi
       .fn<NonNullable<SemanticMemoryProvider["forget"]>>()

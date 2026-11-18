@@ -5306,6 +5306,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             groupId: thread.groupId,
             trigger: run.trigger,
             semanticMemoryEnabled,
+            semanticMemoryForgets: Boolean(semanticMemory?.forget),
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
@@ -9786,6 +9787,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               await semanticMemory.forget(
                 {
                   id: String(args.id ?? ""),
+                  scope: memoryScope!,
+                  botId: bot.id,
                   ...(typeof args.entity === "string" && args.entity.trim()
                     ? { entity: args.entity.trim() }
                     : {}),
@@ -12613,6 +12616,7 @@ export function selectBuiltinToolsForRun(options: {
   groupId: string | null;
   trigger: string;
   semanticMemoryEnabled: boolean;
+  semanticMemoryForgets?: boolean;
   cloudAgentEnabled?: boolean;
   messagingChannelRun: boolean;
   /** Hanging up is only offered to a turn the caller spoke on a live call. */
@@ -12634,6 +12638,7 @@ export function selectBuiltinToolsForRun(options: {
         options.trigger,
       ),
       options.semanticMemoryEnabled,
+      Boolean(options.semanticMemoryForgets),
     ),
     Boolean(options.cloudAgentEnabled),
   ).filter(
