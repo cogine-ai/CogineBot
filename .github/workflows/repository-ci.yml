@@ -139,12 +139,15 @@ jobs:
           COGINEBOT_PROTOCOL_TEST_ROOT: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}
           XDG_CONFIG_HOME: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/config
           XDG_DATA_HOME: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/data
-          XDG_CURRENT_DESKTOP: openbox
+          XDG_CURRENT_DESKTOP: X-Generic
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/runtime
           RAKAZO_PERFORMANCE_USER_DATA: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/profiles
         run: |
           set -euo pipefail
           pnpm --filter @rakazo/web build
           pnpm --filter @rakazo/desktop build
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
           xvfb-run -a dbus-run-session -- bash -c 'openbox >/dev/null 2>&1 & pnpm --filter @rakazo/desktop exec playwright test --config e2e/playwright.config.ts deep-links.spec.ts'
       - name: Retain native desktop acceptance evidence
         if: matrix.lane == 'desktop' && !cancelled()

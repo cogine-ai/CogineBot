@@ -44,11 +44,14 @@ describe.skipIf(process.platform !== "linux")("Linux protocol kernel locking", (
     const receipt = path.join(path.dirname(f.paths.lockFile), "dispatched");
     await writeFile(executable, `#!/bin/sh\nprintf '%s\\n' "$@" > '${receipt}'\n`);
     await chmod(executable, 0o700);
+    const runtime = path.join(path.dirname(f.paths.lockFile), "runtime");
+    await mkdir(runtime, { mode: 0o700 });
     const env = {
       ...process.env,
       ...f.env,
       DISPLAY: ":99",
-      XDG_CURRENT_DESKTOP: "generic",
+      XDG_CURRENT_DESKTOP: "X-Generic",
+      XDG_RUNTIME_DIR: runtime,
       BROWSER: "/bin/false",
     };
     await registerLinuxProtocol({ ...install, executable }, { env, explicit: true });
