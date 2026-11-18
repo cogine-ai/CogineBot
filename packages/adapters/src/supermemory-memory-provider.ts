@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type {
@@ -136,7 +137,12 @@ function parseSupermemoryConnection(
   if (apiKey.length < 8) throw new Error("apiKey must contain at least 8 characters");
   const baseUrl =
     mode === "cloud" ? SUPERMEMORY_CLOUD_BASE_URL : requiredValue(settings, "baseUrl");
-  if (mode === "local") assertSupermemoryLocalBaseUrlSync(baseUrl);
+  if (mode === "local") {
+    if (isSupermemoryCloudBaseUrl(baseUrl)) {
+      throw new Error("Local mode cannot use the Supermemory Cloud URL.");
+    }
+    assertSupermemoryLocalBaseUrlSync(baseUrl);
+  }
   parseSupermemoryBaseUrl(baseUrl);
   return { mode, baseUrl, apiKey };
 }
@@ -153,14 +159,21 @@ export async function prepareSupermemoryConnection(
   const { mode, baseUrl, apiKey } = parseSupermemoryConnection(settings, credentials);
   const pinnedAddresses =
     mode === "local" ? await pinSupermemoryPrivateHost(baseUrl, options) : undefined;
-  const probe = await probeSupermemory({
+  const connection: SupermemoryConnectionConfig = {
     baseUrl,
     apiKey,
     resolveHostname: options?.resolveHostname,
     fetch: options?.fetch,
     ...(pinnedAddresses ? { pinnedAddresses } : {}),
-  });
+  };
+  const probe = await probeSupermemory(connection);
   if (!probe.ok) throw new Error(probe.error);
+  // A fresh random tag checks deletion authority without touching saved facts.
+  const deletable = await deleteSupermemoryContainer(
+    `cogine:delete-probe:${randomUUID()}`,
+    connection,
+  );
+  if (!deletable.ok) throw new Error(deletable.error);
   return { settings: { mode, baseUrl }, credentials: { apiKey } };
 }
 
@@ -250,6 +263,7 @@ export class SupermemoryMemoryProvider implements SemanticMemoryProvider {
     request: SemanticMemoryRecallRequest,
     context: AdapterContext,
   ): Promise<SemanticMemoryResponse<SemanticMemoryResult[]>> {
+    if (!request.query.trim()) return { ok: true, value: [] };
     const blocked = await this.localBaseUrlBlock();
     if (blocked) return { ok: false, error: blocked };
     const result = await searchSupermemoryContainers(

@@ -316,9 +316,9 @@ describe("deleteSupermemoryContainer", () => {
   });
 
   it("reports a non-OK response instead of throwing", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 500 })));
     const result = await deleteSupermemoryContainer("rakazo:bot-123", config);
-    expect(result).toEqual({ ok: false, error: expect.stringContaining("404") });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining("500") });
     vi.unstubAllGlobals();
   });
 });

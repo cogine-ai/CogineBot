@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isLocalMcpHost } from "@rakazo/contracts";
+import { sanitizeConnectorError } from "./connector-safety.js";
 import type { ResolvedAddress, ResolveHostname } from "./network-address.js";
 import { createPrivateNetworkFetch } from "./remote-mcp.js";
 import { readBodyCapped } from "./web-ssrf.js";
@@ -175,8 +176,8 @@ function boundedRecallLimit(limit: number): number {
   return Math.min(Math.max(1, Math.floor(limit)), MAX_RECALLED_MEMORIES);
 }
 
-function unreachableError(error: unknown): string {
-  return `Supermemory is unreachable: ${error instanceof Error ? error.message : String(error)}`;
+function unreachableError(error: unknown, apiKey: string): string {
+  return `Supermemory is unreachable: ${sanitizeConnectorError(error, [apiKey])}`;
 }
 
 function authHeaders(config: SupermemoryConnectionConfig): Record<string, string> {
@@ -242,7 +243,7 @@ export async function searchSupermemory(
     if (error instanceof Error && error.message === "Supermemory response is too large.") {
       return { ok: false, error: error.message };
     }
-    return { ok: false, error: unreachableError(error) };
+    return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }
 
@@ -304,7 +305,10 @@ export async function searchSupermemoryContainers(
   };
 }
 
-/** Deletes every memory in a container, e.g. after the conversation they summarize is cleared. */
+export const SUPERMEMORY_DELETE_FORBIDDEN_ERROR =
+  "Supermemory cannot delete memory containers with this API key. Check its permissions.";
+
+/** Deletes a container's memories; a missing container is already clear. */
 export async function deleteSupermemoryContainer(
   containerTag: string,
   config: SupermemoryConnectionConfig,
@@ -322,15 +326,14 @@ export async function deleteSupermemoryContainer(
       },
     );
     try {
-      if (!response.ok) {
-        return { ok: false, error: `Supermemory container delete failed: ${response.status}` };
-      }
-      return { ok: true };
+      if (response.ok || response.status === 404) return { ok: true };
+      if (response.status === 403) return { ok: false, error: SUPERMEMORY_DELETE_FORBIDDEN_ERROR };
+      return { ok: false, error: `Supermemory container delete failed: ${response.status}` };
     } finally {
       await releaseUnreadBody(response);
     }
   } catch (error) {
-    return { ok: false, error: unreachableError(error) };
+    return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }
 
@@ -361,7 +364,7 @@ export async function saveSupermemoryMemory(
       await releaseUnreadBody(response);
     }
   } catch (error) {
-    return { ok: false, error: unreachableError(error) };
+    return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }
 
@@ -414,6 +417,6 @@ export async function probeSupermemory(
       await releaseUnreadBody(response);
     }
   } catch (error) {
-    return { ok: false, error: unreachableError(error) };
+    return { ok: false, error: unreachableError(error, config.apiKey) };
   }
 }
