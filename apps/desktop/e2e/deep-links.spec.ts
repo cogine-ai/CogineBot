@@ -154,11 +154,29 @@ async function nativeDialog(title: string) {
   return id;
 }
 
-async function dismissDialog(title: string, screenshot: string) {
+async function dismissDialog(title: string, screenshot: string, retry = true) {
   const id = await nativeDialog(title);
   await exec("scrot", [path.join(screenshotRoot, screenshot)]);
   await exec("xdotool", ["windowactivate", "--sync", id]);
-  await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
+  if (retry) {
+    // Select the observed GTK Retry button explicitly; activating a dialog does
+    // not establish which of its two buttons currently owns keyboard focus.
+    const { stdout } = await exec("xdotool", ["getwindowgeometry", "--shell", id]);
+    const width = Number(/^WIDTH=(\d+)$/m.exec(stdout)?.[1]);
+    const height = Number(/^HEIGHT=(\d+)$/m.exec(stdout)?.[1]);
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(18);
+    await exec("xdotool", [
+      "mousemove",
+      "--window",
+      id,
+      "--sync",
+      String(Math.floor(width / 4)),
+      String(height - 18),
+      "click",
+      "1",
+    ]);
+  } else await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
 }
 
 async function startFixtureServer(port = 0) {
@@ -304,6 +322,13 @@ test.afterEach(async () => {
     body: JSON.stringify(
       {
         windows,
+        documents: documentRequests,
+        fixtureListening: vite?.httpServer?.listening,
+        applications: [...apps].map((application) => ({
+          pid: application.process().pid,
+          exit: application.process().exitCode,
+          pages: application.windows().map((page) => ({ url: page.url(), closed: page.isClosed() })),
+        })),
         processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
         children: dispatches.map((child) => ({
           pid: child.pid,
@@ -436,7 +461,7 @@ test("installed AppImage and development launcher coexist and OS links restore w
   });
   const delivered = dispatch("coginebot-dev://bot/?target=https://example.test");
   // Linux showErrorBox displays its supplied title in the body; its WM title is Error.
-  await dismissDialog("Error", "deep-links-invalid-entry.png");
+  await dismissDialog("Error", "deep-links-invalid-entry.png", false);
   await delivered();
   await expect(window.getByLabel("Draft")).toHaveValue("Development draft");
   expect(window.url()).toBe(`${origin}/`);
