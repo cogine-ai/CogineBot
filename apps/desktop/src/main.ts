@@ -463,9 +463,11 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
 
   return new Promise<AppDocumentState>((resolve, reject) => {
     let settled = false;
+    let loadTimer: NodeJS.Timeout | undefined;
     const settle = (error?: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(loadTimer);
       contents.removeListener("did-fail-load", onFail);
       // Keep render-process-gone until document readiness finishes so a crash
       // during mount still fails the switch.
@@ -517,6 +519,12 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
     contents.on("render-process-gone", onGone);
     // Keep the development origin fence for this window's later navigations too.
     if (development !== null) contents.on("will-redirect", onRedirect);
+    if (development !== null) {
+      loadTimer = setTimeout(() => {
+        settle(new Error("The development server did not respond in time."));
+        if (!contents.isDestroyed()) contents.stop();
+      }, PROBE_TIMEOUT_MS);
+    }
     void contents.loadURL(url).then(
       async () => {
         // onCompleted can lag loadURL; wait briefly for the main-frame status.

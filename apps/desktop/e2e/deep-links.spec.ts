@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import type { ServerResponse } from "node:http";
 import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -36,9 +37,12 @@ let productionExecutable: string;
 let developmentProfile: string;
 let mounted = 0;
 let documentRequests = 0;
-let failureMode: "ready" | "failed" | "hold" | "redirect" = "ready";
+let failureMode: "ready" | "failed" | "hold" | "redirect" | "stall" = "ready";
 let redirectTarget = "";
 let releaseFailedDocument: (() => void) | undefined;
+const stalledResponses = new Set<ServerResponse>();
+let stalledDocuments = 0;
+let cancelledDocuments = 0;
 
 async function nativeWindowList(details = false) {
   for (let attempt = 0; ; attempt += 1) {
@@ -150,7 +154,7 @@ async function nativeDialogs() {
   return inspected.filter((id): id is string => id !== null);
 }
 
-async function nativeDialog(title: string) {
+async function nativeDialog(title: string, timeout?: number) {
   let id = "";
   await expect
     .poll(
@@ -159,7 +163,7 @@ async function nativeDialog(title: string) {
         id = dialogs.length === 1 ? dialogs[0]! : "";
         return id;
       },
-      { message: `Waiting for the ${title} native dialog.` },
+      { message: `Waiting for the ${title} native dialog.`, timeout },
     )
     .not.toBe("");
   return id;
@@ -209,8 +213,18 @@ async function startFixtureServer(port = 0) {
                 response.end();
                 return;
               }
+              if (failureMode === "stall") {
+                stalledDocuments += 1;
+                stalledResponses.add(response);
+                response.once("close", () => {
+                  cancelledDocuments += 1;
+                  stalledResponses.delete(response);
+                });
+                return;
+              }
               if (failureMode !== "ready") {
                 const fail = () => {
+                  if (response.destroyed) return;
                   response.setHeader("content-type", "text/html");
                   response.end(
                     '<!doctype html><html><head><title>Development fixture unavailable</title></head><body><main data-rakazo-app-state="failed">Development fixture unavailable</main></body></html>',
@@ -321,6 +335,7 @@ test.afterAll(async () => {
       env,
       timeout: 30_000,
     });
+    for (const response of stalledResponses) response.destroy();
     await vite?.close();
     for (const child of dispatches) if (child.exitCode === null) child.kill();
     await rm(root, { recursive: true, force: true });
@@ -717,5 +732,27 @@ test("development startup rejects another origin but permits a same-origin redir
     await new Promise<void>((resolve, reject) =>
       unexpected.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+});
+
+test("a development server that never responds is cancelled before native Retry", async () => {
+  const before = { started: stalledDocuments, cancelled: cancelledDocuments };
+  failureMode = "stall";
+  try {
+    const starting = launch(devExecutable);
+    void starting.catch(() => undefined);
+    await expect.poll(() => stalledDocuments).toBe(before.started + 1);
+    // Allow the existing eight-second load budget plus native UI scheduling.
+    await nativeDialog("CogineBot Dev", 15_000);
+    await expect.poll(() => cancelledDocuments).toBe(before.cancelled + 1);
+    failureMode = "ready";
+    await dismissDialog("CogineBot Dev", "deep-links-development-stalled.png");
+    const development = await starting;
+    await consoleWindow(development);
+    expect(stalledDocuments).toBe(before.started + 1);
+    await close(development);
+  } finally {
+    failureMode = "ready";
+    for (const response of stalledResponses) response.destroy();
   }
 });
