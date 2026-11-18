@@ -7,7 +7,10 @@ import type {
 import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import {
+  InvalidGrantError,
+  TemporarilyUnavailableError,
+} from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
@@ -40,7 +43,7 @@ import {
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
-import { persistPreparedSecret } from "./secret-persistence.js";
+import { deferPreparedSecretCleanup, persistPreparedSecret } from "./secret-persistence.js";
 import { reconcileSecretWrite } from "./secret-store-factory.js";
 import { withAbort } from "./web-ssrf.js";
 
@@ -296,6 +299,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     private readonly persistMaterial: (
       material: OAuthMaterial,
       storedOAuth: OAuthState | undefined,
+      recoverSave: boolean,
     ) => Promise<void>,
     private readonly options: ProviderOptions = {},
   ) {
@@ -404,14 +408,26 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     }
     // The primitive strips response-provided issuer; stamp the server we used.
     // Persistence failures must reach the caller rather than expose an uncommitted grant.
-    await this.saveTokens({ ...next, issuer });
+    await this.storeTokens({ ...next, issuer }, true);
   }
 
   async saveTokens(value: OAuthTokens): Promise<void> {
+    const runtimeRefresh = !this.options.state && Boolean(this.storedOAuth?.tokens?.refresh_token);
+    try {
+      await this.storeTokens(value, runtimeRefresh);
+    } catch (error) {
+      // The SDK treats an ordinary save error as permission to start authorization.
+      if (runtimeRefresh && !(error instanceof McpReauthorizationRequiredError))
+        throw new TemporarilyUnavailableError("MCP credentials could not be saved; retry");
+      throw error;
+    }
+  }
+
+  private async storeTokens(value: OAuthTokens, recoverSave: boolean): Promise<void> {
     const oauth = this.oauth();
     oauth.tokens = value;
     oauth.obtainedAt = Date.now();
-    await this.persist();
+    await this.persist(recoverSave);
   }
   async redirectToAuthorization(url: URL): Promise<void> {
     let authorizationUrl: URL;
@@ -486,12 +502,12 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     return this.material.oauth;
   }
 
-  private async persist(): Promise<void> {
+  private async persist(recoverSave = false): Promise<void> {
     const snapshot = structuredClone(this.material);
     const next = this.persistQueue.then(async () => {
       if (this.persistenceConflict) throw this.persistenceConflict;
       try {
-        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth));
+        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth), recoverSave);
         this.storedOAuth = structuredClone(snapshot.oauth);
       } catch (error) {
         if (error instanceof McpOAuthCredentialsChangedError) {
@@ -1129,16 +1145,26 @@ export class McpOAuthBroker {
     return new StoredMcpOAuthProvider(
       server.id,
       loaded.material,
-      async (material, oauth) => {
-        await this.replaceMaterial(
-          server.id,
-          material,
-          context,
-          false,
-          endpoint,
-          options.onPersisted,
-          { oauth, revision },
-        );
+      async (material, oauth, recoverSave) => {
+        const save = () =>
+          this.replaceMaterial(server.id, material, context, false, endpoint, options.onPersisted, {
+            oauth,
+            revision,
+          });
+        if (!recoverSave) {
+          await save();
+          return;
+        }
+        // Keep retirement notifications behind adoption even when the first commit
+        // loses its reply. The existing conditional save confirms this exact grant.
+        await deferPreparedSecretCleanup(this.prisma, async () => {
+          try {
+            await save();
+          } catch (error) {
+            if (error instanceof McpOAuthCredentialsChangedError) throw error;
+            await save();
+          }
+        });
       },
       {
         ...(endpoint
