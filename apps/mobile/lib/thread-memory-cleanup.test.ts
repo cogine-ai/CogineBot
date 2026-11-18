@@ -69,6 +69,7 @@ function fixture(
   const scope = {
     useCallback: (callback: unknown) => callback,
     seenMemoryCleanupNotices: { current: new Set<string>() },
+    pendingMemoryCleanupClears: { current: new Set<string>() },
     memoryCleanupAlertBlocked: blocked,
     memoryCleanupOwner: "owner-one",
     memoryCleanupOwnerRef: ownerRef,
@@ -116,6 +117,17 @@ function fixture(
 }
 
 describe("native memory cleanup outcomes", () => {
+  it("defers metadata that precedes a clear receipt so its native alert uses the immediate copy", async () => {
+    const f = fixture();
+    f.clear();
+    f.notify("thread-one", false);
+    expect(f.alert).not.toHaveBeenCalled();
+    await f.finish();
+    expect(f.alert).toHaveBeenCalledExactlyOnceWith(
+      "Clear conversation",
+      "Messages cleared. External memory cleanup could not be confirmed.",
+    );
+  });
   it("clears local rows and reports uncertainty once without changing the snapshot contract", async () => {
     const f = fixture();
     f.clear();

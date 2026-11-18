@@ -822,6 +822,7 @@ function Thread({
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
   const snapRef = useRef<MobileSnapshot | null>(null);
   const seenMemoryCleanupNotices = useRef(new Set<string>());
+  const pendingMemoryCleanupClears = useRef(new Set<string>());
   const memoryCleanupAlertBlocked = useRef(false);
   const memoryCleanupOwner = JSON.stringify([ownerUserId, sessionEpoch, profileScope]);
   const memoryCleanupOwnerRef = useRef(memoryCleanupOwner);
@@ -830,6 +831,7 @@ function Thread({
     (id: string, immediate: boolean) => {
       if (memoryCleanupAlertBlocked.current) return;
       const key = JSON.stringify([memoryCleanupOwner, id]);
+      if (!immediate && pendingMemoryCleanupClears.current.has(key)) return;
       if (seenMemoryCleanupNotices.current.has(key)) return;
       seenMemoryCleanupNotices.current.add(key);
       Alert.alert(
@@ -1504,9 +1506,12 @@ function Thread({
     if (!botId) return;
     const owner = memoryCleanupOwner;
     const targetThreadId = snapRef.current?.threadId;
+    const cleanupKey = targetThreadId ? JSON.stringify([owner, targetThreadId]) : null;
+    if (cleanupKey) pendingMemoryCleanupClears.current.add(cleanupKey);
     const epoch = historyEpoch.current;
     void rpc<{ ok: true; memoryCleanupUnconfirmed?: true }>("threads/clear", { botId })
       .then((result) => {
+        if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
         if (
           memoryCleanupOwnerRef.current !== owner ||
           activeBotId.current !== botId ||
@@ -1516,6 +1521,8 @@ function Thread({
         if (result.memoryCleanupUnconfirmed && snapRef.current) {
           showMemoryCleanupNotice(snapRef.current.threadId, true);
           commitSnap({ ...snapRef.current, memoryCleanupUnconfirmed: true });
+        } else if (snapRef.current?.memoryCleanupUnconfirmed) {
+          showMemoryCleanupNotice(snapRef.current.threadId, false);
         }
         if (epoch !== historyEpoch.current) return;
         expandedHistoryThread.current = null;
@@ -1531,7 +1538,10 @@ function Thread({
       })
       .catch((err: unknown) =>
         Alert.alert(t("Could not clear conversation"), errorText(err, t("Try again."))),
-      );
+      )
+      .finally(() => {
+        if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
+      });
   }
 
   const botActions = [
@@ -2023,6 +2033,8 @@ function Thread({
                 event.type === "thread.message.reaction" ||
                 event.type === "thread.subagent" ||
                 event.type === "thread.cloud_agent" ||
+                (event.type === "thread.meta" &&
+                  event.payload?.memoryCleanupUnconfirmed === true) ||
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
                 event.type === "run.waiting_limit" ||

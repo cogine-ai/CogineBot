@@ -3124,8 +3124,23 @@ for (const width of [1280, 390]) {
       });
       state.bootstrap = (route, data) => json(route, { ...data, thread: project(data.thread!) });
       state.thread = (route, data) => json(route, project(data));
-      await page.route("**/rpc/threads/clear", (route) => {
+      await page.route("**/rpc/threads/clear", async (route) => {
         cleared = true;
+        if (width === 1280 && locale === "en") {
+          await stream.emit({
+            id: "cleanup-before-receipt",
+            spaceId: "space-primary",
+            threadId: "thread-chief",
+            botId: "chief",
+            seq: cleanupCursor,
+            type: "thread.meta",
+            createdAt: stamp,
+            payload: { memoryCleanupUnconfirmed: true },
+          });
+          await expect(
+            page.getByText("External memory cleanup could not be confirmed.", { exact: true }),
+          ).toBeVisible();
+        }
         return json(route, { ok: true, memoryCleanupUnconfirmed: true });
       });
       await page.goto("/app/chief");

@@ -5202,6 +5202,22 @@ describe("mobile screen released-event callback", () => {
     expect(h.snapRef.current?.cursor).toBe(11);
   });
 
+  it("routes late cleanup metadata through the real screen subscription without changing its Run", () => {
+    const h = screenCallback();
+    const currentRun = h.snapRef.current?.run;
+    h.handler({
+      type: "thread.meta",
+      seq: 11,
+      botId: "bot-1",
+      threadId: "thread-1",
+      payload: { memoryCleanupUnconfirmed: true },
+    });
+    expect(h.snapRef.current?.memoryCleanupUnconfirmed).toBe(true);
+    expect(h.snapRef.current?.cursor).toBe(11);
+    expect(h.snapRef.current?.run).toBe(currentRun);
+    expect(h.commitSnap).toHaveBeenCalledOnce();
+  });
+
   it.each(["abort", "reader", "target", "Space", "session"])(
     "does not apply an old screen callback after %s changes",
     (change) => {

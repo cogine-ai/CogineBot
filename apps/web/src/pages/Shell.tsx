@@ -3308,7 +3308,20 @@ export function ShellPage() {
     : undefined;
   const showMemoryCleanupNotice = useCallback(
     (scope: string, immediate: boolean) => {
-      if (seenMemoryCleanupNotices.current.has(scope)) return;
+      if (seenMemoryCleanupNotices.current.has(scope)) {
+        // Metadata can arrive before the clear RPC: promote the visible notice without reopening it.
+        if (immediate) {
+          setMemoryCleanupNotice((current) =>
+            current?.scope === scope
+              ? {
+                  scope,
+                  message: t`Messages cleared. External memory cleanup could not be confirmed.`,
+                }
+              : current,
+          );
+        }
+        return;
+      }
       seenMemoryCleanupNotices.current.add(scope);
       setMemoryCleanupNotice({
         scope,
