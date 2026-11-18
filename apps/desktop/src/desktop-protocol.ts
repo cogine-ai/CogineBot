@@ -84,6 +84,9 @@ export function protocolAction(args: readonly string[]) {
 /** Desktop Entry string escaping happens before Exec argument unquoting. */
 export function desktopExecArgument(value: string): string {
   if (/[\r\n\0=]/.test(value)) throw new Error("Unsupported desktop launcher path.");
+  // Generic xdg-utils reads the first word literally, including quote marks.
+  // Ordinary paths need no quoting; reserve it for Desktop Entry special characters.
+  if (!/[\s"'\\><~|&;$*?#()`%]/u.test(value)) return value;
   return `"${value
     .replaceAll("\\", "\\\\\\\\")
     .replace(/["`$]/g, (character) => `\\\\${character}`)

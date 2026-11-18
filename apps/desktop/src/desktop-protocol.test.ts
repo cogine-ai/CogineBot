@@ -46,6 +46,11 @@ afterEach(async () => {
 });
 
 describe("desktop protocol registration", () => {
+  it("keeps ordinary executable paths unquoted for the generic desktop opener", () => {
+    expect(
+      linuxProtocolEntry({ ...install, executable: "/workspace/机器人/coginebot-dev" }),
+    ).toContain("Exec=/workspace/机器人/coginebot-dev %u\n");
+  });
   it("registers an explicit development launcher with the selected executable", async () => {
     const f = await fixture();
     const run = vi.fn(async () => "");

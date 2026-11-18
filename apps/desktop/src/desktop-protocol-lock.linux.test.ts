@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, watch } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,24 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== "linux")("Linux protocol kernel locking", () => {
+  it("registers and dispatches through the real generic xdg opener without a graphical app", async () => {
+    const f = await fixture();
+    const executable = path.join(path.dirname(f.paths.lockFile), "protocol-fixture");
+    const receipt = path.join(path.dirname(f.paths.lockFile), "dispatched");
+    await writeFile(executable, `#!/bin/sh\nprintf '%s\\n' "$@" > '${receipt}'\n`);
+    await chmod(executable, 0o700);
+    const env = {
+      ...process.env,
+      ...f.env,
+      DISPLAY: ":99",
+      XDG_CURRENT_DESKTOP: "generic",
+      BROWSER: "/bin/false",
+    };
+    await registerLinuxProtocol({ ...install, executable }, { env, explicit: true });
+    await runProtocolCommand("xdg-open", ["coginebot-dev://bot/"], env);
+    expect(await readFile(receipt, "utf8")).toBe("coginebot-dev://bot/\n");
+  });
+
   it("keeps a running writer's exclusion after the controller descriptor closes", async () => {
     const f = await fixture();
     const ready = path.join(path.dirname(f.paths.lockFile), "writer-ready");

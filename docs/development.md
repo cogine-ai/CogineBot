@@ -118,6 +118,9 @@ They cannot select a server, send a message, run a tool or finish authorization.
 On macOS, closing the Console keeps its hidden window and unsent draft until the
 application quits. The existing explicit warm-window profiling overrides still apply.
 Linux desktop links require `xdg-utils` and `flock` from `util-linux`.
+The generic xdg-utils opener does not support quoted executable tokens. Use a
+location without reserved characters there; compatible desktop openers such as
+GIO support the standard quoting used for other locations.
 An AppImage registers its user desktop entry on its first ordinary
 launch, preserving an existing different handler. Before removing that AppImage,
 quit it and run it with `--coginebot-unregister-protocol` to remove its own entry.
