@@ -94,3 +94,28 @@ export function observeMemoryCleanup<T extends MemoryCleanupObservation>(
     ? snapshot
     : next;
 }
+
+/** Snapshot compatibility preserves an unresolved outcome until an explicit settlement arrives. */
+export function mergeThreadMemoryCleanup<
+  T extends MemoryCleanupObservation & { threadId: string; cursor?: number },
+>(previous: T | null, incoming: T, snapshot: T): T {
+  const sameThread = previous?.threadId === incoming.threadId;
+  let merged =
+    sameThread && previous.memoryCleanupUnconfirmed
+      ? { ...snapshot, memoryCleanupUnconfirmed: true as const }
+      : snapshot;
+  const omitted = sameThread && incoming.memoryCleanupPending === undefined;
+  const seq = omitted
+    ? (previous.memoryCleanupCursor ?? previous.cursor ?? -1)
+    : (incoming.memoryCleanupCursor ?? incoming.cursor ?? -1);
+  if (omitted)
+    merged = {
+      ...merged,
+      memoryCleanupPending: previous.memoryCleanupPending,
+      memoryCleanupCursor: seq,
+    };
+  merged = observeMemoryCleanup(merged, incoming, seq);
+  if (sameThread && (previous.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1))
+    merged = observeMemoryCleanup(merged, previous, previous.memoryCleanupCursor!);
+  return merged;
+}

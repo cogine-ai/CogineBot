@@ -250,6 +250,26 @@ describe("native memory cleanup outcomes", () => {
     f.effect();
     expect(f.alert).toHaveBeenCalledTimes(2);
   });
+  it("announces a new pending interval after settlement without forgetting a recorded failure", () => {
+    const f = fixture();
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: false };
+    f.effect();
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(2);
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      memoryCleanupPending: false,
+      memoryCleanupUnconfirmed: true,
+    };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(3);
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(3);
+  });
   it("guards overlapping cold clears before the first snapshot exists", async () => {
     const f = fixture();
     f.snapRef.current = null as unknown as MobileSnapshot;

@@ -19,6 +19,7 @@ import {
   isBackgroundRunTrigger,
   isRunTerminalEvent,
   mergeThreadHistory,
+  mergeThreadMemoryCleanup,
   observeMemoryCleanup,
   prependThreadHistoryPage,
   progressMessageId,
@@ -189,34 +190,7 @@ export function mergeThreadSnapshot(
     observeThreadMessages(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
-  if (
-    prev?.threadId === next.threadId &&
-    prev.memoryCleanupUnconfirmed &&
-    !merged.memoryCleanupUnconfirmed
-  ) {
-    merged = { ...merged, memoryCleanupUnconfirmed: true };
-  }
-  const omittedCleanup =
-    prev?.threadId === next.threadId && next.memoryCleanupPending === undefined;
-  if (omittedCleanup)
-    merged = {
-      ...merged,
-      memoryCleanupPending: prev.memoryCleanupPending,
-      memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor ?? -1,
-    };
-  merged = observeMemoryCleanup(
-    merged,
-    next,
-    omittedCleanup
-      ? (prev.memoryCleanupCursor ?? prev.cursor ?? -1)
-      : (next.memoryCleanupCursor ?? next.cursor),
-  );
-  if (
-    prev?.threadId === next.threadId &&
-    (prev.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1)
-  ) {
-    merged = observeMemoryCleanup(merged, prev, prev.memoryCleanupCursor!);
-  }
+  merged = mergeThreadMemoryCleanup(prev, next, merged);
   const clearSeq = Math.max(
     prev?.threadId === next.threadId ? (threadClearSeq(prev) ?? -1) : -1,
     threadClearSeq(next) ?? -1,

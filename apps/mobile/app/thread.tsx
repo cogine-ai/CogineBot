@@ -2801,6 +2801,11 @@ function Thread({
   }, [error, runError, modelPolicyRefusal, focused]);
   useEffect(() => {
     const sameTarget = botId ? snap?.botId === botId : snap?.groupId === groupId;
+    if (sameTarget && snap && !snap.memoryCleanupPending && !snap.memoryCleanupUnconfirmed) {
+      const key = JSON.stringify([memoryCleanupOwner, snap.threadId]);
+      if (seenMemoryCleanupNotices.current.get(key) === false)
+        seenMemoryCleanupNotices.current.delete(key);
+    }
     if (
       focused &&
       !error &&
@@ -2818,6 +2823,7 @@ function Thread({
     error,
     runError,
     modelPolicyRefusal,
+    memoryCleanupOwner,
     snap?.botId,
     snap?.groupId,
     snap?.threadId,
