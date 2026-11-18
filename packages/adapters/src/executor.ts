@@ -436,6 +436,7 @@ import {
   appendMemoryFact,
   correctMemoryFact,
   RememberCorrectionInput,
+  SEMANTIC_MEMORY_MUTATION_TOOLS,
   selectMemoryTools,
 } from "./memory-tools.js";
 import {
@@ -3428,7 +3429,7 @@ export function buildApprovalContinuation(
           ? `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: request.args })}`
           : "The previously approved Page update could not be restored.";
       }
-      if (effect.kind === "save_memory") {
+      if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(effect.kind)) {
         const request = readSemanticMemoryApproval(effect.request);
         if (request)
           return `${USE_TOOL}: ${formatRequest({ name: effect.kind, arguments: request.args })}`;
@@ -5306,7 +5307,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             groupId: thread.groupId,
             trigger: run.trigger,
             semanticMemoryEnabled,
-            semanticMemoryForgets: Boolean(semanticMemory?.forget),
+            semanticMemoryForgets:
+              Boolean(semanticMemory?.forget) &&
+              semanticMemory?.describe().capabilities.forget !== false,
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
@@ -5388,26 +5391,30 @@ export function createRunExecutor(deps: ExecutorDeps) {
           )
         )
           throw new ScriptedStateInvalidError();
-        const memorySaveUnavailable = !tools.some((tool) => tool.name === "save_memory");
+        const unavailableMemoryTools = new Set(
+          [...SEMANTIC_MEMORY_MUTATION_TOOLS].filter(
+            (name) => !tools.some((tool) => tool.name === name),
+          ),
+        );
         const memoryUnavailableResult = semanticMemoryTarget
           ? MEMORY_WRITE_REVOKED
           : SEMANTIC_MEMORY_DESTINATION_CHANGED;
-        const disconnectedApprovals = memorySaveUnavailable
-          ? loadedApprovedEffects.filter((effect) => effect.kind === "save_memory")
-          : [];
-        const approvedEffects = memorySaveUnavailable
-          ? loadedApprovedEffects.filter((effect) => effect.kind !== "save_memory")
-          : loadedApprovedEffects;
+        const disconnectedApprovals = loadedApprovedEffects.filter((effect) =>
+          unavailableMemoryTools.has(effect.kind),
+        );
+        const approvedEffects = loadedApprovedEffects.filter(
+          (effect) => !unavailableMemoryTools.has(effect.kind),
+        );
         const completedMemoryApprovals =
           !scripted || isSteeringContinuation
             ? await deps.prisma.externalEffect.findMany({
                 where: {
                   runId,
                   spaceId: run.spaceId,
-                  kind: "save_memory",
+                  kind: { in: [...SEMANTIC_MEMORY_MUTATION_TOOLS] },
                   status: { in: ["completed", "denied", "executing", "uncertain"] },
                 },
-                select: { idempotencyKey: true, status: true, result: true },
+                select: { idempotencyKey: true, kind: true, status: true, result: true },
               })
             : [];
         const unavailableResult = (value: unknown) =>
@@ -5415,10 +5422,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           stableJsonValue(value) === stableJsonValue(MEMORY_WRITE_REVOKED);
         const recoveredMemoryApprovals = new Map<string, { value: unknown; isError: boolean }>();
         for (const effect of completedMemoryApprovals) {
-          if (!memorySaveUnavailable && effect.status !== "completed") continue;
-          const gate = resolveDuplicateEffectGate(effect, "save_memory");
-          const value =
-            gate.action === "return" ? gate.result : uncertainEffectResult("save_memory");
+          if (!unavailableMemoryTools.has(effect.kind) && effect.status !== "completed") continue;
+          const gate = resolveDuplicateEffectGate(effect, effect.kind);
+          const value = gate.action === "return" ? gate.result : uncertainEffectResult(effect.kind);
           if (value === null || value === undefined) continue;
           const failed =
             isFailedToolResult(value) ||
@@ -5800,7 +5806,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     : undefined,
                 ))
               )
-                throw uncertainEffectError("save_memory");
+                throw uncertainEffectError(effect.kind);
             }
             return true;
           });
@@ -5820,7 +5826,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             instructionsBaseline: settingsBaseline?.instructions ?? bot.instructions,
             counts: mutatingEffectOccurrences,
             recoveredMemoryApprovals,
-            memorySaveUnavailable,
+            unavailableMemoryTools,
           });
           if (!turnState.blob && turnState.sharedPageApproval) {
             markerOnlyPageEffect = await loadRestoredSharedPageEffect(
@@ -6683,7 +6689,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
             if (resourceError) return { error: resourceError };
             let approvedRequest = approvedEffectReplays.take(nextApprovedTool)!;
-            if (name === "save_memory") {
+            if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name)) {
               const memoryApproval = readSemanticMemoryApproval(approvedRequest);
               if (
                 !memoryApproval ||
@@ -7114,7 +7120,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           const memoryWriteGated =
             !viaConnector && (await memoryWriteNeedsApproval(name, () => trust.isTainted()));
-          if (name === "save_memory" && semanticMemoryTarget) {
+          if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name) && semanticMemoryTarget) {
             effectRequest = { memoryWrite: 1, args, target: semanticMemoryTarget };
           }
           const requiresApprovalByDefault =
@@ -7653,7 +7659,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const reviewArgs = redactToolArgsForReview(
                 newSite
                   ? { url: outboundUrl }
-                  : name === "save_memory" && semanticMemoryTarget
+                  : SEMANTIC_MEMORY_MUTATION_TOOLS.has(name) && semanticMemoryTarget
                     ? {
                         ...args,
                         scope: semanticMemoryTarget.scope,
@@ -8016,7 +8022,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           /** Show the stored intended effect using metadata only from its matching connector route. */
           const requestApproval = async () => {
             if (await rulesBlockDispatch()) return settlePolicyBlock(applied!.effect, "intended");
-            if (name === "save_memory") {
+            if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name)) {
               const stored = readSemanticMemoryApproval(applied!.effect.request);
               if (
                 !stored ||
@@ -8054,8 +8060,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               name !== AGENT_CONNECTION_RESPONSE_TOOL &&
               name !== "request_secret" &&
               name !== "request_takeover";
-            const memoryApproval =
-              name === "save_memory" ? readSemanticMemoryApproval(request) : undefined;
+            const memoryApproval = SEMANTIC_MEMORY_MUTATION_TOOLS.has(name)
+              ? readSemanticMemoryApproval(request)
+              : undefined;
             const persistedArgs =
               (memoryApproval && { ...memoryApproval.args, scope: memoryApproval.target.scope }) ??
               connectorApproval?.args ??
@@ -8312,7 +8319,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               if (!markdownMemoryWrite) await lockMemoryWritePolicyRows(tx, policy);
               const reason = await checkMemoryWritePolicy(tx, policy);
               if (reason) return reason;
-              if (name === "save_memory" && semanticMemoryTarget?.connectionId) {
+              if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name) && semanticMemoryTarget?.connectionId) {
                 const [target] = await tx.$queryRaw<
                   { provider: string; secretId: string; scope: string }[]
                 >`
@@ -9751,7 +9758,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             return finish(redacted);
           }
-          if (name === "save_memory") {
+          if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name)) {
             const stored = applied && readSemanticMemoryApproval(applied.effect.request);
             if (
               !stored ||
@@ -9761,6 +9768,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               return finish(SEMANTIC_MEMORY_DESTINATION_CHANGED, "error");
             const early = await claimMemoryWrite();
             if (early !== undefined) return early;
+          }
+          if (name === "save_memory") {
             context.signal.throwIfAborted();
             return finish(
               await semanticMemory!.save(
@@ -9780,8 +9789,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 error: "This memory provider does not support forgetting individual facts.",
               });
             }
-            const early = await claimMemoryWrite();
-            if (early !== undefined) return early;
             context.signal.throwIfAborted();
             return finish(
               await semanticMemory.forget(

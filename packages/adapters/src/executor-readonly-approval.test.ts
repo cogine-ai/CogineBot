@@ -282,7 +282,12 @@ function fixture({
       async ({
         where,
       }: {
-        where?: { id?: string; runId?: string; status?: string | { in: string[] }; kind?: string };
+        where?: {
+          id?: string;
+          runId?: string;
+          status?: string | { in: string[] };
+          kind?: string | { in: string[] };
+        };
       } = {}) =>
         effects.filter((effect) => {
           if (typeof where?.status === "string" && effect.status !== where.status) return false;
@@ -292,7 +297,13 @@ function fixture({
             !where.status.in.includes(effect.status)
           )
             return false;
-          if (where?.kind && effect.kind !== where.kind) return false;
+          if (
+            where?.kind &&
+            (typeof where.kind === "string"
+              ? effect.kind !== where.kind
+              : !where.kind.in.includes(effect.kind))
+          )
+            return false;
           if (where?.runId && effect.runId && effect.runId !== where.runId) return false;
           if (where?.id && effect.id !== where.id) return false;
           return true;
@@ -5923,9 +5934,15 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.commit).not.toHaveBeenCalled();
   });
 
-  it.each(["same", "scope", "connection", "disconnected-at-dispatch"] as const)(
-    "binds a semantic approval to its destination (%s)",
-    async (change) => {
+  describe.each(["save_memory", "forget_memory"] as const)("semantic %s approvals", (name) => {
+    it.each([
+      "same",
+      "scope",
+      "connection",
+      "provider",
+      "legacy",
+      "disconnected-at-dispatch",
+    ] as const)("binds a semantic approval to its destination (%s)", async (change) => {
       const save = vi
         .fn<SemanticMemoryProvider["save"]>()
         .mockResolvedValue({ ok: true, value: undefined });
@@ -5933,25 +5950,33 @@ describe("connector read-only metadata and approval enforcement", () => {
         scope: "isolated",
         connectionId: "fixture-private-connection",
       };
-      const name = "save_memory";
+      let providerId = "fixture";
+      const forget = vi
+        .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
+        .mockResolvedValue({ ok: true, value: { id: "fact-1", expired: true, reason: null } });
+      const mutate = name === "save_memory" ? save : forget;
       const f = fixture({
         name,
         builtin: true,
         semanticTarget,
         semanticMemory: {
           describe: () => ({
-            id: "fixture",
+            id: providerId,
             contractVersion: "1",
             adapterVersion: "1",
             capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
           }),
           save,
+          forget,
           recall: async () => ({ ok: true, value: [] }),
           purgeHistory: async () => ({ ok: true, value: undefined }),
         },
         rules: [{ effect: "require_approval", matchKind: "tool", matchValue: name }],
       });
-      const args = { content: "Approved fact" };
+      const args =
+        name === "save_memory"
+          ? { content: "Approved fact" }
+          : { id: "fact-1", reason: "Approved removal" };
       f.setCalls([{ args, executionId: "first" }]);
       await f.run();
       const block = f.pauseRunForInput.mock.calls[0]?.[0].blocks[0];
@@ -5961,196 +5986,231 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(JSON.stringify(block)).not.toContain(semanticTarget.connectionId);
       const effect = f.effects[0]!;
       effect.status = "approved";
+      if (change === "provider") providerId = "replacement";
+      if (change === "legacy") effect.request = args;
       if (change === "scope") semanticTarget.scope = "shared";
       if (change === "connection") semanticTarget.connectionId = "replacement";
       if (change === "disconnected-at-dispatch") f.prisma.$queryRaw.mockResolvedValue([]);
-      f.setCalls([{ args: { content: "Replacement" }, executionId: "resume" }]);
+      f.setCalls([
+        {
+          args: name === "save_memory" ? { content: "Replacement" } : { id: "unapproved-fact" },
+          executionId: "resume",
+        },
+      ]);
       await f.run();
       if (change === "same") {
-        expect(save).toHaveBeenCalledExactlyOnceWith(
+        expect(mutate).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ ...args, scope: "isolated" }),
           expect.anything(),
         );
       } else {
-        expect(save).not.toHaveBeenCalled();
+        expect(mutate).not.toHaveBeenCalled();
         expect(f.results.at(-1)).toMatchObject({ unchanged: true });
       }
       expect(effect.status).toBe("completed");
-    },
-  );
+    });
 
-  it.each([
-    "no checkpoint",
-    "pending checkpoint",
-    "already settled checkpoint",
-    "already settled without checkpoint",
-    "already saved checkpoint",
-    "disabled checkpoint",
-    "sequential tail checkpoint",
-    "unavailable different tool checkpoint",
-    "interrupted provider write checkpoint",
-    "denied checkpoint",
-  ] as const)(
-    "settles a disconnected approved memory write (%s) without exposing the tool",
-    async (mode) => {
-      let connected = true;
-      const disabledBuiltinTools: string[] = [];
-      const save = vi
-        .fn<SemanticMemoryProvider["save"]>()
-        .mockResolvedValue({ ok: true, value: undefined });
-      const f = fixture({
-        name: "save_memory",
-        builtin: true,
-        disabledBuiltinTools,
-        memoryConnected: () => connected,
-        semanticTarget: { scope: "isolated", connectionId: "fixture-connection" },
-        semanticMemory: {
+    it.each([
+      "no checkpoint",
+      "pending checkpoint",
+      "already settled checkpoint",
+      "already settled without checkpoint",
+      "already saved checkpoint",
+      "disabled checkpoint",
+      "sequential tail checkpoint",
+      "unavailable different tool checkpoint",
+      "interrupted provider write checkpoint",
+      "denied checkpoint",
+      ...(name === "forget_memory"
+        ? (["no capability checkpoint", "recall-only checkpoint"] as const)
+        : []),
+    ] as const)(
+      "settles a disconnected approved memory write (%s) without exposing the tool",
+      async (mode) => {
+        let connected = true;
+        const disabledBuiltinTools: string[] = [];
+        const save = vi
+          .fn<SemanticMemoryProvider["save"]>()
+          .mockResolvedValue({ ok: true, value: undefined });
+        const forget = vi
+          .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
+          .mockResolvedValue({ ok: true, value: { id: "fact-1", expired: true, reason: null } });
+        const mutate = name === "save_memory" ? save : forget;
+        let forgetEnabled = true;
+        const semanticMemory: SemanticMemoryProvider = {
           describe: () => ({
             id: "fixture",
             contractVersion: "1",
             adapterVersion: "1",
-            capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+            capabilities: {
+              recall: true,
+              save: true,
+              purgeHistory: true,
+              sharedScope: true,
+              forget: forgetEnabled,
+            },
           }),
           save,
+          forget,
           recall: async () => ({ ok: true, value: [] }),
           purgeHistory: async () => ({ ok: true, value: undefined }),
-        },
-        rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "save_memory" }],
-      });
-      const args = { content: "Approved fact" };
-      f.setCalls([{ args, executionId: "first" }]);
-      await f.run();
-      const effect = f.effects[0]!;
-      effect.status = "approved";
-      if (mode.startsWith("already settled")) {
-        effect.status = "completed";
-        effect.result = {
-          error: "The memory destination changed. Request a new approval.",
-          unchanged: true,
         };
-      }
-      if (mode === "already saved checkpoint") {
-        effect.status = "completed";
-        effect.result = { ok: true };
-      }
-      if (mode === "interrupted provider write checkpoint") effect.status = "executing";
-      if (mode === "denied checkpoint") effect.status = "denied";
-      if (mode === "disabled checkpoint") disabledBuiltinTools.push("save_memory");
-      else connected = false;
-      const pendingToolCallId = "memory-call";
-      const executionId = JSON.stringify(["pi-tool", "main", pendingToolCallId]);
-      const hasCheckpoint = !mode.includes("no checkpoint") && !mode.includes("without checkpoint");
-      if (hasCheckpoint) {
-        const checkpoint: TurnCheckpoint = {
-          version: 1,
-          provider: "scripted",
-          model: "scripted",
-          systemPrompt: "Synthetic memory approval",
-          pendingToolCallId,
-          executionMode: "sequential",
-          effectOccurrences: [{ executionId, fingerprint: effect.idempotencyKey, occurrence: 0 }],
-          messages: [
-            {
-              role: "assistant",
-              api: "openai-completions",
-              provider: "scripted",
-              model: "scripted",
-              content: [
-                {
-                  type: "toolCall",
-                  id: pendingToolCallId,
-                  name: "use_tool",
-                  arguments: { name: "save_memory", arguments: args },
-                },
-                ...(mode === "sequential tail checkpoint" ||
-                mode === "unavailable different tool checkpoint"
-                  ? [
-                      {
-                        type: "toolCall" as const,
-                        id: "unstarted-memory",
-                        name: "use_tool",
-                        arguments: {
-                          name:
-                            mode === "sequential tail checkpoint" ? "save_memory" : "recall_memory",
-                          arguments: { content: "Another fact" },
+        const f = fixture({
+          name,
+          builtin: true,
+          disabledBuiltinTools,
+          memoryConnected: () => connected,
+          semanticTarget: { scope: "isolated", connectionId: "fixture-connection" },
+          semanticMemory,
+
+          rules: [{ effect: "require_approval", matchKind: "tool", matchValue: name }],
+        });
+        const args: Record<string, string> =
+          name === "save_memory"
+            ? { content: "Approved fact" }
+            : { id: "fact-1", reason: "Approved removal" };
+        f.setCalls([{ args, executionId: "first" }]);
+        await f.run();
+        const effect = f.effects[0]!;
+        effect.status = "approved";
+        if (mode.startsWith("already settled")) {
+          effect.status = "completed";
+          effect.result = {
+            error: "The memory destination changed. Request a new approval.",
+            unchanged: true,
+          };
+        }
+        if (mode === "already saved checkpoint") {
+          effect.status = "completed";
+          effect.result = { ok: true };
+        }
+        if (mode === "interrupted provider write checkpoint") effect.status = "executing";
+        if (mode === "denied checkpoint") effect.status = "denied";
+        if (mode === "disabled checkpoint") disabledBuiltinTools.push(name);
+        else if (mode === "no capability checkpoint") delete semanticMemory.forget;
+        else if (mode === "recall-only checkpoint") forgetEnabled = false;
+        else connected = false;
+        const pendingToolCallId = "memory-call";
+        const executionId = JSON.stringify(["pi-tool", "main", pendingToolCallId]);
+        const hasCheckpoint =
+          !mode.includes("no checkpoint") && !mode.includes("without checkpoint");
+        if (hasCheckpoint) {
+          const checkpoint: TurnCheckpoint = {
+            version: 1,
+            provider: "scripted",
+            model: "scripted",
+            systemPrompt: "Synthetic memory approval",
+            pendingToolCallId,
+            executionMode: "sequential",
+            effectOccurrences: [{ executionId, fingerprint: effect.idempotencyKey, occurrence: 0 }],
+            messages: [
+              {
+                role: "assistant",
+                api: "openai-completions",
+                provider: "scripted",
+                model: "scripted",
+                content: [
+                  {
+                    type: "toolCall",
+                    id: pendingToolCallId,
+                    name: "use_tool",
+                    arguments: { name, arguments: args },
+                  },
+                  ...(mode === "sequential tail checkpoint" ||
+                  mode === "unavailable different tool checkpoint"
+                    ? [
+                        {
+                          type: "toolCall" as const,
+                          id: "unstarted-memory",
+                          name: "use_tool",
+                          arguments: {
+                            name: mode === "sequential tail checkpoint" ? name : "recall_memory",
+                            arguments: { content: "Another fact" },
+                          },
                         },
-                      },
-                    ]
-                  : []),
-              ],
-              stopReason: "toolUse",
-              timestamp: 1,
-              usage: {
-                input: 1,
-                output: 1,
-                cacheRead: 0,
-                cacheWrite: 0,
-                totalTokens: 2,
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                      ]
+                    : []),
+                ],
+                stopReason: "toolUse",
+                timestamp: 1,
+                usage: {
+                  input: 1,
+                  output: 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 2,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
               },
-            },
-          ],
-        };
-        f.effects.push({
-          id: "memory-checkpoint",
-          kind: "runtime_checkpoint",
-          status: "runtime_checkpoint",
-          idempotencyKey: JSON.stringify(["runtime_checkpoint", f.runRecord.id]),
-          request: {},
-          result: JSON.stringify(checkpoint),
-          runId: f.runRecord.id,
-          spaceId: f.runRecord.spaceId,
-        });
-      }
-      f.setCalls([]);
-      if (mode === "unavailable different tool checkpoint") {
-        f.runRecord.status = "queued";
-        await f.executor.continueRun(f.runRecord.id, "worker-1");
-        expect(f.finalizeRun).toHaveBeenLastCalledWith(
-          expect.objectContaining({
-            outcome: "failed",
-            error: "Saved turn checkpoint could not be restored",
-          }),
-        );
-      } else await f.run();
-      expect(save).not.toHaveBeenCalled();
-      const error = mode === "disabled checkpoint" ? "no longer authorized" : "destination changed";
-      const expected =
-        mode === "already saved checkpoint"
-          ? { ok: true }
-          : mode === "interrupted provider write checkpoint"
-            ? { uncertain: true, error: expect.stringContaining("outcome is unknown") }
+            ],
+          };
+          f.effects.push({
+            id: "memory-checkpoint",
+            kind: "runtime_checkpoint",
+            status: "runtime_checkpoint",
+            idempotencyKey: JSON.stringify(["runtime_checkpoint", f.runRecord.id]),
+            request: {},
+            result: JSON.stringify(checkpoint),
+            runId: f.runRecord.id,
+            spaceId: f.runRecord.spaceId,
+          });
+        }
+        f.setCalls([]);
+        if (mode === "unavailable different tool checkpoint") {
+          f.runRecord.status = "queued";
+          await f.executor.continueRun(f.runRecord.id, "worker-1");
+          expect(f.finalizeRun).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+              outcome: "failed",
+              error: "Saved turn checkpoint could not be restored",
+            }),
+          );
+        } else await f.run();
+        expect(mutate).not.toHaveBeenCalled();
+        const error = [
+          "disabled checkpoint",
+          "no capability checkpoint",
+          "recall-only checkpoint",
+        ].includes(mode)
+          ? "no longer authorized"
+          : "destination changed";
+        const expected =
+          mode === "already saved checkpoint"
+            ? { ok: true }
+            : mode === "interrupted provider write checkpoint"
+              ? { uncertain: true, error: expect.stringContaining("outcome is unknown") }
+              : mode === "denied checkpoint"
+                ? { error: expect.stringMatching(/denied|declined|approved/i) }
+                : { unchanged: true, error: expect.stringContaining(error) };
+        expect(effect).toMatchObject({
+          ...(mode === "interrupted provider write checkpoint"
+            ? { status: "executing" }
             : mode === "denied checkpoint"
-              ? { error: expect.stringMatching(/denied|declined|approved/i) }
-              : { unchanged: true, error: expect.stringContaining(error) };
-      expect(effect).toMatchObject({
-        ...(mode === "interrupted provider write checkpoint"
-          ? { status: "executing" }
-          : mode === "denied checkpoint"
-            ? { status: "denied" }
-            : { status: "completed", result: expected }),
-      });
-      if (mode === "unavailable different tool checkpoint") return;
-      const request = f.runtimeRun.mock.lastCall?.[0];
-      if (!request) throw new Error("Expected the run to reach its runtime");
-      expect(request.tools.map((tool) => tool.name)).not.toContain("save_memory");
-      if (hasCheckpoint)
-        expect(request.recoveredMemoryToolResults?.[executionId]).toMatchObject({
-          value: expected,
-          isError: mode !== "already saved checkpoint",
+              ? { status: "denied" }
+              : { status: "completed", result: expected }),
         });
-      else expect(request.prompt).toContain("The memory destination changed.");
-      if (mode === "sequential tail checkpoint")
-        expect(
-          request.recoveredMemoryToolResults?.[
-            JSON.stringify(["pi-tool", "main", "unstarted-memory"])
-          ],
-        ).toMatchObject({
-          value: { error: "This tool is no longer available.", unchanged: true },
-          isError: true,
-        });
-    },
-  );
+        if (mode === "unavailable different tool checkpoint") return;
+        const request = f.runtimeRun.mock.lastCall?.[0];
+        if (!request) throw new Error("Expected the run to reach its runtime");
+        expect(request.tools.map((tool) => tool.name)).not.toContain(name);
+        if (hasCheckpoint)
+          expect(request.recoveredMemoryToolResults?.[executionId]).toMatchObject({
+            value: expected,
+            isError: mode !== "already saved checkpoint",
+          });
+        else expect(request.prompt).toContain("The memory destination changed.");
+        if (mode === "sequential tail checkpoint")
+          expect(
+            request.recoveredMemoryToolResults?.[
+              JSON.stringify(["pi-tool", "main", "unstarted-memory"])
+            ],
+          ).toMatchObject({
+            value: { error: "This tool is no longer available.", unchanged: true },
+            isError: true,
+          });
+      },
+    );
+  });
 
   it.each(["allow", "deny", "ask", "webhook"] as const)(
     "keeps the existing %s policy for a tainted memory write",

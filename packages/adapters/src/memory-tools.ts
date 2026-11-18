@@ -1,6 +1,8 @@
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { z } from "zod";
 
+export const SEMANTIC_MEMORY_MUTATION_TOOLS = new Set(["save_memory", "forget_memory"]);
+
 const SEMANTIC_MEMORY_TOOL_NAMES = new Set(["recall_memory", "save_memory", "forget_memory"]);
 // Correction arguments are stored as JSONB in the approval effect and as text in memory.
 const literal = z

@@ -209,7 +209,8 @@ function terms(text: string): Set<string> {
 /**
  * Serenity returns facts newest first without regard to the query, so rank them here.
  * A fact scores the IDF-weighted share of its words that the query mentions (0 to 1), so
- * words common to every candidate count for almost nothing. Ties keep the newest first.
+ * words common to every candidate count for almost nothing. Ties keep candidate order:
+ * entity order across namespaces, then the backend response order within each entity.
  */
 function rankByQuery(query: string, candidates: SemanticMemoryResult[]): SemanticMemoryResult[] {
   const queryTerms = terms(query);
@@ -248,6 +249,7 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
       adapterVersion: "0.1.0",
       capabilities: {
         recall: true,
+        forget: this.connection.allowWrites,
         save: true,
         purgeHistory: true,
         sharedScope: true,
@@ -351,6 +353,8 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
           "Serenity writes are disabled for this Space. Enable writing in Memory settings to forget facts.",
       };
     }
+    const factId = request.id.trim();
+    if (!factId) return { ok: false, error: "id is required" };
     // Serenity forget deletes any fact id in the brain, so confirm the fact sits in one of
     // this bot's recall namespaces first and fail closed when that cannot be shown.
     const allowed = recallEntities(
@@ -362,8 +366,6 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
     if (request.entity && !allowed.includes(request.entity)) {
       return { ok: false, error: "That memory belongs to another bot or Space." };
     }
-    const factId = request.id.trim();
-    if (!factId) return { ok: false, error: "id is required" };
     const entities = request.entity ? [request.entity] : allowed;
     let owned = false;
     const errors: string[] = [];

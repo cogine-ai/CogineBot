@@ -402,11 +402,16 @@ describe("serenity verbs", () => {
         {
           type: "text",
           text: JSON.stringify({
-            facts: Array.from({ length: 101 }, (_, index) => ({
-              fact_id: `fact-${index}`,
-              fact: `Synthetic fact ${index}`,
-              provenance: "synthetic",
-            })),
+            facts: [
+              null,
+              {},
+              { fact_id: "invalid", fact: "" },
+              ...Array.from({ length: 101 }, (_, index) => ({
+                fact_id: `fact-${index}`,
+                fact: `Synthetic fact ${index}`,
+                provenance: "synthetic",
+              })),
+            ],
           }),
         },
       ],
@@ -416,6 +421,7 @@ describe("serenity verbs", () => {
       network: { fetch: server.fetch },
     });
     expect(result.ok && result.value.length).toBe(100);
+    expect(result.ok && result.value.at(-1)?.factId).toBe("fact-99");
     const call = server.calls.find((entry) => entry.rpc?.method === "tools/call");
     expect(call?.rpc?.params?.arguments).toEqual({ entity: "bot/synthetic", limit: 100 });
     expect(server.calls.at(-1)?.method).toBe("DELETE");
@@ -424,10 +430,11 @@ describe("serenity verbs", () => {
   it("scrubs the connection token from a recall failure", async () => {
     const server = fakeSerenityFetch(() => ({
       isError: true,
-      content: [{ type: "text", text: `failed ${TOKEN}` }],
+      content: [{ type: "text", text: JSON.stringify({ message: `quota exceeded for ${TOKEN}` }) }],
     }));
     const result = await recallSerenity(LOOPBACK, { network: { fetch: server.fetch } });
     expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain("quota exceeded");
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
 

@@ -99,16 +99,29 @@ describe("semantic fact ownership", () => {
     expect(result.ok).toBe(true);
     expect(recalled).toHaveBeenCalledOnce();
     expect(recalled).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ entity }));
+    expect(forgotten).toHaveBeenCalledExactlyOnceWith(
+      "fact-one",
+      expect.any(Object),
+      expect.any(Object),
+    );
     expect(forgotten.mock.calls[0]?.[2]).not.toHaveProperty("entity");
   });
 
-  it("rejects an empty fact id without contacting the provider", async () => {
-    expect((await provider().forget({ ...owner, id: "  " }, context)).ok).toBe(false);
-    expect(recalled).not.toHaveBeenCalled();
-    expect(forgotten).not.toHaveBeenCalled();
-  });
+  it.each([undefined, serenitySpaceEntity("another-space")])(
+    "rejects an empty fact id before checking citation %s",
+    async (entity) => {
+      expect(await provider().forget({ ...owner, id: "  ", entity }, context)).toEqual({
+        ok: false,
+        error: "id is required",
+      });
+      expect(recalled).not.toHaveBeenCalled();
+      expect(forgotten).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps the read-only setting authoritative", async () => {
+    expect(provider(false).describe().capabilities.forget).toBe(false);
+    expect(provider().describe().capabilities.forget).toBe(true);
     expect((await provider(false).forget({ ...owner, id: "fact-one" }, context)).ok).toBe(false);
     expect(recalled).not.toHaveBeenCalled();
     expect(forgotten).not.toHaveBeenCalled();

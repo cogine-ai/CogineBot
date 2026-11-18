@@ -1132,7 +1132,7 @@ describe("mutating tool effect idempotency keys", () => {
     );
   });
 
-  it("restores approval for a legacy forget intent without calling the provider", async () => {
+  it("settles a legacy forget intent without a bound destination or provider call", async () => {
     const forget = vi
       .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
       .mockResolvedValue({ ok: true, value: { id: "fact-1", expired: true, reason: null } });
@@ -1166,10 +1166,10 @@ describe("mutating tool effect idempotency keys", () => {
     });
     f.setCalls([{ name: "forget_memory", args, executionId: "after-restart" }]);
     await f.run();
-    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(forget).not.toHaveBeenCalled();
     expect(f.effects).toHaveLength(1);
-    expect(f.effects[0]?.status).toBe("intended");
+    expect(f.effects[0]).toMatchObject({ status: "completed", result: { unchanged: true } });
   });
 
   it.each(["intended", "executing"])(
