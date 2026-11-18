@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DesktopReachability, DesktopSetup } from "@rakazo/contracts";
@@ -25,6 +25,15 @@ import {
   LAUNCH_CHECK_DELAY_MS,
 } from "./auto-update.js";
 import { openBrowserAuth } from "./browser-auth.js";
+import { desktopProfileRoot, resolveDesktopEnvironment } from "./desktop-environment.js";
+import { consoleLinkArgument, createDesktopLinkHandler } from "./desktop-links.js";
+import {
+  linuxProtocolExecutable,
+  protocolAction,
+  registerLinuxProtocol,
+  runProtocolCommand,
+  unregisterLinuxProtocol,
+} from "./desktop-protocol.js";
 import { DOCKER_INSTALL_LINKS, isDesktopSetupLink, runDocker } from "./docker-cli.js";
 import { requestLocalSettings } from "./local-settings.js";
 import {
@@ -46,6 +55,7 @@ import {
   rendererPageShareDocumentHeaders,
   rendererViewerDocumentHeaders,
 } from "./renderer-assets.js";
+import { revealSecondInstanceWindow, secondInstanceWindow } from "./second-instance.js";
 import { installSessionPermissions } from "./session-permissions.js";
 import {
   DEFAULT_LOCAL_WEB_URL,
@@ -72,6 +82,16 @@ import {
 } from "./window-options.js";
 
 const PERFORMANCE_USER_DATA = process.env.RAKAZO_PERFORMANCE_USER_DATA;
+const desktopMetadata = JSON.parse(
+  readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"),
+) as { coginebotDevelopment?: unknown };
+const desktopEnvironment = resolveDesktopEnvironment({
+  packaged: app.isPackaged,
+  metadata: desktopMetadata.coginebotDevelopment,
+  developmentConfig: process.env.COGINEBOT_DESKTOP_DEVELOPMENT,
+});
+const development = desktopEnvironment.development;
+const registrationAction = protocolAction(process.argv);
 /** Test hook: where the app-managed stack answers. Mode `new` still requires loopback. */
 const LOCAL_WEB_URL = process.env.RAKAZO_LOCAL_WEB_URL?.trim() || DEFAULT_LOCAL_WEB_URL;
 const PROBE_TIMEOUT_MS = 8_000;
@@ -98,12 +118,13 @@ let warmWindowTimer: NodeJS.Timeout | undefined;
 // destroying the last window fires "window-all-closed" -> app.quit(); a probe
 // that runs before the first real window exists must not count as "all closed".
 let liveProbeWindows = 0;
+let developmentOpening = false;
 const WARM_WINDOW_TTL_MS = warmWindowTtlMs(process.env.RAKAZO_WARM_WINDOW_TTL_MS);
 
 const updaterEnvironment = {
   packaged: app.isPackaged,
   version: app.getVersion(),
-  disabled: process.env.RAKAZO_DISABLE_AUTO_UPDATE === "1",
+  disabled: development !== null || process.env.RAKAZO_DISABLE_AUTO_UPDATE === "1",
 };
 const desktopUpdater = new DesktopUpdateController(
   updaterEnvironment,
@@ -120,9 +141,48 @@ let launchUpdateCheckScheduled = false;
 let localStack: LocalStackController;
 
 markOnce("rk:main:module-evaluated");
-if (PERFORMANCE_USER_DATA) {
-  app.setPath("userData", PERFORMANCE_USER_DATA);
-  app.setPath("sessionData", path.join(PERFORMANCE_USER_DATA, "session"));
+if (development !== null) {
+  app.setName(desktopEnvironment.name);
+  if (process.platform === "win32") app.setAppUserModelId(desktopEnvironment.appId);
+}
+const profileRoot = desktopProfileRoot(
+  desktopEnvironment,
+  app.getPath("appData"),
+  PERFORMANCE_USER_DATA,
+);
+if (profileRoot !== null) {
+  mkdirSync(path.join(profileRoot, "session"), { recursive: true });
+  app.setPath("userData", profileRoot);
+  app.setPath("sessionData", path.join(profileRoot, "session"));
+}
+const desktopLinks = createDesktopLinkHandler({
+  scheme: desktopEnvironment.scheme,
+  open: reopenConsole,
+  invalid: () =>
+    dialog.showErrorBox("Invalid CogineBot link", "This link cannot open the Console."),
+});
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  if (registrationAction) app.exit(2);
+  else app.quit();
+} else {
+  // macOS can deliver this before ready; it must not depend on a window yet.
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    desktopLinks.receive(url);
+  });
+  app.on("second-instance", (_event, commandLine) => {
+    try {
+      if (protocolAction(commandLine)) return;
+    } catch {
+      return;
+    }
+    const link = consoleLinkArgument(commandLine);
+    if (link === undefined) desktopLinks.open();
+    else desktopLinks.receive(link);
+  });
+  const initialLink = consoleLinkArgument(process.argv);
+  if (initialLink !== undefined) desktopLinks.receive(initialLink);
 }
 app.once("will-finish-launching", () => markOnce("rk:main:will-finish-launching"));
 app.once("ready", () => markOnce("rk:main:ready"));
@@ -175,6 +235,8 @@ async function resolveSessionForTarget(targetUrl: string) {
   if (partition === null) {
     return { partition: null, value: session.defaultSession };
   }
+  // Workspace profiles are new and have no pre-partition installation to migrate.
+  if (development !== null) return { partition, value: session.fromPartition(partition) };
   if (existsSync(legacyDefaultSessionFlag(partition))) {
     return { partition: null, value: session.defaultSession };
   }
@@ -325,9 +387,11 @@ function createWindow(url: string, partition: string | null) {
       event.preventDefault();
       win.hide();
       clearTimeout(warmWindowTimer);
-      warmWindowTimer = setTimeout(() => {
-        if (mainWindow === win && !win.isDestroyed() && !win.isVisible()) win.destroy();
-      }, WARM_WINDOW_TTL_MS);
+      if (WARM_WINDOW_TTL_MS !== null) {
+        warmWindowTimer = setTimeout(() => {
+          if (mainWindow === win && !win.isDestroyed() && !win.isVisible()) win.destroy();
+        }, WARM_WINDOW_TTL_MS);
+      }
     }
   });
   win.once("closed", () => {
@@ -399,9 +463,11 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
 
   return new Promise<AppDocumentState>((resolve, reject) => {
     let settled = false;
+    let loadTimer: NodeJS.Timeout | undefined;
     const settle = (error?: Error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(loadTimer);
       contents.removeListener("did-fail-load", onFail);
       // Keep render-process-gone until document readiness finishes so a crash
       // during mount still fails the switch.
@@ -443,9 +509,22 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
     const onGone = (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
       settle(new Error(`Renderer stopped (${details.reason}).`));
     };
+    const onRedirect = (event: Electron.Event<{ url: string; isMainFrame: boolean }>) => {
+      if (!event.isMainFrame || safeOrigin(event.url) === safeOrigin(url)) return;
+      event.preventDefault();
+      settle(new Error("The development server redirected to another origin."));
+    };
 
     contents.on("did-fail-load", onFail);
     contents.on("render-process-gone", onGone);
+    // Keep the development origin fence for this window's later navigations too.
+    if (development !== null) contents.on("will-redirect", onRedirect);
+    if (development !== null) {
+      loadTimer = setTimeout(() => {
+        settle(new Error("The development server did not respond in time."));
+        if (!contents.isDestroyed()) contents.stop();
+      }, PROBE_TIMEOUT_MS);
+    }
     void contents.loadURL(url).then(
       async () => {
         // onCompleted can lag loadURL; wait briefly for the main-frame status.
@@ -483,7 +562,12 @@ async function installBundledRenderer(
   partition: string | null,
   managedLocalStack: boolean,
 ) {
-  if (!app.isPackaged || process.env.RAKAZO_DISABLE_BUNDLED_RENDERER === "1") return;
+  if (
+    development !== null ||
+    !app.isPackaged ||
+    process.env.RAKAZO_DISABLE_BUNDLED_RENDERER === "1"
+  )
+    return;
   if (!servesBundledRenderer(targetUrl, managedLocalStack)) return;
   const webUrl = new URL(targetUrl);
   const installationKey = `${partition ?? "default"}:${webUrl.protocol}`;
@@ -685,6 +769,7 @@ function installApplicationMenu() {
     id: "local-server-settings",
     label: "Local Server Settings…",
     accelerator: "CmdOrCtrl+,",
+    enabled: development === null,
     click: () => {
       void showLocalSettings();
     },
@@ -693,11 +778,13 @@ function installApplicationMenu() {
     id: "change-rakazo-server",
     label: "Change CogineBot Server…",
     accelerator: "CmdOrCtrl+Shift+K",
+    enabled: development === null,
     click: () => showSetupWindow(),
   };
   const stopStack: Electron.MenuItemConstructorOptions = {
     id: "stop-local-stack",
     label: "Stop Local Stack",
+    enabled: development === null,
     // The stack keeps running after quit (bots are always on); this is the explicit off switch.
     click: () => {
       if (currentSetup?.mode === "new") void localStack.stop();
@@ -846,9 +933,11 @@ async function openAppOnce(targetUrl: string, switching: boolean) {
   const previous = mainWindow;
   let win: BrowserWindow | null = null;
   try {
-    const documentError = await probeDocument(targetUrl);
-    if (documentError !== null) {
-      throw new Error(documentError);
+    // Development keeps a real failed window to own its native Retry dialog.
+    // loadAppUrl already rejects network, HTTP and document-readiness failures.
+    if (development === null) {
+      const documentError = await probeDocument(targetUrl);
+      if (documentError !== null) throw new Error(documentError);
     }
     await installBundledRenderer(
       targetUrl,
@@ -860,7 +949,7 @@ async function openAppOnce(targetUrl: string, switching: boolean) {
     win = created.win;
     // On launch the web app's error screen stays up so its Refresh can recover;
     // switching to a server that cannot render keeps the previous one instead.
-    if ((await created.loaded) === "failed" && switching) {
+    if ((await created.loaded) === "failed" && (switching || development !== null)) {
       throw new Error("The server page did not become ready.");
     }
     currentTargetUrl = targetUrl;
@@ -874,6 +963,19 @@ async function openAppOnce(targetUrl: string, switching: boolean) {
     pendingPreviousWindow = null;
     // Keep the previous app window so Cancel / close can restore it.
     if (previous !== null && !previous.isDestroyed()) mainWindow = previous;
+    if (development !== null) {
+      // Retain the first failed window until Retry/Quit; destroying the last
+      // window here would quit on Linux/Windows before the error can be shown.
+      if (
+        previous !== null &&
+        !previous.isDestroyed() &&
+        win !== null &&
+        win !== previous &&
+        !win.isDestroyed()
+      )
+        win.destroy();
+      return false;
+    }
     // Show the setup window BEFORE destroying the failed one: on Windows/Linux,
     // destroying the last window fires "window-all-closed" -> app.quit() before
     // showSetupWindow() runs, so the app silently exits instead of showing this error.
@@ -982,7 +1084,118 @@ function safeOrigin(targetUrl: string) {
   }
 }
 
+function reopenConsole() {
+  if (quitting) return;
+  const win = secondInstanceWindow(setupWindow, mainWindow);
+  if (win !== null) {
+    clearTimeout(warmWindowTimer);
+    revealSecondInstanceWindow(win);
+    return;
+  }
+  if (appOpener.busy() || developmentOpening) return;
+  if (development !== null) {
+    void openDevelopmentConsole();
+  } else if (currentTargetUrl === null) showSetupWindow(setupError);
+  else
+    void appOpener.open(currentTargetUrl).then((opened) => {
+      if (opened) commitPendingAppSwitch();
+    });
+}
+
+async function openDevelopmentConsole() {
+  if (development === null || developmentOpening) return;
+  developmentOpening = true;
+  try {
+    while (!quitting) {
+      if (await appOpener.open(development.viteUrl)) {
+        commitPendingAppSwitch();
+        return;
+      }
+      if (quitting) return;
+      const options = {
+        type: "error" as const,
+        message: "Could not open the development server.",
+        buttons: ["Retry", "Quit"],
+        defaultId: 0,
+        cancelId: 1,
+      };
+      const owner = secondInstanceWindow(null, mainWindow);
+      if (owner !== null) revealSecondInstanceWindow(owner);
+      const result = await (owner !== null
+        ? dialog.showMessageBox(owner, options)
+        : dialog.showMessageBox(options));
+      if (result.response !== 0) {
+        app.quit();
+        return;
+      }
+    }
+  } finally {
+    developmentOpening = false;
+  }
+}
+
+function protocolInstall() {
+  return {
+    scheme: desktopEnvironment.scheme,
+    name: desktopEnvironment.name,
+    appId: desktopEnvironment.appId,
+    executable:
+      process.platform === "linux" ? linuxProtocolExecutable(process.execPath) : process.execPath,
+  };
+}
+
+async function changeDevelopmentProtocol(action: "register" | "unregister") {
+  if (!app.isPackaged || development === null)
+    throw new Error("Use the packaged development launcher.");
+  if (process.platform === "linux") {
+    if (action === "register") await registerLinuxProtocol(protocolInstall(), { explicit: true });
+    else await unregisterLinuxProtocol(protocolInstall());
+    return;
+  }
+  const bundle = path.resolve(process.execPath, "../../..");
+  const lsregister =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+  if (action === "register") {
+    if (process.platform === "darwin") await runProtocolCommand(lsregister, ["-f", bundle]);
+    if (!app.setAsDefaultProtocolClient(desktopEnvironment.scheme))
+      throw new Error("Could not register the development launcher.");
+  } else {
+    if (app.isDefaultProtocolClient(desktopEnvironment.scheme))
+      app.removeAsDefaultProtocolClient(desktopEnvironment.scheme);
+    if (process.platform === "darwin") await runProtocolCommand(lsregister, ["-u", bundle]);
+  }
+}
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
+  if (registrationAction) {
+    try {
+      if (development !== null && app.isPackaged) {
+        if (registrationAction !== "check") await changeDevelopmentProtocol(registrationAction);
+      } else if (
+        registrationAction === "unregister" &&
+        app.isPackaged &&
+        process.platform === "linux"
+      )
+        await unregisterLinuxProtocol(protocolInstall());
+      else throw new Error("Unsupported protocol registration action.");
+      app.exit(0);
+    } catch {
+      process.stderr.write("Could not update the desktop protocol registration.\n");
+      app.exit(1);
+    }
+    return;
+  }
+  if (app.isPackaged && development === null && process.platform === "linux") {
+    try {
+      await registerLinuxProtocol(protocolInstall(), { explicit: false });
+    } catch {
+      void dialog.showMessageBox({
+        type: "error",
+        message: "Desktop links could not be registered.",
+      });
+    }
+  }
   installSessionPermissions(session.defaultSession, permissionTarget);
   const userDataDir = app.getPath("userData");
   localStack = new LocalStackController({
@@ -1012,9 +1225,9 @@ app.whenReady().then(async () => {
       }
     },
   });
-  currentSetup = await readSetup(userDataDir);
+  currentSetup = development === null ? await readSetup(userDataDir) : null;
   const target = resolveStartupTarget({
-    envUrl: process.env.RAKAZO_WEB_URL,
+    envUrl: development?.viteUrl ?? process.env.RAKAZO_WEB_URL,
     saved: currentSetup,
     forceSetup: process.env.RAKAZO_FORCE_SETUP === "1",
   });
@@ -1273,27 +1486,11 @@ app.whenReady().then(async () => {
   });
 
   // Register before startup awaits so macOS dock clicks during probe/open are handled.
-  app.on("activate", () => {
-    if (setupWindow !== null && !setupWindow.isDestroyed()) {
-      setupWindow.show();
-      setupWindow.focus();
-      return;
-    }
-    if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      clearTimeout(warmWindowTimer);
-      mainWindow.show();
-      mainWindow.focus();
-      return;
-    }
-    if (appOpener.busy()) return;
-    if (currentTargetUrl === null) showSetupWindow(setupError);
-    else
-      void appOpener.open(currentTargetUrl).then((opened) => {
-        if (opened) commitPendingAppSwitch();
-      });
-  });
+  app.on("activate", reopenConsole);
 
-  if (target.kind === "setup") {
+  if (development !== null) {
+    await openDevelopmentConsole();
+  } else if (target.kind === "setup") {
     showSetupWindow();
   } else if (target.source === "saved") {
     if (currentSetup?.mode === "new") {
@@ -1328,12 +1525,13 @@ app.whenReady().then(async () => {
       destroySetupWindow();
     }
   }
+  desktopLinks.ready();
 });
 
 app.on("window-all-closed", () => {
   // A hidden session probe (defaultSessionHasOriginData) can be the only window
   // during startup; its teardown must not quit the app.
-  if (liveProbeWindows > 0) return;
+  if (liveProbeWindows > 0 || developmentOpening) return;
   if (process.platform !== "darwin") app.quit();
 });
 

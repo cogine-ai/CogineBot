@@ -44,6 +44,9 @@ describe("setup window chrome", () => {
 });
 
 describe("warm window lifetime", () => {
+  it("keeps a closed macOS Console alive by default so its draft and route can be restored", () => {
+    expect(warmWindowTtlMs(undefined)).toBeNull();
+  });
   it("accepts finite timer delays within Node's supported range", () => {
     expect(warmWindowTtlMs("0")).toBe(0);
     expect(warmWindowTtlMs("900000")).toBe(900_000);

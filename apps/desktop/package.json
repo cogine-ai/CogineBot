@@ -6,7 +6,9 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "pnpm build && electron .",
+    "dev": "pnpm build && node scripts/development.mjs start",
+    "dev:register": "pnpm build && node scripts/development.mjs register",
+    "dev:unregister": "pnpm build && node scripts/development.mjs unregister",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
     "pack": "pnpm --filter @rakazo/web build && pnpm build && electron-builder --mac --win --linux",
     "pack:dir": "pnpm --filter @rakazo/web build && pnpm build && electron-builder --dir",
@@ -25,10 +27,20 @@
     "electron": "44.3.0",
     "electron-builder": "26.15.3",
     "typescript": "7.0.2",
+    "vite": "8.3.0",
     "vitest": "4.1.11"
   },
   "build": {
     "appId": "ai.cogine.coginebot.desktop",
+    "protocols": [
+      {
+        "name": "CogineBot",
+        "schemes": [
+          "coginebot"
+        ],
+        "role": "Viewer"
+      }
+    ],
     "directories": {
       "output": "out",
       "buildResources": "assets"

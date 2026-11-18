@@ -21,6 +21,7 @@ apps/**/data
 apps/web/dist
 apps/desktop/dist
 apps/desktop/out
+apps/desktop/out-dev
 apps/desktop/e2e/screenshots
 apps/mobile/.expo
 apps/mobile/dist
