@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -53,6 +53,13 @@ describe.skipIf(process.platform !== "linux")("Linux protocol kernel locking", (
       fs.writeFileSync(ready, 'ready');
       if (fs.existsSync(release)) process.exit(0);
     `;
+    let markReady!: () => void;
+    const readySignal = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    const monitor = watch(path.dirname(ready), () => {
+      if (existsSync(ready)) markReady();
+    });
     const writer = runProtocolCommand(
       process.execPath,
       ["-e", script, ready, release],
@@ -61,11 +68,12 @@ describe.skipIf(process.platform !== "linux")("Linux protocol kernel locking", (
     );
     let closed = false;
     try {
-      await expect.poll(() => existsSync(ready)).toBe(true);
+      await readySignal;
       await lock.close();
       closed = true;
       expect(spawnSync("flock", ["-n", f.paths.lockFile, "true"]).status).toBe(1);
     } finally {
+      monitor.close();
       if (!closed) await lock.close();
       await writeFile(release, "release");
       await writer;
