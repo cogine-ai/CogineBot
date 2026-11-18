@@ -246,6 +246,30 @@ describe("clear conversation cleanup outcome", () => {
       memoryCleanupExpected: true,
     });
   });
+  it("does not let a successfully resolved replacement confirm the earlier connection", async () => {
+    const f = fixture();
+    const original = (await f.resolve.getMockImplementation()!(input.spaceId))!;
+    const replacementPurge = vi.fn(async () => ({ ok: true as const, value: undefined }));
+    f.saved.mockResolvedValue({ secretId: "replacement-connection" });
+    f.resolve.mockResolvedValueOnce(original).mockResolvedValueOnce({
+      ...original,
+      connectionId: "replacement-connection",
+      provider: { ...original.provider, purgeHistory: replacementPurge },
+    });
+    await expect(f.execute()).resolves.toMatchObject({
+      memoryCleanupUnconfirmed: true,
+      memoryCleanupPending: false,
+    });
+    expect(replacementPurge).toHaveBeenCalledExactlyOnceWith(
+      { botId: input.botId, generations: [2, 3] },
+      context,
+    );
+    expect(f.purgeHistory).not.toHaveBeenCalled();
+    expect(f.resolve).toHaveBeenCalledTimes(2);
+    expect(f.settleMemoryCleanup).toHaveBeenCalledWith(
+      expect.objectContaining({ unconfirmed: true }),
+    );
+  });
   it("retains responsibility if the pinned provider is disconnected before the lock read", async () => {
     const f = fixture();
     f.saved.mockResolvedValue(null);

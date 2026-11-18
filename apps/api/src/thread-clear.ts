@@ -44,6 +44,9 @@ export async function clearThreadConversation(
   );
   if (cleared.cleanup) {
     let unconfirmed = false;
+    const earlierConnectionUnconfirmed =
+      configurationUnknown ||
+      (configured !== null && configured.connectionId !== cleared.cleanup.connectionId);
     try {
       if (cleared.cleanup.connectionId && configured?.connectionId !== cleared.cleanup.connectionId)
         configured = await deps.memoryProviders.resolve(input.spaceId);
@@ -58,7 +61,7 @@ export async function clearThreadConversation(
           { botId: input.botId, generations: cleared.cleanup.generations },
           context,
         );
-        unconfirmed = !result.ok;
+        unconfirmed = earlierConnectionUnconfirmed || !result.ok;
         if (!result.ok)
           getLogger().error("semantic memory purge after thread clear failed", result.error);
       }
