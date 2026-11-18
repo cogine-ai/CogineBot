@@ -25,48 +25,23 @@ const context: AdapterContext = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-function probeTransport(status: number) {
-  return vi.fn<typeof fetch>(async (_url, init) =>
-    init?.method === "GET" ? new Response("[]", { status: 200 }) : new Response("", { status }),
-  );
-}
-
 describe("semantic connection checks", () => {
-  it("checks delete authority using fresh probe tags without business data", async () => {
-    const fetch = probeTransport(404);
-    await prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch });
-    await prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch });
-    expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual([
-      "GET",
-      "DELETE",
-      "GET",
-      "DELETE",
-    ]);
-    const tags = fetch.mock.calls
-      .filter(([, init]) => init?.method === "DELETE")
-      .map(([url]) => decodeURIComponent(new URL(String(url)).pathname.split("/").at(-1)!));
-    expect(tags).toHaveLength(2);
-    expect(new Set(tags).size).toBe(2);
-    for (const tag of tags) expect(tag).toMatch(/^cogine:delete-probe:[0-9a-f-]{36}$/);
-  });
-
-  it.each([200, 404])("accepts the fresh-tag delete status %s", async (status) => {
-    const fetch = probeTransport(status);
+  it("checks readability without claiming cleanup authority or touching another namespace", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) =>
+      init?.method === "GET"
+        ? new Response("[]", { status: 200 })
+        : new Response("", { status: 403 }),
+    );
     await expect(
       prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
     ).resolves.toMatchObject({ settings: { mode: "cloud" } });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      `${SUPERMEMORY_CLOUD_BASE_URL}/v3/container-tags/list`,
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 
-  it.each([403, 500])("refuses a connection whose delete check returns %s", async (status) => {
-    const fetch = probeTransport(status);
-    await expect(
-      prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
-    ).rejects.toThrow(status === 403 ? SUPERMEMORY_DELETE_FORBIDDEN_ERROR : /500/);
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("never tries deletion after a rejected read probe", async () => {
+  it("rejects a rejected read probe without issuing a write or delete", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("", { status: 401 }));
     await expect(
       prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
@@ -74,8 +49,8 @@ describe("semantic connection checks", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("uses the same accepted DNS pin for both connection probes", async () => {
-    const fetch = probeTransport(404);
+  it("retains the accepted DNS pin during the read check", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("[]", { status: 200 }));
     const resolveHostname = vi.fn(async () => [{ address: "172.18.0.4", family: 4 as const }]);
     await prepareSupermemoryConnection(
       { mode: "local", baseUrl: "http://memory-service:6767" },
@@ -83,11 +58,11 @@ describe("semantic connection checks", () => {
       { fetch, resolveHostname, allowPrivateEndpoint: true },
     );
     expect(resolveHostname).toHaveBeenCalledOnce();
-    expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(["GET", "DELETE"]);
+    expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(["GET"]);
   });
 
   it("rejects the Cloud origin in local mode before DNS or HTTP", async () => {
-    const fetch = probeTransport(404);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("[]", { status: 200 }));
     const resolveHostname = vi.fn(async () => [{ address: "172.18.0.4", family: 4 as const }]);
     await expect(
       prepareSupermemoryConnection(
@@ -100,6 +75,56 @@ describe("semantic connection checks", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+it("enforces permission at the actual Bot history namespace", async () => {
+  const allowedTag = "rakazo:bot-one:history:1";
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+    if (init?.method === "GET") return new Response("[]", { status: 200 });
+    const tag = decodeURIComponent(new URL(String(url)).pathname.split("/").at(-1)!);
+    return tag === allowedTag
+      ? Response.json({
+          success: true,
+          containerTag: tag,
+          deletedDocumentsCount: 0,
+          deletedMemoriesCount: 0,
+        })
+      : new Response("", { status: 403 });
+  });
+  await prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch });
+  const provider = new SupermemoryMemoryProvider({
+    baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+    ...credentials,
+    fetch,
+  });
+  await expect(
+    provider.purgeHistory({ botId: "bot-one", generations: [1] }, context),
+  ).resolves.toEqual({ ok: true, value: undefined });
+  await expect(
+    provider.purgeHistory({ botId: "another-bot", generations: [1] }, context),
+  ).resolves.toEqual({ ok: false, error: SUPERMEMORY_DELETE_FORBIDDEN_ERROR });
+  expect(
+    fetch.mock.calls
+      .filter(([, init]) => init?.method === "DELETE")
+      .map(([url]) => decodeURIComponent(new URL(String(url)).pathname.split("/").at(-1)!)),
+  ).toEqual([allowedTag, "rakazo:another-bot:history:1"]);
+});
+
+it.each(["route missing", "container missing"])(
+  "does not claim cleanup for an unconfirmed 404 (%s)",
+  async (error) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error }, { status: 404 }),
+    );
+    const provider = new SupermemoryMemoryProvider({
+      baseUrl: SUPERMEMORY_CLOUD_BASE_URL,
+      ...credentials,
+      fetch,
+    });
+    await expect(
+      provider.purgeHistory({ botId: "bot-one", generations: [1] }, context),
+    ).resolves.toEqual({ ok: false, error: expect.stringContaining("404") });
+  },
+);
 
 describe("empty semantic queries", () => {
   it.each([
@@ -137,7 +162,7 @@ it.each([200, 404, 403, 500])(
         ...credentials,
         fetch,
       }),
-    ).resolves.toMatchObject({ ok: status === 200 || status === 404 });
+    ).resolves.toMatchObject({ ok: status === 200 });
     expect(cancel).toHaveBeenCalledOnce();
   },
 );

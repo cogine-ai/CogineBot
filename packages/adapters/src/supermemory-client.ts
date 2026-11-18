@@ -308,7 +308,7 @@ export async function searchSupermemoryContainers(
 export const SUPERMEMORY_DELETE_FORBIDDEN_ERROR =
   "Supermemory cannot delete memory containers with this API key. Check its permissions.";
 
-/** Deletes a container's memories; a missing container is already clear. */
+/** Deletes a container's memories only when the backend acknowledges success. */
 export async function deleteSupermemoryContainer(
   containerTag: string,
   config: SupermemoryConnectionConfig,
@@ -326,7 +326,7 @@ export async function deleteSupermemoryContainer(
       },
     );
     try {
-      if (response.ok || response.status === 404) return { ok: true };
+      if (response.ok) return { ok: true };
       if (response.status === 403) return { ok: false, error: SUPERMEMORY_DELETE_FORBIDDEN_ERROR };
       return { ok: false, error: `Supermemory container delete failed: ${response.status}` };
     } finally {
