@@ -162,7 +162,6 @@ async function nativeDialog(title: string) {
 
 async function dismissDialog(title: string, screenshot: string, retry = true) {
   const id = await nativeDialog(title);
-  await exec("scrot", [path.join(screenshotRoot, screenshot)]);
   await exec("xdotool", ["windowactivate", "--sync", id]);
   if (retry) {
     // Select the observed GTK Retry button explicitly; activating a dialog does
@@ -182,7 +181,10 @@ async function dismissDialog(title: string, screenshot: string, retry = true) {
     ]);
     await exec("scrot", ["--pointer", path.join(screenshotRoot, screenshot)]);
     await exec("xdotool", ["click", "1"]);
-  } else await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
+  } else {
+    await exec("scrot", [path.join(screenshotRoot, screenshot)]);
+    await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
+  }
 }
 
 async function startFixtureServer(port = 0) {
