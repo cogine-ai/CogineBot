@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -35,7 +36,8 @@ let productionExecutable: string;
 let developmentProfile: string;
 let mounted = 0;
 let documentRequests = 0;
-let failureMode: "ready" | "failed" | "hold" = "ready";
+let failureMode: "ready" | "failed" | "hold" | "redirect" = "ready";
+let redirectTarget = "";
 let releaseFailedDocument: (() => void) | undefined;
 
 async function nativeWindowList(details = false) {
@@ -199,6 +201,11 @@ async function startFixtureServer(port = 0) {
           server.middlewares.use((request, response, next) => {
             if (request.url === "/") {
               documentRequests += 1;
+              if (failureMode === "redirect") {
+                response.writeHead(302, { location: redirectTarget });
+                response.end();
+                return;
+              }
               if (failureMode !== "ready") {
                 const fail = () => {
                   response.setHeader("content-type", "text/html");
@@ -668,4 +675,33 @@ test("closing the old failed window during Retry keeps recovery alive", async ()
   await dismissDialog("CogineBot Dev", "deep-links-development-retry-after-close.png");
   await consoleWindow(development);
   await close(development);
+});
+
+test("development startup rejects another origin but permits a same-origin redirect", async () => {
+  let unexpectedRequests = 0;
+  const unexpected = createHttpServer((_request, response) => {
+    unexpectedRequests += 1;
+    response.end("<main>Unexpected origin</main>");
+  });
+  await new Promise<void>((resolve) => unexpected.listen(0, "127.0.0.1", resolve));
+  const address = unexpected.address();
+  if (address === null || typeof address === "string") throw new Error("Missing redirect port.");
+  try {
+    failureMode = "redirect";
+    redirectTarget = `http://127.0.0.1:${address.port}/`;
+    const development = await launch(devExecutable);
+    await nativeDialog("CogineBot Dev");
+    expect(unexpectedRequests).toBe(0);
+    redirectTarget = "/console";
+    await dismissDialog("CogineBot Dev", "deep-links-development-redirect.png");
+    const window = await consoleWindow(development);
+    expect(window.url()).toBe(`${origin}/console`);
+    expect(unexpectedRequests).toBe(0);
+    await close(development);
+  } finally {
+    failureMode = "ready";
+    await new Promise<void>((resolve, reject) =>
+      unexpected.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });

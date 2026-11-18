@@ -465,6 +465,7 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
       if (settled) return;
       settled = true;
       contents.removeListener("did-fail-load", onFail);
+      contents.removeListener("will-redirect", onRedirect);
       // Keep render-process-gone until document readiness finishes so a crash
       // during mount still fails the switch.
       targetSession.webRequest.onCompleted(null);
@@ -505,9 +506,15 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
     const onGone = (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
       settle(new Error(`Renderer stopped (${details.reason}).`));
     };
+    const onRedirect = (event: Electron.Event<{ url: string; isMainFrame: boolean }>) => {
+      if (!event.isMainFrame || safeOrigin(event.url) === safeOrigin(url)) return;
+      event.preventDefault();
+      settle(new Error("The development server redirected to another origin."));
+    };
 
     contents.on("did-fail-load", onFail);
     contents.on("render-process-gone", onGone);
+    if (development !== null) contents.on("will-redirect", onRedirect);
     void contents.loadURL(url).then(
       async () => {
         // onCompleted can lag loadURL; wait briefly for the main-frame status.
