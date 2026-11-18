@@ -697,6 +697,11 @@ test("development startup rejects another origin but permits a same-origin redir
     const window = await consoleWindow(development);
     expect(window.url()).toBe(`${origin}/console`);
     expect(unexpectedRequests).toBe(0);
+    redirectTarget = `http://127.0.0.1:${address.port}/`;
+    await window.goto(`${origin}/`).catch(() => undefined);
+    await expect(window.getByRole("heading", { name: "Console fixture" })).toBeVisible();
+    expect(window.url()).toBe(`${origin}/console`);
+    expect(unexpectedRequests).toBe(0);
     await close(development);
   } finally {
     failureMode = "ready";

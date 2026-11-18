@@ -465,7 +465,6 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
       if (settled) return;
       settled = true;
       contents.removeListener("did-fail-load", onFail);
-      contents.removeListener("will-redirect", onRedirect);
       // Keep render-process-gone until document readiness finishes so a crash
       // during mount still fails the switch.
       targetSession.webRequest.onCompleted(null);
@@ -514,6 +513,7 @@ function loadAppUrl(win: BrowserWindow, url: string): Promise<AppDocumentState> 
 
     contents.on("did-fail-load", onFail);
     contents.on("render-process-gone", onGone);
+    // Keep the development origin fence for this window's later navigations too.
     if (development !== null) contents.on("will-redirect", onRedirect);
     void contents.loadURL(url).then(
       async () => {
