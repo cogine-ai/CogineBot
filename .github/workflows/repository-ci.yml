@@ -136,6 +136,11 @@ jobs:
           RAKAZO_DISABLE_AUTO_UPDATE: "1"
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          COGINEBOT_PROTOCOL_TEST_ROOT: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/data
+          XDG_CURRENT_DESKTOP: openbox
+          RAKAZO_PERFORMANCE_USER_DATA: ${{ runner.temp }}/desktop-protocol-${{ github.run_id }}-${{ github.run_attempt }}/profiles
         run: |
           set -euo pipefail
           pnpm --filter @rakazo/web build

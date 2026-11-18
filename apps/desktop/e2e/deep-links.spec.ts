@@ -1,6 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ElectronApplication, Page } from "@playwright/test";
@@ -11,7 +10,12 @@ import { createServer } from "vite";
 import { developmentBuildConfiguration } from "../src/development-build.js";
 
 // Native OS associations belong only to this disposable Linux CI session.
-test.skip(process.platform !== "linux" || !process.env.CI, "Requires the Linux CI virtual display");
+test.skip(
+  process.platform !== "linux" ||
+    process.env.GITHUB_ACTIONS !== "true" ||
+    !process.env.COGINEBOT_PROTOCOL_TEST_ROOT,
+  "Requires the isolated Linux CI desktop session",
+);
 test.describe.configure({ mode: "serial", timeout: 120_000 });
 
 const exec = promisify(execFile);
@@ -19,8 +23,9 @@ const desktop = path.resolve(import.meta.dirname, "..");
 const screenshotRoot = path.join(desktop, "e2e/screenshots");
 const title = "CogineBot Console fixture";
 const apps = new Set<ElectronApplication>();
+const dispatches: ReturnType<typeof spawn>[] = [];
 let root: string;
-let env: NodeJS.ProcessEnv;
+let env: Record<string, string>;
 let vite: ViteDevServer;
 let origin: string;
 let devExecutable: string;
@@ -39,21 +44,27 @@ async function nativeWindows() {
 }
 
 function dispatch(url: string) {
-  const child = spawn("xdg-open", [url], { env, stdio: "ignore" });
-  const exited = new Promise<Error | null>((resolve) => {
-    child.once("error", resolve);
-    child.once("exit", (code) => resolve(code === 0 ? null : new Error(`xdg-open exited ${code}`)));
+  const child = spawn("xdg-open", [url], { env, stdio: ["ignore", "pipe", "pipe"] });
+  dispatches.push(child);
+  let error = "";
+  child.on("error", (value) => {
+    error += value.message;
   });
+  child.stderr?.on("data", (chunk) => {
+    error = (error + chunk).slice(-16_384);
+  });
+  child.stdout?.resume();
   return async () => {
-    const error = await exited;
-    if (error) throw error;
+    await expect
+      .poll(() => ({ code: child.exitCode, error: child.exitCode === 0 ? "" : error }))
+      .toEqual({ code: 0, error: "" });
   };
 }
 
 async function launch(executablePath: string) {
   const app = await electron.launch({
     executablePath,
-    env: { ...env, RAKAZO_WEB_URL: origin },
+    env,
     args: ["--no-sandbox"],
   });
   apps.add(app);
@@ -101,17 +112,25 @@ async function dismissDialog(title: string, screenshot: string) {
 
 test.beforeAll(async () => {
   test.setTimeout(600_000);
-  root = await mkdtemp(path.join(tmpdir(), "coginebot-protocol-ci-"));
+  root = process.env.COGINEBOT_PROTOCOL_TEST_ROOT!;
+  // Set before dbus-run-session/Openbox, so OS-launched processes use the same
+  // profile and associations as direct Playwright launches.
+  expect(process.env.XDG_CONFIG_HOME).toBe(path.join(root, "config"));
+  expect(process.env.XDG_DATA_HOME).toBe(path.join(root, "data"));
+  expect(process.env.RAKAZO_PERFORMANCE_USER_DATA).toBe(path.join(root, "profiles"));
+  await mkdir(root, { recursive: true });
   env = {
-    ...process.env,
-    XDG_CONFIG_HOME: path.join(root, "config"),
-    XDG_DATA_HOME: path.join(root, "data"),
-    XDG_CURRENT_DESKTOP: "openbox",
-    RAKAZO_PERFORMANCE_USER_DATA: path.join(root, "profiles"),
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
     RAKAZO_DISABLE_AUTO_UPDATE: "1",
     APPIMAGE_EXTRACT_AND_RUN: "1",
   };
   delete env.ELECTRON_RUN_AS_NODE;
+  delete env.RAKAZO_WEB_URL;
+  delete env.RAKAZO_FORCE_SETUP;
   await mkdir(screenshotRoot, { recursive: true });
   const fixture = path.join(root, "vite");
   await mkdir(fixture);
@@ -140,6 +159,11 @@ test.beforeAll(async () => {
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
             if (request.url === "/") documentRequests += 1;
+            if (request.url === "/rpc/health" && request.method === "POST") {
+              response.setHeader("content-type", "application/json");
+              response.end(JSON.stringify({ json: { ok: true, version: "0.2.2" } }));
+              return;
+            }
             if (request.url !== "/mounted") return next();
             mounted += 1;
             response.end("ok");
@@ -150,7 +174,6 @@ test.beforeAll(async () => {
   });
   await vite.listen();
   origin = vite.resolvedUrls!.local[0]!.replace(/\/$/, "");
-  env.RAKAZO_WEB_URL = origin;
 
   // This invokes the actual registration command, packaged development helper and xdg-mime.
   await exec(process.execPath, ["scripts/development.mjs", "register", "--vite-url", origin], {
@@ -181,8 +204,32 @@ test.afterAll(async () => {
       timeout: 30_000,
     });
     await vite?.close();
+    for (const child of dispatches) if (child.exitCode === null) child.kill();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test.afterEach(async () => {
+  const info = test.info();
+  if (info.status === info.expectedStatus) return;
+  const { stdout: windows } = await exec("wmctrl", ["-lp"]);
+  const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
+  await info.attach("native-dispatch-state", {
+    body: JSON.stringify(
+      {
+        windows,
+        processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
+        children: dispatches.map((child) => ({
+          pid: child.pid,
+          exit: child.exitCode,
+          signal: child.signalCode,
+        })),
+      },
+      null,
+      2,
+    ),
+    contentType: "application/json",
+  });
 });
 
 test("a system link restores first-run setup without bypassing it", async () => {
@@ -196,15 +243,29 @@ test("a system link restores first-run setup without bypassing it", async () => 
   await expect(setup.getByRole("heading", { name: "Welcome to CogineBot" })).toBeVisible();
   await production.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide());
   const delivered = dispatch("coginebot://bot/");
-  await delivered();
   await expect
     .poll(() =>
       production.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible()),
     )
     .toBe(true);
+  await delivered();
   await expect(setup.getByRole("heading", { name: "Welcome to CogineBot" })).toBeVisible();
   expect(mounted).toBe(0);
   await setup.screenshot({ path: path.join(screenshotRoot, "deep-links-setup-restored.png") });
+  await setup.getByRole("radio", { name: /Existing instance/ }).check();
+  await setup.locator("#server-url").fill(origin);
+  const connected = await Promise.all([
+    production.waitForEvent("window"),
+    setup.getByRole("button", { name: "Continue" }).click(),
+  ]).then(([window]) => window);
+  await expect(connected.getByRole("heading", { name: "Console fixture" })).toBeVisible();
+  await expect
+    .poll(async () =>
+      JSON.parse(
+        await readFile(path.join(env.RAKAZO_PERFORMANCE_USER_DATA!, "setup.json"), "utf8"),
+      ),
+    )
+    .toMatchObject({ mode: "existing", serverUrl: origin });
   await close(production);
 });
 
