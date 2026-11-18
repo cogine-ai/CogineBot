@@ -269,7 +269,8 @@ test.beforeAll(async () => {
   await mkdir(fixture);
   await writeFile(
     path.join(fixture, "index.html"),
-    `<!doctype html><html lang="en"><head><title>${title}</title></head><body>
+    `<!doctype html><html lang="en"><head><title>${title}</title>
+    <style>:root{color-scheme:light dark}body{font-family:system-ui;color:CanvasText;background:Canvas}</style></head><body>
     <main><h1>Console fixture</h1><label>Draft <textarea aria-label="Draft"></textarea></label>
     <p data-testid="run">Synthetic Run is active</p><p id="version"></p></main>
     <script type="module">
