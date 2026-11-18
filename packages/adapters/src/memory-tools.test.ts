@@ -60,19 +60,28 @@ describe("correctMemoryFact", () => {
 });
 
 describe("selectMemoryTools", () => {
+  it("does not advertise forgetting when the configured provider cannot forget", () => {
+    expect(selectMemoryTools(tools, true, false).map((entry) => entry.name)).toEqual([
+      "remember",
+      "recall_memory",
+      "save_memory",
+      "shell",
+    ]);
+  });
+
   it("keeps native remember and drops semantic memory tools when unconfigured", () => {
-    const names = selectMemoryTools(tools, false).map((t) => t.name);
+    const names = selectMemoryTools(tools, false, false).map((t) => t.name);
     expect(names).toEqual(["remember", "shell"]);
   });
 
   it("offers explicit Markdown memory alongside semantic memory when configured", () => {
-    const names = selectMemoryTools(tools, true).map((t) => t.name);
+    const names = selectMemoryTools(tools, true, true).map((t) => t.name);
     expect(names).toEqual(["remember", "recall_memory", "save_memory", "forget_memory", "shell"]);
   });
 
   it("is a no-op for tool lists with no memory tools at all", () => {
     const shellOnly = [tool("shell")];
-    expect(selectMemoryTools(shellOnly, false)).toEqual(shellOnly);
-    expect(selectMemoryTools(shellOnly, true)).toEqual(shellOnly);
+    expect(selectMemoryTools(shellOnly, false, false)).toEqual(shellOnly);
+    expect(selectMemoryTools(shellOnly, true, true)).toEqual(shellOnly);
   });
 });

@@ -22,9 +22,10 @@ export const RememberCorrectionInput = z.strictObject({
 export function selectMemoryTools(
   tools: ConnectorTool[],
   semanticMemoryConfigured: boolean,
+  semanticMemoryForgets: boolean,
 ): ConnectorTool[] {
   return semanticMemoryConfigured
-    ? tools
+    ? tools.filter((tool) => semanticMemoryForgets || tool.name !== "forget_memory")
     : tools.filter((tool) => !SEMANTIC_MEMORY_TOOL_NAMES.has(tool.name));
 }
 

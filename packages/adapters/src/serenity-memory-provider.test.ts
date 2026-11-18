@@ -188,7 +188,7 @@ describe("SerenityMemoryProvider", () => {
       value: [
         {
           memory: "Prefer conventional commits.",
-          score: 1,
+          score: expect.any(Number),
           id: "fact-1",
           provenance: "user told rakazo",
           entity: "rakazo-bot/bot-1",
@@ -196,9 +196,8 @@ describe("SerenityMemoryProvider", () => {
       ],
     });
     expect(recallSerenityMock).toHaveBeenCalledWith(
-      "commits",
       expect.objectContaining({ endpoint: "http://127.0.0.1:8787/mcp" }),
-      expect.objectContaining({ entity: "rakazo-bot/bot-1", limit: 5 }),
+      expect.objectContaining({ entity: "rakazo-bot/bot-1" }),
     );
   });
 
@@ -291,7 +290,7 @@ describe("SerenityMemoryProvider", () => {
     ]);
   });
 
-  it("forgets by fact id only (Serenity forget has no entity argument)", async () => {
+  it("checks the cited entity before forwarding only the fact id", async () => {
     forgetSerenityMock.mockResolvedValue({
       ok: true,
       value: { id: "fact-9", expired: true, reason: null },
@@ -303,8 +302,18 @@ describe("SerenityMemoryProvider", () => {
       brainLabel: "Personal Brain",
       allowWrites: true,
     });
+    recallSerenityMock.mockResolvedValue({
+      ok: true,
+      value: [{ factId: "fact-9", fact: "A saved preference.", provenance: "synthetic" }],
+    });
     await labeled.forget(
-      { id: "fact-9", entity: `rakazo-bot/${PERSONAL_BRAIN}--bot-1`, reason: "cleanup" },
+      {
+        scope: "isolated",
+        botId: "bot-1",
+        id: "fact-9",
+        entity: `rakazo-bot/${PERSONAL_BRAIN}--bot-1`,
+        reason: "cleanup",
+      },
       context,
     );
     expect(forgetSerenityMock).toHaveBeenCalledWith(
@@ -383,7 +392,7 @@ describe("SerenityMemoryProvider", () => {
       value: [
         {
           memory: "The team uses metric units.",
-          score: 1,
+          score: expect.any(Number),
           id: "fact-space-1",
           provenance: "space policy",
           entity: `rakazo-space/${PERSONAL_BRAIN}--workspace-1`,
@@ -392,7 +401,14 @@ describe("SerenityMemoryProvider", () => {
     });
 
     const fact = recalled.ok ? recalled.value[0] : undefined;
-    await labeled.forget({ id: fact!.id!, entity: fact!.entity, reason: "cleanup" }, context);
+    recallSerenityMock.mockResolvedValue({
+      ok: true,
+      value: [{ factId: fact!.id!, fact: fact!.memory, provenance: "synthetic" }],
+    });
+    await labeled.forget(
+      { scope: "shared", botId: "bot-1", id: fact!.id!, entity: fact!.entity, reason: "cleanup" },
+      context,
+    );
     expect(forgetSerenityMock).toHaveBeenCalledWith(
       "fact-space-1",
       expect.objectContaining({ brainLabel: "Personal Brain" }),
@@ -406,7 +422,14 @@ describe("SerenityMemoryProvider", () => {
       ok: true,
       value: { id: "fact-1", expired: true, reason: "user requested" },
     });
-    const result = await provider().forget({ id: "fact-1", reason: "user requested" }, context);
+    recallSerenityMock.mockResolvedValue({
+      ok: true,
+      value: [{ factId: "fact-1", fact: "A saved preference.", provenance: "synthetic" }],
+    });
+    const result = await provider().forget(
+      { scope: "isolated", botId: "bot-1", id: "fact-1", reason: "user requested" },
+      context,
+    );
     expect(result).toEqual({
       ok: true,
       value: { id: "fact-1", expired: true, reason: "user requested" },

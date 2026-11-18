@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { isLocalMcpHost } from "@rakazo/contracts";
 import { Agent } from "undici";
-import { combineSignals } from "./connector-safety.js";
+import { combineSignals, sanitizeConnectorError } from "./connector-safety.js";
 import {
   createAddressCheckedLookup,
   isCloudMetadataAddress,
@@ -19,6 +19,7 @@ import {
 import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 import { isBlockedHostname } from "./web-ssrf.js";
 
+const MAX_SERENITY_RECALL_LIMIT = 100;
 const SERENITY_TIMEOUT_MS = 15_000;
 const SERENITY_TERMINATE_TIMEOUT_MS = 2_000;
 export const MAX_SERENITY_FACT_CHARS = 10_000;
@@ -386,15 +387,18 @@ export async function probeSerenity(
   }
 }
 
+/**
+ * Lists an entity's newest facts, up to the server maximum. Recall's `query` only drives a
+ * separate page search; facts are filtered by entity and sorted newest first regardless of it,
+ * so the query is omitted and callers rank the facts themselves.
+ */
 export async function recallSerenity(
-  query: string,
   config: SerenityConnectionConfig,
   options: {
-    limit: number;
     entity?: string;
     signal?: AbortSignal;
     network?: SerenityNetworkDependencies;
-  },
+  } = {},
 ): Promise<SerenityResult<SerenityRecallFact[]>> {
   try {
     const payload = await withSerenityClient(
@@ -405,8 +409,7 @@ export async function recallSerenity(
           {
             name: "recall",
             arguments: {
-              query,
-              limit: Math.min(Math.max(1, Math.floor(options.limit)), 50),
+              limit: MAX_SERENITY_RECALL_LIMIT,
               ...(options.entity ? { entity: options.entity } : {}),
             },
           },
@@ -421,11 +424,11 @@ export async function recallSerenity(
       },
       options.network,
     );
-    return { ok: true, value: parseRecallFacts(payload).slice(0, options.limit) };
+    return { ok: true, value: parseRecallFacts(payload).slice(0, MAX_SERENITY_RECALL_LIMIT) };
   } catch (error) {
     return {
       ok: false,
-      error: `Serenity recall failed: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Serenity recall failed: ${sanitizeConnectorError(error, [config.token])}`,
     };
   }
 }

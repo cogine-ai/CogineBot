@@ -396,6 +396,41 @@ describe("serenity verbs", () => {
     expect(server.fetch).not.toHaveBeenCalled();
   });
 
+  it("lists bounded entity facts without sending a query or trusting an oversized response", async () => {
+    const server = fakeSerenityFetch(() => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            facts: Array.from({ length: 101 }, (_, index) => ({
+              fact_id: `fact-${index}`,
+              fact: `Synthetic fact ${index}`,
+              provenance: "synthetic",
+            })),
+          }),
+        },
+      ],
+    }));
+    const result = await recallSerenity(LOOPBACK, {
+      entity: "bot/synthetic",
+      network: { fetch: server.fetch },
+    });
+    expect(result.ok && result.value.length).toBe(100);
+    const call = server.calls.find((entry) => entry.rpc?.method === "tools/call");
+    expect(call?.rpc?.params?.arguments).toEqual({ entity: "bot/synthetic", limit: 100 });
+    expect(server.calls.at(-1)?.method).toBe("DELETE");
+  });
+
+  it("scrubs the connection token from a recall failure", async () => {
+    const server = fakeSerenityFetch(() => ({
+      isError: true,
+      content: [{ type: "text", text: `failed ${TOKEN}` }],
+    }));
+    const result = await recallSerenity(LOOPBACK, { network: { fetch: server.fetch } });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
   it("states a tool error code once and keeps its reset time", async () => {
     const server = fakeSerenityFetch(() => ({
       isError: true,
@@ -411,8 +446,7 @@ describe("serenity verbs", () => {
         },
       ],
     }));
-    const result = await recallSerenity("units", LOOPBACK, {
-      limit: 5,
+    const result = await recallSerenity(LOOPBACK, {
       network: { fetch: server.fetch },
     });
     expect(result).toEqual({
@@ -426,7 +460,7 @@ describe("serenity verbs", () => {
     const fetch = vi.fn(
       async () => new Response("slow down", { status: 429, headers: { "retry-after": "30" } }),
     );
-    const result = await recallSerenity("units", LOOPBACK, { limit: 5, network: { fetch } });
+    const result = await recallSerenity(LOOPBACK, { network: { fetch } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/rate limit reached; retry after 30s/);
   });
@@ -436,7 +470,7 @@ describe("serenity verbs", () => {
     const fetch = vi.fn(
       async () => new Response("slow down", { status: 429, headers: { "retry-after": date } }),
     );
-    const result = await recallSerenity("units", LOOPBACK, { limit: 5, network: { fetch } });
+    const result = await recallSerenity(LOOPBACK, { network: { fetch } });
     if (!result.ok) expect(result.error).toContain(`retry after ${date}.`);
     expect(result.ok).toBe(false);
   });
@@ -450,8 +484,7 @@ describe("serenity verbs", () => {
       const stalling = vi.fn(async (input: string | URL | Request, init?: RequestInit) =>
         init?.method === "DELETE" ? new Promise<Response>(() => {}) : server.fetch(input, init),
       );
-      const pending = recallSerenity("units", LOOPBACK, {
-        limit: 5,
+      const pending = recallSerenity(LOOPBACK, {
         network: { fetch: stalling },
       });
       await vi.advanceTimersByTimeAsync(2_000);
