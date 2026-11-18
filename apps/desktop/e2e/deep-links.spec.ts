@@ -695,11 +695,14 @@ test("development startup rejects another origin but permits a same-origin redir
     await mkdir(path.join(developmentProfile, "Local Storage"), { recursive: true });
     failureMode = "redirect";
     redirectTarget = `http://127.0.0.1:${address.port}/`;
-    const development = await launch(devExecutable);
+    // A blocked first navigation can delay Playwright initialization until Retry.
+    const starting = launch(devExecutable);
+    void starting.catch(() => undefined);
     await nativeDialog("CogineBot Dev");
     expect(unexpectedRequests).toBe(0);
     redirectTarget = "/console";
     await dismissDialog("CogineBot Dev", "deep-links-development-redirect.png");
+    const development = await starting;
     const window = await consoleWindow(development);
     expect(window.url()).toBe(`${origin}/console`);
     expect(unexpectedRequests).toBe(0);
