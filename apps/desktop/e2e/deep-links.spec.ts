@@ -72,9 +72,22 @@ async function launch(executablePath: string) {
 }
 
 async function consoleWindow(app: ElectronApplication): Promise<Page> {
-  const window = await app.firstWindow();
-  await expect(window.getByRole("heading", { name: "Console fixture" })).toBeVisible();
-  return window;
+  let window: Page | undefined;
+  await expect
+    .poll(async () => {
+      for (const page of app.windows()) {
+        if (page.isClosed() || !page.url().startsWith(`${origin}/`)) continue;
+        const native = await app.browserWindow(page);
+        if (await native.evaluate((win) => win.isVisible())) {
+          window = page;
+          return true;
+        }
+      }
+      return false;
+    })
+    .toBe(true);
+  await expect(window!.getByRole("heading", { name: "Console fixture" })).toBeVisible();
+  return window!;
 }
 
 async function close(app: ElectronApplication) {
@@ -254,10 +267,8 @@ test("a system link restores first-run setup without bypassing it", async () => 
   await setup.screenshot({ path: path.join(screenshotRoot, "deep-links-setup-restored.png") });
   await setup.getByRole("radio", { name: /Existing instance/ }).check();
   await setup.locator("#server-url").fill(origin);
-  const connected = await Promise.all([
-    production.waitForEvent("window"),
-    setup.getByRole("button", { name: "Continue" }).click(),
-  ]).then(([window]) => window);
+  await setup.getByRole("button", { name: "Continue" }).click();
+  const connected = await consoleWindow(production);
   await expect(connected.getByRole("heading", { name: "Console fixture" })).toBeVisible();
   await expect
     .poll(async () =>
