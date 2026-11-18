@@ -36,8 +36,22 @@ let documentRequests = 0;
 let failureMode: "ready" | "failed" | "hold" = "ready";
 let releaseFailedProbe: (() => void) | undefined;
 
+async function nativeWindowList(details = false) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await exec("wmctrl", [details ? "-lp" : "-l"]);
+    } catch (error) {
+      // A window can disappear between wmctrl's enumeration and property read.
+      // Retry that X11 race without treating an incomplete list as an empty one.
+      const failure = error as { stderr?: string };
+      if (attempt >= 2 || !failure.stderr?.includes("BadWindow (invalid Window parameter)"))
+        throw error;
+    }
+  }
+}
+
 async function nativeWindows() {
-  const { stdout } = await exec("wmctrl", ["-lp"]);
+  const { stdout } = await nativeWindowList(true);
   return stdout
     .split("\n")
     .map((line) => /^(\S+)\s+\S+\s+(\d+)\s+\S+\s+(.*)$/.exec(line))
@@ -106,7 +120,7 @@ async function closeNativeWindow() {
 }
 
 async function nativeDialogs(titles: string[] = []) {
-  const { stdout } = await exec("wmctrl", ["-l"]);
+  const { stdout } = await nativeWindowList();
   const windows = stdout
     .split("\n")
     .filter(Boolean)
@@ -284,7 +298,7 @@ test.afterEach(async () => {
   ) {
     await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
   }
-  const { stdout: windows } = await exec("wmctrl", ["-lp"]);
+  const { stdout: windows } = await nativeWindowList(true);
   const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
   await info.attach("native-dispatch-state", {
     body: JSON.stringify(
