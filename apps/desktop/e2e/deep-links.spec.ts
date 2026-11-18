@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { ElectronApplication, Page } from "@playwright/test";
 import { _electron as electron, expect, test } from "@playwright/test";
@@ -337,18 +338,22 @@ test.afterEach(async () => {
             pages: application
               .windows()
               .map((page) => ({ url: page.url(), closed: page.isClosed() })),
-            main: await application
-              .evaluate(({ app, BrowserWindow }) => ({
-                ready: app.isReady(),
-                windows: BrowserWindow.getAllWindows().map((win) => ({
-                  id: win.id,
-                  bounds: win.getBounds(),
-                  visible: win.isVisible(),
-                  url: win.webContents.getURL(),
-                  loading: win.webContents.isLoading(),
-                })),
-              }))
-              .catch((error: Error) => ({ error: error.message })),
+            main: await Promise.race([
+              application
+                .evaluate(({ app, BrowserWindow }) => ({
+                  ready: app.isReady(),
+                  windows: BrowserWindow.getAllWindows().map((win) => ({
+                    id: win.id,
+                    bounds: win.getBounds(),
+                    visible: win.isVisible(),
+                    url: win.webContents.getURL(),
+                    loading: win.webContents.isLoading(),
+                  })),
+                }))
+                .catch((error: Error) => ({ error: error.message })),
+              // A synchronous native error box can block main-process RPC.
+              delay(1_000, { error: "Main-process diagnostics timed out." }),
+            ]),
           })),
         ),
         processes: processes.split("\n").filter((line) => /coginebot|AppImage|xdg-open/.test(line)),
