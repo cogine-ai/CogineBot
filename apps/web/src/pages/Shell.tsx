@@ -3392,7 +3392,10 @@ export function ShellPage() {
       (activeSnapshot.memoryCleanupUnconfirmed || activeSnapshot.memoryCleanupPending)
     ) {
       showMemoryCleanupNotice(memoryCleanupScope, false, !activeSnapshot.memoryCleanupUnconfirmed);
-    } else if (!activeSnapshot.memoryCleanupPending && !activeSnapshot.memoryCleanupUnconfirmed) {
+    } else if (
+      activeSnapshot.memoryCleanupPending === false &&
+      !activeSnapshot.memoryCleanupUnconfirmed
+    ) {
       dismissedMemoryCleanupNotices.current.delete(JSON.stringify([memoryCleanupScope, true]));
       setMemoryCleanupNotices((current) => {
         if (!current[memoryCleanupScope]?.provisional) return current;

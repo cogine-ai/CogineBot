@@ -59,6 +59,7 @@ function fixture(
     focused?: boolean;
     otherBot?: boolean;
     persisted?: boolean;
+    saved?: boolean;
     owner?: string;
   } = {},
 ) {
@@ -111,6 +112,7 @@ function fixture(
     snapRef,
     snap: snapRef.current,
     focused: overrides.focused ?? true,
+    showingSaved: overrides.saved ?? false,
     error: overrides.error,
     runError: null,
     historyEpoch,
@@ -269,6 +271,20 @@ describe("native memory cleanup outcomes", () => {
     expect(f.alert).toHaveBeenCalledTimes(3);
     f.effect();
     expect(f.alert).toHaveBeenCalledTimes(3);
+  });
+  it.each(["omitted", "saved-false"])("does not expire the pending interval for %s", (mode) => {
+    const f = fixture({ saved: mode === "saved-false" });
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      memoryCleanupPending: mode === "omitted" ? undefined : false,
+    };
+    f.effect();
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
   });
   it("guards overlapping cold clears before the first snapshot exists", async () => {
     const f = fixture();
