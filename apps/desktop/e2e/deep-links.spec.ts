@@ -179,9 +179,9 @@ async function dismissDialog(title: string, screenshot: string, retry = true) {
       "--sync",
       String(Math.floor(width / 4)),
       String(height - 18),
-      "click",
-      "1",
     ]);
+    await exec("scrot", ["--pointer", path.join(screenshotRoot, screenshot)]);
+    await exec("xdotool", ["click", "1"]);
   } else await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
 }
 
@@ -349,6 +349,9 @@ test.afterEach(async () => {
                     url: win.webContents.getURL(),
                     loading: win.webContents.isLoading(),
                   })),
+                  marks: performance
+                    .getEntriesByType("mark")
+                    .map(({ name, startTime }) => ({ name, startTime })),
                 }))
                 .catch((error: Error) => ({ error: error.message })),
               // A synchronous native error box can block main-process RPC.
@@ -608,6 +611,11 @@ test("a rebound workspace owns only its development association", async () => {
 test("an unavailable Vite server offers native Retry and recovers without production setup", async () => {
   await vite.close();
   const development = await launch(devExecutable);
+  await development.evaluate(({ app }) => {
+    app.on("before-quit", () => performance.mark("test:before-quit"));
+    app.on("will-quit", () => performance.mark("test:will-quit"));
+    app.on("browser-window-created", () => performance.mark("test:window-created"));
+  });
   await nativeDialog("CogineBot Dev");
   // Restore the same address before accepting the native dialog's Retry button.
   vite = await startFixtureServer(Number(new URL(origin).port));
