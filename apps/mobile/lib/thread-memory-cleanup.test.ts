@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { observeMemoryCleanup } from "@rakazo/core";
+import { hasNewThreadWork, observeMemoryCleanup } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileSnapshot } from "./api";
@@ -17,7 +17,10 @@ let notify = "";
 let clear = "";
 let effect = "";
 let commit = "";
+let ownerExpression = "";
 function collect(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(file) === "memoryCleanupOwner")
+    ownerExpression = node.initializer!.getText(file);
   if (ts.isVariableDeclaration(node) && node.name.getText(file) === "showMemoryCleanupNotice")
     notify = `const ${node.getText(file)};`;
   if (ts.isFunctionDeclaration(node) && node.name?.text === "clearConversation")
@@ -54,6 +57,7 @@ function fixture(
     focused?: boolean;
     otherBot?: boolean;
     persisted?: boolean;
+    owner?: string;
   } = {},
 ) {
   const responses: Array<{
@@ -81,7 +85,7 @@ function fixture(
     ...(overrides.persisted ? { memoryCleanupUnconfirmed: true as const } : {}),
   };
   const snapRef = { current: overrides.otherBot ? { ...initial, botId: "other-bot" } : initial };
-  const ownerRef = { current: "owner-one" };
+  const ownerRef = { current: overrides.owner ?? "owner-one" };
   const botRef = { current: "bot-one" };
   const historyEpoch = { current: 1 };
   const blocked = { current: overrides.blocked ?? false };
@@ -94,7 +98,7 @@ function fixture(
     seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
     pendingMemoryCleanupClears: { current: new Set<string>() },
     memoryCleanupAlertBlocked: blocked,
-    memoryCleanupOwner: "owner-one",
+    memoryCleanupOwner: ownerRef.current,
     memoryCleanupOwnerRef: ownerRef,
     Alert: { alert },
     t: (value: string) => value,
@@ -109,6 +113,7 @@ function fixture(
     historyEpoch,
     rpc: vi.fn(async () => nextResponse()),
     observeMemoryCleanup,
+    hasNewThreadWork,
     modelPolicyRefusal: false,
     refresh: vi.fn(async () => undefined),
     expandedHistoryThread: { current: null },
@@ -154,6 +159,11 @@ function fixture(
     alert,
     commitSnap,
     rpc: scope.rpc,
+    rerenderOwner: (owner: string) => {
+      ownerRef.current = owner;
+      scope.memoryCleanupOwner = owner;
+      return new Function(...Object.keys(scope), code)(...Object.values(scope)) as typeof handlers;
+    },
   };
 }
 
@@ -166,6 +176,7 @@ describe("native memory cleanup outcomes", () => {
     expect(f.alert).toHaveBeenCalledOnce();
     f.clear();
     f.effect();
+    await new Promise((resolve) => setImmediate(resolve));
     expect(f.alert).toHaveBeenCalledOnce();
     await f.finish();
     f.effect();
@@ -230,6 +241,42 @@ describe("native memory cleanup outcomes", () => {
     f.clear();
     await f.finish();
     expect(f.alert).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a pending clear owned when profile readiness changes", async () => {
+    const owner = (profileScope: unknown, apiGeneration = 1, spaceEpoch = 1) =>
+      new Function(
+        "ownerUserId",
+        "sessionEpoch",
+        "currentApiBaseGeneration",
+        "spaceEpoch",
+        "profileScope",
+        `return ${ownerExpression};`,
+      )("user-one", 1, () => apiGeneration, spaceEpoch, profileScope) as string;
+    const initial = owner(null);
+    const ready = owner({ apiBase: "https://app.example.test", userId: "user-one" });
+    expect(ready).toBe(initial);
+    expect(owner(null, 2)).not.toBe(initial);
+    expect(owner(null, 1, 2)).not.toBe(initial);
+    const f = fixture({ owner: initial });
+    f.clear();
+    f.rerenderOwner(ready).clear();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.rpc).toHaveBeenCalledOnce();
+    await f.finish();
+    expect(f.alert).toHaveBeenCalledOnce();
+  });
+  it("preserves a newer native send receipt without a cursor advance", async () => {
+    const f = fixture();
+    f.clear();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      run: { id: "new-receipt-run", status: "queued" },
+      activeRuns: [{ id: "new-receipt-run", status: "queued" }],
+    };
+    await f.finish();
+    expect(f.snapRef.current.run?.id).toBe("new-receipt-run");
+    expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual(["new-receipt-run"]);
   });
   it("does not show a false warning after pending cleanup is confirmed", async () => {
     const f = fixture();

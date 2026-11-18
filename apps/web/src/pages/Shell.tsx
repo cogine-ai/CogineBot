@@ -49,6 +49,7 @@ import {
   cronFromPreset,
   formatMessageTime,
   groupVoiceChats,
+  hasNewThreadWork,
   inferAttachmentMimeType,
   isActive,
   isApprovalAskBlock,
@@ -7401,7 +7402,7 @@ export function ShellPage() {
               const actor = groupSettingsActor.current;
               const spaceId = selectedSpaceId() ?? actor.spaceId;
               const epoch = historyEpoch.current;
-              const requestCursor = snapshotRef.current?.cursor ?? -1;
+              const requestSnapshot = snapshotRef.current;
               const expectedThreadId = clearTarget.chat.threadId;
               const scope = JSON.stringify([actor.userId, spaceId, expectedThreadId]);
               setPendingMemoryCleanupClears((current) => new Set(current).add(scope));
@@ -7431,7 +7432,7 @@ export function ShellPage() {
                   epoch === historyEpoch.current &&
                   snapshotRef.current &&
                   matches(snapshotRef.current) &&
-                  snapshotRef.current.cursor <= requestCursor
+                  !hasNewThreadWork(snapshotRef.current, requestSnapshot)
                 ) {
                   clearHistoryWindow();
                   updateSnapshot((current) =>
@@ -7446,7 +7447,7 @@ export function ShellPage() {
                   epoch === historyEpoch.current &&
                   snapshotRef.current &&
                   matches(snapshotRef.current) &&
-                  snapshotRef.current.cursor > requestCursor
+                  hasNewThreadWork(snapshotRef.current, requestSnapshot)
                 ) {
                   void (
                     clearTarget.kind === "bot"

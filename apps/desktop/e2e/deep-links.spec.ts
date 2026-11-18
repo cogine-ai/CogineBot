@@ -143,9 +143,9 @@ async function closeNativeWindow() {
   await expect.poll(async () => (await nativeWindows()).length).toBe(0);
 }
 
-async function nativeDialogs(windowTitle?: string) {
+async function nativeDialogs(windowTitle?: string, applicationPid?: number) {
   const { stdout } = await nativeWindowList(true);
-  const windows = nativeDialogCandidates(stdout, windowTitle);
+  const windows = nativeDialogCandidates(stdout, windowTitle, applicationPid);
   const inspected = await Promise.all(
     windows.map(async (win) => {
       const properties = await exec("xprop", [
@@ -163,7 +163,7 @@ async function nativeDialogs(windowTitle?: string) {
   return inspected.filter((id): id is string => id !== null);
 }
 
-async function nativeDialog(title: string, timeout?: number) {
+async function nativeDialog(title: string, timeout?: number, applicationPid?: number) {
   let id = "";
   const samples: unknown[] = [];
   try {
@@ -174,7 +174,7 @@ async function nativeDialog(title: string, timeout?: number) {
           const diagnostic = <T>(read: Promise<T>) =>
             read.catch((error: unknown) => ({ error: String(error) }));
           const [dialogs, x11Dialogs, ewmh, tree] = await Promise.all([
-            nativeDialogs(title),
+            nativeDialogs(title, applicationPid),
             diagnostic(visibleNativeDialogs(exec, title)),
             diagnostic(nativeWindowList(true)),
             diagnostic(exec("xwininfo", ["-root", "-tree"])),
@@ -202,8 +202,13 @@ async function nativeDialog(title: string, timeout?: number) {
   }
 }
 
-async function dismissDialog(title: string, screenshot: string, retry = true) {
-  const id = await nativeDialog(title);
+async function dismissDialog(
+  title: string,
+  screenshot: string,
+  retry = true,
+  applicationPid?: number,
+) {
+  const id = await nativeDialog(title, undefined, applicationPid);
   await exec("xdotool", ["windowactivate", "--sync", id]);
   if (retry) {
     // Select the observed GTK Retry button explicitly; activating a dialog does
@@ -741,20 +746,27 @@ test("an unavailable Vite server offers native Retry and recovers without produc
 test("closing the old failed window during Retry keeps recovery alive", async () => {
   failureMode = "failed";
   const development = await launch(devExecutable);
-  await nativeDialog("CogineBot Dev");
+  const applicationPid = development.process().pid;
+  expect(applicationPid).toBeGreaterThan(0);
+  await nativeDialog("CogineBot Dev", undefined, applicationPid);
   const previous = await development.evaluate(
     ({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().find((win) => win.getBounds().width > 1)!.id,
   );
   failureMode = "hold";
-  await dismissDialog("CogineBot Dev", "deep-links-development-first-failure.png");
+  await dismissDialog(
+    "CogineBot Dev",
+    "deep-links-development-first-failure.png",
+    true,
+    applicationPid,
+  );
   await expect.poll(() => releaseFailedDocument !== undefined).toBe(true);
   await development.evaluate(
     ({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.close(),
     previous,
   );
   releaseFailedDocument!();
-  await nativeDialog("CogineBot Dev");
+  await nativeDialog("CogineBot Dev", undefined, applicationPid);
   expect(
     await development.evaluate(
       ({ BrowserWindow }) =>
@@ -762,7 +774,12 @@ test("closing the old failed window during Retry keeps recovery alive", async ()
     ),
   ).toBe(1);
   failureMode = "ready";
-  await dismissDialog("CogineBot Dev", "deep-links-development-retry-after-close.png");
+  await dismissDialog(
+    "CogineBot Dev",
+    "deep-links-development-retry-after-close.png",
+    true,
+    applicationPid,
+  );
   await consoleWindow(development);
   await close(development);
 });

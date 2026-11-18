@@ -14,14 +14,19 @@ export async function clearThreadConversation(
   context: AdapterContext,
 ): Promise<{ ok: true; threadId: string } & MemoryCleanupState> {
   let configured: ConfiguredMemoryProvider | null = null;
+  let configurationUnknown = false;
   if (!input.groupId) {
     try {
       configured = await deps.memoryProviders.resolve(input.spaceId);
     } catch (error) {
+      configurationUnknown = true;
       getLogger().error("semantic memory provider before thread clear failed", error);
     }
   }
-  const cleared = await deps.events.clearThread(input);
+  const cleared = await deps.events.clearThread({
+    ...input,
+    ...(configured || configurationUnknown ? { memoryCleanupExpected: true } : {}),
+  });
   let state: MemoryCleanupState = {
     memoryCleanupCursor: cleared.event.seq,
     ...(cleared.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {}),

@@ -29,7 +29,7 @@ function fixture() {
       cancelledRunIds: ["run-one"],
       historyCompactionGeneration: 3,
       ...(sticky ? { memoryCleanupUnconfirmed: true as const } : {}),
-      ...(config
+      ...(config || scope.memoryCleanupExpected
         ? { cleanup: { ...cleanup, connectionId: config?.secretId }, memoryCleanupPending: true }
         : { memoryCleanupPending: false }),
       event: {
@@ -109,6 +109,7 @@ describe("clear conversation cleanup outcome", () => {
     expect(f.phases).toEqual(["local commit", "external purge", "settlement commit"]);
     expect(f.clearThread).toHaveBeenCalledExactlyOnceWith({
       ...input,
+      memoryCleanupExpected: true,
     });
     expect(f.purgeHistory).toHaveBeenCalledExactlyOnceWith(
       { botId: input.botId, generations: [2, 3] },
@@ -157,6 +158,7 @@ describe("clear conversation cleanup outcome", () => {
   it("does not create cleanup work when no provider is configured", async () => {
     const f = fixture();
     f.saved.mockResolvedValue(null);
+    f.resolve.mockResolvedValue(null);
     await expect(f.execute()).resolves.toEqual({
       ok: true,
       threadId: input.threadId,
@@ -211,6 +213,26 @@ describe("clear conversation cleanup outcome", () => {
     await f.execute();
     expect(f.resolve).toHaveBeenCalledExactlyOnceWith(input.spaceId);
     expect(f.purgeHistory).toHaveBeenCalledOnce();
-    expect(f.clearThread).toHaveBeenCalledExactlyOnceWith(input);
+    expect(f.clearThread).toHaveBeenCalledExactlyOnceWith({
+      ...input,
+      memoryCleanupExpected: true,
+    });
+  });
+  it("retains responsibility if the pinned provider is disconnected before the lock read", async () => {
+    const f = fixture();
+    f.saved.mockResolvedValue(null);
+    await expect(f.execute()).resolves.toMatchObject({ memoryCleanupUnconfirmed: true });
+    expect(f.purgeHistory).not.toHaveBeenCalled();
+    expect(f.clearThread).toHaveBeenCalledExactlyOnceWith({
+      ...input,
+      memoryCleanupExpected: true,
+    });
+  });
+  it("keeps unknown responsibility if resolution fails and the saved connection disappears", async () => {
+    const f = fixture();
+    f.resolve.mockRejectedValue(new Error("synthetic resolution failure"));
+    f.saved.mockResolvedValue(null);
+    await expect(f.execute()).resolves.toMatchObject({ memoryCleanupUnconfirmed: true });
+    expect(f.purgeHistory).not.toHaveBeenCalled();
   });
 });

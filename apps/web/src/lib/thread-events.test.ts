@@ -5,7 +5,7 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
+import { hasNewThreadWork, ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import {
   activeThreadRuns,
@@ -2560,6 +2560,18 @@ it("announces an actual completion reduction after it removes the primary Run", 
   expect(current?.activeRuns).toEqual([]);
   expect(announcements.update("scope", true, current)).toEqual(["Committed reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
+});
+
+it("a send receipt introduces work before any event cursor advancement", () => {
+  const initial = snapshot([]);
+  const received = applyThreadSendReceipt(initial, {
+    botId: "bot-1",
+    runId: "new-receipt-run",
+    taskId: "new-task",
+  })!;
+  expect(received.cursor).toBe(initial.cursor);
+  expect(received.run?.id).toBe("new-receipt-run");
+  expect(hasNewThreadWork(received, initial)).toBe(true);
 });
 
 describe("external memory cleanup uncertainty", () => {

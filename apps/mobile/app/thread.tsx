@@ -33,6 +33,7 @@ import {
   formatMessageTime,
   forwardProbeAfterPage,
   groupVoiceChats,
+  hasNewThreadWork,
   isApprovalAskBlock,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
@@ -831,7 +832,12 @@ function Thread({
     >(),
   );
   const memoryCleanupAlertBlocked = useRef(false);
-  const memoryCleanupOwner = JSON.stringify([ownerUserId, sessionEpoch, profileScope]);
+  const memoryCleanupOwner = JSON.stringify([
+    ownerUserId,
+    sessionEpoch,
+    currentApiBaseGeneration(),
+    spaceEpoch,
+  ]);
   const memoryCleanupOwnerRef = useRef(memoryCleanupOwner);
   memoryCleanupOwnerRef.current = memoryCleanupOwner;
   const showMemoryCleanupNotice = useCallback(
@@ -1545,7 +1551,7 @@ function Thread({
         seenMemoryCleanupNotices.current.delete(JSON.stringify([owner, targetThreadId]));
     }
     const epoch = historyEpoch.current;
-    const requestCursor = snapRef.current?.cursor ?? -1;
+    const requestSnapshot = snapRef.current;
     void rpc<{
       ok: true;
       threadId?: string;
@@ -1591,7 +1597,7 @@ function Thread({
           showMemoryCleanupNotice(snapRef.current.threadId, false);
         }
         if (epoch !== historyEpoch.current) return;
-        if ((snapRef.current?.cursor ?? -1) > requestCursor) {
+        if (snapRef.current && hasNewThreadWork(snapRef.current, requestSnapshot)) {
           void refresh().catch(() => undefined);
           return;
         }

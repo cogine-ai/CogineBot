@@ -1,7 +1,7 @@
 type Execute = (file: string, args: string[]) => Promise<{ stdout: string }>;
 
 /** GTK message boxes can be untitled; match them to the named application's process. */
-export function nativeDialogCandidates(list: string, title?: string) {
+export function nativeDialogCandidates(list: string, title?: string, applicationPid?: number) {
   const windows = list.split("\n").flatMap((line) => {
     const match = /^(\S+)\s+\S+\s+(\d+)\s+\S+\s*(.*)$/.exec(line);
     return match ? [{ id: match[1]!, pid: Number(match[2]), title: match[3]! }] : [];
@@ -11,11 +11,12 @@ export function nativeDialogCandidates(list: string, title?: string) {
       .filter((window) => window.title === title && window.pid > 0)
       .map((window) => window.pid),
   );
+  if (title !== "Error" && applicationPid && applicationPid > 0) owners.add(applicationPid);
   return windows.filter(
     (window) =>
       title === undefined ||
       window.title === title ||
-      (window.title === "" && owners.has(window.pid)),
+      (title !== "Error" && window.title === "" && owners.has(window.pid)),
   );
 }
 

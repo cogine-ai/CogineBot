@@ -4011,7 +4011,7 @@ describe("clearThread", () => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
-      $queryRaw: vi.fn(),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
@@ -4094,7 +4094,7 @@ describe("clearThread", () => {
   it("scopes group clear lease cleanup to cancelled run ids", async () => {
     const fanout = new TestFanout();
     const tx = {
-      $queryRaw: vi.fn(),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       spaceMemoryConfig: { findUnique: vi.fn(async () => null) },

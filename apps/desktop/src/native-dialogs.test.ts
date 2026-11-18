@@ -17,8 +17,20 @@ describe("native dialog observation", () => {
       "0x00b00003",
     ]);
   });
+  it("retains the launched process through a failed document title and closed parent", () => {
+    const list =
+      "0x1  0 110 fixture Development fixture unavailable\n0x2  0 110 fixture \n0x3  0 220 fixture \n";
+    expect(nativeDialogCandidates(list, "CogineBot Dev", 110).map((window) => window.id)).toEqual([
+      "0x2",
+    ]);
+    expect(
+      nativeDialogCandidates("0x2  0 110 fixture \n", "CogineBot Dev", 110).map(
+        (window) => window.id,
+      ),
+    ).toEqual(["0x2"]);
+  });
   it("retains exact Error selection and supports untitled cleanup windows", () => {
-    const list = "0x1  0 110 fixture Error\n0x2  0 220 fixture \n";
+    const list = "0x1  0 110 fixture Error\n0x2  0 110 fixture \n";
     expect(nativeDialogCandidates(list, "Error").map((window) => window.id)).toEqual(["0x1"]);
     expect(nativeDialogCandidates(list).map((window) => window.id)).toEqual(["0x1", "0x2"]);
   });

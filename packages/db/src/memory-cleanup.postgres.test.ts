@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { PrismaClient } from "./client.js";
+import type { Prisma, PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
 import { beginMemorySave, clearThread, finishMemorySave, settleMemoryCleanup } from "./events.js";
 import { hasPendingMemoryCleanup, memoryCleanupIntents } from "./memory-cleanup.js";
@@ -379,5 +379,101 @@ describe.skipIf(!enabled).sequential("durable memory cleanup uncertainty (Postgr
     expect(
       await prisma.event.count({ where: { threadId: scope.threadId, type: "thread.meta" } }),
     ).toBe(1);
+  });
+  it.each(["replace", "disconnect"])(
+    "serializes a configured connection %s after the clear observation",
+    async (mode) => {
+      const scope = await seed();
+      const oldSecret = await prisma.secret.create({
+        data: { userId, spaceId, kind: "memory-provider", ciphertext: "synthetic-old" },
+      });
+      const nextSecret = await prisma.secret.create({
+        data: { userId, spaceId, kind: "memory-provider", ciphertext: "synthetic-next" },
+      });
+      await prisma.spaceMemoryConfig.create({
+        data: { spaceId, userId, provider: "fixture", settings: {}, secretId: oldSecret.id },
+      });
+      let observed!: () => void;
+      let release!: () => void;
+      const observation = new Promise<void>((resolve) => {
+        observed = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = prisma.$transaction.bind(prisma);
+      const transaction = vi.spyOn(prisma, "$transaction").mockImplementationOnce((callback) =>
+        original(async (tx) => {
+          const proxy = new Proxy(tx, {
+            get(target, property) {
+              if (property !== "$queryRaw") return Reflect.get(target, property);
+              return async (...args: unknown[]) => {
+                const rows = await Reflect.apply(target.$queryRaw, target, args);
+                if (
+                  Array.isArray(args[0]) &&
+                  args[0].join("").includes("FROM space_memory_configs")
+                ) {
+                  observed();
+                  await gate;
+                }
+                return rows;
+              };
+            },
+          });
+          return (callback as (client: Prisma.TransactionClient) => Promise<unknown>)(proxy);
+        }),
+      );
+      const clearing = clearThread(prisma, scope);
+      let writing: Promise<unknown> | undefined;
+      try {
+        await observation;
+        writing = (
+          mode === "replace"
+            ? prisma.spaceMemoryConfig.update({
+                where: { spaceId },
+                data: { secretId: nextSecret.id },
+              })
+            : prisma.spaceMemoryConfig.delete({ where: { spaceId } })
+        ).then((value) => value);
+        await vi.waitFor(
+          async () => {
+            const [row] = await prisma.$queryRaw<Array<{ waiting: number }>>`
+          SELECT COUNT(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+          AND query LIKE '%space_memory_configs%' AND query NOT LIKE '%pg_stat_activity%'
+        `;
+            expect(row!.waiting).toBeGreaterThan(0);
+          },
+          { timeout: 4000, interval: 20 },
+        );
+        release();
+        const [receipt] = await Promise.all([clearing, writing]);
+        expect(receipt.cleanup?.connectionId).toBe(oldSecret.id);
+      } finally {
+        release();
+        await Promise.allSettled([clearing, ...(writing ? [writing] : [])]);
+        transaction.mockRestore();
+        await prisma.secret.deleteMany({ where: { id: { in: [oldSecret.id, nextSecret.id] } } });
+      }
+    },
+  );
+  it("recovers a transient same-generation completion before a later clear", async () => {
+    const scope = await seed();
+    const intent = save(scope);
+    await beginMemorySave(prisma, intent);
+    const original = prisma.$transaction.bind(prisma);
+    const transaction = vi
+      .spyOn(prisma, "$transaction")
+      .mockRejectedValueOnce(Object.assign(new Error("synthetic conflict"), { code: "P2034" }))
+      .mockImplementationOnce(original);
+    try {
+      await expect(finishMemorySave(prisma, intent)).resolves.toBe(false);
+      expect(transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      transaction.mockRestore();
+    }
+    await clearThread(prisma, scope);
+    expect((await state(scope)).intents).toEqual([]);
+    expect((await state(scope)).pending).toBe(false);
   });
 });

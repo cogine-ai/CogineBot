@@ -494,12 +494,12 @@ export async function clearThread(
         memoryCleanupIntents: true,
       },
     });
-    const memoryConfig = input.groupId
-      ? null
-      : await tx.spaceMemoryConfig.findUnique({
-          where: { spaceId: input.spaceId },
-          select: { secretId: true },
-        });
+    const [memoryConfig] = input.groupId
+      ? []
+      : await tx.$queryRaw<Array<{ secretId: string }>>`
+      SELECT "secretId" FROM space_memory_configs WHERE "spaceId" = ${input.spaceId} FOR SHARE
+    `;
+
     const activeRuns = await tx.run.findMany({
       where: {
         spaceId: input.spaceId,
