@@ -1,5 +1,6 @@
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as SerenityClient from "./serenity-client.js";
 import { forgetSerenity, recallSerenity } from "./serenity-client.js";
 import {
   SerenityMemoryProvider,
@@ -8,7 +9,7 @@ import {
 } from "./serenity-memory-provider.js";
 
 vi.mock("./serenity-client.js", async (original) => ({
-  ...(await original<typeof import("./serenity-client.js")>()),
+  ...(await original<typeof SerenityClient>()),
   recallSerenity: vi.fn(),
   forgetSerenity: vi.fn(),
 }));
