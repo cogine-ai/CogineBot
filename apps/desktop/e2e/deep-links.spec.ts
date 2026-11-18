@@ -144,7 +144,7 @@ async function startFixtureServer(port = 0) {
                 const fail = () => {
                   response.setHeader("content-type", "text/html");
                   response.end(
-                    '<main data-rakazo-app-state="failed">Development fixture unavailable</main>',
+                    '<!doctype html><html><head><title>Development fixture unavailable</title></head><body><main data-rakazo-app-state="failed">Development fixture unavailable</main></body></html>',
                   );
                 };
                 if (failureMode === "hold" && request.headers["sec-fetch-dest"] !== "document")

@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import { desktopDevelopmentId } from "./desktop-environment.js";
 import {
   linuxProtocolPaths,
   registerLinuxProtocol,
+  runProtocolCommand,
   unregisterLinuxProtocol,
 } from "./desktop-protocol.js";
 
@@ -36,6 +38,41 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== "linux")("Linux protocol kernel locking", () => {
+  it("keeps a running writer's exclusion after the controller descriptor closes", async () => {
+    const f = await fixture();
+    const ready = path.join(path.dirname(f.paths.lockFile), "writer-ready");
+    const release = path.join(path.dirname(f.paths.lockFile), "writer-release");
+    const lock = await open(f.paths.lockFile, "a", 0o600);
+    expect(
+      spawnSync("flock", ["-xn", "3"], { stdio: ["ignore", "ignore", "pipe", lock.fd] }).status,
+    ).toBe(0);
+    const script = `
+      const fs = require('node:fs'), path = require('node:path');
+      const [ready, release] = process.argv.slice(1);
+      fs.watch(path.dirname(release), () => { if (fs.existsSync(release)) process.exit(0); });
+      fs.writeFileSync(ready, 'ready');
+      if (fs.existsSync(release)) process.exit(0);
+    `;
+    const writer = runProtocolCommand(
+      process.execPath,
+      ["-e", script, ready, release],
+      process.env,
+      lock.fd,
+    );
+    let closed = false;
+    try {
+      await expect.poll(() => existsSync(ready)).toBe(true);
+      await lock.close();
+      closed = true;
+      expect(spawnSync("flock", ["-n", f.paths.lockFile, "true"]).status).toBe(1);
+    } finally {
+      if (!closed) await lock.close();
+      await writeFile(release, "release");
+      await writer;
+    }
+    expect(spawnSync("flock", ["-n", f.paths.lockFile, "true"]).status).toBe(0);
+  });
+
   it("holds a cross-process lock across awaited writes and fences both schemes and removal", async () => {
     const f = await fixture();
     let entered!: () => void;

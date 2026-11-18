@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -21,7 +21,37 @@ export async function runProtocolCommand(
   command: string,
   args: string[],
   env = process.env,
+  lockFd?: number,
 ): Promise<string> {
+  if (lockFd !== undefined) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, {
+        env,
+        windowsHide: true,
+        timeout: 15_000,
+        stdio: ["ignore", "pipe", "pipe", lockFd],
+      });
+      const chunks: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+      let bytes = 0;
+      for (const name of ["stdout", "stderr"] as const) {
+        child[name]!.on("data", (chunk: Buffer) => {
+          bytes += chunk.length;
+          if (bytes > 1024 * 1024) {
+            child.kill();
+            reject(new Error("Desktop protocol command output is too large."));
+          } else chunks[name].push(chunk);
+        });
+      }
+      child.once("error", reject);
+      child.once("close", (code) => {
+        if (code === 0) resolve(Buffer.concat(chunks.stdout).toString("utf8").trim());
+        else {
+          const detail = Buffer.concat(chunks.stderr).toString("utf8").trim();
+          reject(new Error(detail || `Desktop protocol command failed (${code}).`));
+        }
+      });
+    });
+  }
   const { stdout } = await execFileAsync(command, args, {
     timeout: 15_000,
     windowsHide: true,
@@ -105,7 +135,7 @@ export function linuxProtocolPaths(
 /** All our schemes update shared mimeapps files; keep one kernel lock across them. */
 async function withLinuxProtocolLock<T>(
   paths: ReturnType<typeof linuxProtocolPaths>,
-  update: () => Promise<T>,
+  update: (fd: number) => Promise<T>,
 ): Promise<T> {
   await mkdir(path.dirname(paths.lockFile), { recursive: true });
   const lock = await open(paths.lockFile, "a", 0o600);
@@ -118,7 +148,7 @@ async function withLinuxProtocolLock<T>(
     });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error("Desktop link registration is busy. Try again.");
-    return await update();
+    return await update(lock.fd);
   } finally {
     // Keep the coordination inode; closing releases the kernel lock even on
     // process termination, without a stale PID file or unlink/rebind race.
@@ -139,9 +169,11 @@ export async function registerLinuxProtocol(
   install: DesktopProtocolInstall,
   options: { explicit: boolean; env?: NodeJS.ProcessEnv; run?: ProtocolCommand },
 ): Promise<void> {
-  const run = options.run ?? ((command, args) => runProtocolCommand(command, args, options.env));
   const paths = linuxProtocolPaths(install, options.env);
-  return withLinuxProtocolLock(paths, async () => {
+  return withLinuxProtocolLock(paths, async (fd) => {
+    // A registry writer retains the lock even if this Electron process exits.
+    const run =
+      options.run ?? ((command, args) => runProtocolCommand(command, args, options.env, fd));
     const mime = `x-scheme-handler/${install.scheme}`;
     const current = await run("xdg-mime", ["query", "default", mime]);
     // An ordinary launch keeps the person's existing OS handler choice.
