@@ -382,7 +382,10 @@ export function reduceThreadSnapshot(
   ) {
     return cleanup === prev && event.seq <= prev.cursor
       ? prev
-      : { ...cleanup, cursor: Math.max(prev.cursor, event.seq) };
+      : {
+          ...observeThreadMessages(observeThreadClear(cleanup, clearSeq)),
+          cursor: Math.max(prev.cursor, event.seq),
+        };
   }
   const messageEvent =
     event.type === "thread.message.created" ||

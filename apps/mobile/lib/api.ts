@@ -1721,7 +1721,10 @@ export function applyMobileThreadEvent(
   ) {
     return cleanup === prev && (event.seq ?? -1) <= (prev.cursor ?? -1)
       ? prev
-      : { ...cleanup, cursor: Math.max(prev.cursor ?? -1, event.seq ?? -1) };
+      : {
+          ...observeMobileMessages(observeMobileClear(cleanup, clearSeq)),
+          cursor: Math.max(prev.cursor ?? -1, event.seq ?? -1),
+        };
   }
   const messageEvent =
     event.type === "thread.message.created" ||

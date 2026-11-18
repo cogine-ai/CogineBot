@@ -2570,6 +2570,9 @@ describe("external memory cleanup uncertainty", () => {
     expect(isThreadSnapshotEvent(update)).toBe(true);
     const next = reduceThreadSnapshot(initial, update)!;
     expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect((next as ThreadSnapshot & { observedClearSeq?: number }).observedClearSeq).toBe(
+      initial.cursor,
+    );
     expect(next.messages).toHaveLength(initial.messages.length);
     expect(next.messages).toMatchObject(initial.messages);
     expect(next.run).toEqual(initial.run);

@@ -838,7 +838,11 @@ function Thread({
     (id: string, immediate: boolean) => {
       if (memoryCleanupAlertBlocked.current) return;
       const key = JSON.stringify([memoryCleanupOwner, id]);
-      if (!immediate && pendingMemoryCleanupClears.current.has(key)) return;
+      if (
+        !immediate &&
+        pendingMemoryCleanupClears.current.has(JSON.stringify([memoryCleanupOwner, "bot", botId]))
+      )
+        return;
       const failed =
         snapRef.current?.threadId === id && snapRef.current.memoryCleanupUnconfirmed === true;
       const previous = seenMemoryCleanupNotices.current.get(key);
@@ -851,7 +855,7 @@ function Thread({
           : t("External memory cleanup could not be confirmed."),
       );
     },
-    [memoryCleanupOwner, t],
+    [memoryCleanupOwner, botId, t],
   );
   // The copy saved on this device stays on screen until a live snapshot replaces it.
   const [showingSaved, setShowingSaved] = useState(false);
@@ -1533,11 +1537,12 @@ function Thread({
     if (!botId) return;
     const owner = memoryCleanupOwner;
     const targetThreadId = snapRef.current?.threadId;
-    const cleanupKey = targetThreadId ? JSON.stringify([owner, targetThreadId]) : null;
+    const cleanupKey = JSON.stringify([owner, "bot", botId]);
     if (cleanupKey && pendingMemoryCleanupClears.current.has(cleanupKey)) return;
     if (cleanupKey) {
       pendingMemoryCleanupClears.current.add(cleanupKey);
-      seenMemoryCleanupNotices.current.delete(cleanupKey);
+      if (targetThreadId)
+        seenMemoryCleanupNotices.current.delete(JSON.stringify([owner, targetThreadId]));
     }
     const epoch = historyEpoch.current;
     const requestCursor = snapRef.current?.cursor ?? -1;
@@ -1558,6 +1563,9 @@ function Thread({
         )
           return;
         if (snapRef.current) {
+          seenMemoryCleanupNotices.current.delete(
+            JSON.stringify([owner, snapRef.current.threadId]),
+          );
           commitSnap(
             observeMemoryCleanup(
               snapRef.current,

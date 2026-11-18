@@ -3589,7 +3589,24 @@ test("cleanup metadata received during a cold search jump reaches the committed 
     blocks: [{ kind: "text", text: "The anchored history" }],
   };
   state.thread = (route, data) =>
-    json(route, data.botId === "research-one" ? { ...data, cursor: 40, olderCursor: 10 } : data);
+    json(
+      route,
+      data.botId === "research-one"
+        ? {
+            ...data,
+            cursor: 40,
+            olderCursor: 20,
+            messages: [
+              {
+                ...old,
+                id: "recent-jump-history",
+                seq: 20,
+                blocks: [{ kind: "text", text: "The recent history" }],
+              },
+            ],
+          }
+        : data,
+    );
   state.messages = async (route) => {
     started.resolve();
     await held.promise;
@@ -3620,6 +3637,13 @@ test("cleanup metadata received during a cold search jump reaches the committed 
     await expect(page.getByTestId("composer-error")).toHaveText(
       "External memory cleanup could not be confirmed.",
     );
+    await page
+      .getByTestId("transcript")
+      .getByText("The anchored history", { exact: true })
+      .scrollIntoViewIfNeeded({ timeout: 5_000 });
+    await expect(
+      page.getByTestId("transcript").getByText("The anchored history", { exact: true }),
+    ).toBeInViewport();
     await captureScreenshot(page, testInfo, "memory-cleanup-cold-jump");
     expect(errors).toEqual([]);
   } finally {

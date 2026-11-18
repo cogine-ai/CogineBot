@@ -175,19 +175,21 @@ async function nativeDialog(title: string, timeout?: number) {
       .poll(
         async () => {
           const at = Date.now();
+          const diagnostic = <T>(read: Promise<T>) =>
+            read.catch((error: unknown) => ({ error: String(error) }));
           const [dialogs, x11Dialogs, ewmh, tree] = await Promise.all([
             nativeDialogs(title),
-            visibleNativeDialogs(exec, title),
-            nativeWindowList(true),
-            exec("xwininfo", ["-root", "-tree"]),
+            diagnostic(visibleNativeDialogs(exec, title)),
+            diagnostic(nativeWindowList(true)),
+            diagnostic(exec("xwininfo", ["-root", "-tree"])),
           ]);
           samples.push({
             at,
             observedAt: Date.now(),
             dialogs,
             x11Dialogs,
-            ewmh: ewmh.stdout,
-            tree: tree.stdout,
+            ewmh,
+            tree,
           });
           id = dialogs.length === 1 ? dialogs[0]! : "";
           return id;

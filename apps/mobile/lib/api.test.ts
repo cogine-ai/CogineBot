@@ -5696,6 +5696,7 @@ describe("mobile external memory cleanup uncertainty", () => {
     };
     const next = applyMobileThreadEvent(initial, event)!;
     expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect(next.observedClearSeq).toBe(initial.cursor);
     expect(next.messages).toHaveLength(initial.messages.length);
     expect(next.messages).toMatchObject(initial.messages);
     expect(next.run).toEqual(initial.run);

@@ -153,6 +153,7 @@ function fixture(
     blocked,
     alert,
     commitSnap,
+    rpc: scope.rpc,
   };
 }
 
@@ -174,6 +175,7 @@ describe("native memory cleanup outcomes", () => {
     const f = fixture();
     f.clear();
     f.clear();
+    expect(f.rpc).toHaveBeenCalledOnce();
     expect(f.alert).not.toHaveBeenCalled();
     await f.finish();
     expect(f.alert).toHaveBeenCalledOnce();
@@ -206,6 +208,28 @@ describe("native memory cleanup outcomes", () => {
     expect(f.alert).toHaveBeenCalledTimes(2);
     f.effect();
     expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+  it("guards overlapping cold clears before the first snapshot exists", async () => {
+    const f = fixture();
+    f.snapRef.current = null as unknown as MobileSnapshot;
+    f.clear();
+    f.clear();
+    expect(f.rpc).toHaveBeenCalledOnce();
+    await f.finish({ ok: true, threadId: "thread-one" });
+    expect(f.alert).not.toHaveBeenCalled();
+    expect(f.commitSnap).not.toHaveBeenCalled();
+    // Exactly one response exists; a second clear now gets a fresh response.
+    f.snapRef.current = {
+      botId: "bot-one",
+      threadId: "thread-one",
+      cursor: 1,
+      messages: [],
+      olderCursor: null,
+      run: null,
+    };
+    f.clear();
+    await f.finish();
+    expect(f.alert).toHaveBeenCalledOnce();
   });
   it("does not show a false warning after pending cleanup is confirmed", async () => {
     const f = fixture();
