@@ -916,9 +916,11 @@ async function openAppOnce(targetUrl: string, switching: boolean) {
   const previous = mainWindow;
   let win: BrowserWindow | null = null;
   try {
-    const documentError = await probeDocument(targetUrl);
-    if (documentError !== null) {
-      throw new Error(documentError);
+    // Development keeps a real failed window to own its native Retry dialog.
+    // loadAppUrl already rejects network, HTTP and document-readiness failures.
+    if (development === null) {
+      const documentError = await probeDocument(targetUrl);
+      if (documentError !== null) throw new Error(documentError);
     }
     await installBundledRenderer(
       targetUrl,
@@ -1093,13 +1095,18 @@ async function openDevelopmentConsole() {
         return;
       }
       if (quitting) return;
-      const result = await dialog.showMessageBox({
-        type: "error",
+      const options = {
+        type: "error" as const,
         message: "Could not open the development server.",
         buttons: ["Retry", "Quit"],
         defaultId: 0,
         cancelId: 1,
-      });
+      };
+      const owner = secondInstanceWindow(null, mainWindow);
+      if (owner !== null) revealSecondInstanceWindow(owner);
+      const result = await (owner !== null
+        ? dialog.showMessageBox(owner, options)
+        : dialog.showMessageBox(options));
       if (result.response !== 0) {
         app.quit();
         return;

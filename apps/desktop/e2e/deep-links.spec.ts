@@ -36,7 +36,7 @@ let developmentProfile: string;
 let mounted = 0;
 let documentRequests = 0;
 let failureMode: "ready" | "failed" | "hold" = "ready";
-let releaseFailedProbe: (() => void) | undefined;
+let releaseFailedDocument: (() => void) | undefined;
 
 async function nativeWindowList(details = false) {
   for (let attempt = 0; ; attempt += 1) {
@@ -206,8 +206,8 @@ async function startFixtureServer(port = 0) {
                     '<!doctype html><html><head><title>Development fixture unavailable</title></head><body><main data-rakazo-app-state="failed">Development fixture unavailable</main></body></html>',
                   );
                 };
-                if (failureMode === "hold" && request.headers["sec-fetch-dest"] !== "document")
-                  releaseFailedProbe = fail;
+                if (failureMode === "hold" && request.headers["sec-fetch-dest"] === "document")
+                  releaseFailedDocument = fail;
                 else fail();
                 return;
               }
@@ -619,6 +619,12 @@ test("an unavailable Vite server offers native Retry and recovers without produc
     app.on("browser-window-created", () => performance.mark("test:window-created"));
   });
   await nativeDialog("CogineBot Dev");
+  expect(
+    await development.evaluate(
+      ({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().filter((win) => win.getBounds().width > 1).length,
+    ),
+  ).toBe(1);
   // Restore the same address before accepting the native dialog's Retry button.
   vite = await startFixtureServer(Number(new URL(origin).port));
   await dismissDialog("CogineBot Dev", "deep-links-development-unavailable.png");
@@ -641,12 +647,12 @@ test("closing the old failed window during Retry keeps recovery alive", async ()
   );
   failureMode = "hold";
   await dismissDialog("CogineBot Dev", "deep-links-development-first-failure.png");
-  await expect.poll(() => releaseFailedProbe !== undefined).toBe(true);
+  await expect.poll(() => releaseFailedDocument !== undefined).toBe(true);
   await development.evaluate(
     ({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.close(),
     previous,
   );
-  releaseFailedProbe!();
+  releaseFailedDocument!();
   await nativeDialog("CogineBot Dev");
   expect(
     await development.evaluate(
