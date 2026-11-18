@@ -3322,7 +3322,6 @@ export function ShellPage() {
         }
         return;
       }
-      seenMemoryCleanupNotices.current.add(scope);
       setMemoryCleanupNotice({
         scope,
         message: immediate
@@ -3346,6 +3345,11 @@ export function ShellPage() {
     !composerDraft.deliveryNotice
       ? memoryCleanupNotice.message
       : null;
+  useEffect(() => {
+    if (cleanupError && memoryCleanupScope) {
+      seenMemoryCleanupNotices.current.add(memoryCleanupScope);
+    }
+  }, [cleanupError, memoryCleanupScope]);
   const displayedRunError = !sendError && !composerDraft.deliveryNotice ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
   const handleRunErrorPresented = useCallback((runId: string) => {

@@ -3239,3 +3239,43 @@ test("a late cleanup warning waits for an existing run error without replacing i
   expect(unknown).toEqual([]);
   expect(errors).toEqual([]);
 });
+
+test("a cleanup warning deferred behind an error survives visiting another affected thread", async ({
+  page,
+}, testInfo) => {
+  const { state, errors, unknown } = await mockChat(page);
+  await controlledStream(page);
+  const failed = {
+    id: "run-blocking-cleanup-warning",
+    botId: "chief",
+    status: "failed" as const,
+    trigger: "user" as const,
+    error: "The model provider is unavailable. Try again later.",
+  };
+  const project = (data: ThreadSnapshot): ThreadSnapshot => ({
+    ...data,
+    memoryCleanupUnconfirmed: true,
+    run: data.botId === "chief" ? failed : null,
+  });
+  state.bootstrap = (route, data) => json(route, { ...data, thread: project(data.thread!) });
+  state.thread = (route, data) => json(route, project(data));
+  await ready(page);
+  const failure = page.getByTestId("composer-error");
+  await expect(failure).toContainText(failed.error);
+  const roster = page.getByTestId("bots-sidebar");
+  await roster.locator('[data-roster-bot-id="research-one"]').click();
+  await expect(page).toHaveURL(/\/app\/research-one$/);
+  await expect(failure).toHaveText("External memory cleanup could not be confirmed.");
+  await roster.locator('[data-roster-bot-id="chief"]').click();
+  await expect(page).toHaveURL(/\/app\/chief$/);
+  await expect(failure).toContainText(failed.error);
+  await page.getByTestId("composer-error-dismiss").click();
+  await expect(failure).toHaveText("External memory cleanup could not be confirmed.");
+  await captureScreenshot(page, testInfo, "memory-cleanup-after-thread-switch");
+  await page.getByTestId("composer-error-dismiss").click();
+  await expect(failure).toBeHidden();
+  expect(state.sends).toEqual([]);
+  expect(state.uploads).toEqual([]);
+  expect(unknown).toEqual([]);
+  expect(errors).toEqual([]);
+});
