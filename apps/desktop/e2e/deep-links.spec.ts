@@ -12,7 +12,7 @@ import type { ViteDevServer } from "vite";
 import { createServer } from "vite";
 import { developmentBuildConfiguration } from "../src/development-build.js";
 import { closePendingApplications } from "./application-teardown.js";
-import { visibleNativeDialogs } from "./native-dialogs.js";
+import { nativeDialogCandidates, visibleNativeDialogs } from "./native-dialogs.js";
 
 // Native OS associations belong only to this disposable Linux CI session.
 test.skip(
@@ -144,12 +144,8 @@ async function closeNativeWindow() {
 }
 
 async function nativeDialogs(windowTitle?: string) {
-  const { stdout } = await nativeWindowList();
-  const windows = stdout
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => ({ id: line.split(/\s+/)[0]!, title: line.split(/\s+/).slice(3).join(" ") }))
-    .filter((win) => windowTitle === undefined || win.title === windowTitle);
+  const { stdout } = await nativeWindowList(true);
+  const windows = nativeDialogCandidates(stdout, windowTitle);
   const inspected = await Promise.all(
     windows.map(async (win) => {
       const properties = await exec("xprop", [

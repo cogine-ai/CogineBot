@@ -1,5 +1,24 @@
 type Execute = (file: string, args: string[]) => Promise<{ stdout: string }>;
 
+/** GTK message boxes can be untitled; match them to the named application's process. */
+export function nativeDialogCandidates(list: string, title?: string) {
+  const windows = list.split("\n").flatMap((line) => {
+    const match = /^(\S+)\s+\S+\s+(\d+)\s+\S+\s*(.*)$/.exec(line);
+    return match ? [{ id: match[1]!, pid: Number(match[2]), title: match[3]! }] : [];
+  });
+  const owners = new Set(
+    windows
+      .filter((window) => window.title === title && window.pid > 0)
+      .map((window) => window.pid),
+  );
+  return windows.filter(
+    (window) =>
+      title === undefined ||
+      window.title === title ||
+      (window.title === "" && owners.has(window.pid)),
+  );
+}
+
 /** Query visible X11 windows directly; GTK dialogs need not be in the EWMH client list. */
 export async function visibleNativeDialogs(exec: Execute, title?: string): Promise<string[]> {
   const pattern = title === undefined ? ".+" : `^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;

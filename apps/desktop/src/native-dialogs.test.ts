@@ -1,7 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
-import { visibleNativeDialogs } from "../e2e/native-dialogs.js";
+import { nativeDialogCandidates, visibleNativeDialogs } from "../e2e/native-dialogs.js";
 
 describe("native dialog observation", () => {
+  it("includes an untitled GTK window only for the requested application process", () => {
+    const list = [
+      "0x00400003  0 110   fixture CogineBot Dev",
+      "0x00600007  0 110   fixture ",
+      "0x00800007  0 220   fixture ",
+      "0x00a00003  0 220   fixture Other application",
+      "0x00b00003  0 0   fixture CogineBot Dev",
+      "0x00c00007  0 0   fixture ",
+    ].join("\n");
+    expect(nativeDialogCandidates(list, "CogineBot Dev").map((window) => window.id)).toEqual([
+      "0x00400003",
+      "0x00600007",
+      "0x00b00003",
+    ]);
+  });
+  it("retains exact Error selection and supports untitled cleanup windows", () => {
+    const list = "0x1  0 110 fixture Error\n0x2  0 220 fixture \n";
+    expect(nativeDialogCandidates(list, "Error").map((window) => window.id)).toEqual(["0x1"]);
+    expect(nativeDialogCandidates(list).map((window) => window.id)).toEqual(["0x1", "0x2"]);
+  });
   it("finds a visible GTK error without EWMH dialog or modal properties", async () => {
     const exec = vi.fn(async (file: string) => ({
       stdout: file === "xdotool" ? "42\n" : 'WM_NAME(STRING) = "Error"\n',
