@@ -125,6 +125,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb dbus-x11 xdg-utils desktop-file-utils openbox wmctrl xdotool scrot
+          # Allow Chromium's namespace sandbox in this disposable runner session.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
           pnpm --filter @rakazo/desktop exec node node_modules/electron/install.js
       - name: Test packaged desktop protocol integration
         if: matrix.lane == 'desktop'

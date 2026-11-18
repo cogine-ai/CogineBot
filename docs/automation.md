@@ -18,7 +18,8 @@ The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.22.3, and pnp
 
 Each dependency-based lane performs `pnpm install --frozen-lockfile --ignore-scripts` and then explicit Prisma generation. The integration and browser harnesses also generate and migrate their disposable databases. The native desktop lane explicitly runs the pinned Electron install script and packages and opens Electron only in its disposable virtual-display session. The other lanes do not run dependency lifecycle scripts, the Electron installer or desktop application. No source-check lane runs a mobile emulator or sandbox computer image.
 
-The native lane verifies Linux distribution integration and synthetic Console state.
+The native lane enables unprivileged user namespaces in its disposable runner for
+Chromium's sandbox, then verifies Linux distribution integration and synthetic Console state.
 It does not establish macOS or Windows system registration, browser protocol prompts,
 real-account authorization, signed installers, or installed-app upgrades. Record those
 platform and distribution checks separately for the exact release artifact.

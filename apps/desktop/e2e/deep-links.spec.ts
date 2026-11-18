@@ -26,6 +26,7 @@ let origin: string;
 let devExecutable: string;
 let productionExecutable: string;
 let mounted = 0;
+let documentRequests = 0;
 
 async function nativeWindows() {
   const { stdout } = await exec("wmctrl", ["-lp"]);
@@ -38,12 +39,12 @@ async function nativeWindows() {
 
 function dispatch(url: string) {
   const child = spawn("xdg-open", [url], { env, stdio: "ignore" });
-  // Keep errors observable; successful dispatch is established by the native window.
-  let error: Error | undefined;
-  child.once("error", (value) => {
-    error = value;
+  const exited = new Promise<Error | null>((resolve) => {
+    child.once("error", resolve);
+    child.once("exit", (code) => resolve(code === 0 ? null : new Error(`xdg-open exited ${code}`)));
   });
-  return () => {
+  return async () => {
+    const error = await exited;
     if (error) throw error;
   };
 }
@@ -137,6 +138,7 @@ test.beforeAll(async () => {
         name: "native-mount-receipt",
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
+            if (request.url === "/") documentRequests += 1;
             if (request.url !== "/mounted") return next();
             mounted += 1;
             response.end("ok");
@@ -227,6 +229,14 @@ test("installed AppImage and development launcher coexist and OS links restore w
     await development.evaluate(({ BrowserWindow }, action) => {
       BrowserWindow.getAllWindows()[0]![action]();
     }, action);
+    await expect
+      .poll(() =>
+        development.evaluate(({ BrowserWindow }, action) => {
+          const win = BrowserWindow.getAllWindows()[0]!;
+          return action === "minimize" ? win.isMinimized() : !win.isVisible();
+        }, action),
+      )
+      .toBe(true);
     const delivered = dispatch("coginebot-dev://bot/");
     await expect
       .poll(() =>
@@ -236,11 +246,12 @@ test("installed AppImage and development launcher coexist and OS links restore w
         }),
       )
       .toBe(true);
-    delivered();
+    await delivered();
     await expect(window.getByLabel("Draft")).toHaveValue("Development draft");
     await expect(window.getByTestId("run")).toHaveText("Synthetic Run is active");
   }
-  for (let index = 0; index < 4; index += 1) dispatch("coginebot://bot/");
+  const repeats = Array.from({ length: 4 }, () => dispatch("coginebot://bot/"));
+  await Promise.all(repeats.map((complete) => complete()));
   await expect(productionWindow.getByLabel("Draft")).toHaveValue("Installed draft");
   expect(await identity(production)).toEqual(installedIdentity);
   expect(await identity(development)).toEqual(developmentIdentity);
@@ -254,7 +265,7 @@ test("installed AppImage and development launcher coexist and OS links restore w
   });
   const delivered = dispatch("coginebot-dev://bot/?target=https://example.test");
   await dismissDialog("Invalid CogineBot link", "deep-links-invalid-entry.png");
-  delivered();
+  await delivered();
   await expect(window.getByLabel("Draft")).toHaveValue("Development draft");
   expect(window.url()).toBe(`${origin}/`);
   await productionWindow.screenshot({
@@ -276,13 +287,17 @@ test("installed AppImage and development launcher coexist and OS links restore w
 test("registered OS dispatch cold-starts each distribution once, including repeated requests", async () => {
   for (const scheme of ["coginebot", "coginebot-dev"]) {
     const before = mounted;
+    const requestsBefore = documentRequests;
     const delivered = dispatch(`${scheme}://bot/`);
-    for (let index = 0; index < 3; index += 1) dispatch(`${scheme}://bot/`);
+    // The first document probe establishes that the cold process owns its lock.
+    await expect.poll(() => documentRequests).toBeGreaterThan(requestsBefore);
+    const repeats = Array.from({ length: 3 }, () => dispatch(`${scheme}://bot/`));
+    await Promise.all(repeats.map((complete) => complete()));
     await expect.poll(async () => (await nativeWindows()).length).toBe(1);
     await expect.poll(() => mounted).toBe(before + 1);
-    delivered();
     await exec("scrot", [path.join(screenshotRoot, `deep-links-${scheme}-cold.png`)]);
     await closeNativeWindow();
+    await delivered();
   }
 });
 
@@ -311,8 +326,8 @@ test("a rebound workspace owns only its development association", async () => {
   expect(await readFile(entry, "utf8")).toBe(rebound);
   const delivered = dispatch("coginebot-dev://bot/");
   await expect.poll(async () => (await nativeWindows()).length).toBe(1);
-  delivered();
   await closeNativeWindow();
+  await delivered();
   await exec(executable, ["--no-sandbox", "--coginebot-unregister-protocol"], { env });
   await expect(readFile(entry)).rejects.toMatchObject({ code: "ENOENT" });
   expect(
