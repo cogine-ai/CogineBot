@@ -174,7 +174,7 @@ describe("Supermemory local base URL", () => {
   );
 
   it("accepts a Compose service name that resolves to a private address", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("[]", { status: 200 }));
     const resolveHostname = vi.fn(privateResolver);
 
     const prepared = await prepareSupermemoryConnection(
@@ -191,7 +191,7 @@ describe("Supermemory local base URL", () => {
   });
 
   it("accepts Docker Desktop and private-suffix hosts that resolve privately", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async () => new Response("[]", { status: 200 }));
 
     await prepareSupermemoryConnection(
       { mode: "local", baseUrl: "http://host.docker.internal:6767" },
