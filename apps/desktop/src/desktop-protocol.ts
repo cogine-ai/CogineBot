@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { chmod, mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { execFile, spawnSync } from "node:child_process";
+import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -90,6 +90,7 @@ export function linuxProtocolPaths(
   return {
     filename: `${install.scheme}.desktop`,
     file: path.join(applications, `${install.scheme}.desktop`),
+    lockFile: path.join(applications, ".coginebot-protocols.lock"),
     associations: [
       path.join(config, "mimeapps.list"),
       path.join(applications, "mimeapps.list"),
@@ -99,6 +100,30 @@ export function linuxProtocolPaths(
       ]),
     ],
   };
+}
+
+/** All our schemes update shared mimeapps files; keep one kernel lock across them. */
+async function withLinuxProtocolLock<T>(
+  paths: ReturnType<typeof linuxProtocolPaths>,
+  update: () => Promise<T>,
+): Promise<T> {
+  await mkdir(path.dirname(paths.lockFile), { recursive: true });
+  const lock = await open(paths.lockFile, "a", 0o600);
+  try {
+    // flock inherits the same open file description on fd 3. The parent retains
+    // the lock after the short helper exits, including across awaited writes.
+    const result = spawnSync("flock", ["-xn", "3"], {
+      stdio: ["ignore", "ignore", "pipe", lock.fd],
+      timeout: 15_000,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error("Desktop link registration is busy. Try again.");
+    return await update();
+  } finally {
+    // Keep the coordination inode; closing releases the kernel lock even on
+    // process termination, without a stale PID file or unlink/rebind race.
+    await lock.close();
+  }
 }
 
 async function readOptional(file: string): Promise<string | null> {
@@ -116,24 +141,26 @@ export async function registerLinuxProtocol(
 ): Promise<void> {
   const run = options.run ?? ((command, args) => runProtocolCommand(command, args, options.env));
   const paths = linuxProtocolPaths(install, options.env);
-  const mime = `x-scheme-handler/${install.scheme}`;
-  const current = await run("xdg-mime", ["query", "default", mime]);
-  // An ordinary launch keeps the person's existing OS handler choice.
-  if (!options.explicit && current && current !== paths.filename) return;
-  const old = await readOptional(paths.file);
-  if (
-    old !== null &&
-    !old.includes(`\nX-CogineBot-AppId=${install.appId}\n`) &&
-    !(
-      options.explicit &&
-      install.scheme === "coginebot-dev" &&
-      /\nX-CogineBot-AppId=ai\.cogine\.coginebot\.desktop\.dev-[a-f0-9]{12}\n/.test(old)
+  return withLinuxProtocolLock(paths, async () => {
+    const mime = `x-scheme-handler/${install.scheme}`;
+    const current = await run("xdg-mime", ["query", "default", mime]);
+    // An ordinary launch keeps the person's existing OS handler choice.
+    if (!options.explicit && current && current !== paths.filename) return;
+    const old = await readOptional(paths.file);
+    if (
+      old !== null &&
+      !old.includes(`\nX-CogineBot-AppId=${install.appId}\n`) &&
+      !(
+        options.explicit &&
+        install.scheme === "coginebot-dev" &&
+        /\nX-CogineBot-AppId=ai\.cogine\.coginebot\.desktop\.dev-[a-f0-9]{12}\n/.test(old)
+      )
     )
-  )
-    throw new Error("Another application owns that desktop launcher.");
-  await mkdir(path.dirname(paths.file), { recursive: true });
-  await writePrivateFile(paths.file, linuxProtocolEntry(install));
-  await run("xdg-mime", ["default", paths.filename, mime]);
+      throw new Error("Another application owns that desktop launcher.");
+    await mkdir(path.dirname(paths.file), { recursive: true });
+    await writePrivateFile(paths.file, linuxProtocolEntry(install));
+    await run("xdg-mime", ["default", paths.filename, mime]);
+  });
 }
 
 /** Remove only this handler from its protocol, retaining other keys and handlers. */
@@ -171,24 +198,26 @@ export async function unregisterLinuxProtocol(
   env?: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   const paths = linuxProtocolPaths(install, env);
-  const expected = linuxProtocolEntry(install);
-  if ((await readOptional(paths.file)) !== expected) return false;
-  for (const file of new Set(paths.associations)) {
-    const contents = await readOptional(file);
-    if (contents === null) continue;
-    const next = removeProtocolAssociation(
-      contents,
-      `x-scheme-handler/${install.scheme}`,
-      paths.filename,
-    );
-    if (next === contents) continue;
-    const mode = (await stat(file)).mode & 0o777;
-    await writePrivateFile(file, next);
-    await chmod(file, mode);
-  }
-  // Check ownership again before deleting, including a launcher rebound by
-  // another workspace or edited outside this application.
-  if ((await readOptional(paths.file)) !== expected) return false;
-  await unlink(paths.file);
-  return true;
+  return withLinuxProtocolLock(paths, async () => {
+    const expected = linuxProtocolEntry(install);
+    if ((await readOptional(paths.file)) !== expected) return false;
+    for (const file of new Set(paths.associations)) {
+      const contents = await readOptional(file);
+      if (contents === null) continue;
+      const next = removeProtocolAssociation(
+        contents,
+        `x-scheme-handler/${install.scheme}`,
+        paths.filename,
+      );
+      if (next === contents) continue;
+      const mode = (await stat(file)).mode & 0o777;
+      await writePrivateFile(file, next);
+      await chmod(file, mode);
+    }
+    // Check ownership again before deleting, including a launcher rebound by
+    // another workspace or edited outside this application.
+    if ((await readOptional(paths.file)) !== expected) return false;
+    await unlink(paths.file);
+    return true;
+  });
 }

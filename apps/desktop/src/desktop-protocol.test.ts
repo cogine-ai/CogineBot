@@ -1,3 +1,4 @@
+import type * as ChildProcess from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +14,11 @@ import {
   removeProtocolAssociation,
   unregisterLinuxProtocol,
 } from "./desktop-protocol.js";
+
+vi.mock("node:child_process", async (original) => ({
+  ...(await original<typeof ChildProcess>()),
+  spawnSync: vi.fn(() => ({ status: 0 })),
+}));
 
 const roots: string[] = [];
 const install = {

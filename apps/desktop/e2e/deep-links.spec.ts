@@ -33,6 +33,8 @@ let productionExecutable: string;
 let developmentProfile: string;
 let mounted = 0;
 let documentRequests = 0;
+let failureMode: "ready" | "failed" | "hold" = "ready";
+let releaseFailedProbe: (() => void) | undefined;
 
 async function nativeWindows() {
   const { stdout } = await exec("wmctrl", ["-lp"]);
@@ -78,7 +80,10 @@ async function consoleWindow(app: ElectronApplication): Promise<Page> {
       for (const page of app.windows()) {
         if (page.isClosed() || !page.url().startsWith(`${origin}/`)) continue;
         const native = await app.browserWindow(page);
-        if (await native.evaluate((win) => win.isVisible())) {
+        if (
+          (await native.evaluate((win) => win.isVisible())) &&
+          (await page.getByRole("heading", { name: "Console fixture" }).isVisible())
+        ) {
           window = page;
           return true;
         }
@@ -123,6 +128,48 @@ async function dismissDialog(title: string, screenshot: string) {
   await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
 }
 
+async function startFixtureServer(port = 0) {
+  const server = await createServer({
+    configFile: false,
+    root: path.join(root, "vite"),
+    server: { host: "127.0.0.1", port, strictPort: true },
+    plugins: [
+      {
+        name: "native-fixture-receipts",
+        configureServer(server) {
+          server.middlewares.use((request, response, next) => {
+            if (request.url === "/") {
+              documentRequests += 1;
+              if (failureMode !== "ready") {
+                const fail = () => {
+                  response.setHeader("content-type", "text/html");
+                  response.end(
+                    '<main data-rakazo-app-state="failed">Development fixture unavailable</main>',
+                  );
+                };
+                if (failureMode === "hold" && request.headers["sec-fetch-dest"] !== "document")
+                  releaseFailedProbe = fail;
+                else fail();
+                return;
+              }
+            }
+            if (request.url === "/rpc/health" && request.method === "POST") {
+              response.setHeader("content-type", "application/json");
+              response.end(JSON.stringify({ json: { ok: true, version: "0.2.2" } }));
+              return;
+            }
+            if (request.url !== "/mounted") return next();
+            mounted += 1;
+            response.end("ok");
+          });
+        },
+      },
+    ],
+  });
+  await server.listen();
+  return server;
+}
+
 test.beforeAll(async () => {
   test.setTimeout(600_000);
   root = process.env.COGINEBOT_PROTOCOL_TEST_ROOT!;
@@ -155,37 +202,15 @@ test.beforeAll(async () => {
     <script type="module">
     import { text } from './message.js';
     document.querySelector('#version').textContent = text;
-    fetch('/mounted', { method: 'POST' });
+    // Session-migration probes have no desktop preload and are not Console mounts.
+    if (window.rakazoDesktop) fetch('/mounted', { method: 'POST' });
     if (import.meta.hot) import.meta.hot.accept('./message.js', module => {
       document.querySelector('#version').textContent = module.text;
     });
     </script></body></html>`,
   );
   await writeFile(path.join(fixture, "message.js"), 'export const text = "Initial module";');
-  vite = await createServer({
-    configFile: false,
-    root: fixture,
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "native-mount-receipt",
-        configureServer(server) {
-          server.middlewares.use((request, response, next) => {
-            if (request.url === "/") documentRequests += 1;
-            if (request.url === "/rpc/health" && request.method === "POST") {
-              response.setHeader("content-type", "application/json");
-              response.end(JSON.stringify({ json: { ok: true, version: "0.2.2" } }));
-              return;
-            }
-            if (request.url !== "/mounted") return next();
-            mounted += 1;
-            response.end("ok");
-          });
-        },
-      },
-    ],
-  });
-  await vite.listen();
+  vite = await startFixtureServer();
   origin = vite.resolvedUrls!.local[0]!.replace(/\/$/, "");
 
   // This invokes the actual registration command, packaged development helper and xdg-mime.
@@ -484,12 +509,7 @@ test("an unavailable Vite server offers native Retry and recovers without produc
   const development = await launch(devExecutable);
   await nativeDialog("CogineBot Dev");
   // Restore the same address before accepting the native dialog's Retry button.
-  vite = await createServer({
-    configFile: false,
-    root: path.join(root, "vite"),
-    server: { host: "127.0.0.1", port: Number(new URL(origin).port), strictPort: true },
-  });
-  await vite.listen();
+  vite = await startFixtureServer(Number(new URL(origin).port));
   await dismissDialog("CogineBot Dev", "deep-links-development-unavailable.png");
   const window = await consoleWindow(development);
   await expect(window.getByRole("heading", { name: "Welcome to CogineBot" })).toHaveCount(0);
@@ -497,5 +517,34 @@ test("an unavailable Vite server offers native Retry and recovers without produc
   await window.screenshot({
     path: path.join(screenshotRoot, "deep-links-development-retried.png"),
   });
+  await close(development);
+});
+
+test("closing the old failed window during Retry keeps recovery alive", async () => {
+  failureMode = "failed";
+  const development = await launch(devExecutable);
+  await nativeDialog("CogineBot Dev");
+  const previous = await development.evaluate(
+    ({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().find((win) => win.getBounds().width > 1)!.id,
+  );
+  failureMode = "hold";
+  await dismissDialog("CogineBot Dev", "deep-links-development-first-failure.png");
+  await expect.poll(() => releaseFailedProbe !== undefined).toBe(true);
+  await development.evaluate(
+    ({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.close(),
+    previous,
+  );
+  releaseFailedProbe!();
+  await nativeDialog("CogineBot Dev");
+  expect(
+    await development.evaluate(
+      ({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().filter((win) => win.getBounds().width > 1).length,
+    ),
+  ).toBe(1);
+  failureMode = "ready";
+  await dismissDialog("CogineBot Dev", "deep-links-development-retry-after-close.png");
+  await consoleWindow(development);
   await close(development);
 });

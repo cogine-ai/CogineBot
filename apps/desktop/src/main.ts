@@ -947,7 +947,13 @@ async function openAppOnce(targetUrl: string, switching: boolean) {
     if (development !== null) {
       // Retain the first failed window until Retry/Quit; destroying the last
       // window here would quit on Linux/Windows before the error can be shown.
-      if (previous !== null && win !== null && win !== previous && !win.isDestroyed())
+      if (
+        previous !== null &&
+        !previous.isDestroyed() &&
+        win !== null &&
+        win !== previous &&
+        !win.isDestroyed()
+      )
         win.destroy();
       return false;
     }
@@ -1501,7 +1507,7 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   // A hidden session probe (defaultSessionHasOriginData) can be the only window
   // during startup; its teardown must not quit the app.
-  if (liveProbeWindows > 0) return;
+  if (liveProbeWindows > 0 || developmentOpening) return;
   if (process.platform !== "darwin") app.quit();
 });
 
