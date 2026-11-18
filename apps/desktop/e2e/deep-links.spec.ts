@@ -58,12 +58,12 @@ async function nativeWindowList(details = false) {
   }
 }
 
-async function nativeWindows() {
+async function nativeWindows(windowTitle = title) {
   const { stdout } = await nativeWindowList(true);
   return stdout
     .split("\n")
     .map((line) => /^(\S+)\s+\S+\s+(\d+)\s+\S+\s+(.*)$/.exec(line))
-    .filter((match) => match?.[3] === title)
+    .filter((match) => match?.[3] === windowTitle)
     .map((match) => ({ id: match![1]!, pid: Number(match![2]) }));
 }
 
@@ -642,23 +642,26 @@ test("a rebound workspace owns only its development association", async () => {
 
 test("an unavailable Vite server offers native Retry and recovers without production setup", async () => {
   await vite.close();
-  const development = await launch(devExecutable);
-  await development.evaluate(({ app }) => {
-    app.on("before-quit", () => performance.mark("test:before-quit"));
-    app.on("will-quit", () => performance.mark("test:will-quit"));
-    app.on("browser-window-created", () => performance.mark("test:window-created"));
-  });
-  await nativeDialog("CogineBot Dev");
+  // A failed first navigation may delay Playwright initialization until Retry.
+  const starting = launch(devExecutable);
+  void starting.catch(() => undefined);
+  const dialog = await nativeDialog("CogineBot Dev");
+  await expect
+    .poll(
+      async () => (await nativeWindows("CogineBot Dev")).filter((win) => win.id !== dialog).length,
+    )
+    .toBe(1);
+  // Restore the same address before accepting the native dialog's Retry button.
+  vite = await startFixtureServer(Number(new URL(origin).port));
+  await dismissDialog("CogineBot Dev", "deep-links-development-unavailable.png");
+  const development = await starting;
+  const window = await consoleWindow(development);
   expect(
     await development.evaluate(
       ({ BrowserWindow }) =>
         BrowserWindow.getAllWindows().filter((win) => win.getBounds().width > 1).length,
     ),
   ).toBe(1);
-  // Restore the same address before accepting the native dialog's Retry button.
-  vite = await startFixtureServer(Number(new URL(origin).port));
-  await dismissDialog("CogineBot Dev", "deep-links-development-unavailable.png");
-  const window = await consoleWindow(development);
   await expect(window.getByRole("heading", { name: "Welcome to CogineBot" })).toHaveCount(0);
   await expect(window.locator("#version")).toHaveText("Updated by Vite HMR");
   await window.screenshot({
