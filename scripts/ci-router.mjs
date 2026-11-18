@@ -3,7 +3,16 @@ import { appendFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const laneNames = ["static", "build", "unit", "shell", "integration", "web", "marketing"];
+const laneNames = [
+  "static",
+  "build",
+  "unit",
+  "shell",
+  "integration",
+  "web",
+  "marketing",
+  "desktop",
+];
 const shellFiles = new Set([
   "scripts/backup.sh",
   "scripts/restore.sh",
@@ -30,6 +39,7 @@ function plan(lanes, reason) {
   if (result.static) add("Lint and typecheck", "static", 15);
   if (result.build) add("Web production build", "build", 15);
   if (result.marketing) add("Marketing production build", "marketing", 15);
+  if (result.desktop) add("Linux desktop protocol integration", "desktop", 25);
   if (result.unit) add("Default offline unit tests", "unit", 30);
   if (result.shell) {
     add("Deployment shell tests", "shell-deploy", 20);

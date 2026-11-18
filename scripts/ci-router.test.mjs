@@ -7,7 +7,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { changedPaths, planForEnvironment, routeChangedPaths } from "./ci-router.mjs";
 
-const laneNames = ["static", "build", "unit", "shell", "integration", "web", "marketing"];
+const laneNames = [
+  "static",
+  "build",
+  "unit",
+  "shell",
+  "integration",
+  "web",
+  "marketing",
+  "desktop",
+];
 const script = fileURLToPath(new URL("./ci-router.mjs", import.meta.url));
 
 function selected(result) {
@@ -141,7 +150,7 @@ test("unsafe paths and empty comparisons cannot suppress checks", () => {
 test("full matrix preserves all partitions and execution limits", () => {
   const result = routeChangedPaths(["package.json"]);
   assert.equal(result.has_checks, true);
-  assert.equal(result.matrix.include.length, 11);
+  assert.equal(result.matrix.include.length, 12);
   const entries = result.matrix.include;
   assert.deepEqual(
     entries.filter(({ lane }) => lane === "integration").map(({ shard }) => shard),
@@ -158,14 +167,13 @@ test("full matrix preserves all partitions and execution limits", () => {
   for (const entry of entries) {
     assert.equal(typeof entry.check, "string");
     assert.equal(typeof entry.shard, "string");
-    const expected =
-      entry.lane === "web"
-        ? 25
-        : entry.lane === "unit"
-          ? 30
-          : ["integration", "shell-deploy"].includes(entry.lane)
-            ? 20
-            : 15;
+    const expected = ["web", "desktop"].includes(entry.lane)
+      ? 25
+      : entry.lane === "unit"
+        ? 30
+        : ["integration", "shell-deploy"].includes(entry.lane)
+          ? 20
+          : 15;
     assert.equal(entry.timeout, expected);
   }
 });

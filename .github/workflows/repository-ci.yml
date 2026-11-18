@@ -120,6 +120,33 @@ jobs:
       - name: Build the marketing site
         if: matrix.lane == 'marketing'
         run: pnpm --filter @rakazo/www build
+      - name: Install native desktop prerequisites
+        if: matrix.lane == 'desktop'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb dbus-x11 xdg-utils desktop-file-utils openbox wmctrl xdotool scrot
+          pnpm --filter @rakazo/desktop exec node node_modules/electron/install.js
+      - name: Test packaged desktop protocol integration
+        if: matrix.lane == 'desktop'
+        env:
+          RAKAZO_DISABLE_AUTO_UPDATE: "1"
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          pnpm --filter @rakazo/web build
+          pnpm --filter @rakazo/desktop build
+          xvfb-run -a dbus-run-session -- bash -c 'openbox >/dev/null 2>&1 & pnpm --filter @rakazo/desktop exec playwright test --config e2e/playwright.config.ts deep-links.spec.ts'
+      - name: Retain native desktop acceptance evidence
+        if: matrix.lane == 'desktop' && !cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-protocol-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/desktop/e2e/screenshots/deep-links-*.png
+            apps/desktop/test-results/
+          if-no-files-found: error
+          retention-days: 7
       - name: Run the selected offline test lane
         if: matrix.lane == 'unit' || startsWith(matrix.lane, 'shell-')
         run: |

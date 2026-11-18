@@ -88,6 +88,38 @@ Use one administrator for the complete SQL-to-files-to-restart transition, with
 automated updates and other maintenance stopped. The restore helpers do not
 serialize the whole operation against deployments, updates, or another restore.
 
+### Desktop development links
+
+With the local Vite server running, open a separate development desktop shell:
+
+```sh
+pnpm --filter @rakazo/desktop dev --vite-url http://localhost:5173
+```
+
+To open that workspace from `coginebot-dev://bot/`, quit its development shell
+and explicitly register a launcher:
+
+```sh
+pnpm --filter @rakazo/desktop dev:register --vite-url http://localhost:5173
+pnpm --filter @rakazo/desktop dev:unregister
+```
+
+Registration builds a local launcher for the current workspace and Vite address;
+it does not start Vite, the API or a local service stack. Re-register from another
+workspace to change the development link's target. Ordinary `dev` launches keep
+the OS association unchanged. Keep the generated `apps/desktop/out-dev` launcher
+until you unregister or replace it; quit that workspace's shell before rebuilding
+the launcher. An unavailable Vite server offers Retry or Quit.
+
+Development workspaces have separate profiles and instances. The installed app
+keeps its existing profile and uses `coginebot://bot/`; development launchers do not
+use the installed app's update channel. Both links only open or restore the Console.
+They cannot select a server, send a message, run a tool or finish authorization.
+On Linux, an AppImage registers its user desktop entry on its first ordinary
+launch, preserving an existing different handler. Before removing that AppImage,
+quit it and run it with `--coginebot-unregister-protocol` to remove its own entry.
+These commands leave the `cogine://` association and user data intact.
+
 ### Model connections
 
 When moving to real-model validation, use the application's shared model connection settings. Compatible endpoints use the same saved connection mechanism for endpoint, model, capabilities, and credentials. Do not add a new provider-specific environment variable to bypass it.

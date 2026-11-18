@@ -14,8 +14,14 @@ The source-check jobs use GitHub-hosted Ubuntu runners, Node.js 24.22.3, and pnp
 | Default offline unit tests | The complete default `pnpm run test` suite with two workers and a JSON result file. Live provider, computer, and database opt-ins are empty. No tests are excluded to hide known failures. |
 | Official PostgreSQL integration | `pnpm test:integration -- --sandbox=fake --runtime=scripted`, using the isolated suite harness, including Bot package HTTP transactions and recovery. Testcontainers starts a disposable PostgreSQL 16 container and creates a separate database from the migrated template for each suite. Model-dependent fixtures use scripted responses or a loopback model emulator. |
 | Selected fake web E2E | The official `pnpm test:e2e` harness with `--sandbox=fake --runtime=scripted` and the spec selection recorded in the active workflow. It starts a disposable PostgreSQL container, local API, and headless Chromium. The optional ticket board stays disabled unless explicitly enabled for its dedicated checks. |
+| Linux desktop protocol integration | Packaged AppImage and development launchers in Xvfb/Openbox, real `xdg-open` dispatch, isolated XDG associations and profiles, and a local Vite fixture. Captures native and renderer screenshots; does not publish installers. |
 
-Each dependency-based lane performs `pnpm install --frozen-lockfile --ignore-scripts` and then explicit Prisma generation. The integration and browser harnesses also generate and migrate their disposable databases. No dependency lifecycle scripts, Electron installer, desktop application, mobile emulator, or sandbox computer image is run by these lanes.
+Each dependency-based lane performs `pnpm install --frozen-lockfile --ignore-scripts` and then explicit Prisma generation. The integration and browser harnesses also generate and migrate their disposable databases. The native desktop lane explicitly runs the pinned Electron install script and packages and opens Electron only in its disposable virtual-display session. The other lanes do not run dependency lifecycle scripts, the Electron installer or desktop application. No source-check lane runs a mobile emulator or sandbox computer image.
+
+The native lane verifies Linux distribution integration and synthetic Console state.
+It does not establish macOS or Windows system registration, browser protocol prompts,
+real-account authorization, signed installers, or installed-app upgrades. Record those
+platform and distribution checks separately for the exact release artifact.
 
 These are offline product checks: they do not call paid models, provision remote computers, or use real customer data. They are not network-isolated. GitHub Actions, Node.js, pnpm, package registry downloads, the PostgreSQL test image, the workflow-linter release, and the Chromium test binary require network access. Unit tests can start local fixture processes, and model emulators can serve loopback HTTP requests. That is different from validating a real model or computer workflow.
 
