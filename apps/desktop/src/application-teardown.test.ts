@@ -10,7 +10,7 @@ describe("desktop test application teardown", () => {
     });
     const close = vi.fn(async () => {});
     let completed = false;
-    const teardown = closePendingApplications(new Set([launch]), new Set(), close).then(
+    const teardown = closePendingApplications(new Set([launch]), new Set([app]), close).then(
       (errors) => {
         completed = true;
         return errors;

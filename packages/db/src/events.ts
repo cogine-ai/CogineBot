@@ -494,6 +494,12 @@ export async function clearThread(
         memoryCleanupIntents: true,
       },
     });
+    const memoryConfig = input.groupId
+      ? null
+      : await tx.spaceMemoryConfig.findUnique({
+          where: { spaceId: input.spaceId },
+          select: { secretId: true },
+        });
     const activeRuns = await tx.run.findMany({
       where: {
         spaceId: input.spaceId,
@@ -506,9 +512,10 @@ export async function clearThread(
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
     const cleanup: MemoryCleanupIntent | undefined =
-      input.memoryCleanupExpected && !input.groupId
+      (memoryConfig || input.memoryCleanupExpected) && !input.groupId
         ? {
             token: `clear:${thread.historyCompactionGeneration + 1}`,
+            ...(memoryConfig ? { connectionId: memoryConfig.secretId } : {}),
             kind: "clear",
             generations: [
               Math.max(0, thread.historyCompactionGeneration - 1),
@@ -600,53 +607,55 @@ async function changeMemoryCleanup<T>(
   },
   realtime?: RealtimeFanout,
 ): Promise<{ result: T; cursor: number }> {
-  const committed = await prisma.$transaction(async (tx) => {
-    const [thread] = await tx.$queryRaw<
-      Array<{
-        historyCompactionGeneration: number;
-        nextEventSeq: number;
-        memoryCleanupIntents: Prisma.JsonValue;
-        memoryCleanupUnconfirmed: boolean;
-      }>
-    >`SELECT "historyCompactionGeneration", "nextEventSeq", "memoryCleanupIntents", "memoryCleanupUnconfirmed"
+  const committed = await withTransactionRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const [thread] = await tx.$queryRaw<
+        Array<{
+          historyCompactionGeneration: number;
+          nextEventSeq: number;
+          memoryCleanupIntents: Prisma.JsonValue;
+          memoryCleanupUnconfirmed: boolean;
+        }>
+      >`SELECT "historyCompactionGeneration", "nextEventSeq", "memoryCleanupIntents", "memoryCleanupUnconfirmed"
       FROM threads WHERE id = ${input.threadId} AND "spaceId" = ${input.spaceId}
       AND "botId" = ${input.botId} FOR UPDATE`;
-    if (!thread) throw new Error("Memory cleanup target is unavailable.");
-    const wasPending = hasPendingMemoryCleanup(
-      thread.memoryCleanupIntents,
-      thread.historyCompactionGeneration,
-    );
-    const changed = change({
-      generation: thread.historyCompactionGeneration,
-      intents: memoryCleanupIntents(thread.memoryCleanupIntents),
-      unconfirmed: thread.memoryCleanupUnconfirmed,
-    });
-    const pending = hasPendingMemoryCleanup(
-      changed.intents as unknown as Prisma.JsonValue,
-      thread.historyCompactionGeneration,
-    );
-    await tx.thread.update({
-      where: { id: input.threadId },
-      data: {
-        memoryCleanupIntents: changed.intents as unknown as Prisma.InputJsonArray,
-        ...(changed.unconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
-      },
-    });
-    const event =
-      pending !== wasPending || (changed.unconfirmed && !thread.memoryCleanupUnconfirmed)
-        ? await appendEventInTransaction(tx, {
-            ...input,
-            type: "thread.meta",
-            payload: {
-              memoryCleanupPending: pending,
-              ...(thread.memoryCleanupUnconfirmed || changed.unconfirmed
-                ? { memoryCleanupUnconfirmed: true }
-                : {}),
-            },
-          })
-        : null;
-    return { result: changed.result, cursor: event?.seq ?? thread.nextEventSeq - 1, event };
-  });
+      if (!thread) throw new Error("Memory cleanup target is unavailable.");
+      const wasPending = hasPendingMemoryCleanup(
+        thread.memoryCleanupIntents,
+        thread.historyCompactionGeneration,
+      );
+      const changed = change({
+        generation: thread.historyCompactionGeneration,
+        intents: memoryCleanupIntents(thread.memoryCleanupIntents),
+        unconfirmed: thread.memoryCleanupUnconfirmed,
+      });
+      const pending = hasPendingMemoryCleanup(
+        changed.intents as unknown as Prisma.JsonValue,
+        thread.historyCompactionGeneration,
+      );
+      await tx.thread.update({
+        where: { id: input.threadId },
+        data: {
+          memoryCleanupIntents: changed.intents as unknown as Prisma.InputJsonArray,
+          ...(changed.unconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
+        },
+      });
+      const event =
+        pending !== wasPending || (changed.unconfirmed && !thread.memoryCleanupUnconfirmed)
+          ? await appendEventInTransaction(tx, {
+              ...input,
+              type: "thread.meta",
+              payload: {
+                memoryCleanupPending: pending,
+                ...(thread.memoryCleanupUnconfirmed || changed.unconfirmed
+                  ? { memoryCleanupUnconfirmed: true }
+                  : {}),
+              },
+            })
+          : null;
+      return { result: changed.result, cursor: event?.seq ?? thread.nextEventSeq - 1, event };
+    }),
+  );
   if (committed.event)
     await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
   return { result: committed.result, cursor: committed.cursor };

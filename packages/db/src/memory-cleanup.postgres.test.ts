@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
 import { beginMemorySave, clearThread, finishMemorySave, settleMemoryCleanup } from "./events.js";
@@ -301,5 +301,83 @@ describe.skipIf(!enabled).sequential("durable memory cleanup uncertainty (Postgr
       await settleMemoryCleanup(prisma, { ...scope, token: intent.token, unconfirmed: false });
     }
     expect((await state(scope)).pending).toBe(false);
+  });
+  it("observes a configured connection inside clear without a caller pre-read", async () => {
+    const scope = await seed();
+    const secret = await prisma.secret.create({
+      data: { userId, spaceId, kind: "memory-provider", ciphertext: "synthetic-ciphertext" },
+    });
+    try {
+      await prisma.spaceMemoryConfig.create({
+        data: { spaceId, userId, provider: "fixture", settings: {}, secretId: secret.id },
+      });
+      const receipt = await clearThread(prisma, scope);
+      expect(receipt.cleanup?.connectionId).toBe(secret.id);
+      expect((await state(scope)).pending).toBe(true);
+    } finally {
+      await prisma.secret.delete({ where: { id: secret.id } });
+    }
+  });
+  it("retries only a transient completion conflict and reads the settled token idempotently", async () => {
+    const scope = await seed();
+    const receipt = await clear(scope);
+    const original = prisma.$transaction.bind(prisma);
+    const conflict = Object.assign(new Error("synthetic serialization conflict"), {
+      code: "P2034",
+    });
+    const transaction = vi.spyOn(prisma, "$transaction").mockRejectedValueOnce(conflict);
+    try {
+      transaction.mockImplementationOnce(original);
+      const result = await settleMemoryCleanup(prisma, {
+        ...scope,
+        token: receipt.cleanup!.token,
+        unconfirmed: false,
+      });
+      expect(result.memoryCleanupPending).toBe(false);
+      expect(transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      transaction.mockRestore();
+    }
+    const again = await settleMemoryCleanup(prisma, {
+      ...scope,
+      token: receipt.cleanup!.token,
+      unconfirmed: false,
+    });
+    expect(again.memoryCleanupPending).toBe(false);
+    expect(
+      await prisma.event.count({ where: { threadId: scope.threadId, type: "thread.meta" } }),
+    ).toBe(1);
+  });
+  it("does not retry a permanent transaction error or invent a persisted failure", async () => {
+    const scope = await seed();
+    const receipt = await clear(scope);
+    const failure = new Error("synthetic database unavailable");
+    const transaction = vi.spyOn(prisma, "$transaction").mockRejectedValue(failure);
+    try {
+      await expect(
+        settleMemoryCleanup(prisma, { ...scope, token: receipt.cleanup!.token, unconfirmed: true }),
+      ).rejects.toBe(failure);
+      expect(transaction).toHaveBeenCalledOnce();
+    } finally {
+      transaction.mockRestore();
+    }
+    expect((await state(scope)).pending).toBe(true);
+    expect((await state(scope)).memoryCleanupUnconfirmed).toBe(false);
+  });
+  it("a failed post-commit notification cannot duplicate settlement or its event", async () => {
+    const scope = await seed();
+    const receipt = await clear(scope);
+    const publish = vi.fn(async () => {
+      throw new Error("synthetic fanout unavailable");
+    });
+    const input = { ...scope, token: receipt.cleanup!.token, unconfirmed: true };
+    const first = await settleMemoryCleanup(prisma, input, { publish } as never);
+    const second = await settleMemoryCleanup(prisma, input);
+    expect(second).toEqual(first);
+    expect(first.memoryCleanupUnconfirmed).toBe(true);
+    expect(publish).toHaveBeenCalledOnce();
+    expect(
+      await prisma.event.count({ where: { threadId: scope.threadId, type: "thread.meta" } }),
+    ).toBe(1);
   });
 });

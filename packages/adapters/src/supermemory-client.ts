@@ -473,6 +473,10 @@ async function readContainerListSignature(response: Response, signal: AbortSigna
             typeof (item as { containerTag?: unknown }).containerTag !== "string"
           )
             throw new SyntaxError("Invalid container signature");
+          if (char === "]") {
+            empty = true;
+            continue;
+          }
           return;
         }
         if (quoted) {

@@ -503,6 +503,7 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     getLogger().error("Failed to load semantic memory provider for history compaction", error);
   }
   let staleSavedMemory = false;
+  let saveCompletionFailed = false;
   const saveIntent = {
     spaceId: thread.spaceId,
     threadId,
@@ -544,10 +545,23 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
       try {
         staleSavedMemory = await deps.events.finishMemorySave(saveIntent);
       } catch (error) {
+        saveCompletionFailed = true;
         // Registration retains the old generation even if this result cannot be stored.
         getLogger().error("Could not settle semantic memory save", error);
       }
     }
+  }
+  const latest = await deps.prisma.thread.findUniqueOrThrow({
+    where: { id: threadId },
+    select: {
+      nextMessageSeq: true,
+      historyCompactedUpToSeq: true,
+      historyCompactionGeneration: true,
+      historyCompactionRetryAfterSeq: true,
+    },
+  });
+  if (saveCompletionFailed && latest.historyCompactionGeneration !== previousGeneration) {
+    staleSavedMemory = true;
   }
   if (semanticMemory && staleSavedMemory) {
     let unconfirmed = false;
@@ -572,15 +586,6 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
       getLogger().error("Could not settle stale semantic memory cleanup", error);
     }
   }
-  const latest = await deps.prisma.thread.findUniqueOrThrow({
-    where: { id: threadId },
-    select: {
-      nextMessageSeq: true,
-      historyCompactedUpToSeq: true,
-      historyCompactionGeneration: true,
-      historyCompactionRetryAfterSeq: true,
-    },
-  });
 
   // Drain a pre-existing backlog at queue speed rather than one batch per completed run, which
   // for a thread that accumulated thousands of messages before semantic memory was enabled would

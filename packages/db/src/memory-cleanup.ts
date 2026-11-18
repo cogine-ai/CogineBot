@@ -4,6 +4,7 @@ export interface MemoryCleanupIntent {
   token: string;
   kind: "clear" | "save";
   generations: number[];
+  connectionId?: string;
 }
 
 export function memoryCleanupIntents(value: Prisma.JsonValue): MemoryCleanupIntent[] {

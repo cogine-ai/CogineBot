@@ -5723,6 +5723,34 @@ describe("mobile external memory cleanup uncertainty", () => {
   });
 });
 
+it("orders native cleanup independently of transcript events and omitted clear flags", () => {
+  const current = {
+    ...snapshot(),
+    cursor: 30,
+    observedClearSeq: 1,
+    memoryCleanupCursor: 5,
+    memoryCleanupPending: true,
+  };
+  const cleared = applyMobileThreadEvent(current, {
+    threadId: current.threadId,
+    type: "thread.cleared",
+    seq: 10,
+    payload: { memoryCleanupUnconfirmed: true },
+  })!;
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.memoryCleanupPending).toBe(false);
+  expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+  const settled = { ...current, memoryCleanupCursor: 20, memoryCleanupPending: false };
+  expect(
+    applyMobileThreadEvent(settled, {
+      threadId: current.threadId,
+      type: "thread.meta",
+      seq: 15,
+      payload: { memoryCleanupPending: true },
+    })!.memoryCleanupPending,
+  ).toBe(false);
+});
+
 it("settles pending cleanup without clearing a recorded failure or reapplying an older pending event", () => {
   const initial = { ...snapshot(), memoryCleanupUnconfirmed: true as const };
   const pendingEvent = {

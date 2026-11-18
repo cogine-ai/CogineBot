@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { observeMemoryCleanup } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileSnapshot } from "./api";
@@ -55,12 +56,21 @@ function fixture(
     persisted?: boolean;
   } = {},
 ) {
-  let release!: (value: ClearReceipt) => void;
-  let reject!: (error: Error) => void;
-  const response = new Promise<ClearReceipt>((resolve, fail) => {
-    release = resolve;
-    reject = fail;
-  });
+  const responses: Array<{
+    promise: Promise<ClearReceipt>;
+    release: (value: ClearReceipt) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  function nextResponse() {
+    let release!: (value: ClearReceipt) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<ClearReceipt>((resolve, fail) => {
+      release = resolve;
+      reject = fail;
+    });
+    responses.push({ promise, release, reject });
+    return promise;
+  }
   const initial: MobileSnapshot = {
     botId: "bot-one",
     threadId: "thread-one",
@@ -81,7 +91,7 @@ function fixture(
   });
   const scope = {
     useCallback: (callback: unknown) => callback,
-    seenMemoryCleanupNotices: { current: new Set<string>() },
+    seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
     pendingMemoryCleanupClears: { current: new Set<string>() },
     memoryCleanupAlertBlocked: blocked,
     memoryCleanupOwner: "owner-one",
@@ -97,7 +107,10 @@ function fixture(
     error: overrides.error,
     runError: null,
     historyEpoch,
-    rpc: vi.fn(async () => response),
+    rpc: vi.fn(async () => nextResponse()),
+    observeMemoryCleanup,
+    modelPolicyRefusal: false,
+    refresh: vi.fn(async () => undefined),
     expandedHistoryThread: { current: null },
     pinnedAroundRef: { current: null },
     jumpScrollTarget: { current: null },
@@ -111,14 +124,16 @@ function fixture(
     effect(): void;
   };
   const finish = async (receipt: ClearReceipt = { ok: true, memoryCleanupUnconfirmed: true }) => {
-    release(receipt);
-    await response;
+    const response = responses.shift()!;
+    response.release(receipt);
+    await response.promise;
     await Promise.resolve();
     await Promise.resolve();
   };
   const fail = async () => {
-    reject(new Error("response lost"));
-    await response.catch(() => undefined);
+    const response = responses.shift()!;
+    response.reject(new Error("response lost"));
+    await response.promise.catch(() => undefined);
     await Promise.resolve();
     await Promise.resolve();
   };
@@ -149,7 +164,46 @@ describe("native memory cleanup outcomes", () => {
     f.effect();
     expect(f.alert).toHaveBeenCalledOnce();
     f.clear();
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
     await f.finish();
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+  it("keeps one outstanding clear per thread until its receipt arrives", async () => {
+    const f = fixture();
+    f.clear();
+    f.clear();
+    expect(f.alert).not.toHaveBeenCalled();
+    await f.finish();
+    expect(f.alert).toHaveBeenCalledOnce();
+  });
+  it("preserves newer messages and Run at the same history epoch", async () => {
+    const f = fixture();
+    f.clear();
+    const newer = [{ id: "new", seq: 2, role: "user" as const, blocks: [] }];
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      cursor: 30,
+      messages: newer,
+      run: { id: "new-run", status: "running" },
+    };
+    await f.finish();
+    expect(f.snapRef.current.messages).toEqual(newer);
+    expect(f.snapRef.current.run?.id).toBe("new-run");
+  });
+  it("a provisional native notice cannot consume a later recorded failure", () => {
+    const f = fixture();
+    f.snapRef.current = { ...f.snapRef.current, memoryCleanupPending: true };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      memoryCleanupPending: false,
+      memoryCleanupUnconfirmed: true,
+    };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(2);
     f.effect();
     expect(f.alert).toHaveBeenCalledTimes(2);
   });
@@ -324,6 +378,7 @@ describe("cold jump cleanup metadata commit", () => {
       }).outputText;
       const scope = {
         pendingMemoryCleanupEvents,
+        observeMemoryCleanup,
         snapRef,
         memoryCleanupOwnerRef: { current: reader === "other-owner" ? "owner-two" : "owner-one" },
         liveSubscriptionGeneration: { current: reader === "old-subscription" ? 2 : 1 },

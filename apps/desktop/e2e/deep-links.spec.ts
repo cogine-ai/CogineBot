@@ -12,6 +12,7 @@ import type { ViteDevServer } from "vite";
 import { createServer } from "vite";
 import { developmentBuildConfiguration } from "../src/development-build.js";
 import { closePendingApplications } from "./application-teardown.js";
+import { visibleNativeDialogs } from "./native-dialogs.js";
 
 // Native OS associations belong only to this disposable Linux CI session.
 test.skip(
@@ -168,17 +169,39 @@ async function nativeDialogs(windowTitle?: string) {
 
 async function nativeDialog(title: string, timeout?: number) {
   let id = "";
-  await expect
-    .poll(
-      async () => {
-        const dialogs = await nativeDialogs(title);
-        id = dialogs.length === 1 ? dialogs[0]! : "";
-        return id;
-      },
-      { message: `Waiting for the ${title} native dialog.`, timeout },
-    )
-    .not.toBe("");
-  return id;
+  const samples: unknown[] = [];
+  try {
+    await expect
+      .poll(
+        async () => {
+          const at = Date.now();
+          const [dialogs, x11Dialogs, ewmh, tree] = await Promise.all([
+            nativeDialogs(title),
+            visibleNativeDialogs(exec, title),
+            nativeWindowList(true),
+            exec("xwininfo", ["-root", "-tree"]),
+          ]);
+          samples.push({
+            at,
+            observedAt: Date.now(),
+            dialogs,
+            x11Dialogs,
+            ewmh: ewmh.stdout,
+            tree: tree.stdout,
+          });
+          id = dialogs.length === 1 ? dialogs[0]! : "";
+          return id;
+        },
+        { message: `Waiting for the ${title} native dialog.`, timeout },
+      )
+      .not.toBe("");
+    return id;
+  } finally {
+    await test.info().attach("native-dialog-observations", {
+      body: JSON.stringify({ title, samples }),
+      contentType: "application/json",
+    });
+  }
 }
 
 async function dismissDialog(title: string, screenshot: string, retry = true) {
@@ -393,11 +416,13 @@ test.afterEach(async () => {
       await info.attach("native-failure", { path: nativeScreenshot, contentType: "image/png" });
     }
     const { stdout: windows } = await nativeWindowList(true);
+    const { stdout: x11Windows } = await exec("xwininfo", ["-root", "-tree"]);
     const { stdout: processes } = await exec("ps", ["-eo", "pid,ppid,args"]);
     await info.attach("native-dispatch-state", {
       body: JSON.stringify(
         {
           windows,
+          x11Windows,
           documents: documentRequests,
           fixtureListening: vite?.httpServer?.listening,
           applications: await Promise.all(
@@ -810,9 +835,11 @@ test("failed native recovery teardown closes a launcher before attachment settle
   const starting = launch(devExecutable);
   void starting.catch(() => undefined);
   try {
-    await nativeDialog("CogineBot Dev");
-    await expect.poll(async () => (await nativeWindows("CogineBot Dev")).length).toBe(1);
-    const [failedWindow] = await nativeWindows("CogineBot Dev");
+    const dialogId = await nativeDialog("CogineBot Dev");
+    const launcherWindows = async () =>
+      (await nativeWindows("CogineBot Dev")).filter((window) => window.id !== dialogId);
+    await expect.poll(async () => (await launcherWindows()).length).toBe(1);
+    const [failedWindow] = await launcherWindows();
     expect(failedWindow).toBeDefined();
     expect(await closeApplications()).toEqual([]);
     await expect

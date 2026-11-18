@@ -36,6 +36,7 @@ import {
   isServerUnreachable,
   isUnreachableStatus,
   mergeThreadHistory,
+  observeMemoryCleanup,
   prependThreadHistoryPage,
   progressMessageId,
   protectObservedThreadPage,
@@ -1364,6 +1365,7 @@ export type MobileSnapshot = {
   threadId: string;
   memoryCleanupUnconfirmed?: true;
   memoryCleanupPending?: boolean;
+  memoryCleanupCursor?: number;
   cursor?: number;
   observedClearSeq?: number;
   messages: MobileMessage[];
@@ -1462,6 +1464,13 @@ export function mergeMobileSnapshot(
   );
   if (sameThread && prev.memoryCleanupUnconfirmed && !merged.memoryCleanupUnconfirmed) {
     merged = { ...merged, memoryCleanupUnconfirmed: true };
+  }
+  merged = observeMemoryCleanup(merged, next, next.memoryCleanupCursor ?? next.cursor ?? -1);
+  if (
+    prev?.threadId === next.threadId &&
+    (prev.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1)
+  ) {
+    merged = observeMemoryCleanup(merged, prev, prev.memoryCleanupCursor!);
   }
   if (
     sameThread &&
@@ -1673,6 +1682,17 @@ export function applyMobileThreadEvent(
   if (!prev || event.type === "heartbeat" || (event.threadId && event.threadId !== prev.threadId))
     return prev;
   const original = prev;
+  const cleanup = observeMemoryCleanup(
+    prev,
+    {
+      ...event.payload,
+      ...(event.type === "thread.cleared"
+        ? { memoryCleanupPending: event.payload?.memoryCleanupPending === true }
+        : {}),
+    },
+    event.seq ?? -1,
+    prev.cursor ?? -1,
+  );
   const clearSeq = mobileClearSeq(prev);
   if (
     event.type === "thread.cleared" &&
@@ -1684,12 +1704,24 @@ export function applyMobileThreadEvent(
     return observeMobileClear(
       {
         ...observed,
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
         messages: observed.messages.filter(
           (message) => (message.observedEventSeq ?? original.cursor ?? -1) > event.seq!,
         ),
       },
       event.seq,
     );
+  }
+  if (
+    event.type === "thread.meta" &&
+    (event.payload?.memoryCleanupUnconfirmed === true ||
+      typeof event.payload?.memoryCleanupPending === "boolean")
+  ) {
+    return cleanup === prev && (event.seq ?? -1) <= (prev.cursor ?? -1)
+      ? prev
+      : { ...cleanup, cursor: Math.max(prev.cursor ?? -1, event.seq ?? -1) };
   }
   const messageEvent =
     event.type === "thread.message.created" ||
@@ -1710,23 +1742,12 @@ export function applyMobileThreadEvent(
   )
     return prev;
   const cursor = event.seq === undefined ? prev.cursor : Math.max(prev.cursor ?? -1, event.seq);
-  prev = observeMobileMessages(observeMobileClear(prev, clearSeq));
-  if (
-    event.type === "thread.meta" &&
-    (event.payload?.memoryCleanupUnconfirmed === true ||
-      typeof event.payload?.memoryCleanupPending === "boolean")
-  ) {
-    return {
-      ...prev,
-      cursor,
-      ...(event.payload?.memoryCleanupUnconfirmed === true
-        ? { memoryCleanupUnconfirmed: true }
-        : {}),
-      ...(typeof event.payload?.memoryCleanupPending === "boolean"
-        ? { memoryCleanupPending: event.payload.memoryCleanupPending }
-        : {}),
-    };
-  }
+  prev = observeMobileMessages(
+    observeMobileClear(
+      { ...prev, memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor ?? -1 },
+      clearSeq,
+    ),
+  );
   if (event.type === "thread.cleared") {
     return observeMobileClear(
       {
@@ -1736,12 +1757,9 @@ export function applyMobileThreadEvent(
         olderCursor: null,
         run: null,
         activeRuns: [],
-        ...(typeof event.payload?.memoryCleanupPending === "boolean"
-          ? { memoryCleanupPending: event.payload.memoryCleanupPending }
-          : {}),
-        ...(event.payload?.memoryCleanupUnconfirmed === true
-          ? { memoryCleanupUnconfirmed: true as const }
-          : {}),
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
       },
       event.seq ?? cursor,
     );

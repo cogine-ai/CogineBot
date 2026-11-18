@@ -957,8 +957,9 @@ describe("compactHistory", () => {
       await expect(compactHistory(h.deps, "thread-1")).resolves.toBeUndefined();
       expect(h.jobs.enqueue).toHaveBeenCalledWith(historyCompactJob("thread-1"));
       expect(h.saveMemory).toHaveBeenCalledTimes(phase === "register" ? 0 : 1);
-      if (phase !== "register") expect(h.pendingSaves.get("save:0:49")).toBe(0);
-      if (phase === "settle")
+      if (phase === "settle") expect(h.pendingSaves.get("save:0:49")).toBe(0);
+      if (phase === "finish") expect(h.pendingSaves.has("save:0:49")).toBe(false);
+      if (phase !== "register")
         expect(h.purgeHistory).toHaveBeenCalledExactlyOnceWith(
           { botId: "bot-1", generations: [0] },
           expect.any(Object),
@@ -966,6 +967,25 @@ describe("compactHistory", () => {
     },
   );
 
+  it("retains same-generation completion responsibility without purging live history", async () => {
+    const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    h.events.finishMemorySave.mockRejectedValueOnce(new Error("database unavailable"));
+    await compactHistory(h.deps, "thread-1");
+    expect(h.saveMemory).toHaveBeenCalledOnce();
+    expect(h.purgeHistory).not.toHaveBeenCalled();
+    expect(h.pendingSaves.get("save:0:49")).toBe(0);
+  });
+  it("preserves the existing deleted-thread external-save boundary", async () => {
+    const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
+    h.saveMemory.mockImplementationOnce(async () => {
+      h.prisma.thread.findUniqueOrThrow.mockRejectedValue(new Error("thread already deleted"));
+      return { ok: true, value: undefined };
+    });
+    h.events.finishMemorySave.mockRejectedValueOnce(new Error("thread already deleted"));
+    await expect(compactHistory(h.deps, "thread-1")).rejects.toThrow("thread already deleted");
+    expect(h.saveMemory).toHaveBeenCalledOnce();
+    expect(h.purgeHistory).not.toHaveBeenCalled();
+  });
   it("does not save history when registration observes that clear already advanced the generation", async () => {
     const h = compactionHarness({ deploymentModelKey: "synthetic-model-key" });
     h.events.beginMemorySave.mockResolvedValueOnce(false);

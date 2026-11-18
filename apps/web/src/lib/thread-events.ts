@@ -19,6 +19,7 @@ import {
   isBackgroundRunTrigger,
   isRunTerminalEvent,
   mergeThreadHistory,
+  observeMemoryCleanup,
   prependThreadHistoryPage,
   progressMessageId,
   protectObservedThreadPage,
@@ -195,6 +196,13 @@ export function mergeThreadSnapshot(
   ) {
     merged = { ...merged, memoryCleanupUnconfirmed: true };
   }
+  merged = observeMemoryCleanup(merged, next, next.memoryCleanupCursor ?? next.cursor);
+  if (
+    prev?.threadId === next.threadId &&
+    (prev.memoryCleanupCursor ?? -1) > (merged.memoryCleanupCursor ?? -1)
+  ) {
+    merged = observeMemoryCleanup(merged, prev, prev.memoryCleanupCursor!);
+  }
   const clearSeq = Math.max(
     prev?.threadId === next.threadId ? (threadClearSeq(prev) ?? -1) : -1,
     threadClearSeq(next) ?? -1,
@@ -338,6 +346,17 @@ export function reduceThreadSnapshot(
 ): ThreadSnapshot | null {
   if (!prev || event.threadId !== prev.threadId) return prev;
   const original = prev;
+  const cleanup = observeMemoryCleanup(
+    prev,
+    {
+      ...event.payload,
+      ...(event.type === "thread.cleared"
+        ? { memoryCleanupPending: event.payload.memoryCleanupPending === true }
+        : {}),
+    },
+    event.seq,
+    prev.cursor,
+  );
   const clearSeq = threadClearSeq(prev);
   if (event.type === "thread.cleared" && event.seq <= prev.cursor) {
     if (event.seq <= (clearSeq ?? -1)) return prev;
@@ -345,6 +364,9 @@ export function reduceThreadSnapshot(
     return observeThreadClear(
       {
         ...observed,
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
         messages: observed.messages.filter(
           (message) =>
             ((message as ObservedThreadMessage).observedEventSeq ?? original.cursor) > event.seq,
@@ -352,6 +374,15 @@ export function reduceThreadSnapshot(
       },
       event.seq,
     );
+  }
+  if (
+    event.type === "thread.meta" &&
+    (event.payload.memoryCleanupUnconfirmed === true ||
+      typeof event.payload.memoryCleanupPending === "boolean")
+  ) {
+    return cleanup === prev && event.seq <= prev.cursor
+      ? prev
+      : { ...cleanup, cursor: Math.max(prev.cursor, event.seq) };
   }
   const messageEvent =
     event.type === "thread.message.created" ||
@@ -370,23 +401,12 @@ export function reduceThreadSnapshot(
   )
     return prev;
   const cursor = Math.max(prev.cursor, event.seq);
-  prev = observeThreadMessages(observeThreadClear(prev, clearSeq));
-  if (
-    event.type === "thread.meta" &&
-    (event.payload.memoryCleanupUnconfirmed === true ||
-      typeof event.payload.memoryCleanupPending === "boolean")
-  ) {
-    return {
-      ...prev,
-      cursor,
-      ...(event.payload.memoryCleanupUnconfirmed === true
-        ? { memoryCleanupUnconfirmed: true }
-        : {}),
-      ...(typeof event.payload.memoryCleanupPending === "boolean"
-        ? { memoryCleanupPending: event.payload.memoryCleanupPending }
-        : {}),
-    };
-  }
+  prev = observeThreadMessages(
+    observeThreadClear(
+      { ...prev, memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor },
+      clearSeq,
+    ),
+  );
   if (event.type === "thread.cleared") {
     return observeThreadClear(
       {
@@ -396,12 +416,9 @@ export function reduceThreadSnapshot(
         olderCursor: null,
         run: null,
         activeRuns: [],
-        ...(typeof event.payload.memoryCleanupPending === "boolean"
-          ? { memoryCleanupPending: event.payload.memoryCleanupPending }
-          : {}),
-        ...(event.payload.memoryCleanupUnconfirmed === true
-          ? { memoryCleanupUnconfirmed: true as const }
-          : {}),
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
       },
       event.seq,
     );

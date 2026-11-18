@@ -2600,6 +2600,30 @@ describe("external memory cleanup uncertainty", () => {
   });
 });
 
+it("orders cleanup independently of newer transcript events and resets omitted pending on clear", () => {
+  const current = {
+    ...snapshot([]),
+    cursor: 30,
+    observedClearSeq: 1,
+    memoryCleanupCursor: 5,
+    memoryCleanupPending: true,
+  };
+  const cleared = reduceThreadSnapshot(
+    current,
+    event({ type: "thread.cleared", seq: 10, payload: { memoryCleanupUnconfirmed: true } }),
+  )!;
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.memoryCleanupPending).toBe(false);
+  expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+  const settled = { ...current, memoryCleanupCursor: 20, memoryCleanupPending: false };
+  expect(
+    reduceThreadSnapshot(
+      settled,
+      event({ type: "thread.meta", seq: 15, payload: { memoryCleanupPending: true } }),
+    )!.memoryCleanupPending,
+  ).toBe(false);
+});
+
 it("settles pending cleanup by sequence without resetting a sticky failure or current Run", () => {
   const initial = {
     ...snapshot([]),

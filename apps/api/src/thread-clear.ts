@@ -1,12 +1,11 @@
 import type { AdapterContext, JobPublisher } from "@rakazo/adapter-kit";
 import { runJobKey } from "@rakazo/adapter-kit";
-import type { MemoryProviderResolver } from "@rakazo/adapters";
-import type { ClearThreadInput, MemoryCleanupState, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { ConfiguredMemoryProvider, MemoryProviderResolver } from "@rakazo/adapters";
+import type { ClearThreadInput, MemoryCleanupState, ThreadEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 export async function clearThreadConversation(
   deps: {
-    prisma: Pick<PrismaClient, "spaceMemoryConfig">;
     events: Pick<ThreadEvents, "clearThread" | "settleMemoryCleanup">;
     jobs: Pick<JobPublisher, "cancel">;
     memoryProviders: MemoryProviderResolver;
@@ -14,24 +13,15 @@ export async function clearThreadConversation(
   input: ClearThreadInput,
   context: AdapterContext,
 ): Promise<{ ok: true; threadId: string } & MemoryCleanupState> {
-  let cleanupExpected = false;
+  let configured: ConfiguredMemoryProvider | null = null;
   if (!input.groupId) {
     try {
-      cleanupExpected = Boolean(
-        await deps.prisma.spaceMemoryConfig.findUnique({
-          where: { spaceId: input.spaceId },
-          select: { spaceId: true },
-        }),
-      );
+      configured = await deps.memoryProviders.resolve(input.spaceId);
     } catch (error) {
-      getLogger().error("semantic memory configuration before thread clear failed", error);
-      cleanupExpected = true;
+      getLogger().error("semantic memory provider before thread clear failed", error);
     }
   }
-  const cleared = await deps.events.clearThread({
-    ...input,
-    ...(cleanupExpected ? { memoryCleanupExpected: true } : {}),
-  });
+  const cleared = await deps.events.clearThread(input);
   let state: MemoryCleanupState = {
     memoryCleanupCursor: cleared.event.seq,
     ...(cleared.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
@@ -43,8 +33,11 @@ export async function clearThreadConversation(
   if (cleared.cleanup) {
     let unconfirmed = false;
     try {
-      const configured = await deps.memoryProviders.resolve(input.spaceId);
-      if (!configured) {
+      if (
+        !configured ||
+        !cleared.cleanup.connectionId ||
+        configured.connectionId !== cleared.cleanup.connectionId
+      ) {
         unconfirmed = true;
       } else {
         const result = await configured.provider.purgeHistory(
@@ -73,7 +66,6 @@ export async function clearThreadConversation(
       getLogger().error("semantic memory cleanup settlement failed", error);
       state = {
         ...state,
-        ...(unconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
         memoryCleanupPending: true,
       };
     }

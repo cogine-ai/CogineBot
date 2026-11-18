@@ -111,6 +111,9 @@ describe("mobile search jump", () => {
           liveSavedChatsScope: async () => ({}),
           isIntegrationsScopeCurrent: () => true,
           snapshotOrigin: useRef(null),
+          pendingMemoryCleanupEvents: useRef(new Map()),
+          memoryCleanupOwnerRef: useRef("owner-one"),
+          liveSubscriptionGeneration: useRef(1),
           setShowingSaved: vi.fn(),
           historyEpoch: useRef(0),
           jumpGeneration: useRef(0),
@@ -131,6 +134,7 @@ describe("mobile search jump", () => {
           openThreadWindow,
           ...api,
           withLiveStreamingProgress,
+          observeMemoryCleanup: core.observeMemoryCleanup,
           reconcileVisibleThreadSnapshot,
         };
         jump = new Function(...Object.keys(scope), handlers)(...Object.values(scope));
@@ -303,6 +307,9 @@ function raceScope(
     liveSavedChatsScope: async () => ({}),
     isIntegrationsScopeCurrent: () => true,
     snapshotOrigin: { current: null },
+    pendingMemoryCleanupEvents: { current: new Map() },
+    memoryCleanupOwnerRef: { current: "owner-one" },
+    liveSubscriptionGeneration: { current: 1 },
     setShowingSaved: vi.fn(),
     historyEpoch: { current: 0 },
     jumpGeneration: { current: 0 },

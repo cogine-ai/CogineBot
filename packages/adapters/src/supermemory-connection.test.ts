@@ -201,16 +201,22 @@ describe("readable protocol responses", () => {
     },
   );
 
-  it.each(["<html>Fallback</html>", "", "{}", "null", "[null]", "[1]", '[{"name":"fallback"}]'])(
-    "rejects an unrecognized successful list response %s",
-    async (body) => {
-      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
-      await expect(
-        prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
-      ).rejects.toThrow(/container list/);
-      expect(fetch).toHaveBeenCalledOnce();
-    },
-  );
+  it.each([
+    "<html>Fallback</html>",
+    "",
+    "{}",
+    "null",
+    "[null]",
+    "[1]",
+    '[{"name":"fallback"}]',
+    '[{"containerTag":"history"}]not-json',
+  ])("rejects an unrecognized successful list response %s", async (body) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(body));
+    await expect(
+      prepareSupermemoryConnection({ mode: "cloud" }, credentials, { fetch }),
+    ).rejects.toThrow(/container list/);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 
   it.each([false, true])(
     "bounds an incomplete first list entry with declared size %s",

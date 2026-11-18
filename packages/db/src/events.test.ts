@@ -4014,10 +4014,16 @@ describe("clearThread", () => {
       $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({
+            nextMessageSeq,
+            historyCompactionGeneration: 0,
+            memoryCleanupUnconfirmed: false,
+            memoryCleanupIntents: [],
+          })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {
@@ -4091,10 +4097,16 @@ describe("clearThread", () => {
       $queryRaw: vi.fn(),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq: 3, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({
+            nextMessageSeq: 3,
+            historyCompactionGeneration: 0,
+            memoryCleanupUnconfirmed: false,
+            memoryCleanupIntents: [],
+          })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {
