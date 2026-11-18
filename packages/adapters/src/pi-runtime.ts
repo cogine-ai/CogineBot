@@ -89,6 +89,7 @@ import {
   TransientModelError,
 } from "./model-output-recovery.js";
 import {
+  canResolveConfiguredOpenRouterModel,
   catalogModelWithOpenRouterFallback,
   IMAGE_RETURNING_COMPUTER_TOOLS,
 } from "./model-vision.js";
@@ -100,7 +101,7 @@ import { affordableOpenRouterOutput } from "./openrouter-output-budget.js";
 import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
-import { liveModelSibling, withLiveImageInput } from "./pi-live-model.js";
+import { liveModelSibling, withLiveImageInput, withModelCapabilities } from "./pi-live-model.js";
 import { registerLocalProvider } from "./pi-local-provider.js";
 import {
   acceptedReasoningEfforts,
@@ -1315,19 +1316,17 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
       ? "openrouter"
       : canonicalPiProviderId(modelConfig.provider);
   const envDefaultModel = process.env.PI_DEFAULT_MODEL?.trim();
-  const envDefaultProvider = process.env.PI_DEFAULT_PROVIDER?.trim() || "openrouter";
   const requestedId =
     modelConfig.id === "scripted" ? envDefaultModel || DEFAULT_OPENROUTER_MODEL_ID : modelConfig.id;
   const modelId = usableModelId(requestedId) ?? "";
   const credentials = credentialStoreForRequest({ model: modelConfig }, provider);
   const models = modelsForRequest({ model: modelConfig }, provider, credentials);
   let model = catalogModelWithOpenRouterFallback(models, provider, modelId);
+  const listed = model !== undefined;
   if (
     !model &&
     provider === "openrouter" &&
-    modelId &&
-    ((envDefaultProvider === "openrouter" && modelId === envDefaultModel) ||
-      modelConfig.contextWindow !== undefined)
+    canResolveConfiguredOpenRouterModel(modelId, modelConfig.contextWindow)
   ) {
     model = configuredOpenRouterModel(modelId, modelConfig.contextWindow);
   }
@@ -1335,6 +1334,13 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
     model ??= liveModelSibling(models, provider, modelId);
     if (model) model = withLiveImageInput(model, modelConfig.acceptsImages);
   }
+  if (
+    model &&
+    !listed &&
+    provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
+    provider !== CHATGPT_PLAN_PROVIDER_ID
+  )
+    model = withModelCapabilities(model, modelConfig);
   if (model && (modelConfig.contextWindow !== undefined || modelConfig.maxTokens !== undefined)) {
     model = {
       ...model,
@@ -1361,6 +1367,7 @@ function credentialStoreForRequest(
     persist ? (next) => persist(next) : undefined,
     oauth.retire,
     oauth.synchronize,
+    oauth.refresh,
   );
 }
 

@@ -7603,3 +7603,23 @@ msgstr "Ergebnis unbekannt"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {# Werkzeug} other {# Werkzeuge}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "Angepasst"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "Auf Standard zurücksetzen"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "Modelleinstellungen konnten nicht gespeichert werden"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "Die maximale Anzahl der Ausgabetokens muss unter dem Kontextlimit liegen."
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "Die Modellverbindung wurde geändert. Neu laden und erneut versuchen."

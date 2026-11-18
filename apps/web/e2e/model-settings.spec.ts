@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
-import type { Me, ThreadSnapshot } from "@rakazo/contracts";
+import type { Me, ModelCredential, ThreadSnapshot } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -232,19 +232,7 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await captureScreenshot(page, testInfo, "openai-compatible-thinking-connection");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const credentials = await rpc<
-    Array<{
-      id: string;
-      connectionRevision: number;
-      modelId?: string;
-      reasoning?: boolean;
-      thinkingLevel?: string | null;
-      maxTokens?: number;
-      contextWindow?: number;
-      supportsImages?: boolean;
-      maxImagesPerPrompt?: number;
-    }>
-  >(page, "models/credentials", {});
+  const credentials = await rpc<ModelCredential[]>(page, "models/credentials", {});
   expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.reasoning).toBe(true);
   expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.thinkingLevel).toBe(
     "low",
@@ -261,26 +249,31 @@ test("custom connections persist reasoning support and bot thinking", async ({
   );
   await page.reload();
   await openUserSettings(page, "models");
-  await page.getByText("Advanced", { exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "Supports thinking" })).toBeChecked();
+  const panel = page.getByTestId("model-settings-panel");
+  await panel.locator("summary").click();
+  await expect(panel.getByRole("checkbox", { name: "Supports thinking" })).toBeChecked();
+  await page.getByText("Thinking", { exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Reasoning effort", exact: true })).toHaveValue(
     "low",
   );
-  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("8192");
-  await expect(page.getByLabel("Context limit")).toHaveValue("65536");
-  await expect(page.getByRole("checkbox", { name: "Supports images" })).toBeChecked();
-  await expect(page.getByLabel("Maximum images per request")).toHaveValue("1");
-  await page.getByLabel("Maximum images per request").fill("");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const clearedCredentials = await rpc<Array<{ modelId?: string; maxImagesPerPrompt?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(
-    clearedCredentials.find((entry) => entry.modelId === "arbitrary-model")?.maxImagesPerPrompt,
-  ).toBeUndefined();
+  await expect(panel.getByLabel("Maximum output tokens")).toHaveValue("8192");
+  await expect(panel.getByLabel("Context limit")).toHaveValue("65536");
+  await expect(panel.getByRole("checkbox", { name: "Supports images" })).toBeChecked();
+  await expect(panel.getByLabel("Maximum images per request")).toHaveValue("1");
+  await panel.getByLabel("Maximum images per request").fill("");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByText("Saved.", { exact: true })).toBeVisible();
+  const clearedCredentials = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const cleared = clearedCredentials.find((entry) => entry.modelId === "arbitrary-model");
+  expect(cleared?.modelSettings?.["arbitrary-model"]).toMatchObject({
+    reasoning: true,
+    images: true,
+    maxTokens: 8192,
+    contextWindow: 65536,
+  });
+  expect(cleared?.modelSettings?.["arbitrary-model"]?.maxImagesPerPrompt).toBeUndefined();
+  expect(cleared?.maxImagesPerPrompt).toBe(1);
+  await captureScreenshot(page, testInfo, "saved-model-capabilities");
   await page.getByRole("button", { name: "Close model settings" }).click();
   await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
   const settings = page.getByTestId("bot-settings");
@@ -462,26 +455,20 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await captureScreenshot(page, testInfo, "builtin-provider-max-tokens");
   await page.getByRole("button", { name: "Connect API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
-  const connected = await rpc<Array<{ provider: string; maxTokens?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(connected.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(8192);
-  // Connecting preserves the open disclosure; only open it if the form remounted.
-  const outputLimit = page.getByLabel("Maximum output tokens");
-  if (!(await outputLimit.isVisible())) {
-    await page.getByText("Advanced", { exact: true }).click();
-  }
+  const connected = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const savedModel = connected.find((entry) => entry.provider === "scripted")!;
+  expect(savedModel.maxTokens).toBe(8192);
+  const panel = page.getByTestId("model-settings-panel");
+  await panel.locator("summary").click();
+  const outputLimit = panel.getByLabel("Maximum output tokens");
+  await expect(outputLimit).toHaveValue("8192");
   await outputLimit.fill("16384");
-  await page.getByRole("button", { name: "Save limits", exact: true }).click();
-  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const updated = await rpc<Array<{ provider: string; maxTokens?: number }>>(
-    page,
-    "models/credentials",
-    {},
-  );
-  expect(updated.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(16384);
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(panel.getByText("Saved.", { exact: true })).toBeVisible();
+  const updated = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  const adjustedModel = updated.find((entry) => entry.provider === "scripted")!;
+  expect(adjustedModel.modelSettings?.[savedModel.modelId!]?.maxTokens).toBe(16384);
+  expect(adjustedModel.maxTokens).toBe(8192);
   await page.reload();
   await openUserSettings(page, "models");
   await expect(page.getByRole("combobox", { name: "Model", exact: true })).toHaveText(
@@ -491,8 +478,8 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await expect(storedKey).toHaveValue("");
   await expect(storedKey).toHaveAttribute("placeholder", "Paste a replacement key");
   await captureScreenshot(page, testInfo, "stored-provider-api-key");
-  await page.getByText("Advanced", { exact: true }).click();
-  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("16384");
+  await panel.locator("summary").click();
+  await expect(panel.getByLabel("Maximum output tokens")).toHaveValue("16384");
 
   // Connected providers get their own section with the saved model inline;
   // searching flattens back to one ranked list.
@@ -509,6 +496,11 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await page.getByLabel("Replace API key").fill("fake-scripted-key-two");
   await page.getByRole("button", { name: "Replace API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
+  const replaced = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  expect(
+    replaced.find((entry) => entry.id === savedModel.id)?.modelSettings?.[savedModel.modelId!]
+      ?.maxTokens,
+  ).toBe(16384);
 
   const codexCredential = {
     id: "cred-codex",
@@ -1301,3 +1293,155 @@ test("custom model protocols save, reopen and preserve private headers", async (
     );
   }
 });
+
+for (const width of [1280, 390]) {
+  test(`per-model settings save, recover and reset on the selected connection at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await signup(
+      page,
+      `model-settings-${width}-${Date.now()}@example.test`,
+      "password12",
+      "Model Settings",
+    );
+    await completeOnboarding(page);
+    type SavedConnection = {
+      id: string;
+      modelId?: string;
+      thinkingLevel?: string;
+      modelSettings?: Record<string, { maxTokens?: number; contextWindow?: number }>;
+    };
+    const connections: SavedConnection[] = [];
+    for (const port of [8090, 8091]) {
+      connections.push(
+        await rpc<SavedConnection>(page, "models/connect", {
+          provider: "openai-compatible",
+          apiKey: "synthetic-offline-key",
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          modelId: "model-a",
+          enabledModelIds: ["model-a", "model-b"],
+          reasoning: true,
+          thinkingLevel: "low",
+          maxTokens: 1024,
+          contextWindow: 32000,
+        }),
+      );
+    }
+    if (width === 390)
+      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill("openai-compatible");
+    await settings.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await settings.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    await settings.getByLabel("Models from server", { exact: true }).selectOption("model-b");
+    const panel = settings.getByTestId("model-settings-panel");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Default");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toBeHidden();
+    await panel.locator("summary").click();
+    await panel.getByLabel("Context limit", { exact: true }).fill("64000");
+    await panel.getByLabel("Maximum output tokens", { exact: true }).fill("2048");
+    let fail = true;
+    await page.route("**/rpc/models/saveModelSettings", async (route) => {
+      if (!fail) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 503,
+        json: {
+          json: {
+            defined: false,
+            code: "SERVICE_UNAVAILABLE",
+            status: 503,
+            message: "Synthetic settings unavailable",
+          },
+        },
+      });
+    });
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(panel.getByRole("alert")).toContainText("Synthetic settings unavailable");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveValue("2048");
+    await captureScreenshot(page, testInfo, `a1-model-draft-failure-${width}`);
+    fail = false;
+    const savedResponse = page.waitForResponse(
+      (response) => response.url().includes("/rpc/models/saveModelSettings") && response.ok(),
+    );
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await savedResponse;
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await expect(settings.getByLabel("Models from server", { exact: true })).toHaveValue("model-b");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Adjusted");
+    const read = async () => rpc<SavedConnection[]>(page, "models/credentials", {});
+    const stored = await read();
+    expect(
+      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-b"],
+    ).toMatchObject({ contextWindow: 64000, maxTokens: 2048 });
+    expect(stored.find((entry) => entry.id === connections[0]!.id)?.modelId).toBe("model-a");
+    expect(
+      stored.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-a"],
+    ).toBeUndefined();
+    expect(stored.find((entry) => entry.id === connections[1]!.id)?.modelSettings).toBeUndefined();
+    await captureScreenshot(page, testInfo, `a1-model-settings-saved-${width}`);
+    await panel.getByRole("button", { name: "Reset to defaults", exact: true }).click();
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveValue("");
+    await expect(panel.locator("summary")).toHaveText("Advanced · Default");
+    const reset = (await read()).find((entry) => entry.id === connections[0]!.id)!;
+    expect(reset.modelSettings).toEqual({ "model-b": {} });
+    expect(reset.modelId).toBe("model-a");
+    await expect(settings.getByLabel("Models from server", { exact: true })).toHaveValue("model-b");
+    expect(reset.thinkingLevel).toBe("low");
+    await expect(panel.getByLabel("Maximum output tokens", { exact: true })).toHaveAttribute(
+      "placeholder",
+      "4096",
+    );
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+    await captureScreenshot(page, testInfo, `a1-model-settings-reset-${width}`);
+    await page.reload();
+    if (width === 390)
+      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+    await openUserSettings(page, "models");
+    await page.getByPlaceholder("Search providers").fill("openai-compatible");
+    await page.getByRole("button", { name: /OpenAI-compatible/ }).click();
+    await page.getByLabel("Connection", { exact: true }).selectOption(connections[0]!.id);
+    await page.getByLabel("Models from server", { exact: true }).selectOption("model-b");
+    await expect(page.getByTestId("model-settings-panel").locator("summary")).toHaveText(
+      "Advanced · Default",
+    );
+    await settings.getByLabel("Models from server", { exact: true }).selectOption("model-a");
+    await panel.locator("summary").click();
+    await expect(
+      panel.getByRole("checkbox", { name: "Supports thinking", exact: true }),
+    ).toBeChecked();
+    if (width === 1280) {
+      await panel.getByRole("checkbox", { name: "Supports thinking", exact: true }).uncheck();
+      await panel.getByRole("button", { name: "Save", exact: true }).click();
+    } else await panel.getByRole("button", { name: "Reset to defaults", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await expect(
+      settings.getByRole("combobox", { name: "Reasoning effort", exact: true }),
+    ).toBeHidden();
+    const connectionSave = page.waitForResponse(
+      (response) => response.url().includes("/rpc/models/connect") && response.ok(),
+    );
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await connectionSave;
+    const reconnected = await read();
+    expect(reconnected.find((entry) => entry.id === connections[0]!.id)?.thinkingLevel).toBe("low");
+    expect(
+      reconnected.find((entry) => entry.id === connections[0]!.id)?.modelSettings?.["model-b"],
+    ).toEqual({});
+    expect(
+      reconnected.find((entry) => entry.id === connections[1]!.id)?.modelSettings,
+    ).toBeUndefined();
+    await panel.getByRole("checkbox", { name: "Supports thinking", exact: true }).check();
+    await panel.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(panel.getByRole("status")).toHaveText("Saved.");
+    await settings.getByText("Thinking", { exact: true }).click();
+    await expect(
+      settings.getByRole("combobox", { name: "Reasoning effort", exact: true }),
+    ).toHaveValue("low");
+  });
+}

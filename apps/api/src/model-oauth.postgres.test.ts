@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { createRouterClient, ORPCError } from "@orpc/server";
-import { EncryptedSecretStore, ModelOAuthSessions, PiOAuthLogins } from "@rakazo/adapters";
+import {
+  EncryptedSecretStore,
+  ModelOAuthSessions,
+  PiOAuthLogins,
+  parseModelSecret,
+  refreshStoredModelCredential,
+  resolveStoredModelAuth,
+  serializeModelSecret,
+} from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import { createDb, runAsSystem, runAsTenant } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -125,6 +133,142 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       witness.mockRestore();
     }
   }
+
+  it.each([
+    ["anthropic", false],
+    ["chatgpt-plan", false],
+    ["chatgpt-plan", true],
+  ] as const)(
+    "coordinates %s settings with an independently connected token writer (pending %s)",
+    async (provider, pending) => {
+      const actor = await member();
+      const secrets = new EncryptedSecretStore(key);
+      const secretId = randomUUID();
+      const startingCredential = {
+        ...token,
+        expires: pending ? Date.now() + 3_600_000 : 1,
+        ...(pending
+          ? {
+              clientId: "synthetic-client",
+              issuer: "https://auth.openai.com",
+              subject: "synthetic-subject",
+              hostId: `urn:uuid:${randomUUID()}`,
+              idToken: "synthetic-id-token",
+              scopes: ["chatgpt.tokens.use.direct"],
+              pendingRotation: {
+                receivedAt: Date.now(),
+                response: {
+                  access_token: "pending-access",
+                  refresh_token: "pending-refresh",
+                  id_token: "pending-id",
+                  expires_in: 3600,
+                  scope: "chatgpt.tokens.use.direct",
+                },
+              },
+            }
+          : {}),
+      };
+      const plaintext = serializeModelSecret({
+        kind: "oauth",
+        credential: startingCredential,
+        maxTokens: 1024,
+      });
+      const stored = await secrets.put(
+        plaintext,
+        {
+          ...actor,
+          operationId: "model-settings-test",
+          traceId: "model-settings-test",
+          signal: new AbortController().signal,
+        },
+        { recordId: secretId },
+      );
+      await a.prisma.secret.create({
+        data: {
+          id: secretId,
+          userId: actor.userId,
+          spaceId: null,
+          kind: "model",
+          ciphertext: stored.ciphertext,
+        },
+      });
+      const credential = await a.prisma.userModelCredential.create({
+        data: { userId: actor.userId, provider, label: "Settings fixture", secretId },
+      });
+      const second = process(b, actor);
+      const entered = gate<void>();
+      const release = gate<void>();
+      const { pendingRotation: _pending, ...verified } = startingCredential;
+      const next = {
+        ...verified,
+        access: "synthetic-rotated",
+        refresh: "synthetic-rotated-refresh",
+        expires: Date.now() + 3_600_000,
+      };
+      const oauth = {
+        refresh: vi.fn(async () => {
+          entered.resolve();
+          await release.promise;
+          return next;
+        }),
+        toAuth: vi.fn(async (value: typeof token) => ({ apiKey: value.access })),
+      };
+      const refreshing = resolveStoredModelAuth(
+        a.prisma,
+        secrets,
+        actor,
+        secretId,
+        plaintext,
+        provider,
+        { oauth },
+      );
+      let settingsSaved = false;
+      let saving: Promise<unknown> | undefined;
+      try {
+        await entered.promise;
+        saving = second.client.models
+          .saveModelSettings({
+            credentialId: credential.id,
+            modelId: "claude-sonnet-4-6",
+            settings: { contextWindow: 64000, maxTokens: 2048 },
+          })
+          .then((value) => {
+            settingsSaved = true;
+            return value;
+          });
+        void saving.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const waiting = await a.pool.query<{ blocked: boolean }>(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = 'model-sign-in-b' AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0) AS blocked",
+          );
+          expect(waiting.rows[0]?.blocked).toBe(true);
+        });
+        expect(settingsSaved).toBe(false);
+      } finally {
+        release.resolve();
+      }
+      await expect(refreshing).resolves.toMatchObject({ apiKey: next.access });
+      await expect(saving).resolves.toEqual({ ok: true });
+      const row = await a.prisma.secret.findUniqueOrThrow({ where: { id: secretId } });
+      const current = parseModelSecret(await secrets.load(row.ciphertext, secretId));
+      expect(current).toMatchObject({
+        kind: "oauth",
+        credential: next,
+        maxTokens: 1024,
+        models: { "claude-sonnet-4-6": { contextWindow: 64000, maxTokens: 2048 } },
+      });
+      // A stale runtime store adopts the fresh credential rather than spending the rotated token.
+      const runtimeOperation = vi.fn(async () => next);
+      const refresh = refreshStoredModelCredential(b.prisma, secrets, actor, secretId, provider, {
+        oauth,
+      });
+      await expect(refresh({ ...token, expires: 1 }, runtimeOperation)).resolves.toMatchObject(
+        next,
+      );
+      expect(runtimeOperation).not.toHaveBeenCalled();
+      expect(oauth.refresh).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each(["start", "exchange", "save"] as const)(
     "records safe %s diagnostics while preserving the failed result",
@@ -466,6 +610,186 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     await expect(
       second.client.models.finishOAuth({ loginId: started.loginId }),
     ).resolves.toMatchObject({ provider: "github-copilot", authKind: "oauth" });
+  });
+
+  it.each([false, true])(
+    "retains a reconnect model only while the replacement account lists it (available %s)",
+    async (available) => {
+      const actor = await member();
+      const secrets = new EncryptedSecretStore(key);
+      const secretId = randomUUID();
+      const old = {
+        ...token,
+        clientId: "synthetic-client",
+        issuer: "https://auth.openai.com",
+        subject: "synthetic-subject",
+        hostId: `urn:uuid:${randomUUID()}`,
+        idToken: "synthetic-id",
+        scopes: ["chatgpt.tokens.use.direct"],
+        chatgptPlanModels: [
+          { id: "model-a", name: "Model A" },
+          { id: "model-b", name: "Model B" },
+        ],
+      };
+      const stored = await secrets.put(
+        serializeModelSecret({ kind: "oauth", credential: old }),
+        {
+          ...actor,
+          operationId: "fixture",
+          traceId: "fixture",
+          signal: new AbortController().signal,
+        },
+        { recordId: secretId },
+      );
+      await a.prisma.secret.create({
+        data: {
+          id: secretId,
+          userId: actor.userId,
+          spaceId: null,
+          kind: "model",
+          ciphertext: stored.ciphertext,
+        },
+      });
+      const connected = await a.prisma.userModelCredential.create({
+        data: { userId: actor.userId, provider: "chatgpt-plan", label: "Fixture", secretId },
+      });
+      await a.prisma.spaceModelPreference.create({
+        data: {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          credentialId: connected.id,
+          modelId: "model-a",
+          isDefault: true,
+        },
+      });
+      const first = process(a, actor, undefined, secrets);
+      const begin = first.oauth.begin.bind(first.oauth);
+      vi.spyOn(first.oauth, "begin").mockImplementation((input, persist) =>
+        begin({ ...input, login: undefined }, persist),
+      );
+      const started = await first.client.models.beginOAuth({ provider: "chatgpt-plan" });
+      const replacement = {
+        ...old,
+        access: "replacement-access",
+        refresh: "replacement-refresh",
+        chatgptPlanModels: available ? old.chatgptPlanModels : [{ id: "model-b", name: "Model B" }],
+      };
+      first.providerResult.resolve(replacement);
+      await vi.waitFor(async () =>
+        expect(await first.client.models.completeOAuth({ loginId: started.loginId })).toEqual({
+          status: "ready",
+        }),
+      );
+      await first.client.models.finishOAuth({ loginId: started.loginId });
+      expect(await first.client.models.credentials()).toEqual([
+        expect.objectContaining({ id: connected.id, modelId: available ? "model-a" : "model-b" }),
+      ]);
+    },
+  );
+
+  it("retains a newer model selection while reconnect prepares the replacement secret", async () => {
+    const actor = await member();
+    const entered = gate<void>();
+    const release = gate<void>();
+    const secrets = new EncryptedSecretStore(key);
+    const first = process(a, actor, undefined, secrets);
+    const second = process(b, actor);
+    const connected = await second.client.models.connect({
+      provider: "anthropic",
+      apiKey: "synthetic-key",
+      modelId: "claude-sonnet-4-6",
+      thinkingLevel: "low",
+    });
+    const put = secrets.put.bind(secrets);
+    vi.spyOn(secrets, "put").mockImplementation(async (...args) => {
+      if (args[1].operationId === "cred") {
+        entered.resolve();
+        await release.promise;
+      }
+      return put(...args);
+    });
+    const start = await first.client.models.beginOAuth({ provider: "anthropic" });
+    await first.client.models.submitOAuthCode({ loginId: start.loginId, code: "fixture" });
+    await entered.promise;
+    try {
+      await second.client.models.setDefault({
+        provider: "anthropic",
+        modelId: "claude-opus-4-8",
+        modelCredentialId: connected.id,
+        expectedRevision: connected.connectionRevision,
+        thinkingLevel: "high",
+      });
+    } finally {
+      release.resolve();
+    }
+    await vi.waitFor(async () =>
+      expect(await second.client.models.completeOAuth({ loginId: start.loginId })).toEqual({
+        status: "ready",
+      }),
+    );
+    await second.client.models.finishOAuth({ loginId: start.loginId });
+    expect(await second.client.models.credentials()).toEqual([
+      expect.objectContaining({
+        id: connected.id,
+        modelId: "claude-opus-4-8",
+        thinkingLevel: "high",
+        authKind: "oauth",
+      }),
+    ]);
+  });
+
+  it("keeps model settings saved after a reconnect begins and preserves connection effort", async () => {
+    const actor = await member();
+    const first = process(a, actor);
+    const second = process(b, actor);
+    const connected = await second.client.models.connect({
+      provider: "anthropic",
+      apiKey: "synthetic-before-reconnect",
+      modelId: "claude-sonnet-4-6",
+      thinkingLevel: "low",
+      maxTokens: 1024,
+    });
+    expect(await second.client.models.credentials()).toEqual([
+      expect.objectContaining({
+        id: connected.id,
+        modelId: "claude-sonnet-4-6",
+        thinkingLevel: "low",
+      }),
+    ]);
+    const started = await first.client.models.beginOAuth({ provider: "anthropic" });
+    await second.client.models.saveModelSettings({
+      credentialId: connected.id,
+      modelId: "claude-sonnet-4-6",
+      settings: { contextWindow: 64000, maxTokens: 2048 },
+    });
+    await first.client.models.submitOAuthCode({ loginId: started.loginId, code: "fixture" });
+    await vi.waitFor(async () =>
+      expect(await second.client.models.completeOAuth({ loginId: started.loginId })).toEqual({
+        status: "ready",
+      }),
+    );
+    const result = await second.client.models.finishOAuth({ loginId: started.loginId });
+    expect(result).toMatchObject({
+      id: connected.id,
+      authKind: "oauth",
+      maxTokens: 1024,
+      modelSettings: { "claude-sonnet-4-6": { contextWindow: 64000, maxTokens: 2048 } },
+    });
+    expect(await second.client.models.credentials()).toEqual([
+      expect.objectContaining({
+        id: connected.id,
+        modelId: "claude-sonnet-4-6",
+        thinkingLevel: "low",
+        modelSettings: result.modelSettings,
+      }),
+    ]);
+    const row = await a.prisma.userModelCredential.findUniqueOrThrow({
+      where: { id: connected.id },
+    });
+    const secret = await a.prisma.secret.findUniqueOrThrow({ where: { id: row.secretId } });
+    expect(
+      parseModelSecret(await new EncryptedSecretStore(key).load(secret.ciphertext, secret.id)),
+    ).toMatchObject({ kind: "oauth", credential: token, models: result.modelSettings });
   });
 
   it("keeps a desktop callback on the original process and shares the committed result", async () => {

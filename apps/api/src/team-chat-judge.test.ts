@@ -295,6 +295,11 @@ function bindingFixture() {
     }),
   );
   const prisma = {
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => []),
+    $transaction: vi.fn(
+      async (operation: (tx: unknown) => Promise<unknown>): Promise<unknown> => operation(prisma),
+    ),
     userModelCredential,
     spaceModelPreference,
     deploymentSettings: {
@@ -710,6 +715,11 @@ describe("team chat judge connection bindings", () => {
       modelCredentialId: "connection-a",
     });
     expect(model?.oauth?.retire).toBeTypeOf("function");
+    fixture.secrets.get("secret-a")!.ciphertext = serializeModelSecret({
+      kind: "oauth",
+      credential: model!.oauth!.credential,
+      models: { "gpt-6-luna": { maxTokens: 73 }, other: { contextWindow: 8000 } },
+    });
     await model?.oauth?.persist({
       type: "oauth",
       access: "new-access",
@@ -720,7 +730,94 @@ describe("team chat judge connection bindings", () => {
       where: { id: "secret-a" },
       data: { ciphertext: expect.stringContaining("new-access") },
     });
+    expect(JSON.parse(fixture.secrets.get("secret-a")!.ciphertext).models).toEqual({
+      "gpt-6-luna": { maxTokens: 73 },
+      other: { contextWindow: 8000 },
+    });
+    expect(model?.oauth?.refresh).toBeTypeOf("function");
   });
+
+  it("keeps settings saved after the judge loaded an expiring credential", async () => {
+    const fixture = bindingFixture();
+    fixture.rows[0]!.provider = "anthropic";
+    const old = {
+      kind: "oauth" as const,
+      credential: {
+        type: "oauth" as const,
+        access: "old-access",
+        refresh: "old-refresh",
+        expires: 1,
+      },
+      models: { "claude-sonnet-5-5": { maxTokens: 64 } },
+    };
+    fixture.secrets.get("secret-a")!.ciphertext = serializeModelSecret(old);
+    fixture.secretStore.load.mockImplementationOnce(async (plaintext) => {
+      fixture.secrets.get("secret-a")!.ciphertext = serializeModelSecret({
+        ...old,
+        models: { "claude-sonnet-5-5": { maxTokens: 96 }, other: { contextWindow: 8000 } },
+      });
+      return plaintext;
+    });
+    const fetcher = vi.fn(async () =>
+      Response.json({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 3600 }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await fixture
+        .judge()
+        .decide(judgeInput({ modelProvider: "anthropic", modelId: "claude-sonnet-5-5" }));
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(JSON.parse(fixture.secrets.get("secret-a")!.ciphertext)).toMatchObject({
+        credential: { access: "new-access", refresh: "new-refresh" },
+        models: { "claude-sonnet-5-5": { maxTokens: 96 }, other: { contextWindow: 8000 } },
+      });
+      expect(fixture.run.mock.calls[0]?.[0].model?.maxTokens).toBe(96);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(["openai_compatible", "api_key", "oauth"] as const)(
+    "uses the judge model's own limits for %s",
+    async (kind) => {
+      const fixture = bindingFixture();
+      const provider =
+        kind === "openai_compatible"
+          ? "openai-compatible"
+          : kind === "oauth"
+            ? "openai-codex"
+            : "openrouter";
+      fixture.rows[0]!.provider = provider;
+      fixture.secrets.get("secret-a")!.ciphertext = serializeModelSecret({
+        ...(kind === "openai_compatible"
+          ? {
+              kind,
+              baseUrl: "https://judge.example.test/v1",
+              apiKey: "fake-key",
+              enabledModelIds: ["same-model"],
+            }
+          : kind === "api_key"
+            ? { kind, key: "fake-key" }
+            : {
+                kind,
+                credential: {
+                  type: "oauth",
+                  access: "fake-access",
+                  refresh: "fake-refresh",
+                  expires: Date.now() + 3600000,
+                },
+              }),
+        maxTokens: 64,
+        models: { "same-model": { maxTokens: 96, contextWindow: 8192 }, other: { maxTokens: 128 } },
+      });
+      await fixture.judge().decide(judgeInput({ modelProvider: provider }));
+      expect(fixture.run.mock.calls[0]?.[0].model).toMatchObject({
+        modelCredentialId: "connection-a",
+        maxTokens: 96,
+        contextWindow: 8192,
+      });
+    },
+  );
 
   it("records real Pi HTTP/SSE usage against the exact connection used for the judge call", async () => {
     const first = await startModelEmulator({

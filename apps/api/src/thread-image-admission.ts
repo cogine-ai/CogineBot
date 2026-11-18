@@ -147,7 +147,8 @@ export async function resolveThreadImageInput(
   if (provider === "openai-compatible" && !credential && modelAcceptsImageInput(provider, id))
     supportsImages = true;
   if (
-    ["openai-compatible", CHATGPT_PLAN_PROVIDER_ID, CHATGPT_OAUTH_PROVIDER].includes(provider) &&
+    (supportsImages === undefined ||
+      [CHATGPT_PLAN_PROVIDER_ID, CHATGPT_OAUTH_PROVIDER].includes(provider)) &&
     credential &&
     configuration
   ) {
@@ -174,9 +175,8 @@ export async function resolveThreadImageInput(
           !enabledOpenAiCompatibleModelIds(secret, credential.defaultModel).includes(id.trim()))
       )
         return { status: "unknown" as const };
-      if (provider !== CHATGPT_OAUTH_PROVIDER) {
-        supportsImages = connectionModelImageInput(provider, id, credential, secret);
-      }
+      supportsImages =
+        connectionModelImageInput(provider, id, credential, secret) ?? supportsImages;
     } catch {
       return { status: "unknown" as const };
     }

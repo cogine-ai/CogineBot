@@ -7706,3 +7706,23 @@ msgstr "结果未知"
 #: src/components/ToolActivityDisclosure.tsx
 msgid "{stepCount, plural, one {# tool} other {# tools}}"
 msgstr "{stepCount, plural, one {# 个工具} other {# 个工具}}"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Adjusted"
+msgstr "已调整"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Reset to defaults"
+msgstr "恢复默认"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Could not save model settings"
+msgstr "无法保存模型设置"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Maximum output tokens must be below the context limit."
+msgstr "最大输出 token 数必须小于上下文上限。"
+
+#: src/pages/model-settings-panel.tsx
+msgid "Model connection changed. Reload and try again."
+msgstr "模型连接已更改，请重新加载后重试。"

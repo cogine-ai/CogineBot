@@ -1479,4 +1479,11 @@ export const RU_MESSAGES: Record<string, string> = {
   Visible: "Видно",
   "These login values are too long together. Shorten one or more fields.":
     "Общая длина данных для входа слишком велика. Сократите значения в одном или нескольких полях.",
+  Adjusted: "Изменено",
+  "Reset to defaults": "Сбросить настройки",
+  "Could not save model settings": "Не удалось сохранить настройки модели",
+  "Maximum output tokens must be below the context limit.":
+    "Максимальное число выходных токенов должно быть меньше лимита контекста.",
+  "Model connection changed. Reload and try again.":
+    "Подключение модели изменилось. Перезагрузите и повторите попытку.",
 };

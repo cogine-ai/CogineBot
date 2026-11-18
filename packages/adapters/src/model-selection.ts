@@ -11,7 +11,8 @@ import {
 } from "@rakazo/db";
 import { readChatGPTPlanCredential } from "./chatgpt-plan-auth.js";
 import { CHATGPT_PLAN_PROVIDER_ID, readChatGPTPlanModels } from "./chatgpt-plan-provider.js";
-import { modelCredentialDto } from "./model-connect.js";
+import type { modelCredentialDto } from "./model-connect.js";
+import { compatibleModelThinkingLevels } from "./model-connect.js";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
 import {
   catalogModelAvailableForAuth,
@@ -540,7 +541,8 @@ export function compatibleThinkingLevels(
   if (plaintext !== undefined) {
     try {
       parsed = parseModelSecret(plaintext);
-      levels = modelCredentialDto(row, plaintext).thinkingLevels;
+      if (parsed.kind === "openai_compatible")
+        levels = compatibleModelThinkingLevels(parsed, modelId, row);
     } catch {
       // Unreadable connections must not advertise reasoning support.
     }

@@ -106,6 +106,7 @@ describe("compatible connection format preservation", () => {
       baseUrl: "http://127.0.0.1:8000/v1",
       apiKey: "old-private-key",
       apiProtocol: "future-wire",
+      models: { "fixture-model": { contextWindow: 64000 }, removed: { images: true } },
       headers: { "X-Tenant": "old-private-header" },
     });
     const fresh = parseModelSecret(
@@ -122,8 +123,77 @@ describe("compatible connection format preservation", () => {
     expect(fresh).toMatchObject({ apiKey: "new-private-key", baseUrl: "http://127.0.0.1:8001/v1" });
     expect(fresh).not.toHaveProperty("apiProtocol");
     expect(fresh).not.toHaveProperty("headers");
+    expect(fresh.models).toEqual({ "fixture-model": { contextWindow: 64000 } });
     expect(JSON.stringify(fresh)).not.toContain("old-private");
   });
+
+  it.each([true, false])(
+    "clamps Anthropic effort with per-model thinking support (%s)",
+    (reasoning) => {
+      const baseUrl = "http://127.0.0.1:8000/v1";
+      const models = { "model-a": { reasoning }, "model-b": { reasoning: !reasoning } };
+      const previous = serializeModelSecret({
+        kind: "openai_compatible",
+        baseUrl,
+        apiKey: "synthetic-key",
+        reasoning: !reasoning,
+        apiProtocol: "anthropic-messages",
+        models,
+        enabledModelIds: ["model-a", "model-b"],
+      });
+      const saved = parseModelSecret(
+        buildModelConnectPlaintext(
+          {
+            provider: "openai-compatible",
+            baseUrl,
+            modelId: "model-a",
+            reasoning: !reasoning,
+            apiProtocol: "anthropic-messages",
+            thinkingLevel: "high",
+            enabledModelIds: ["model-b"],
+          },
+          previous,
+        ),
+      );
+      expect(saved).toMatchObject({
+        reasoning: !reasoning,
+        thinkingLevel: reasoning ? "high" : null,
+        models,
+      });
+    },
+  );
+
+  it.each([{}, { reasoning: false }])(
+    "preserves a dormant Anthropic effort during key replacement (%j)",
+    (settings) => {
+      const baseUrl = "http://127.0.0.1:8000/v1";
+      const previous = serializeModelSecret({
+        kind: "openai_compatible",
+        baseUrl,
+        apiKey: "synthetic-old-key",
+        reasoning: true,
+        thinkingLevel: "low",
+        apiProtocol: "anthropic-messages",
+        models: { "model-a": settings },
+      });
+      expect(
+        parseModelSecret(
+          buildModelConnectPlaintext(
+            {
+              provider: "openai-compatible",
+              baseUrl,
+              modelId: "model-a",
+              apiKey: "synthetic-new-key",
+            },
+            previous,
+          ),
+        ),
+      ).toMatchObject({
+        thinkingLevel: "low",
+        models: { "model-a": settings },
+      });
+    },
+  );
 
   it.each(["off", "xhigh", "max"] as const)(
     "saves a supported Anthropic effort for %s",
@@ -465,6 +535,7 @@ describe("modelCredentialDto", () => {
       modelId: "qwen3-4b",
       connectionRevision: 1,
       enabledModelIds: ["qwen3-4b"],
+      visionModelIds: [],
       reasoning: false,
       thinkingLevels: ["off"],
     });

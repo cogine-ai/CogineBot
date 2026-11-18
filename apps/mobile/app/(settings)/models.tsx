@@ -37,11 +37,13 @@ import {
   connectionFormFields,
   connectionFormModelId,
   createModelProbe,
+  credentialModelSettings,
   featuredModelProviders,
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
   modelConnectRequest,
+  modelThinkingLevels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -64,6 +66,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HeaderRowsEditor } from "../../components/header-rows-editor";
 import { MenuPicker } from "../../components/menu-picker";
+import { ModelSettingsPanel } from "../../components/model-settings-panel";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { Checkmark, Chevron } from "../../components/row-accessories";
@@ -93,10 +96,11 @@ import { errorText } from "../../lib/user-error";
 /** Providers with more models than this get a search field. */
 const MODEL_SEARCH_THRESHOLD = 10;
 
-type ModelSelection = {
+type ModelLoadOptions = {
   provider?: string;
   modelId?: string;
   connectionId?: string;
+  keepForm?: boolean;
 };
 
 type FeedbackAnchor = "probe" | "model" | "connection";
@@ -269,7 +273,10 @@ function ModelsForm({
     setError(null);
   }
 
-  function acceptSavedBackupConnection(saved: MobileModelCredential) {
+  function acceptSavedBackupConnection(
+    saved: MobileModelCredential,
+    currentCatalog: MobileModel[],
+  ) {
     clearStaleSavedBackupOptions();
     savedBackupOwnerRef.current = {
       apiBase: currentApiBase(),
@@ -279,7 +286,10 @@ function ModelsForm({
     savedBackupOptionsRef.current.set(
       saved.id,
       new Map(
-        connectedBackupOptions(catalog, [saved]).map((option) => [backupChoiceKey(option), option]),
+        connectedBackupOptions(currentCatalog, [saved]).map((option) => [
+          backupChoiceKey(option),
+          option,
+        ]),
       ),
     );
     setBackupModels((current) => current.map(reconcileSavedBackupChoice));
@@ -306,7 +316,7 @@ function ModelsForm({
     if (loginId) void settings.cancelOAuth(loginId).catch(() => undefined);
   }, [settings.cancelOAuth]);
 
-  const load = useCallback(async (preferred: ModelSelection = {}) => {
+  const load = useCallback(async (preferred: ModelLoadOptions = {}) => {
     setError(null);
     const generation = ++modelRequestGenerationRef.current;
     const selectionRevision = selectionRevisionRef.current;
@@ -337,6 +347,13 @@ function ModelsForm({
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
+    if (preferred.keepForm) {
+      const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
+      setConnectionRevision(current?.connectionRevision);
+      setSavedBaseUrl(current?.baseUrl);
+      if (current) acceptSavedBackupConnection(current, nextCatalog);
+      return nextMe;
+    }
     const nextProvider =
       (preferred.provider &&
       nextCatalog.some(
@@ -589,6 +606,9 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const modelReasoning = credential
+    ? credentialModelSettings(credential, modelId).reasoning === true
+    : reasoning;
   const providerConnections = credentials.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -607,11 +627,13 @@ function ModelsForm({
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel =
-    (currentEntry?.thinkingLevels ?? []).some((level) => level !== "off") ||
-    activeCredential?.reasoning
-      ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
-      : null;
+  const activeThinkingLabel = modelThinkingLevels(
+    activeCredential,
+    currentEntry,
+    me?.defaultModel,
+  ).some((level) => level !== "off")
+    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
+    : null;
   const compatibleRows = compatibleModelRows(
     savedCompatibleModelIds(credential, baseUrl),
     enabledModelIds,
@@ -631,7 +653,7 @@ function ModelsForm({
   // model settings and per-bot Thinking pickers.
   const catalogThinkingLevels =
     !isOpenAiCompatible && selected
-      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      ? modelThinkingLevels(credential, selected, selected.id).filter((level) => level !== "off")
       : [];
   const reasoningEffortValue = thinkingLevel ? thinkingLevelLabel(thinkingLevel, t) : t("Default");
   const catalogThinkingValue = thinkingLevel
@@ -679,10 +701,7 @@ function ModelsForm({
     setApiProtocol(next);
     setThinkingLevel(
       (current) =>
-        clampCatalogThinkingLevel(
-          current,
-          reasoning ? compatibleThinkingLevels(next) : [],
-        ) as ThinkingLevel | null,
+        clampCatalogThinkingLevel(current, compatibleThinkingLevels(next)) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
     clearFeedback();
@@ -965,7 +984,7 @@ function ModelsForm({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
+        compatibleThinkingLevels(apiProtocol),
       ) as ThinkingLevel | null,
     );
   }
@@ -1035,7 +1054,7 @@ function ModelsForm({
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      acceptSavedBackupConnection(savedConnection);
+      acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
       await load({ provider, modelId, connectionId: savedConnection.id });
@@ -1077,7 +1096,7 @@ function ModelsForm({
     if (!isCurrent()) return;
     oauthLoginIdRef.current = null;
     setOauth(null);
-    acceptSavedBackupConnection(savedConnection);
+    acceptSavedBackupConnection(savedConnection, catalog);
     await load({ provider, modelId, connectionId: savedConnection.id });
     if (!isCurrent()) return;
     publishFeedback("connection", {
@@ -1432,73 +1451,107 @@ function ModelsForm({
           ) : null}
         </>
       )}
-      {disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))}
-      {showAdvanced ? (
+      {!credential ? (
         <>
-          <View style={styles.card}>
-            <View style={styles.modelRow}>
-              <Text style={styles.modelLabel}>{t("Supports thinking")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Supports thinking")}
-                value={reasoning}
-                onValueChange={(value) => {
-                  setReasoning(value);
-                  if (!value) setThinkingLevel(null);
-                }}
-                disabled={busy}
-              />
-            </View>
-            {reasoning ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("Reasoning effort")}
-                accessibilityValue={{ text: reasoningEffortValue }}
-                disabled={busy}
-                onPress={() => {
-                  presentMessageActionSheet({
-                    title: t("Reasoning effort"),
-                    cancel: t("Cancel"),
-                    more: t("More"),
-                    colorScheme,
-                    actions: [
-                      {
-                        text: t("Default"),
-                        onPress: () => setThinkingLevel(null),
-                      },
-                      ...compatibleThinkingLevels(apiProtocol).map((level) => ({
-                        text: thinkingLevelLabel(level, t),
-                        onPress: () => setThinkingLevel(level),
-                      })),
-                    ],
-                  });
-                }}
-                style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
-              >
-                <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
-                <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
-              </Pressable>
-            ) : null}
-            <View style={[styles.modelRow, styles.singleRow]}>
-              <Text style={styles.modelLabel}>{t("Supports images")}</Text>
-              <NativeSwitch
-                accessibilityLabel={t("Supports images")}
-                value={supportsImages}
-                onValueChange={setSupportsImages}
-                disabled={busy}
-              />
-            </View>
-          </View>
-          {limitField(t("Context limit"), contextWindow, setContextWindow, 7)}
-          {limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)}
-          {supportsImages
-            ? limitField(
-                t("Maximum images per request"),
-                maxImagesPerPrompt,
-                setMaxImagesPerPrompt,
-                4,
-              )
-            : null}
+          {disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))}
+          {showAdvanced ? (
+            <>
+              <View style={styles.card}>
+                <View style={styles.modelRow}>
+                  <Text style={styles.modelLabel}>{t("Supports thinking")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Supports thinking")}
+                    value={reasoning}
+                    onValueChange={(value) => {
+                      setReasoning(value);
+                      if (!value) setThinkingLevel(null);
+                    }}
+                    disabled={busy}
+                  />
+                </View>
+                {reasoning ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("Reasoning effort")}
+                    accessibilityValue={{ text: reasoningEffortValue }}
+                    disabled={busy}
+                    onPress={() => {
+                      presentMessageActionSheet({
+                        title: t("Reasoning effort"),
+                        cancel: t("Cancel"),
+                        more: t("More"),
+                        colorScheme,
+                        actions: [
+                          {
+                            text: t("Default"),
+                            onPress: () => selectThinkingLevel(null),
+                          },
+                          ...compatibleThinkingLevels(apiProtocol).map((level) => ({
+                            text: thinkingLevelLabel(level, t),
+                            onPress: () => selectThinkingLevel(level),
+                          })),
+                        ],
+                      });
+                    }}
+                    style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+                    <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
+                  </Pressable>
+                ) : null}
+                <View style={[styles.modelRow, styles.singleRow]}>
+                  <Text style={styles.modelLabel}>{t("Supports images")}</Text>
+                  <NativeSwitch
+                    accessibilityLabel={t("Supports images")}
+                    value={supportsImages}
+                    onValueChange={setSupportsImages}
+                    disabled={busy}
+                  />
+                </View>
+              </View>
+              {limitField(t("Context limit"), contextWindow, setContextWindow, 7)}
+              {limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)}
+              {supportsImages
+                ? limitField(
+                    t("Maximum images per request"),
+                    maxImagesPerPrompt,
+                    setMaxImagesPerPrompt,
+                    4,
+                  )
+                : null}
+            </>
+          ) : null}
         </>
+      ) : null}
+      {credential && modelReasoning ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("Reasoning effort")}
+          accessibilityValue={{ text: reasoningEffortValue }}
+          disabled={busy}
+          onPress={() => {
+            presentMessageActionSheet({
+              title: t("Reasoning effort"),
+              cancel: t("Cancel"),
+              more: t("More"),
+              colorScheme,
+              actions: [
+                {
+                  text: t("Default"),
+                  onPress: () => selectThinkingLevel(null),
+                },
+                ...compatibleThinkingLevels(apiProtocol).map((level) => ({
+                  text: thinkingLevelLabel(level, t),
+                  onPress: () => selectThinkingLevel(level),
+                })),
+              ],
+            });
+          }}
+          style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
+        >
+          <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+          <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
+        </Pressable>
       ) : null}
     </>
   ) : null;
@@ -1595,6 +1648,7 @@ function ModelsForm({
                 accessibilityRole="radio"
                 accessibilityState={{ selected: entry.id === selected.id }}
                 onPress={() => {
+                  selectionRevisionRef.current += 1;
                   Keyboard.dismiss();
                   cancelOAuth();
                   setModelId(entry.id);
@@ -1642,11 +1696,11 @@ function ModelsForm({
                       text: t("Default ({level})", {
                         level: thinkingLevelLabel("medium", t),
                       }),
-                      onPress: () => setThinkingLevel(null),
+                      onPress: () => selectThinkingLevel(null),
                     },
                     ...catalogThinkingLevels.map((level) => ({
                       text: thinkingLevelLabel(level, t),
-                      onPress: () => setThinkingLevel(level),
+                      onPress: () => selectThinkingLevel(level),
                     })),
                   ],
                 });
@@ -1662,13 +1716,55 @@ function ModelsForm({
             </Pressable>
           ) : null}
         </View>
-        {provider !== "chatgpt-plan"
+        {!credential && provider !== "chatgpt-plan"
           ? disclosureRow(t("Advanced"), showAdvanced, () => setShowAdvanced((visible) => !visible))
           : null}
-        {showAdvanced && provider !== "chatgpt-plan"
+        {showAdvanced && !credential && provider !== "chatgpt-plan"
           ? limitField(t("Maximum output tokens"), maxTokens, setMaxTokens, 6)
           : null}
       </>
+    ) : null;
+
+  function selectThinkingLevel(value: ThinkingLevel | null) {
+    selectionRevisionRef.current += 1;
+    setThinkingLevel(value);
+  }
+
+  const settingsSelectionRevision = selectionRevisionRef.current;
+  const modelSettingsPanel =
+    credential &&
+    modelId.trim() &&
+    (!isOpenAiCompatible ||
+      credential.enabledModelIds?.includes(modelId.trim()) ||
+      credential.modelId === modelId.trim()) ? (
+      <ModelSettingsPanel
+        key={`${credential.id}:${modelId.trim()}`}
+        credential={credential}
+        modelId={modelId.trim()}
+        entry={selected}
+        saveSettings={async (values) => {
+          const requestContext = await captureApiRequestContext();
+          if (!settingsCurrent())
+            throw new Error(t("Model connection changed. Reload and try again."));
+          await rpc(
+            "models/saveModelSettings",
+            { credentialId: credential.id, modelId: modelId.trim(), settings: values },
+            { requestContext },
+          );
+        }}
+        onSaved={async () => {
+          const current = () =>
+            settingsCurrent() && settingsSelectionRevision === selectionRevisionRef.current;
+          if (!current()) throw new Error(t("Could not load model settings"));
+          const applied = await load({
+            provider,
+            modelId,
+            connectionId: credential.id,
+            keepForm: true,
+          });
+          if (!applied || !current()) throw new Error(t("Could not load model settings"));
+        }}
+      />
     ) : null;
 
   const chatgptUsageControl =
@@ -2219,6 +2315,7 @@ function ModelsForm({
           feedback
         )}
 
+        {modelSettingsPanel}
         <View style={styles.backupSection}>
           <Text style={styles.backupTitle}>{t("Backup models")}</Text>
           {backupLoading ? (

@@ -590,6 +590,9 @@ async function connectedChatGPTPlanCatalog(
           placeholder: false,
           catalogProbe: false,
           reasoning: model.reasoning ?? false,
+          images: model.input?.includes("image") ?? false,
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
         }))),
   ];
 }

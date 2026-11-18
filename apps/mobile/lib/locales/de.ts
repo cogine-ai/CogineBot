@@ -1486,4 +1486,11 @@ export const DE_MESSAGES: Record<string, string> = {
   Visible: "Sichtbar",
   "These login values are too long together. Shorten one or more fields.":
     "Diese Anmeldedaten sind zusammen zu lang. Kürze einen oder mehrere Werte.",
+  Adjusted: "Angepasst",
+  "Reset to defaults": "Auf Standard zurücksetzen",
+  "Could not save model settings": "Modelleinstellungen konnten nicht gespeichert werden",
+  "Maximum output tokens must be below the context limit.":
+    "Die maximale Anzahl der Ausgabetokens muss unter dem Kontextlimit liegen.",
+  "Model connection changed. Reload and try again.":
+    "Die Modellverbindung wurde geändert. Neu laden und erneut versuchen.",
 };

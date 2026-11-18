@@ -2,6 +2,7 @@ import type { OAuthCredential } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   AgentModelOAuthCredential,
+  AgentRunModel,
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
 } from "@rakazo/adapter-kit";
@@ -25,6 +26,162 @@ function credential(overrides: Partial<OAuthCredential> = {}): OAuthCredential {
 }
 
 describe("PiRuntimeCredentialStore", () => {
+  it("keeps rotation ownership until a started callback settles after its deadline", async () => {
+    const stopped = new AbortController();
+    const held = credential();
+    const successor = credential({ access: "successor", refresh: "successor-refresh" });
+    let finish!: (value: OAuthCredential) => void;
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let saved = held;
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, stopped.signal);
+        if (next) saved = { ...next, type: "oauth" };
+        return saved;
+      },
+    );
+    let settled = false;
+    const result = store.modify("anthropic", async () => {
+      started();
+      return new Promise<OAuthCredential>((resolve) => {
+        finish = resolve;
+      });
+    });
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await entered;
+    stopped.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    finish(successor);
+    await expect(result).resolves.toEqual(successor);
+    expect(saved).toEqual(successor);
+    expect(store.accessToken).toBe("successor");
+  });
+  it("runs provider refresh against the locked stored token and publishes only the committed result", async () => {
+    const held = credential({ access: "stale", expires: 1 });
+    const stored = credential({ access: "latest", refresh: "latest-refresh", expires: 2 });
+    const successor = credential({ access: "successor" });
+    const persist = vi.fn();
+    const refresh = vi.fn<NonNullable<NonNullable<AgentRunModel["oauth"]>["refresh"]>>(
+      async (seen, operation) => {
+        expect(seen).toEqual(held);
+        const result = await operation(stored, new AbortController().signal);
+        expect(store.accessToken).toBe("stale");
+        expect(result).toEqual(successor);
+        return successor;
+      },
+    );
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      persist,
+      undefined,
+      undefined,
+      refresh,
+    );
+    const provider = vi.fn<Parameters<PiRuntimeCredentialStore["modify"]>[1]>(async (current) => {
+      expect(current).toEqual(stored);
+      return successor;
+    });
+    await expect(store.modify("anthropic", provider)).resolves.toEqual(successor);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(store.accessToken).toBe("successor");
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("publishes a committed successor before reporting caller cancellation", async () => {
+    const caller = new AbortController();
+    const held = credential();
+    const successor = credential({ access: "committed-access", refresh: "committed-refresh" });
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, new AbortController().signal);
+        caller.abort();
+        return next ?? held;
+      },
+    );
+    await expect(
+      store.modify("anthropic", async () => successor, { signal: caller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.accessToken).toBe(successor.access);
+    await expect(store.read("anthropic")).resolves.toEqual(successor);
+  });
+
+  it("keeps the held token when the coordinated refresh fails to commit", async () => {
+    const held = credential();
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        await operation(held, new AbortController().signal);
+        throw new Error("commit failed");
+      },
+    );
+    await expect(
+      store.modify("anthropic", async () => credential({ access: "uncommitted" })),
+    ).rejects.toThrow("commit failed");
+    expect(store.accessToken).toBe(held.access);
+  });
+
+  it("clears the request-local token only after confirmed retirement", async () => {
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      credential(),
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        throw new RetiredModelCredentialError("Reconnect");
+      },
+    );
+    await expect(store.modify("anthropic", vi.fn())).rejects.toThrow("Reconnect");
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("does not start a provider operation after the coordinated refresh deadline", async () => {
+    const stopped = new AbortController();
+    stopped.abort();
+    const held = credential();
+    const store = new PiRuntimeCredentialStore(
+      "anthropic",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        await operation(held, stopped.signal);
+        return held;
+      },
+    );
+    await expect(
+      store.modify("anthropic", async () => new Promise(() => {})),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.accessToken).toBe(held.access);
+  });
+
   it("reloads current ChatGPT credentials under a shared lock before each request-local refresh", async () => {
     let saved = credential({ access: "old-access", expires: 0 });
     let chain = Promise.resolve();
@@ -120,6 +277,59 @@ describe("PiRuntimeCredentialStore", () => {
 
   it("does not configure openai-codex without a stored OAuth credential", async () => {
     expect(await builtinModels().getAuth("openai-codex")).toBeUndefined();
+  });
+
+  it("uses the actual SDK provider deadline inside coordinated runtime refresh", async () => {
+    const held = credential({ expires: 1 });
+    const deadline = new AbortController();
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) => (ms === 15_000 ? deadline.signal : originalTimeout(ms)));
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let providerSignal: AbortSignal | undefined;
+    const fetcher = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      providerSignal = init?.signal ?? undefined;
+      entered();
+      return new Promise<Response>((_resolve, reject) => {
+        providerSignal!.addEventListener("abort", () => reject(providerSignal!.reason), {
+          once: true,
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const save = vi.fn();
+    const store = new PiRuntimeCredentialStore(
+      "openai-codex",
+      held,
+      undefined,
+      undefined,
+      undefined,
+      async (_, operation) => {
+        const next = await operation(held, new AbortController().signal);
+        if (next) save(next);
+        return next ?? held;
+      },
+    );
+    try {
+      const auth = builtinModels({ credentials: store }).getAuth("openai-codex");
+      const rejected = expect(auth).rejects.toThrow();
+      await started;
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      expect(providerSignal).toBe(deadline.signal);
+      deadline.abort(new Error("provider deadline"));
+      await rejected;
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(save).not.toHaveBeenCalled();
+      expect(store.accessToken).toBe(held.access);
+    } finally {
+      deadline.abort();
+      timeout.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("bridges an encrypted OAuth credential into the OAuth-only Codex provider", async () => {

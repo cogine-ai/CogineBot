@@ -33,10 +33,12 @@ import {
   connectionFormFields,
   connectionFormModelId,
   createModelProbe,
+  credentialModelSettings,
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
   modelConnectRequest,
+  modelThinkingLevels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -89,6 +91,7 @@ import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
+import { ModelSettingsPanel } from "./model-settings-panel";
 
 export function ModelSettingsOverlay({
   onClose,
@@ -226,7 +229,10 @@ export function ModelSettingsOverlay({
     },
   });
 
-  async function refresh(preferredConnectionId?: string) {
+  async function refresh(
+    preferredConnectionId?: string,
+    { keepForm = false }: { keepForm?: boolean } = {},
+  ) {
     const refreshRevision = ++refreshRevisionRef.current;
     const selectionRevision = selectionRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
@@ -292,6 +298,11 @@ export function ModelSettingsOverlay({
     );
     setMe(nextMe);
     if (selectionRevision === selectionRevisionRef.current) {
+      if (keepForm) {
+        setConnectionRevision(nextCredential?.connectionRevision);
+        setSavedBaseUrl(nextCredential?.baseUrl);
+        return true;
+      }
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
       setProvider(nextProvider);
@@ -308,6 +319,7 @@ export function ModelSettingsOverlay({
       applyConnectionFields(fields);
       setHeaderRows(null);
       setCompatibleQuery("");
+      return true;
     }
   }
 
@@ -421,6 +433,9 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const modelReasoning = credential
+    ? credentialModelSettings(credential, modelId).reasoning === true
+    : reasoning;
   const providerConnections = credentials.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -439,11 +454,13 @@ export function ModelSettingsOverlay({
   const activeCredential = credentials.find((entry) => entry.isDefault);
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel =
-    (currentEntry?.thinkingLevels ?? []).some((level) => level !== "off") ||
-    activeCredential?.reasoning
-      ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
-      : null;
+  const activeThinkingLabel = modelThinkingLevels(
+    activeCredential,
+    currentEntry,
+    me?.defaultModel,
+  ).some((level) => level !== "off")
+    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
+    : null;
   const isActive =
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
@@ -458,13 +475,14 @@ export function ModelSettingsOverlay({
   // per-bot Thinking picker.
   const catalogThinkingLevels =
     !isOpenAiCompatible && selected
-      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      ? modelThinkingLevels(credential, selected, selected.id).filter((level) => level !== "off")
       : [];
   const selectedStoredLevel =
     !isOpenAiCompatible && credential?.modelId === selected?.id
       ? (credential?.thinkingLevel ?? null)
       : null;
   const thinkingDirty = !isOpenAiCompatible && (thinkingLevel ?? null) !== selectedStoredLevel;
+  const settingsSelectionRevision = selectionRevisionRef.current;
   const busy = pending !== null || oauthPending;
   const effectiveBaseUrl = baseUrl.trim();
   const openAiCompatibleReady = compatibleConnectionReady({
@@ -518,10 +536,7 @@ export function ModelSettingsOverlay({
     setApiProtocol(next);
     setThinkingLevel(
       (current) =>
-        clampCatalogThinkingLevel(
-          current,
-          reasoning ? compatibleThinkingLevels(next) : [],
-        ) as ThinkingLevel | null,
+        clampCatalogThinkingLevel(current, compatibleThinkingLevels(next)) as ThinkingLevel | null,
     );
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -565,7 +580,7 @@ export function ModelSettingsOverlay({
     setThinkingLevel(
       clampCatalogThinkingLevel(
         credential?.modelId === nextModelId ? credential.thinkingLevel : null,
-        reasoning ? compatibleThinkingLevels(apiProtocol) : [],
+        compatibleThinkingLevels(apiProtocol),
       ) as ThinkingLevel | null,
     );
   }
@@ -1067,7 +1082,7 @@ export function ModelSettingsOverlay({
               setNotice(null);
             }}
           />
-          {provider !== "chatgpt-plan" ? (
+          {provider !== "chatgpt-plan" && !credential ? (
             <ModelThinkingOptions
               showThinking={false}
               disabled={busy}
@@ -1859,15 +1874,19 @@ export function ModelSettingsOverlay({
                     ) : null}
                   </div>
                   <ModelThinkingOptions
-                    reasoning={reasoning}
-                    onReasoningChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setReasoning(value);
-                      if (!value) setThinkingLevel(null);
-                      setNotice(null);
-                    }}
+                    reasoning={modelReasoning}
+                    onReasoningChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setReasoning(value);
+                            if (!value) setThinkingLevel(null);
+                            setNotice(null);
+                          }
+                    }
                     disabled={busy}
-                    advancedLabel={t`Advanced`}
+                    advancedLabel={credential ? t`Thinking` : t`Advanced`}
                     thinkingLabel={t`Supports thinking`}
                     thinkingLevel={thinkingLevel}
                     onThinkingLevelChange={(value) => {
@@ -1882,35 +1901,72 @@ export function ModelSettingsOverlay({
                     thinkingLevelLabel={t`Reasoning effort`}
                     thinkingLevelDefaultLabel={t`Default`}
                     maxTokens={maxTokens}
-                    onMaxTokensChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setMaxTokens(value);
-                      setNotice(null);
-                    }}
+                    onMaxTokensChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setMaxTokens(value);
+                            setNotice(null);
+                          }
+                    }
                     maxTokensLabel={t`Maximum output tokens`}
                     contextWindow={contextWindow}
-                    onContextWindowChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setContextWindow(value);
-                      setNotice(null);
-                    }}
+                    onContextWindowChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setContextWindow(value);
+                            setNotice(null);
+                          }
+                    }
                     contextWindowLabel={t`Context limit`}
                     supportsImages={supportsImages}
-                    onSupportsImagesChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setSupportsImages(value);
-                      setNotice(null);
-                    }}
+                    onSupportsImagesChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setSupportsImages(value);
+                            setNotice(null);
+                          }
+                    }
                     imagesLabel={t`Supports images`}
                     maxImagesPerPrompt={maxImagesPerPrompt}
-                    onMaxImagesPerPromptChange={(value) => {
-                      selectionRevisionRef.current += 1;
-                      setMaxImagesPerPrompt(value);
-                      setNotice(null);
-                    }}
+                    onMaxImagesPerPromptChange={
+                      credential
+                        ? undefined
+                        : (value) => {
+                            selectionRevisionRef.current += 1;
+                            setMaxImagesPerPrompt(value);
+                            setNotice(null);
+                          }
+                    }
                     maxImagesLabel={t`Maximum images per request`}
                   />
                 </div>
+              ) : null}
+              {credential &&
+              modelId.trim() &&
+              (!isOpenAiCompatible ||
+                credential.enabledModelIds?.includes(modelId.trim()) ||
+                credential.modelId === modelId.trim()) ? (
+                <ModelSettingsPanel
+                  key={`${credential.id}:${modelId.trim()}`}
+                  credential={credential}
+                  modelId={modelId.trim()}
+                  entry={selected}
+                  spaceId={me?.spaceId}
+                  onSaved={async () => {
+                    const current = () =>
+                      settingsSelectionRevision === selectionRevisionRef.current &&
+                      contextCurrent();
+                    if (!current()) throw new Error(t`Could not load model settings`);
+                    const applied = await refresh(credential.id, { keepForm: true });
+                    if (!applied || !current()) throw new Error(t`Could not load model settings`);
+                  }}
+                />
               ) : null}
               {isOpenAiCompatible ? (
                 <>

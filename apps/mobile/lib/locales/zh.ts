@@ -1413,4 +1413,9 @@ export const ZH_MESSAGES: Record<string, string> = {
   Visible: "可见",
   "These login values are too long together. Shorten one or more fields.":
     "登录信息的总长度超出限制。请缩短一个或多个字段。",
+  Adjusted: "已调整",
+  "Reset to defaults": "恢复默认",
+  "Could not save model settings": "无法保存模型设置",
+  "Maximum output tokens must be below the context limit.": "最大输出 token 数必须小于上下文上限。",
+  "Model connection changed. Reload and try again.": "模型连接已更改，请重新加载后重试。",
 };

@@ -1112,6 +1112,13 @@ describe("refreshExpiredModelCredential", () => {
         update: vi.fn(async () => ({})),
       },
     } as unknown as PrismaClient;
+    prisma.$transaction = vi.fn(async (operation) =>
+      operation({
+        secret: prisma.secret,
+        $executeRaw: vi.fn(async () => 0),
+        $queryRaw: vi.fn(async () => []),
+      }),
+    ) as unknown as PrismaClient["$transaction"];
     const secretStore = {
       load: vi.fn(async () => current),
       put: vi.fn(async (next: string) => {
@@ -1261,6 +1268,13 @@ describe("kickModelCredentialRefresh", () => {
         update: vi.fn(async () => ({})),
       },
     } as unknown as PrismaClient;
+    prisma.$transaction = vi.fn(async (operation) =>
+      operation({
+        secret: prisma.secret,
+        $executeRaw: vi.fn(async () => 0),
+        $queryRaw: vi.fn(async () => []),
+      }),
+    ) as unknown as PrismaClient["$transaction"];
     const secretStore = {
       load: vi.fn(async () => current),
       put: vi.fn(async (next: string) => {

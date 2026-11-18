@@ -457,6 +457,7 @@ import {
   validateConnectedModelChoice,
   validateModelAuthAvailability,
 } from "./model-selection.js";
+import { connectionModelSettings } from "./model-settings.js";
 import {
   connectionModelImageInput,
   filterImageReturningComputerTools,
@@ -504,8 +505,11 @@ import {
   isRetiredModelCredentialError,
   matchesFailedOAuthSecret,
   parseModelSecret,
+  persistRefreshedModelCredential,
   persistStoredModelSecret,
+  refreshStoredModelCredential,
   resolveModelAuth,
+  resolveStoredModelAuth,
   secretValuesToRedact,
   serializeModelSecret,
   withModelCredentialLock,
@@ -3591,6 +3595,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         ? {
             credential: resolved.oauth,
             persist: resolved.persistOAuth,
+            refresh: resolved.refreshOAuth,
             synchronize: resolved.synchronizeOAuth,
             retire: resolved.retireOAuth,
           }
@@ -3692,6 +3697,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ? {
               credential: resolved.oauth,
               persist: resolved.persistOAuth,
+              refresh: resolved.refreshOAuth,
               synchronize: resolved.synchronizeOAuth,
               retire: resolved.retireOAuth,
             }
@@ -7627,6 +7633,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ? {
                             credential: judgeKey.oauth,
                             persist: judgeKey.persistOAuth,
+                            refresh: judgeKey.refreshOAuth,
                             synchronize: judgeKey.synchronizeOAuth,
                             retire: judgeKey.retireOAuth,
                           }
@@ -11291,6 +11298,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ? {
                       credential: resolved.oauth,
                       persist: resolved.persistOAuth,
+                      refresh: resolved.refreshOAuth,
                       synchronize: resolved.synchronizeOAuth,
                       retire: resolved.retireOAuth,
                     }
@@ -13593,6 +13601,7 @@ async function resolveModelKey(
   maxImagesPerPrompt?: number;
   oauth?: AgentModelOAuthCredential;
   persistOAuth?: (credential: AgentModelOAuthCredential) => Promise<void>;
+  refreshOAuth?: NonNullable<AgentRunRequest["model"]["oauth"]>["refresh"];
   synchronizeOAuth?: NonNullable<AgentRunRequest["model"]["oauth"]>["synchronize"];
   retireOAuth?: (
     reason: ModelCredentialRetireReason,
@@ -13648,7 +13657,17 @@ async function resolveModelKey(
               : undefined,
           });
         const resolveAuth = () =>
-          resolveModelAuth(plaintext, credential.provider, { persist, retire });
+          provider === CHATGPT_PLAN_PROVIDER_ID
+            ? resolveModelAuth(plaintext, credential.provider, { persist, retire })
+            : resolveStoredModelAuth(
+                deps.prisma,
+                deps.secretStore,
+                { userId, spaceId },
+                row.id,
+                plaintext,
+                credential.provider,
+                { retire },
+              );
         let resolved: Awaited<ReturnType<typeof resolveAuth>> | undefined;
         let liveCodex: Awaited<ReturnType<typeof codexLiveModel>>;
         const authError = validateModelAuthAvailability(provider, modelId, plaintext);
@@ -13681,9 +13700,10 @@ async function resolveModelKey(
         const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
         const baseUrl =
           resolved.secret.kind === "openai_compatible" ? resolved.secret.baseUrl : undefined;
+        const settings = connectionModelSettings(resolved.secret, provider, modelId, credential);
         const acceptsImages =
-          connectionModelImageInput(provider, modelId, credential, resolved.secret) ??
-          liveCodex?.supportsImages;
+          liveCodex?.supportsImages ??
+          connectionModelImageInput(provider, modelId, credential, resolved.secret);
         const accountId =
           resolved.secret.kind === "api_key" ? resolved.secret.accountId : undefined;
         const gatewayId =
@@ -13701,57 +13721,36 @@ async function resolveModelKey(
             resolved.secret.kind === "openai_compatible" ? resolved.secret.headers : undefined,
           cacheCapabilities:
             resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
-          contextWindow:
-            resolved.secret.kind !== "oauth" ? resolved.secret.contextWindow : undefined,
-          reasoning:
-            resolved.secret.kind === "openai_compatible" ? resolved.secret.reasoning : undefined,
-          maxTokens: resolved.secret.maxTokens,
+          contextWindow: settings.contextWindow,
+          reasoning: settings.reasoning,
+          maxTokens: settings.maxTokens,
           thinkingLevel:
             resolved.secret.kind === "openai_compatible"
               ? resolved.secret.thinkingLevel
               : undefined,
           acceptsImages,
-          maxImagesPerPrompt:
-            resolved.secret.kind === "openai_compatible"
-              ? resolved.secret.maxImagesPerPrompt
-              : undefined,
+          maxImagesPerPrompt: settings.maxImagesPerPrompt,
           oauth,
           persistOAuth: oauth
-            ? async (next: AgentModelOAuthCredential) => {
-                await withModelCredentialLock(credential.secretId, async () => {
-                  const currentRow = await deps.prisma.secret.findFirst({
-                    where: { id: credential.secretId, userId, spaceId: null },
-                  });
-                  if (!currentRow) return;
-                  const current = parseModelSecret(
-                    await deps.secretStore.load(currentRow.ciphertext, currentRow.id),
-                  );
-                  if (current.kind === "oauth") {
-                    const stored = current.credential;
-                    if (stored.expires > next.expires) return;
-                    if (
-                      stored.access === next.access &&
-                      stored.refresh === next.refresh &&
-                      stored.expires === next.expires
-                    ) {
-                      return;
-                    }
-                  }
-                  await persistStoredModelSecret(
-                    deps.prisma,
-                    deps.secretStore,
-                    { userId, spaceId },
-                    row.id,
-                  )(
-                    serializeModelSecret({
-                      kind: "oauth",
-                      credential: toOAuthCredential(next),
-                      ...(current.maxTokens !== undefined ? { maxTokens: current.maxTokens } : {}),
-                    }),
-                  );
-                });
-              }
+            ? persistRefreshedModelCredential(
+                deps.prisma,
+                deps.secretStore,
+                { userId, spaceId },
+                credential.secretId,
+                provider,
+              )
             : undefined,
+          refreshOAuth:
+            oauth && provider !== CHATGPT_PLAN_PROVIDER_ID
+              ? refreshStoredModelCredential(
+                  deps.prisma,
+                  deps.secretStore,
+                  { userId, spaceId },
+                  credential.secretId,
+                  provider,
+                  { retire },
+                )
+              : undefined,
           synchronizeOAuth:
             oauth && provider === CHATGPT_PLAN_PROVIDER_ID
               ? (

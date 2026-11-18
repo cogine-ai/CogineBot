@@ -51,6 +51,8 @@ function oauthPrisma() {
     ],
   };
   const tx = {
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => []),
     userModelCredential: {
       findFirst: vi.fn(
         async (args: { where: { id: string; userId: string } }) =>
@@ -237,9 +239,9 @@ describe("OAuth credential retirement on terminal refresh rejection", () => {
     expect(state.secrets).toHaveLength(1);
   });
 
-  it("keeps a credential a concurrent refresh already rewrote", async () => {
-    // The refresh raced a sibling run that persisted rotated tokens into the
-    // same secret row; the stale failure must not delete the newer material.
+  it("adopts a credential refreshed before the locked read", async () => {
+    // A sibling rotated the token before this run obtained the refresh lock.
+    // Adopt the committed token without spending the stale refresh token.
     const fetchMock = vi.fn(
       async () =>
         new Response(JSON.stringify({ error: "invalid_grant", error_description: "gone" }), {
@@ -254,9 +256,10 @@ describe("OAuth credential retirement on terminal refresh rejection", () => {
       .mockImplementation(() => rotatedOAuthPlaintext());
     const executor = oauthExecutor(prisma, load);
 
-    await expect(executor.resolveConnectedModel(SCOPE, PROVIDER, MODEL_ID)).rejects.toThrow(
-      /invalid_grant/,
-    );
+    await expect(executor.resolveConnectedModel(SCOPE, PROVIDER, MODEL_ID)).resolves.toMatchObject({
+      oauth: { credential: { access: "rotated-access", refresh: "rotated-refresh" } },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
 
     expect(state.credentials).toHaveLength(1);
     expect(state.preferences).toHaveLength(1);
