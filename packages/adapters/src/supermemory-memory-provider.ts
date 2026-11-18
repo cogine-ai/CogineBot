@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type {
@@ -159,21 +158,15 @@ export async function prepareSupermemoryConnection(
   const { mode, baseUrl, apiKey } = parseSupermemoryConnection(settings, credentials);
   const pinnedAddresses =
     mode === "local" ? await pinSupermemoryPrivateHost(baseUrl, options) : undefined;
-  const connection: SupermemoryConnectionConfig = {
+  // Connection setup checks readability. Cleanup authority is checked by each actual delete.
+  const probe = await probeSupermemory({
     baseUrl,
     apiKey,
     resolveHostname: options?.resolveHostname,
     fetch: options?.fetch,
     ...(pinnedAddresses ? { pinnedAddresses } : {}),
-  };
-  const probe = await probeSupermemory(connection);
+  });
   if (!probe.ok) throw new Error(probe.error);
-  // A fresh random tag checks deletion authority without touching saved facts.
-  const deletable = await deleteSupermemoryContainer(
-    `cogine:delete-probe:${randomUUID()}`,
-    connection,
-  );
-  if (!deletable.ok) throw new Error(deletable.error);
   return { settings: { mode, baseUrl }, credentials: { apiKey } };
 }
 
