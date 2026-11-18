@@ -74,26 +74,28 @@ async function main() {
     if (error.code !== "ENOENT") throw error;
   }
   if (previous) await run(previous, ["--coginebot-check-protocol"]);
-  let executable;
+  await mkdir(output, { recursive: true });
+  const { build: base } = JSON.parse(
+    await readFile(path.join(desktopRoot, "package.json"), "utf8"),
+  );
+  const configFile = path.join(output, "build-config.json");
+  await writePrivateFile(
+    configFile,
+    JSON.stringify({
+      ...developmentBuildConfiguration(development, output, base),
+      afterPack: path.join(desktopRoot, "scripts/development-after-pack.mjs"),
+    }),
+  );
   await build({
     projectDir: desktopRoot,
     targets: Platform.current().createTarget(["dir"]),
     publish: "never",
-    config: {
-      ...developmentBuildConfiguration(development, output),
-      afterPack: async ({ appOutDir, packager }) => {
-        const name = packager.appInfo.productFilename;
-        executable = path.join(
-          appOutDir,
-          ...(process.platform === "darwin"
-            ? [`${name}.app`, "Contents", "MacOS", name]
-            : [process.platform === "win32" ? `${name}.exe` : "coginebot-dev"]),
-        );
-      },
-    },
+    config: configFile,
   });
+  const { executable } = JSON.parse(
+    await readFile(path.join(output, "build-receipt.json"), "utf8"),
+  );
   if (!executable) throw new Error("The development launcher was not built.");
-  await mkdir(output, { recursive: true });
   await run(executable, ["--coginebot-register-protocol"]);
   await writePrivateFile(manifest, JSON.stringify({ development, executable }));
 }

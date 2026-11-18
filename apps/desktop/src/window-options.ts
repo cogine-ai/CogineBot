@@ -1,4 +1,6 @@
-export const DEFAULT_WARM_WINDOW_TTL_MS = 15 * 60_000;
+// Retain the Console's in-memory route and draft while the macOS app is running.
+// An explicit developer override can still expire a hidden window for profiling.
+export const DEFAULT_WARM_WINDOW_TTL_MS = null;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export function warmWindowTtlMs(value: string | undefined) {

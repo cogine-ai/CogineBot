@@ -115,6 +115,8 @@ Development workspaces have separate profiles and instances. The installed app
 keeps its existing profile and uses `coginebot://bot/`; development launchers do not
 use the installed app's update channel. Both links only open or restore the Console.
 They cannot select a server, send a message, run a tool or finish authorization.
+On macOS, closing the Console keeps its hidden window and unsent draft until the
+application quits. The existing explicit warm-window profiling overrides still apply.
 On Linux, an AppImage registers its user desktop entry on its first ordinary
 launch, preserving an existing different handler. Before removing that AppImage,
 quit it and run it with `--coginebot-unregister-protocol` to remove its own entry.

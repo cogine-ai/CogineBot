@@ -25,6 +25,7 @@ let vite: ViteDevServer;
 let origin: string;
 let devExecutable: string;
 let productionExecutable: string;
+let developmentProfile: string;
 let mounted = 0;
 let documentRequests = 0;
 
@@ -184,6 +185,29 @@ test.afterAll(async () => {
   }
 });
 
+test("a system link restores first-run setup without bypassing it", async () => {
+  const production = await electron.launch({
+    executablePath: productionExecutable,
+    env: { ...env, RAKAZO_WEB_URL: "", RAKAZO_FORCE_SETUP: "1" },
+    args: ["--no-sandbox"],
+  });
+  apps.add(production);
+  const setup = await production.firstWindow();
+  await expect(setup.getByRole("heading", { name: "Welcome to CogineBot" })).toBeVisible();
+  await production.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide());
+  const delivered = dispatch("coginebot://bot/");
+  await delivered();
+  await expect
+    .poll(() =>
+      production.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible()),
+    )
+    .toBe(true);
+  await expect(setup.getByRole("heading", { name: "Welcome to CogineBot" })).toBeVisible();
+  expect(mounted).toBe(0);
+  await setup.screenshot({ path: path.join(screenshotRoot, "deep-links-setup-restored.png") });
+  await close(production);
+});
+
 test("installed AppImage and development launcher coexist and OS links restore without reloading", async () => {
   const production = await launch(productionExecutable);
   const productionWindow = await consoleWindow(production);
@@ -201,6 +225,8 @@ test("installed AppImage and development launcher coexist and OS links restore w
     }));
   const installedIdentity = await identity(production);
   const developmentIdentity = await identity(development);
+  developmentProfile = developmentIdentity.profile;
+  await writeFile(path.join(developmentProfile, "preserved-data.txt"), "Keep development data");
   expect(installedIdentity.packaged && developmentIdentity.packaged).toBe(true);
   expect(developmentIdentity.name).toBe("CogineBot Dev");
   expect(developmentIdentity.profile).not.toBe(installedIdentity.profile);
@@ -305,31 +331,74 @@ test("a rebound workspace owns only its development association", async () => {
   test.setTimeout(300_000);
   const workspace = path.join(root, "second-workspace");
   await mkdir(workspace);
+  const original = await launch(devExecutable);
+  const originalWindow = await consoleWindow(original);
+  await originalWindow.getByLabel("Draft").fill("Keep the first workspace draft");
+  let reboundRequests = 0;
+  const reboundVite = await createServer({
+    configFile: false,
+    root: path.join(root, "vite"),
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "rebound-workspace-receipt",
+        configureServer(server) {
+          server.middlewares.use((request, _response, next) => {
+            if (request.url === "/") reboundRequests += 1;
+            next();
+          });
+        },
+      },
+    ],
+  });
+  await reboundVite.listen();
+  const reboundOrigin = reboundVite.resolvedUrls!.local[0]!.replace(/\/$/, "");
   const output = path.join(desktop, "out-dev/rebound");
-  let executable = "";
+  await mkdir(output, { recursive: true });
+  const configFile = path.join(output, "build-config.json");
+  const { build: base } = JSON.parse(await readFile(path.join(desktop, "package.json"), "utf8"));
+  await writeFile(
+    configFile,
+    JSON.stringify({
+      ...developmentBuildConfiguration(
+        { workspaceRoot: workspace, viteUrl: reboundOrigin },
+        output,
+        base,
+      ),
+      afterPack: path.join(desktop, "scripts/development-after-pack.mjs"),
+    }),
+  );
   await build({
     projectDir: desktop,
     targets: Platform.LINUX.createTarget(["dir"]),
     publish: "never",
-    config: {
-      ...developmentBuildConfiguration({ workspaceRoot: workspace, viteUrl: origin }, output),
-      afterPack: async ({ appOutDir }) => {
-        executable = path.join(appOutDir, "coginebot-dev");
-      },
-    },
+    config: configFile,
   });
+  const { executable } = JSON.parse(
+    await readFile(path.join(output, "build-receipt.json"), "utf8"),
+  );
   await exec(executable, ["--no-sandbox", "--coginebot-register-protocol"], { env });
   const entry = path.join(env.XDG_DATA_HOME!, "applications/coginebot-dev.desktop");
   const rebound = await readFile(entry, "utf8");
   expect(rebound).toContain(executable);
+  const delivered = dispatch("coginebot-dev://bot/");
+  await expect.poll(async () => (await nativeWindows()).length).toBe(2);
+  await expect.poll(() => reboundRequests).toBeGreaterThan(0);
+  await expect(originalWindow.getByLabel("Draft")).toHaveValue("Keep the first workspace draft");
+  expect(originalWindow.url()).toBe(`${origin}/`);
+  expect(await readFile(entry, "utf8")).toBe(rebound);
+  await close(original);
   await exec(process.execPath, ["scripts/development.mjs", "unregister"], { cwd: desktop, env });
   expect(await readFile(entry, "utf8")).toBe(rebound);
-  const delivered = dispatch("coginebot-dev://bot/");
   await expect.poll(async () => (await nativeWindows()).length).toBe(1);
   await closeNativeWindow();
   await delivered();
   await exec(executable, ["--no-sandbox", "--coginebot-unregister-protocol"], { env });
+  await reboundVite.close();
   await expect(readFile(entry)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(path.join(developmentProfile, "preserved-data.txt"), "utf8")).toBe(
+    "Keep development data",
+  );
   expect(
     (
       await exec("xdg-mime", ["query", "default", "x-scheme-handler/coginebot"], { env })

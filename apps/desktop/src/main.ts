@@ -385,9 +385,11 @@ function createWindow(url: string, partition: string | null) {
       event.preventDefault();
       win.hide();
       clearTimeout(warmWindowTimer);
-      warmWindowTimer = setTimeout(() => {
-        if (mainWindow === win && !win.isDestroyed() && !win.isVisible()) win.destroy();
-      }, WARM_WINDOW_TTL_MS);
+      if (WARM_WINDOW_TTL_MS !== null) {
+        warmWindowTimer = setTimeout(() => {
+          if (mainWindow === win && !win.isDestroyed() && !win.isVisible()) win.destroy();
+        }, WARM_WINDOW_TTL_MS);
+      }
     }
   });
   win.once("closed", () => {

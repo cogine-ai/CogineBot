@@ -6,22 +6,26 @@ import { desktopDevelopmentId, parseDesktopDevelopment } from "./desktop-environ
 export function developmentBuildConfiguration(
   input: DesktopDevelopment,
   output: string,
+  base: Configuration,
 ): Configuration {
   const development = parseDesktopDevelopment(input);
   return {
+    ...base,
+    extends: null,
     appId: desktopDevelopmentId(development.workspaceRoot),
     productName: "CogineBot Dev",
-    directories: { output },
+    directories: { ...base.directories, output },
     extraMetadata: {
+      ...base.extraMetadata,
       name: "coginebot-desktop-dev",
       productName: "CogineBot Dev",
       coginebotDevelopment: development,
     },
     protocols: [{ name: "CogineBot Dev", schemes: ["coginebot-dev"], role: "Viewer" }],
     extraResources: [],
-    publish: [],
-    mac: { identity: null, notarize: false },
-    win: { executableName: "CogineBot Dev" },
-    linux: { executableName: "coginebot-dev" },
+    publish: null,
+    mac: { ...base.mac, identity: null, notarize: false },
+    win: { ...base.win, executableName: "CogineBot Dev", signAndEditExecutable: false },
+    linux: { ...base.linux, executableName: "coginebot-dev" },
   };
 }
