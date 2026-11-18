@@ -206,7 +206,11 @@ async function startFixtureServer(port = 0) {
                     '<!doctype html><html><head><title>Development fixture unavailable</title></head><body><main data-rakazo-app-state="failed">Development fixture unavailable</main></body></html>',
                   );
                 };
-                if (failureMode === "hold" && request.headers["sec-fetch-dest"] === "document")
+                if (
+                  failureMode === "hold" &&
+                  request.headers["sec-fetch-dest"] === "document" &&
+                  releaseFailedDocument === undefined
+                )
                   releaseFailedDocument = fail;
                 else fail();
                 return;
@@ -518,7 +522,7 @@ test("registered OS dispatch cold-starts each distribution once, including repea
     const before = mounted;
     const requestsBefore = documentRequests;
     const delivered = dispatch(`${scheme}://bot/`);
-    // The first document probe establishes that the cold process owns its lock.
+    // The first document request establishes that the cold process owns its lock.
     await expect.poll(() => documentRequests).toBeGreaterThan(requestsBefore);
     const repeats = Array.from({ length: 3 }, () => dispatch(`${scheme}://bot/`));
     await Promise.all(repeats.map((complete) => complete()));
