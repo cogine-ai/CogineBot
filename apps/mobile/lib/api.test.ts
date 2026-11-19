@@ -2,8 +2,14 @@ import { readFileSync } from "node:fs";
 
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 
-import { isServerUnreachable, ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
+import {
+  isServerUnreachable,
+  observeMemoryCleanup,
+  ReplyAnnouncements,
+  withLiveStreamingProgress,
+} from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promptAiConsent } from "./ai-consent";
 import type { MobileMessage, MobileSnapshot } from "./api.js";
@@ -5174,6 +5180,7 @@ describe("mobile screen released-event callback", () => {
       replyEventObserver: { current: vi.fn() },
       commitSnap,
       applyMobileThreadEvent,
+      observeMemoryCleanup,
       isRunTerminalEvent: (event: { type: string }) =>
         event.type.startsWith("run.") && event.type !== "run.waiting_input",
       expandedHistoryThread: { current: null },
@@ -5188,7 +5195,10 @@ describe("mobile screen released-event callback", () => {
     };
     const handler = new Function(
       ...Object.keys(scope),
-      `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
+      ts.transpileModule(
+        `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+      ).outputText,
     )(...Object.values(scope)) as (event: Parameters<typeof applyMobileThreadEvent>[1]) => void;
     return {
       handler,
