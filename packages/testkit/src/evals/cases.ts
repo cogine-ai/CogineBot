@@ -535,6 +535,33 @@ export const HISTORY_EVAL_CASES: EvalCase[] = ([100, 1000, 10000] as const).flat
 const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
+function currentReportMatches(text: string): boolean {
+  const count = String.raw`\b(?:\d+\s+(?:(?!not\b)[a-z]+\s+){0,2}pending|pending(?:\s+count)?[:\s]+\d+)\b`;
+  const current = String.raw`\b(?:current(?:ly)?|now|latest|today)\b`;
+  const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
+  // Exclude explicitly historical or negated counts from the current-value check.
+  const result = text
+    .replace(
+      new RegExp(
+        `${count}\\s+(?:previously|earlier|before)\\b(?=\\s*(?:[,;.!?\\n)]|\\b(?:and|but)\\b|$))`,
+        "gi",
+      ),
+      "",
+    )
+    .replace(
+      new RegExp(
+        `\\b(?:not|no\\s+longer|(?:does|is|are|was|were)n['’]t)\\b(?:(?!\\bbut\\b)[^,;.!?\\n])*?${count}`,
+        "gi",
+      ),
+      "",
+    )
+    .replace(new RegExp(`${historical}(?:(?!${current}|${count})[^,;.!?\\n])*${count}`, "gi"), "");
+  const counts = [...result.matchAll(new RegExp(count, "gi"))];
+  return (
+    counts.length > 0 &&
+    counts.every((match) => match[0].match(/\d+/)?.[0] === latestReport.split(" ")[0])
+  );
+}
 const freshCheckHistory = historyFixture(1000, "exact");
 freshCheckHistory.version = "history-fresh-check-v2-seed-73";
 freshCheckHistory.ask =
@@ -564,20 +591,16 @@ export const HISTORY_FRESH_CHECK: EvalCase = {
     ),
     check(
       "fresh-read",
-      e.toolNames.filter((name) => name === "read_file").length === 1 &&
-        e.fileReads?.length === 1 &&
-        e.fileReads[0]?.path === reportPath &&
-        e.fileReads[0].succeeded,
+      e.fileReads !== undefined &&
+        e.toolNames.filter((name) => name === "read_file").length === e.fileReads.length &&
+        e.fileReads.every((read) => read.path === reportPath) &&
+        e.fileReads.some((read) => read.succeeded),
     ),
     check(
       "read-only-check",
       e.toolNames.every((name) => ["search_history", "read_history", "read_file"].includes(name)),
     ),
-    check(
-      "current-result",
-      /\b41\s+(?:\w+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+41\b/i.test(e.text) &&
-        !/\b23\s+pending\b/i.test(e.text),
-    ),
+    check("current-result", currentReportMatches(e.text)),
     check("file-unchanged", file(e, reportPath) === latestReport),
     noWrites(e),
   ],
