@@ -545,6 +545,13 @@ function currentReportMatches(text: string): boolean {
   const countClaim = String.raw`(?:a\s+total\s+of\s+)?(?:${countModifier}\s+)?${count}`;
   const reportingVerb = "(?:show(?:ed|n|s|ing)?|report(?:ed|s|ing)?)";
   const countWording = `(?:${countModifier}|${reportingVerb}|contain(?:ed|s)?|be(?:en|ing)?|at|equal(?:s)?)`;
+  const negation = String.raw`(?:not|never|no\s+longer|${auxiliary}n['’]t)`;
+  const speaker = "(?:I(?:['’](?:m|ve|d))?|we(?:['’](?:re|ve|d))?)";
+  const recipientWord = String.raw`(?!(?:and|but|then|that)\b)[a-z]+(?:[-'’][a-z]+)*`;
+  const recipient = String.raw`${recipientWord}(?:\s+${recipientWord}){0,2}`;
+  const embeddedSubject = String.raw`(?:\s+(?:there|it|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification)))?`;
+  const claimWording = String.raw`(?:\s+(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})){0,6}`;
+  const reportingBridge = String.raw`(?:\s+(?:(?:to\s+)?${recipient}\s+)?that${embeddedSubject}${claimWording}|\s+to\s+${recipient})?`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?|there|it))?`;
   let deniesCurrent = false;
@@ -570,25 +577,26 @@ function currentReportMatches(text: string): boolean {
     )
     .replace(
       new RegExp(
-        `${historical}${historicalSubject}(?:\\s+(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})){0,6}[:\\s]+${countClaim}(?!\\s+${postfixCurrent}\\b)`,
+        `${historical}${historicalSubject}${claimWording}[:\\s]+${countClaim}(?!\\s+${postfixCurrent}\\b)`,
         "gi",
       ),
       "",
     )
     .replace(
       new RegExp(
-        `\\b(?:not|never|no\\s+longer|${auxiliary}n['’]t)\\b(?:\\s+(?:currently|now|today|${auxiliary}|${countWording})){0,6}\\s+${countClaim}`,
+        `\\b${speaker}(?:\\s+(?:${auxiliary}|am|currently|now|today))*\\s+${negation}(?:\\s+(?:currently|now|today|${auxiliary}|${countModifier}|be(?:en|ing)?)){0,6}\\s+${reportingVerb}(?:\\s+${countModifier})?${reportingBridge}\\s+${countClaim}`,
         "gi",
       ),
-      (negated: string, offset: number, source: string) => {
-        const reportingAction =
-          new RegExp(
-            `\\b(?:I(?:['’](?:m|ve|d))?|we(?:['’](?:re|ve|d))?)(?:\\s+(?:${auxiliary}|am|currently|now|today))*\\s*$`,
-            "i",
-          ).test(source.slice(0, offset)) &&
-          new RegExp(`\\b${reportingVerb}\\b`, "i").test(negated);
+      "",
+    )
+    .replace(
+      new RegExp(
+        `\\b${negation}\\b(?:\\s+(?:currently|now|today|${auxiliary}|${countWording})){0,6}\\s+${countClaim}`,
+        "gi",
+      ),
+      (negated) => {
         const value = negated.match(new RegExp(count, "i"))?.[0].match(new RegExp(number))?.[0];
-        deniesCurrent ||= !reportingAction && Number(value) === expected;
+        deniesCurrent ||= Number(value) === expected;
         return "";
       },
     );

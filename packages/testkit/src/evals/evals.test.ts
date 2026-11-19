@@ -234,9 +234,42 @@ describe("fresh-check scoring", () => {
     "We’d not show 41 pending",
     "I’d not reported 41 pending",
   );
+  const embeddedReports = [
+    "I did not report to the team that there are 41 pending",
+    "I didn't show the team that there are 41 pending",
+    "We haven't reported that it shows 41 pending",
+    "We have not shown the team that the current report contains 41 pending",
+    "I would not report that 41 pending",
+    "I wouldn’t report to reviewers that there were 41 pending",
+    "I did not report to the team 41 pending",
+    "I did not report to the review team that the latest report shows 41 pending",
+  ];
+  const countDenialsWithReportingWords = [
+    "I do not have 41 reported tasks pending",
+    "We do not have 41 shown items pending",
+    "I would not have 41 reported items pending",
+    "I am not at 41 reported items pending",
+  ];
+  const reportedCounts = [
+    "I did not report 41 reported tasks pending",
+    "We have not shown 41 shown items pending",
+  ];
 
   it.each([
     "The current report shows 41 pending.",
+    ...embeddedReports.flatMap((action) => [
+      `${action}; the current report contains 41 pending.`,
+      `${action.replace("41", "23")}; the current report contains 41 pending.`,
+    ]),
+    ...countDenialsWithReportingWords.map(
+      (denial) => `${denial.replace("41", "23")}; the current report contains 41 pending.`,
+    ),
+    ...reportedCounts.map((action) => `${action}; the current report contains 41 pending.`),
+    "I did not report to the team; the current report shows 41 pending.",
+    "I did not report to the team and the current report shows 41 pending.",
+    "I did not report to the team but the current report shows 41 pending.",
+    `The current report contains 41 pending. ${embeddedReports[0]}.`,
+    `The current report contains 41 pending. ${embeddedReports.at(-1)}.`,
     ...withheldReports.map((action) => `${action}; the current report contains 41 pending.`),
     "I did not report 41 pending to the team; the current report contains 41 pending.",
     "The current report contains 41 pending. I did not report 41 pending to the team.",
@@ -295,6 +328,16 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 23 pending.",
+    ...embeddedReports.flatMap((action) => [
+      action,
+      `${action}; the current report contains 23 pending.`,
+      `${action}; the previous report contains 41 pending.`,
+    ]),
+    ...countDenialsWithReportingWords.flatMap((denial) => [
+      denial,
+      `${denial}; the current report contains 41 pending.`,
+    ]),
+    ...reportedCounts,
     ...withheldReports,
     "I did not report 41 pending to the team.",
     ...withheldReportingPhrases.flatMap((phrase) => [
