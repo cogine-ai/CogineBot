@@ -170,8 +170,38 @@ describe("fresh-check scoring", () => {
       .filter((row) => !row.pass)
       .map((row) => row.id);
 
+  const deniedCountPhrases = [
+    "did not contain",
+    "did not contain exactly",
+    "didn't contain exactly",
+    "didn’t contain exactly",
+    "did not exactly contain",
+    "does not precisely contain",
+    "doesn't contain precisely",
+    "never contained",
+    "never did contain",
+    "has not contained exactly",
+    "hasn't contained exactly",
+    "no longer contains",
+  ];
+  const affirmedCountPhrases = ["contained exactly", "had precisely", "did contain exactly"];
+
   it.each([
     "The current report shows 41 pending.",
+    "The previous report did not contain exactly 41 pending; the current report contains 41 pending",
+    ...deniedCountPhrases.flatMap((phrase) =>
+      ["previous", "earlier"].map(
+        (period) =>
+          `The ${period} report ${phrase} 41 pending; the current report contains 41 pending.`,
+      ),
+    ),
+    ...affirmedCountPhrases.map(
+      (phrase) =>
+        `The previous report ${phrase} 23 pending; the current report contains 41 pending.`,
+    ),
+    "I did not exactly edit the file and it shows 41 pending.",
+    "I didn't precisely modify the file and it shows 41 pending.",
+    "I never edited the file and the current report contains 41 pending.",
     "The previous report contained 23 pending; the current report contains 41 pending.",
     "The previous report contains 23 pending; the current report contains 41 pending.",
     "The report does not show exactly 23 pending; the current report shows 41 pending.",
@@ -211,6 +241,16 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 23 pending.",
+    ...deniedCountPhrases.flatMap((phrase) => [
+      `The current report ${phrase} 41 pending.`,
+      `The current report shows 41 pending. The current report ${phrase} 41 pending.`,
+      `The previous report ${phrase} 41 pending in the current report. The current report shows 41 pending.`,
+      `The previous report ${phrase} 41 pending.`,
+    ]),
+    ...affirmedCountPhrases.flatMap((phrase) => [
+      `The previous report ${phrase} 41 pending.`,
+      `The previous report ${phrase} 23 pending in the current report. The current report shows 41 pending.`,
+    ]),
     "The previous report contained 41 pending.",
     "Current report: 41 pending; previous report contained 23 pending in the current report.",
     "The report does not show exactly 41 pending.",
