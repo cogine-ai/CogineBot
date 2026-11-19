@@ -212,6 +212,20 @@ describe("fresh-check scoring", () => {
       ),
     ),
   );
+  withheldReports.push(
+    "I am not showing 41 pending",
+    "I'm not showing 41 pending",
+    "I’m not reporting 41 pending",
+    "We are not showing 41 pending",
+    "We're not reporting 41 pending",
+    "We’re not showing 41 pending",
+    "I've not reported 41 pending",
+    "I’ve not shown 41 pending",
+    "We've not reported 41 pending",
+    "We’ve not shown 41 pending",
+    "I had not reported 41 pending",
+    "We have not been showing 41 pending",
+  );
 
   it.each([
     "The current report shows 41 pending.",
