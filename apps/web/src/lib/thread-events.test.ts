@@ -327,6 +327,25 @@ describe("thread event reduction", () => {
     },
   );
 
+  it("keeps the newest receipt when multiple sends arrive without advancing the cursor", () => {
+    const initial = { ...snapshot([]), cursor: 15, olderCursor: 1 };
+    const newer = applyThreadSendReceipt(initial, {
+      botId: "bot-1",
+      runId: "newer-receipt",
+      taskId: "newer-task",
+      eventSeq: 33,
+    });
+    expect(
+      applyThreadSendReceipt(newer, {
+        botId: "bot-1",
+        runId: "older-receipt",
+        taskId: "older-task",
+        eventSeq: 31,
+      }),
+    ).toBe(newer);
+    expect(newer?.cursor).toBe(15);
+  });
+
   it("does not replace authoritative active or group run state with a send receipt", () => {
     const active = threadRun("run-active");
     const direct: ThreadSnapshot = { ...snapshot([]), run: active, activeRuns: [active] };
@@ -3118,25 +3137,35 @@ describe("Shell clear receipt snapshot commits", () => {
       expect(h.snapshotRef.current?.activeRuns).toEqual([]);
     },
   );
-  it("keeps the post-clear queued Run when a visible clear arrives before its run event", async () => {
-    const h = await fixture();
-    h.snapshotRef.current = applyThreadSendReceipt(
-      { ...h.b, cursor: 15, olderCursor: 1, run: null, activeRuns: [] },
-      { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 21 },
-    );
-    h.reader.beforeEvent(
-      event({
-        threadId: "thread-B",
-        botId: "bot-B",
-        seq: 20,
-        type: "thread.cleared",
-        payload: { cancelledRunIds: ["old-run"] },
-      }),
-    );
-    expect(h.snapshotRef.current?.messages).toEqual([]);
-    expect(h.snapshotRef.current?.run?.id).toBe("new-send");
-    expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(["new-send"]);
-  });
+  it.each([false, true])(
+    "keeps the post-clear queued Run before its run event (cached active: %s)",
+    async (active) => {
+      const h = await fixture();
+      const previous = threadRun("old-run", "bot-B");
+      h.snapshotRef.current = applyThreadSendReceipt(
+        {
+          ...h.b,
+          cursor: 15,
+          olderCursor: 1,
+          run: active ? previous : null,
+          activeRuns: active ? [previous] : [],
+        },
+        { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 21 },
+      );
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 20,
+          type: "thread.cleared",
+          payload: { cancelledRunIds: ["old-run"] },
+        }),
+      );
+      expect(h.snapshotRef.current?.messages).toEqual([]);
+      expect(h.snapshotRef.current?.run?.id).toBe("new-send");
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(["new-send"]);
+    },
+  );
   it.each(["before", "after"])(
     "rejects a cancelled send receipt arriving %s the equal-boundary clear receipt",
     async (timing) => {

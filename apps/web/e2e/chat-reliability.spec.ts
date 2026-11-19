@@ -3884,13 +3884,20 @@ for (const postClear of [false, true]) {
   });
 }
 
-for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-after"] as const) {
+for (const scenario of [
+  "history",
+  "new-send",
+  "new-send-stale",
+  "cancelled-before",
+  "cancelled-after",
+] as const) {
   test(
     scenario === "history"
       ? "a visible clear removes loaded history before recovery and keeps it removed afterward"
       : `a visible clear reconciles ${scenario} without a snapshot repair`,
     async ({ page }, testInfo) => {
       const { state, errors, unknown } = await mockChat(page);
+      const newSend = scenario === "new-send" || scenario === "new-send-stale";
       const stream = await controlledStream(page);
       const pageHeld = deferred();
       const pageStarted = deferred();
@@ -3916,7 +3923,7 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
         seq: 20,
         blocks: [{ kind: "text", text: "History after recovering clear" }],
       };
-      const sentRunId = scenario === "new-send" ? "new-after-clear-run" : "cancelled-send-run";
+      const sentRunId = newSend ? "new-after-clear-run" : "cancelled-send-run";
       const queued: NonNullable<ThreadSnapshot["run"]> = {
         id: sentRunId,
         botId: "research-one",
@@ -3934,12 +3941,12 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
       };
       if (scenario !== "history") {
         state.send = async (route) => {
-          if (scenario !== "new-send") await sendHeld.promise;
+          if (!newSend) await sendHeld.promise;
           return json(route, {
             runId: sentRunId,
             taskId: queued.taskId,
             seq: 2,
-            eventSeq: scenario === "new-send" ? 21 : 19,
+            eventSeq: newSend ? 21 : 19,
           });
         };
       }
@@ -3978,10 +3985,15 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
           messages: recovering ? [newer] : [old],
           ...(recovering
             ? {
-                run: scenario === "new-send" ? queued : null,
-                activeRuns: scenario === "new-send" ? [queued] : [],
+                run: newSend ? queued : null,
+                activeRuns: newSend ? [queued] : [],
               }
-            : {}),
+            : scenario === "new-send-stale"
+              ? {
+                  run: { ...queued, id: "old-run", taskId: "old-task", status: "running" },
+                  activeRuns: [{ ...queued, id: "old-run", taskId: "old-task", status: "running" }],
+                }
+              : {}),
         });
       };
       state.messages = async (route) => {
@@ -4016,7 +4028,7 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
           await composer.fill("A send racing the clear");
           await composer.press("Enter");
           await expect.poll(() => state.sends.length).toBe(1);
-          if (scenario === "new-send") await expect(stop).toBeVisible();
+          if (newSend) await expect(stop).toBeVisible();
           else {
             clearing = clearFixtureConversation(page, 1280, "en", "research-one");
             void clearing.catch((error: unknown) => {
@@ -4049,7 +4061,7 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
           createdAt: stamp,
           payload: {
             memoryCleanupPending: true,
-            ...(scenario === "new-send" ? { cancelledRunIds: ["old-run"] } : {}),
+            ...(newSend ? { cancelledRunIds: ["old-run"] } : {}),
           },
         });
         await expect(previous).toHaveCount(0);
@@ -4066,7 +4078,7 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
             await expect(composer).toHaveValue("");
           }
           await expect(stop).toHaveCount(0);
-        } else if (scenario === "new-send") await expect(stop).toBeVisible();
+        } else if (newSend) await expect(stop).toBeVisible();
         await expect(page.getByTestId("composer-error")).toHaveText(
           clearing
             ? "Messages cleared. External memory cleanup could not be confirmed."
@@ -4093,7 +4105,7 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
             ? "memory-cleanup-visible-clear-after-recovery"
             : `memory-cleanup-${scenario}-after-recovery`,
         );
-        if (scenario === "new-send") await expect(stop).toBeVisible();
+        if (newSend) await expect(stop).toBeVisible();
         else await expect(stop).toHaveCount(0);
         expect(state.sends).toHaveLength(scenario === "history" ? 0 : 1);
         expect(state.uploads).toEqual([]);

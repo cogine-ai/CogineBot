@@ -38,6 +38,7 @@ import {
 
 // A durable event version is independent of the message's position in history.
 type ObservedThreadMessage = ThreadMessage & { observedEventSeq?: number };
+type ObservedThreadRun = Run & { observedEventSeq?: number };
 type ObservedThreadSnapshot = ThreadSnapshot & { observedClearSeq?: number };
 
 function observeThreadMessages(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
@@ -135,9 +136,17 @@ export function applyThreadSendReceipt(
     return snapshot;
   }
   const currentRuns = activeThreadRuns(snapshot);
-  if (currentRuns.some((run) => isActive(run.status as RunStatus))) return snapshot;
+  const latestRunEvent = Math.max(
+    snapshot.cursor,
+    ...currentRuns.map((run) => (run as ObservedThreadRun).observedEventSeq ?? -1),
+  );
+  if (
+    currentRuns.some((run) => isActive(run.status as RunStatus)) &&
+    (receipt.eventSeq === undefined || receipt.eventSeq <= latestRunEvent)
+  )
+    return snapshot;
   const createdAt = receipt.createdAt ?? new Date().toISOString();
-  const run: Run & { observedEventSeq?: number } = {
+  const run: ObservedThreadRun = {
     id: receipt.runId,
     botId: receipt.botId,
     threadId: snapshot.threadId,
