@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 import { nativeDialogCandidates, visibleNativeDialogs } from "../e2e/native-dialogs.js";
 
 describe("native dialog observation", () => {
+  it("restricts titled and untitled candidates to the explicitly launched process", () => {
+    const list = [
+      "0x1  0 110 fixture CogineBot Dev",
+      "0x2  0 110 fixture ",
+      "0x3  0 220 fixture CogineBot Dev",
+      "0x4  0 220 fixture ",
+    ].join("\n");
+    expect(nativeDialogCandidates(list, "CogineBot Dev", 110).map(({ id }) => id)).toEqual([
+      "0x1",
+      "0x2",
+    ]);
+    expect(nativeDialogCandidates(list, "CogineBot Dev", 330)).toEqual([]);
+    expect(nativeDialogCandidates(list, "CogineBot Dev").map(({ id }) => id)).toEqual([
+      "0x1",
+      "0x2",
+      "0x3",
+      "0x4",
+    ]);
+  });
+
   it("includes an untitled GTK window only for the requested application process", () => {
     const list = [
       "0x00400003  0 110   fixture CogineBot Dev",

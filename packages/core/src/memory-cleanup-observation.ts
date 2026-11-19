@@ -4,7 +4,7 @@ export type MemoryCleanupObservation = {
   memoryCleanupUnconfirmed?: true;
 };
 
-type ThreadWorkObservation = {
+export type ThreadWorkObservation = {
   threadId: string;
   cursor?: number;
   run: { id: string } | null;
@@ -32,20 +32,48 @@ export function applyThreadClearReceipt<
   const keepRun = (run: { id: string }) =>
     !cancelled.has(run.id) &&
     ((snapshot.cursor ?? -1) > receipt.clearEventSeq ||
-      (started !== null && !previous.has(run.id)));
+      (started?.threadId === snapshot.threadId && !previous.has(run.id)));
+  const messages = snapshot.messages.filter(
+    (message) =>
+      (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq &&
+      (!message.runId || !cancelled.has(message.runId)),
+  );
+  const preservesPage =
+    messages.length > 0 &&
+    messages.length === snapshot.messages.length &&
+    (snapshot.cursor ?? -1) >= receipt.clearEventSeq;
   return {
     ...snapshot,
     cursor: Math.max(snapshot.cursor ?? -1, receipt.clearEventSeq),
     observedClearSeq: receipt.clearEventSeq,
-    messages: snapshot.messages.filter(
-      (message) =>
-        (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq &&
-        (!message.runId || !cancelled.has(message.runId)),
-    ),
-    olderCursor: null,
+    messages,
+    olderCursor: preservesPage ? snapshot.olderCursor : null,
     run: snapshot.run && keepRun(snapshot.run) ? snapshot.run : null,
     activeRuns: snapshot.activeRuns?.filter(keepRun),
   };
+}
+
+/** A retained post-clear anchor remains valid even when an older prefix was removed. */
+export function shouldResetHistoryAfterClear(
+  previous: { cursor?: number; messages: Array<{ id: string }>; olderCursor?: number | null },
+  next: {
+    observedClearSeq?: number;
+    cursor?: number;
+    messages: Array<{ id: string }>;
+    olderCursor?: number | null;
+  },
+  anchorMessageId?: string | null,
+): boolean {
+  if (
+    previous === next ||
+    (anchorMessageId && next.messages.some((message) => message.id === anchorMessageId))
+  )
+    return false;
+  return !(
+    (previous.cursor ?? -1) >= (next.observedClearSeq ?? next.cursor ?? Number.POSITIVE_INFINITY) &&
+    previous.messages.length === next.messages.length &&
+    previous.olderCursor === next.olderCursor
+  );
 }
 
 /** A send receipt can introduce a Run before its first durable event arrives. */
@@ -111,7 +139,9 @@ export function mergeThreadMemoryCleanup<
   if (omitted)
     merged = {
       ...merged,
-      memoryCleanupPending: previous.memoryCleanupPending,
+      ...(previous.memoryCleanupPending !== undefined
+        ? { memoryCleanupPending: previous.memoryCleanupPending }
+        : {}),
       memoryCleanupCursor: seq,
     };
   merged = observeMemoryCleanup(merged, incoming, seq);

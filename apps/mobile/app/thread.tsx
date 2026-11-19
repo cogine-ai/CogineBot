@@ -55,6 +55,7 @@ import {
   resolveComposerSendPlan,
   resolvePersonaColorDef,
   selectedAskActionLabel,
+  shouldResetHistoryAfterClear,
   threadWindowMessages,
   timeSeparatorIds,
   userVisibleMessages,
@@ -884,7 +885,11 @@ function Thread({
   const streamResponsesRef = useRef(streamResponses);
   streamResponsesRef.current = streamResponses;
 
-  function commitSnap(next: MobileSnapshot | null) {
+  function commitSnap(
+    next: MobileSnapshot | null,
+    observation?: { clearEventSeq?: number; memoryCleanupSettledAt?: number },
+  ) {
+    const previous = snapRef.current?.threadId === next?.threadId ? snapRef.current : next;
     if (next) {
       const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
       if (
@@ -892,11 +897,13 @@ function Thread({
         (cleanup.subscription === undefined ||
           cleanup.subscription === liveSubscriptionGeneration.current)
       ) {
-        if (cleanup.clearEventSeq !== undefined)
+        if (cleanup.clearEventSeq !== undefined) {
+          observation = { ...observation, clearEventSeq: cleanup.clearEventSeq };
           next = applyThreadClearReceipt(next, null, {
             clearEventSeq: cleanup.clearEventSeq,
             cancelledRunIds: cleanup.cancelledRunIds,
           });
+        }
         next = observeMemoryCleanup(
           { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor ?? -1 },
           {
@@ -905,12 +912,38 @@ function Thread({
           },
           cleanup.seq,
         );
+        if (cleanup.pending === false)
+          observation = { ...observation, memoryCleanupSettledAt: cleanup.seq };
       }
       pendingMemoryCleanupEvents.current.delete(next.threadId);
+      if (
+        observation?.clearEventSeq !== undefined &&
+        previous &&
+        shouldResetHistoryAfterClear(
+          previous,
+          next,
+          jumpScrollTarget.current ?? pinnedAroundRef.current?.messageId,
+        )
+      ) {
+        expandedHistoryThread.current = null;
+        pinnedAroundRef.current = null;
+        jumpScrollTarget.current = null;
+        jumpAnchor.current.release();
+      }
+      if (
+        observation?.memoryCleanupSettledAt !== undefined &&
+        next.memoryCleanupPending === false &&
+        next.memoryCleanupCursor === observation.memoryCleanupSettledAt
+      ) {
+        const key = JSON.stringify([memoryCleanupOwnerRef.current, next.threadId]);
+        if (seenMemoryCleanupNotices.current.get(key) === false)
+          seenMemoryCleanupNotices.current.delete(key);
+      }
     }
     snapRef.current = next;
     const visible = withLiveStreamingProgress(next, streamResponsesRef.current);
     setSnap((previous) => reconcileVisibleThreadSnapshot(previous, visible));
+    return next;
   }
 
   useEffect(() => {
@@ -1624,6 +1657,10 @@ function Thread({
                 -1,
               snapRef.current.cursor ?? -1,
             ),
+            {
+              memoryCleanupSettledAt:
+                result.memoryCleanupPending === false ? result.memoryCleanupCursor : undefined,
+            },
           );
         }
         if (
@@ -1640,16 +1677,12 @@ function Thread({
         }
         if (epoch !== historyEpoch.current) return;
         if (snapRef.current && result.clearEventSeq !== undefined) {
-          expandedHistoryThread.current = null;
-          pinnedAroundRef.current = null;
-          jumpScrollTarget.current = null;
-          jumpAnchor.current.release();
-          historyEpoch.current += 1;
           commitSnap(
             applyThreadClearReceipt(snapRef.current, requestSnapshot, {
               clearEventSeq: result.clearEventSeq,
               cancelledRunIds: result.cancelledRunIds,
             }),
+            { clearEventSeq: result.clearEventSeq },
           );
           return;
         }
@@ -1827,8 +1860,13 @@ function Thread({
       );
       snapshotOrigin.current = scope;
       pendingSave.current = null;
-      writeSavedThread(scope, savedChatTarget(committed), committed);
-      commitSnap(committed);
+      const accepted = commitSnap(committed, {
+        memoryCleanupSettledAt:
+          next.memoryCleanupPending === false
+            ? (next.memoryCleanupCursor ?? next.cursor)
+            : undefined,
+      });
+      if (accepted) writeSavedThread(scope, savedChatTarget(accepted), accepted);
       setShowingSaved(false);
     }
     if (isCurrentTarget(targetBotId, targetGroupId)) {
@@ -2228,17 +2266,18 @@ function Thread({
                 event.type === "computer.takeover.released" ||
                 isRunTerminalEvent(event)
               ) {
-                if (
-                  event.type === "thread.cleared" &&
-                  (event.seq === undefined || event.seq > (snapRef.current?.cursor ?? -1))
-                ) {
+                if (event.type === "thread.cleared" && event.seq === undefined) {
                   expandedHistoryThread.current = null;
                   pinnedAroundRef.current = null;
                   jumpScrollTarget.current = null;
                   jumpAnchor.current.release();
                   historyEpoch.current += 1;
                 }
-                commitSnap(applyMobileThreadEvent(snapRef.current, event));
+                commitSnap(applyMobileThreadEvent(snapRef.current, event), {
+                  clearEventSeq: event.type === "thread.cleared" ? event.seq : undefined,
+                  memoryCleanupSettledAt:
+                    event.payload?.memoryCleanupPending === false ? event.seq : undefined,
+                });
               }
               if (event.type === "bot.updated") {
                 void refreshMentionBots();

@@ -5,8 +5,15 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { hasNewThreadWork, ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import {
+  applyThreadClearReceipt,
+  hasNewThreadWork,
+  observeMemoryCleanup,
+  ReplyAnnouncements,
+  shouldResetHistoryAfterClear,
+  withLiveStreamingProgress,
+} from "@rakazo/core";
+import { describe, expect, it, vi } from "vitest";
 import {
   activeThreadRuns,
   applyThreadSendReceipt,
@@ -2471,7 +2478,12 @@ it("the Shell reader retains a covered clear barrier without replacing current e
   );
   const bufferEnd = source.indexOf("    return {\n      resume,", bufferStart);
   const buffer = source.slice(bufferStart, bufferEnd).replace("(event: ProductEvent)", "(event)");
-  const script = `${buffer} const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
+  const historyStart = source.indexOf("  function reconcileClearHistory(");
+  const historyEnd = source.indexOf("  function retryCurrentThread()", historyStart);
+  const history = source
+    .slice(historyStart, historyEnd)
+    .replace("(previous: ThreadSnapshot, next: ThreadSnapshot)", "(previous, next)");
+  const script = `${history} ${buffer} const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
   const run = threadRun("current-run", "bot-2");
   const snapRef = {
     current: {
@@ -2485,6 +2497,11 @@ it("the Shell reader retains a covered clear barrier without replacing current e
     ownsReader: () => true,
     pendingMemoryCleanupEvents: { current: new Map() },
     scope: "scope-one",
+    shouldResetHistoryAfterClear,
+    pinnedAroundRef: { current: null },
+    setScrollRequest: () => {},
+    searchParamsRef: { current: new URLSearchParams() },
+    setSearchParams: () => {},
     snapshotRef: snapRef,
     reduceThreadSnapshot,
     expandedHistoryThread: { current: null },
@@ -2686,4 +2703,247 @@ it("keeps pending cleanup across an omitted refresh until an explicit settlement
     memoryCleanupCursor: 12,
   });
   expect(settled).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
+});
+
+describe("Shell clear receipt snapshot commits", () => {
+  function fixture() {
+    const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
+    function declaration(name: string) {
+      const start = source.indexOf(`  function ${name}(`);
+      if (start < 0) return "";
+      const body = source.indexOf("{", start);
+      let depth = 0;
+      for (let end = body; end < source.length; end++) {
+        if (source[end] === "{") depth++;
+        else if (source[end] === "}" && --depth === 0) return source.slice(start, end + 1);
+      }
+      throw new Error(`Unclosed source function ${name}`);
+    }
+    const start = source.indexOf(
+      "onConfirm={async () => {",
+      source.indexOf("<ClearConversationDialog"),
+    );
+    const end = source.indexOf("\n            }}", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const confirm = `${source.slice(start + "onConfirm={".length, end)}\n}`;
+    const a = {
+      ...snapshot([message("A-message", [{ kind: "text", text: "Thread A" }])]),
+      botId: "bot-A",
+      threadId: "thread-A",
+      cursor: 10,
+    };
+    const b = {
+      ...snapshot([message("deleted-B", [{ kind: "text", text: "Before clear B" }])]),
+      botId: "bot-B",
+      threadId: "thread-B",
+      cursor: 10,
+    };
+    const snapshotRef = { current: a as ThreadSnapshot | null };
+    const actor = { current: { userId: "user-one", spaceId: "space-one" as string | undefined } };
+    const generation = { session: 1, selection: 1 };
+    let complete!: (value: {
+      ok: true;
+      threadId: string;
+      clearEventSeq: number;
+      cancelledRunIds?: string[];
+      memoryCleanupCursor?: number;
+      memoryCleanupPending?: boolean;
+      memoryCleanupUnconfirmed?: true;
+    }) => void;
+    const response = new Promise<Parameters<typeof complete>[0]>((resolve) => {
+      complete = resolve;
+    });
+    let commit!: (value: ThreadSnapshot | null) => void;
+    let pending = new Set<string>();
+    const scope = {
+      groupSettingsActor: actor,
+      selectedSpaceId: () => null,
+      currentRpcSessionGeneration: () => generation.session,
+      currentSpaceSelectionGeneration: () => generation.selection,
+      pendingClearReceipts: { current: new Map() },
+      pendingMemoryCleanupEvents: { current: new Map() },
+      dismissedMemoryCleanupNotices: { current: new Set<string>() },
+      draftScopeKeyRef: { current: "scope-B" },
+      snapshotRef,
+      setSnapshot: vi.fn(),
+      withLiveStreamingProgress: (value: ThreadSnapshot | null) => value,
+      streamResponsesRef: { current: false },
+      currentComputerStatus: (value: unknown) => value,
+      pinnedAroundRef: {
+        current: null as {
+          messageId: string;
+          threadId: string;
+          messages: ThreadMessage[];
+          olderCursor: number | null;
+        } | null,
+      },
+      expandedHistoryThread: { current: null },
+      historyEpoch: { current: 1 },
+      setScrollRequest: vi.fn(),
+      searchParamsRef: { current: new URLSearchParams() },
+      setSearchParams: vi.fn(),
+      clearHistoryWindow: vi.fn(),
+      clearTarget: { kind: "bot", chat: { id: "bot-B", threadId: "thread-B" } },
+      activeBotId: { current: "bot-B" },
+      activeGroupId: { current: undefined },
+      setPendingMemoryCleanupClears: (update: (value: Set<string>) => Set<string>) => {
+        pending = update(pending);
+      },
+      rpc: { threads: { clear: vi.fn(async () => response) } },
+      updateSnapshot: (update: (value: ThreadSnapshot | null) => ThreadSnapshot | null) =>
+        commit(update(snapshotRef.current)),
+      refreshThreadRef: { current: vi.fn(async () => undefined) },
+      refreshGroupThreadRef: { current: vi.fn(async () => undefined) },
+      showMemoryCleanupNotice: vi.fn(),
+      setClearTarget: vi.fn(),
+      refreshBots: vi.fn(async () => undefined),
+      hasNewThreadWork,
+      applyThreadClearReceipt,
+      observeMemoryCleanup,
+      shouldResetHistoryAfterClear,
+    };
+    const script =
+      `${declaration("clearReceiptOwnerKey")}\n${declaration("reconcileClearHistory")}\n${declaration("commitSnapshot")}\nconst confirm = ${confirm}; return { commit: commitSnapshot, confirm };`.replace(
+        /:\s*ThreadSnapshot(?:\s*\|\s*null)?/g,
+        "",
+      );
+    const callbacks = new Function(...Object.keys(scope), script)(...Object.values(scope)) as {
+      commit(value: ThreadSnapshot | null): void;
+      confirm(): Promise<void>;
+    };
+    commit = callbacks.commit;
+    return { ...callbacks, complete, a, b, snapshotRef, scope, generation, actor };
+  }
+  it("buffers B's clear boundary while A is still the committed snapshot", async () => {
+    const h = fixture();
+    const clearing = h.confirm();
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+    });
+    await clearing;
+    expect(h.snapshotRef.current).toBe(h.a);
+    h.commit({ ...h.b, memoryCleanupPending: false });
+    expect(h.snapshotRef.current).toMatchObject({
+      threadId: "thread-B",
+      cursor: 12,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+      messages: [],
+    });
+    expect(h.scope.pendingClearReceipts.current.size).toBe(0);
+  });
+  it("rearms a dismissed web interval between consecutive committed metadata frames", () => {
+    const h = fixture();
+    const current = { ...h.b, cursor: 20, memoryCleanupCursor: 20, memoryCleanupPending: true };
+    h.commit(current);
+    const noticeScope = JSON.stringify(["user-one", "space-one", "thread-B"]);
+    const key = JSON.stringify([noticeScope, true]);
+    h.scope.dismissedMemoryCleanupNotices.current.add(key);
+    const settled = reduceThreadSnapshot(
+      current,
+      event({
+        type: "thread.meta",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 21,
+        payload: { memoryCleanupPending: false },
+      }),
+    )!;
+    h.commit(settled);
+    h.commit(
+      reduceThreadSnapshot(
+        settled,
+        event({
+          type: "thread.meta",
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 22,
+          payload: { memoryCleanupPending: true },
+        }),
+      ),
+    );
+    expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(false);
+    h.scope.dismissedMemoryCleanupNotices.current.add(key);
+    h.commit(
+      reduceThreadSnapshot(
+        h.snapshotRef.current,
+        event({
+          type: "thread.meta",
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 19,
+          payload: { memoryCleanupPending: false },
+        }),
+      ),
+    );
+    expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(true);
+  });
+  it("keeps a newer matching snapshot ahead of the buffered cleanup receipt", async () => {
+    const h = fixture();
+    const clearing = h.confirm();
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 12,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+    });
+    await clearing;
+    const after = {
+      ...h.b,
+      cursor: 20,
+      memoryCleanupPending: false,
+      memoryCleanupCursor: 20,
+      messages: [message("after", [{ kind: "text", text: "After clear" }])],
+    };
+    h.commit(after);
+    expect(h.snapshotRef.current).toMatchObject({
+      cursor: 20,
+      memoryCleanupPending: false,
+      memoryCleanupCursor: 20,
+      messages: after.messages,
+    });
+  });
+  it.each(["user", "session", "selection"] as const)(
+    "does not apply another %s owner's buffered receipt",
+    async (change) => {
+      const h = fixture();
+      const clearing = h.confirm();
+      h.complete({
+        ok: true,
+        threadId: "thread-B",
+        clearEventSeq: 12,
+        memoryCleanupPending: true,
+        memoryCleanupCursor: 15,
+      });
+      await clearing;
+      if (change === "user") h.actor.current.userId = "user-two";
+      else h.generation[change]++;
+      h.commit(h.b);
+      expect(h.snapshotRef.current?.messages).toEqual(h.b.messages);
+      expect(h.snapshotRef.current?.memoryCleanupPending).toBeUndefined();
+    },
+  );
+  it("keeps clear ownership stable when the implicit Space proof becomes ready", async () => {
+    const h = fixture();
+    h.actor.current.spaceId = undefined;
+    const clearing = h.confirm();
+    h.actor.current.spaceId = "space-one";
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 12,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+    });
+    await clearing;
+    h.commit(h.b);
+    expect(h.snapshotRef.current).toMatchObject({ memoryCleanupPending: true, messages: [] });
+  });
 });

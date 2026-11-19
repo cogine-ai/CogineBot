@@ -38,7 +38,12 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
-import type { AnnouncementEvent, BotCreationReceipt } from "@rakazo/core";
+import type {
+  AnnouncementEvent,
+  BotCreationReceipt,
+  MemoryCleanupObservation,
+  ThreadWorkObservation,
+} from "@rakazo/core";
 import {
   applyThreadClearReceipt,
   attachmentLabels,
@@ -78,6 +83,7 @@ import {
   type SlashActionId,
   searchHitThreadTarget,
   serializeComposerPrompt,
+  shouldResetHistoryAfterClear,
   speechFromBlocks,
   timeSeparatorIds,
   truncateSlashDescription,
@@ -628,10 +634,47 @@ export function ShellPage() {
   const pendingMemoryCleanupEvents = useRef(
     new Map<string, { scope: string | null; seq: number; payload: ProductEvent["payload"] }>(),
   );
+  const pendingClearReceipts = useRef(
+    new Map<
+      string,
+      {
+        botId?: string;
+        groupId?: string;
+        started: ThreadWorkObservation | null;
+        receipt: MemoryCleanupObservation & { clearEventSeq: number; cancelledRunIds?: string[] };
+      }
+    >(),
+  );
+
+  function clearReceiptOwnerKey() {
+    return JSON.stringify([
+      groupSettingsActor.current.userId,
+      currentRpcSessionGeneration(),
+      currentSpaceSelectionGeneration(),
+    ]);
+  }
 
   function commitSnapshot(next: ThreadSnapshot | null) {
     if (next) {
       const nextThreadId = next.threadId;
+      const key = JSON.stringify([clearReceiptOwnerKey(), nextThreadId]);
+      const pendingClear = pendingClearReceipts.current.get(key);
+      if (
+        pendingClear &&
+        (pendingClear.groupId
+          ? next.groupId === pendingClear.groupId
+          : next.botId === pendingClear.botId)
+      ) {
+        const before = next;
+        next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
+        reconcileClearHistory(before, next);
+        next = observeMemoryCleanup(
+          next,
+          pendingClear.receipt,
+          pendingClear.receipt.memoryCleanupCursor ?? pendingClear.receipt.clearEventSeq,
+        );
+        pendingClearReceipts.current.delete(key);
+      }
       const cleanup = pendingMemoryCleanupEvents.current.get(nextThreadId);
       if (cleanup?.scope === draftScopeKeyRef.current) {
         next = observeMemoryCleanup(
@@ -641,6 +684,15 @@ export function ShellPage() {
         );
       }
       pendingMemoryCleanupEvents.current.delete(nextThreadId);
+      if (next.memoryCleanupPending === false && !next.memoryCleanupUnconfirmed) {
+        const actor = groupSettingsActor.current;
+        const scope = JSON.stringify([
+          actor.userId,
+          selectedSpaceId() ?? actor.spaceId,
+          nextThreadId,
+        ]);
+        dismissedMemoryCleanupNotices.current.delete(JSON.stringify([scope, true]));
+      }
     }
     if (next?.computer) {
       const computer = currentComputerStatus(next.computer);
@@ -1663,6 +1715,35 @@ export function ShellPage() {
     invalidateHistoryRequests();
   }
 
+  function reconcileClearHistory(previous: ThreadSnapshot, next: ThreadSnapshot) {
+    const pinned = pinnedAroundRef.current;
+    if (
+      !shouldResetHistoryAfterClear(
+        previous,
+        next,
+        pinned?.threadId === previous.threadId ? pinned.messageId : undefined,
+      )
+    ) {
+      if (pinned?.threadId === next.threadId)
+        pinnedAroundRef.current = {
+          ...pinned,
+          messages: next.messages,
+          olderCursor: next.olderCursor,
+        };
+      return;
+    }
+    expandedHistoryThread.current = null;
+    pinnedAroundRef.current = null;
+    setScrollRequest(null);
+    if (pinned && searchParamsRef.current.get("m") === pinned.messageId) {
+      const params = new URLSearchParams(searchParamsRef.current);
+      params.delete("m");
+      params.delete("attention");
+      setSearchParams(params, { replace: true });
+    }
+    // The clear watermark rejects pre-clear pages without cancelling post-clear reads.
+  }
+
   function retryCurrentThread() {
     if (threadCheckpoint.current?.scope === draftScopeKey) invalidateHistoryRequests();
     else clearHistoryWindow();
@@ -1762,6 +1843,7 @@ export function ShellPage() {
                 next.messages.some((message) => message.id === messageId)
               )
                 expandedHistoryThread.current = event.threadId;
+              if (event.type === "thread.cleared") reconcileClearHistory(current, next);
               commitSnapshot(next);
             }
           }
@@ -1769,7 +1851,11 @@ export function ShellPage() {
         }
         applyThreadEvent(
           event,
-          commitSnapshot,
+          (next) => {
+            if (event.type === "thread.cleared" && current && next)
+              reconcileClearHistory(current, next);
+            commitSnapshot(next);
+          },
           (next) => commitReaderComputer(next, event),
           snapshotRef,
           computerRef,
@@ -2321,7 +2407,6 @@ export function ShellPage() {
         );
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
-          clearHistoryWindow();
         }
         if (event.type === "bot.archived") {
           void refreshBots(true).catch(() => undefined);
@@ -2429,7 +2514,6 @@ export function ShellPage() {
         replyEventObserver.current(event);
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
-          clearHistoryWindow();
         }
         const eventBot = botsRef.current.find((bot) => bot.id === event.botId);
         notifyBrowserForEvent(
@@ -7416,6 +7500,7 @@ export function ShellPage() {
               const actor = groupSettingsActor.current;
               const spaceId = selectedSpaceId() ?? actor.spaceId;
               const epoch = historyEpoch.current;
+              const owner = clearReceiptOwnerKey();
               const requestSnapshot = snapshotRef.current;
               const expectedThreadId = clearTarget.chat.threadId;
               const scope = JSON.stringify([actor.userId, spaceId, expectedThreadId]);
@@ -7431,33 +7516,67 @@ export function ShellPage() {
                   clearTarget.kind === "bot"
                     ? activeBotId.current === clearTarget.chat.id
                     : activeGroupId.current === clearTarget.chat.id;
-                const sameOwner =
-                  actor.userId === groupSettingsActor.current.userId &&
-                  actor.spaceId === groupSettingsActor.current.spaceId &&
-                  spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId);
+                const sameOwner = owner === clearReceiptOwnerKey();
                 const matches = (snapshot: ThreadSnapshot) =>
                   snapshot.threadId === receiptThreadId &&
                   (clearTarget.kind === "bot"
                     ? snapshot.botId === clearTarget.chat.id
                     : snapshot.groupId === clearTarget.chat.id);
+                if (sameOwner && cleared.clearEventSeq !== undefined) {
+                  const key = JSON.stringify([owner, receiptThreadId]);
+                  const before = pendingClearReceipts.current.get(key);
+                  const incoming = {
+                    ...(clearTarget.kind === "bot"
+                      ? { botId: clearTarget.chat.id }
+                      : { groupId: clearTarget.chat.id }),
+                    started:
+                      requestSnapshot?.threadId === receiptThreadId
+                        ? {
+                            threadId: requestSnapshot.threadId,
+                            cursor: requestSnapshot.cursor,
+                            run: requestSnapshot.run ? { id: requestSnapshot.run.id } : null,
+                            activeRuns: requestSnapshot.activeRuns?.map(({ id }) => ({ id })),
+                          }
+                        : null,
+                    receipt: { ...cleared, clearEventSeq: cleared.clearEventSeq },
+                  };
+                  const latest =
+                    before && before.receipt.clearEventSeq > cleared.clearEventSeq
+                      ? before
+                      : incoming;
+                  const other = latest === before ? incoming : before;
+                  pendingClearReceipts.current.set(key, {
+                    ...latest,
+                    receipt: {
+                      ...observeMemoryCleanup(
+                        latest.receipt,
+                        other?.receipt ?? {},
+                        other?.receipt.memoryCleanupCursor ?? other?.receipt.clearEventSeq ?? -1,
+                      ),
+                      cancelledRunIds: [
+                        ...new Set([
+                          ...(latest.receipt.cancelledRunIds ?? []),
+                          ...(other?.receipt.cancelledRunIds ?? []),
+                        ]),
+                      ],
+                    },
+                  });
+                  if (activeTarget && snapshotRef.current && matches(snapshotRef.current))
+                    commitSnapshot(snapshotRef.current);
+                }
                 if (
                   sameOwner &&
                   activeTarget &&
                   epoch === historyEpoch.current &&
                   snapshotRef.current &&
                   matches(snapshotRef.current) &&
-                  (cleared.clearEventSeq !== undefined ||
-                    !hasNewThreadWork(snapshotRef.current, requestSnapshot))
+                  cleared.clearEventSeq === undefined &&
+                  !hasNewThreadWork(snapshotRef.current, requestSnapshot)
                 ) {
                   clearHistoryWindow();
                   updateSnapshot((current) =>
                     current && matches(current)
-                      ? cleared.clearEventSeq !== undefined
-                        ? applyThreadClearReceipt(current, requestSnapshot, {
-                            clearEventSeq: cleared.clearEventSeq,
-                            cancelledRunIds: cleared.cancelledRunIds,
-                          })
-                        : { ...current, messages: [], olderCursor: null, run: null }
+                      ? { ...current, messages: [], olderCursor: null, run: null }
                       : current,
                   );
                 }

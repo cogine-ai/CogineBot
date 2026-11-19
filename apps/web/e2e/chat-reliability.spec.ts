@@ -3739,7 +3739,7 @@ test("a delayed clear receipt stays with its target while another thread snapsho
   page,
 }, testInfo) => {
   const { state, errors, unknown } = await mockChat(page);
-  await controlledStream(page);
+  const stream = await controlledStream(page);
   let releaseClear!: () => void;
   let releaseSnapshot!: () => void;
   const clearGate = new Promise<void>((resolve) => {
@@ -3748,19 +3748,48 @@ test("a delayed clear receipt stays with its target while another thread snapsho
   const snapshotGate = new Promise<void>((resolve) => {
     releaseSnapshot = resolve;
   });
+  let cleared = false;
+  let afterCursor = 150;
+  const afterMessages: ThreadMessage[] = [];
   state.thread = async (route, data) => {
     if (data.botId === "research-one") {
-      await snapshotGate;
-      return json(route, { ...data, cursor: 150 }).catch(() => undefined);
+      const captured = cleared
+        ? {
+            ...data,
+            cursor: afterCursor,
+            messages: afterMessages,
+            olderCursor: null,
+            memoryCleanupPending: true,
+          }
+        : {
+            ...data,
+            cursor: 149,
+            memoryCleanupPending: false,
+            messages: [
+              {
+                id: "deleted-before-B-clear",
+                threadId: data.threadId,
+                seq: 1,
+                role: "user" as const,
+                blocks: [{ kind: "text" as const, text: "Deleted before B clear" }],
+                createdAt: stamp,
+              },
+            ],
+          };
+      if (!cleared) await snapshotGate;
+      return json(route, captured).catch(() => undefined);
     }
     return json(route, data);
   };
   await page.route("**/rpc/threads/clear", async (route) => {
     await clearGate;
+    cleared = true;
     return json(route, {
       ok: true,
       threadId: "thread-research-one",
-      memoryCleanupUnconfirmed: true,
+      clearEventSeq: 150,
+      cancelledRunIds: [],
+      memoryCleanupPending: true,
       memoryCleanupCursor: 150,
     });
   });
@@ -3783,20 +3812,128 @@ test("a delayed clear receipt stays with its target while another thread snapsho
       .toBe(true);
     releaseClear();
     await clearing;
-    await visit("chief");
-    await expect(page).toHaveURL(/\/app\/chief$/);
-    await expect(page.getByTestId("composer-error")).toBeHidden();
     releaseSnapshot();
-    await visit("research-one");
+    await expect.poll(stream.activeTargets).toContain("bot:research-one");
+    const checkpoint: ThreadMessage = {
+      id: "B-after-clear-checkpoint",
+      threadId: "thread-research-one",
+      seq: 2,
+      role: "user",
+      blocks: [{ kind: "text", text: "B after clear checkpoint" }],
+      createdAt: stamp,
+    };
+    afterMessages.push(checkpoint);
+    afterCursor = 151;
+    await stream.emit({
+      id: "B-checkpoint-event",
+      spaceId: "space-primary",
+      threadId: "thread-research-one",
+      botId: "research-one",
+      seq: 151,
+      type: "thread.message.created",
+      createdAt: stamp,
+      payload: {
+        messageId: checkpoint.id,
+        messageSeq: checkpoint.seq,
+        role: checkpoint.role,
+        blocks: checkpoint.blocks,
+      },
+    });
+    await expect(
+      page.getByTestId("transcript").getByText("B after clear checkpoint", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("transcript").getByText("Deleted before B clear", { exact: true }),
+    ).toHaveCount(0);
     await expect(page.getByTestId("composer-error")).toHaveText(
       "Messages cleared. External memory cleanup could not be confirmed.",
     );
+    await expect(page).toHaveURL(/\/app\/research-one$/);
     await captureScreenshot(page, testInfo, "memory-cleanup-correct-target");
+    await visit("chief");
+    await expect(page.getByTestId("composer-error")).toBeHidden();
     expect(unknown).toEqual([]);
     expect(errors).toEqual([]);
   } finally {
     releaseClear();
     releaseSnapshot();
     await clearing;
+  }
+});
+
+test("a late clear receipt preserves a post-clear search window", async ({ page }, testInfo) => {
+  const { state, errors, unknown } = await mockChat(page);
+  await controlledStream(page);
+  const held = deferred();
+  const started = deferred();
+  let cleared = false;
+  const anchor: ThreadMessage = {
+    id: "post-clear-anchor",
+    threadId: "thread-chief",
+    seq: 103,
+    role: "user",
+    blocks: [{ kind: "text", text: "Search result after the clear" }],
+    createdAt: stamp,
+  };
+  const recent: ThreadMessage = {
+    ...anchor,
+    id: "post-clear-recent",
+    seq: 105,
+    blocks: [{ kind: "text", text: "Recent post-clear message" }],
+  };
+  state.thread = (route, data) =>
+    json(
+      route,
+      cleared && data.botId === "chief"
+        ? { ...data, cursor: 153, messages: [recent], olderCursor: 105, memoryCleanupPending: true }
+        : data,
+    );
+  state.messages = (route) =>
+    json(route, { threadId: "thread-chief", messages: [anchor], olderCursor: 103 });
+  await page.route("**/rpc/threads/clear", async (route) => {
+    cleared = true;
+    started.resolve();
+    await held.promise;
+    return json(route, {
+      ok: true,
+      threadId: "thread-chief",
+      clearEventSeq: 150,
+      cancelledRunIds: [],
+      memoryCleanupCursor: 155,
+      memoryCleanupUnconfirmed: true,
+      memoryCleanupPending: false,
+    });
+  });
+  await ready(page);
+  const clearing = clearFixtureConversation(page, 1280, "en");
+  void clearing.catch(() => undefined);
+  try {
+    await started.promise;
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/app/chief?m=post-clear-anchor");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(
+      page.getByTestId("transcript").getByText("Search result after the clear", { exact: true }),
+    ).toBeVisible();
+    held.resolve();
+    await clearing;
+    await expect(
+      page.getByRole("button", { name: "Load earlier messages", exact: true }),
+    ).toBeVisible();
+    const shown = page
+      .getByTestId("transcript")
+      .getByText("Search result after the clear", { exact: true });
+    await shown.scrollIntoViewIfNeeded();
+    await expect(shown).toBeInViewport();
+    await expect(page.getByTestId("composer-error")).toHaveText(
+      "Messages cleared. External memory cleanup could not be confirmed.",
+    );
+    await captureScreenshot(page, testInfo, "memory-cleanup-post-clear-search");
+    expect(unknown).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    held.resolve();
+    await clearing.catch(() => undefined);
   }
 });

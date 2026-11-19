@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
-import { applyThreadClearReceipt, hasNewThreadWork, observeMemoryCleanup } from "@rakazo/core";
+import * as core from "@rakazo/core";
+import {
+  applyThreadClearReceipt,
+  hasNewThreadWork,
+  observeMemoryCleanup,
+  shouldResetHistoryAfterClear,
+} from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
-import type { MobileSnapshot } from "./api";
+import type {
+  applyMobileThreadEvent as ApplyMobileThreadEvent,
+  mergeMobileSnapshot as MergeMobileSnapshot,
+  MobileSnapshot,
+} from "./api";
 
 // Run the actual screen callbacks with offline native/state seams.
 const text = readFileSync(new URL("../app/thread.tsx", import.meta.url), "utf8");
@@ -13,12 +23,31 @@ const file = ts.createSourceFile(
   true,
   ts.ScriptKind.TSX,
 );
+const apiSource = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
+const apiCode = ts
+  .transpileModule(
+    `${apiSource.slice(apiSource.indexOf("function observeMobileMessages("), apiSource.indexOf("const MESSAGING_PROVIDER_LABELS")).replaceAll("export ", "")}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, applyMobileThreadEvent };`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+  )
+  .outputText.replaceAll("export ", "");
+const { applyMobileThreadEvent, mergeMobileSnapshot } = new Function(...Object.keys(core), apiCode)(
+  ...Object.values(core),
+) as {
+  applyMobileThreadEvent: typeof ApplyMobileThreadEvent;
+  mergeMobileSnapshot: typeof MergeMobileSnapshot;
+};
 let notify = "";
 let clear = "";
 let effect = "";
 let commit = "";
 let ownerExpression = "";
+let subscriptionCallback = "";
+let refreshCommit = "";
 function collect(node: ts.Node) {
+  if (ts.isCallExpression(node) && node.expression.getText(file) === "subscribeThread")
+    subscriptionCallback = node.arguments[2]!.getText(file);
+  if (ts.isIfStatement(node) && node.expression.getText(file) === "result.commit")
+    refreshCommit = node.getText(file);
   if (ts.isVariableDeclaration(node) && node.name.getText(file) === "memoryCleanupOwner")
     ownerExpression = node.initializer!.getText(file);
   if (ts.isVariableDeclaration(node) && node.name.getText(file) === "showMemoryCleanupNotice")
@@ -93,9 +122,16 @@ function fixture(
   const historyEpoch = { current: 1 };
   const blocked = { current: overrides.blocked ?? false };
   const alert = vi.fn();
-  const commitSnap = vi.fn((snapshot: MobileSnapshot) => {
-    snapRef.current = snapshot;
-  });
+  let commitActual: (
+    snapshot: MobileSnapshot | null,
+    observation?: { clearEventSeq?: number; memoryCleanupSettledAt?: number },
+  ) => MobileSnapshot | null;
+  const commitSnap = vi.fn(
+    (
+      snapshot: MobileSnapshot | null,
+      observation?: { clearEventSeq?: number; memoryCleanupSettledAt?: number },
+    ) => commitActual(snapshot, observation),
+  );
   const scope = {
     useCallback: (callback: unknown) => callback,
     seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
@@ -120,15 +156,47 @@ function fixture(
     observeMemoryCleanup,
     hasNewThreadWork,
     applyThreadClearReceipt,
+    shouldResetHistoryAfterClear,
+    liveSubscriptionGeneration: { current: 1 },
+    streamResponsesRef: { current: false },
+    withLiveStreamingProgress: (value: MobileSnapshot | null) => value,
+    setSnap: vi.fn(),
+    reconcileVisibleThreadSnapshot: (_previous: unknown, next: MobileSnapshot | null) => next,
+    abort: new AbortController(),
+    sessionGeneration: 1,
+    selectionGeneration: 1,
+    subscriptionGeneration: 1,
+    currentSessionGeneration: () => 1,
+    currentSpaceSelectionGeneration: () => 1,
+    activeGroupId: { current: undefined },
+    replyEventObserver: { current: vi.fn() },
+    applyMobileThreadEvent,
+    isRunTerminalEvent: () => false,
+    refreshDelegatedApprovals: { current: vi.fn() },
+    refreshMentionBots: vi.fn(),
+    readVisibleTarget: { current: null },
+    markReadIfVisible: vi.fn(),
     modelPolicyRefusal: false,
     refresh: vi.fn(async () => undefined),
-    expandedHistoryThread: { current: null },
-    pinnedAroundRef: { current: null },
-    jumpScrollTarget: { current: null },
+    expandedHistoryThread: { current: null as string | null },
+    pinnedAroundRef: { current: null as { messageId: string; threadId: string } | null },
+    jumpScrollTarget: { current: null as string | null },
     jumpAnchor: { current: { release: vi.fn() } },
     commitSnap,
     errorText: (_error: unknown, fallback: string) => fallback,
   };
+  commitActual = new Function(
+    ...Object.keys(scope),
+    ts.transpileModule(`${commit}; return commitSnap;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+  )(...Object.values(scope));
+  const emit = new Function(
+    ...Object.keys(scope),
+    ts.transpileModule(`let cursor = 1; let retryMs = 250; return (${subscriptionCallback});`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+  )(...Object.values(scope)) as (event: Parameters<typeof applyMobileThreadEvent>[1]) => void;
   const handlers = new Function(...Object.keys(scope), code)(...Object.values(scope)) as {
     clear(): void;
     notify(id: string, immediate: boolean): void;
@@ -150,6 +218,8 @@ function fixture(
   };
   return {
     ...handlers,
+    emit,
+    runtime: scope,
     effect: () => {
       const current = { ...scope, snap: snapRef.current };
       const callbacks = new Function(...Object.keys(current), code)(...Object.values(current));
@@ -175,6 +245,134 @@ function fixture(
 }
 
 describe("native memory cleanup outcomes", () => {
+  it("keeps a post-clear search anchor and page when the receipt arrives", async () => {
+    const f = fixture();
+    f.clear();
+    const anchor = { messageId: "anchor", threadId: "thread-one" };
+    f.runtime.pinnedAroundRef.current = anchor;
+    f.runtime.jumpScrollTarget.current = "anchor";
+    f.runtime.expandedHistoryThread.current = "thread-one";
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      cursor: 20,
+      olderCursor: 3,
+      messages: [{ id: "anchor", seq: 3, observedEventSeq: 15, role: "user", blocks: [] }],
+    };
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+      memoryCleanupCursor: 21,
+    });
+    expect(f.runtime.pinnedAroundRef.current).toBe(anchor);
+    expect(f.runtime.jumpScrollTarget.current).toBe("anchor");
+    expect(f.runtime.jumpAnchor.current.release).not.toHaveBeenCalled();
+    expect(f.historyEpoch.current).toBe(1);
+    expect(f.snapRef.current.olderCursor).toBe(3);
+  });
+  it("rearms a pending interval between consecutive live frames before React effects", () => {
+    const f = fixture();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 10,
+    };
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
+    f.emit({
+      type: "thread.meta",
+      threadId: "thread-one",
+      botId: "bot-one",
+      seq: 11,
+      payload: { memoryCleanupPending: false },
+    });
+    f.emit({
+      type: "thread.meta",
+      threadId: "thread-one",
+      botId: "bot-one",
+      seq: 12,
+      payload: { memoryCleanupPending: true },
+    });
+    f.effect();
+    expect(f.alert).toHaveBeenCalledTimes(2);
+  });
+  it.each(["stale", "omitted"])("does not rearm the interval for a %s live frame", (mode) => {
+    const f = fixture();
+    f.snapRef.current = {
+      ...f.snapRef.current,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 20,
+    };
+    f.effect();
+    f.emit({
+      type: "thread.meta",
+      threadId: "thread-one",
+      botId: "bot-one",
+      seq: mode === "stale" ? 19 : 21,
+      payload: mode === "stale" ? { memoryCleanupPending: false } : { title: "Unrelated update" },
+    });
+    f.emit({
+      type: "thread.meta",
+      threadId: "thread-one",
+      botId: "bot-one",
+      seq: 22,
+      payload: { memoryCleanupPending: true },
+    });
+    f.effect();
+    expect(f.alert).toHaveBeenCalledOnce();
+  });
+  it("persists the same reconciled snapshot accepted after a cold clear receipt", async () => {
+    const f = fixture();
+    f.snapRef.current = null as unknown as MobileSnapshot;
+    f.clear();
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+      memoryCleanupCursor: 20,
+      memoryCleanupPending: true,
+    });
+    const next = {
+      botId: "bot-one",
+      threadId: "thread-one",
+      cursor: 5,
+      run: null,
+      olderCursor: null,
+      messages: [{ id: "deleted", seq: 1, role: "user", blocks: [] }],
+    };
+    const writeSavedThread = vi.fn();
+    const scope = {
+      ...f.runtime,
+      result: { commit: true },
+      next,
+      mergeMobileSnapshot,
+      snapshotOrigin: { current: null },
+      pendingSave: { current: null },
+      writeSavedThread,
+      savedChatTarget: (snapshot: MobileSnapshot) => snapshot.botId,
+      scope: { userId: "user-one" },
+      setShowingSaved: vi.fn(),
+    };
+    expect(refreshCommit).not.toBe("");
+    new Function(
+      ...Object.keys(scope),
+      ts.transpileModule(refreshCommit, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+        .outputText,
+    )(...Object.values(scope));
+    expect(f.snapRef.current.messages).toEqual([]);
+    expect(writeSavedThread).toHaveBeenCalledExactlyOnceWith(
+      scope.scope,
+      "bot-one",
+      f.snapRef.current,
+    );
+    expect(writeSavedThread.mock.calls[0]![2]).toMatchObject({
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 20,
+    });
+  });
+
   it("reports each explicit clear while replayed background state stays deduplicated", async () => {
     const f = fixture();
     f.clear();
@@ -563,6 +761,12 @@ describe("cold jump cleanup metadata commit", () => {
       const scope = {
         pendingMemoryCleanupEvents,
         applyThreadClearReceipt,
+        shouldResetHistoryAfterClear,
+        expandedHistoryThread: { current: null },
+        pinnedAroundRef: { current: null },
+        jumpScrollTarget: { current: null },
+        jumpAnchor: { current: { release: vi.fn() } },
+        seenMemoryCleanupNotices: { current: new Map() },
         observeMemoryCleanup,
         snapRef,
         memoryCleanupOwnerRef: { current: reader === "other-owner" ? "owner-two" : "owner-one" },

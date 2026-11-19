@@ -14,9 +14,10 @@ export function nativeDialogCandidates(list: string, title?: string, application
   if (title !== "Error" && applicationPid && applicationPid > 0) owners.add(applicationPid);
   return windows.filter(
     (window) =>
-      title === undefined ||
-      window.title === title ||
-      (title !== "Error" && window.title === "" && owners.has(window.pid)),
+      (!(applicationPid && applicationPid > 0) || window.pid === applicationPid) &&
+      (title === undefined ||
+        window.title === title ||
+        (title !== "Error" && window.title === "" && owners.has(window.pid))),
   );
 }
 
