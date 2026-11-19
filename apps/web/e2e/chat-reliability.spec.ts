@@ -4028,8 +4028,10 @@ for (const scenario of [
           await composer.fill("A send racing the clear");
           await composer.press("Enter");
           await expect.poll(() => state.sends.length).toBe(1);
-          if (newSend) await expect(stop).toBeVisible();
-          else {
+          if (newSend) {
+            await expect(composer).toHaveValue("");
+            await expect(stop).toBeVisible();
+          } else {
             clearing = clearFixtureConversation(page, 1280, "en", "research-one");
             void clearing.catch((error: unknown) => {
               clearFailure = error;
