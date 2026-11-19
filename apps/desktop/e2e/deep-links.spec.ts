@@ -13,6 +13,7 @@ import { createServer } from "vite";
 import { developmentBuildConfiguration } from "../src/development-build.js";
 import { closePendingApplications } from "./application-teardown.js";
 import { nativeDialogCandidates, visibleNativeDialogs } from "./native-dialogs.js";
+import { isNativeWindowVisible } from "./window-visibility.js";
 
 // Native OS associations belong only to this disposable Linux CI session.
 test.skip(
@@ -114,10 +115,9 @@ async function consoleWindow(app: ElectronApplication): Promise<Page> {
   await expect
     .poll(async () => {
       for (const page of app.windows()) {
-        if (page.isClosed() || !page.url().startsWith(`${origin}/`)) continue;
-        const native = await app.browserWindow(page);
+        if (!page.url().startsWith(`${origin}/`)) continue;
         if (
-          (await native.evaluate((win) => win.isVisible())) &&
+          (await isNativeWindowVisible(app, page)) &&
           (await page.getByRole("heading", { name: "Console fixture" }).isVisible())
         ) {
           window = page;
