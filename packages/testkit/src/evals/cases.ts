@@ -536,15 +536,26 @@ const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
 function currentReportMatches(text: string): boolean {
-  const count = String.raw`\b(?:\d+\s+(?:(?!not\b)[a-z]+\s+){0,2}pending|pending(?:\s+count)?[:\s]+\d+)\b`;
+  const number = String.raw`\d+(?:[.,/]\d+)*`;
+  const count = String.raw`\b(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending|pending(?:\s+count)?[:\s]+${number})\b`;
   const current = String.raw`\b(?:current(?:ly)?|now|latest|today)\b`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   let deniesCurrent = false;
-  // Exclude explicitly historical or negated counts from the current-value check.
+  // Normalize contextual current counts, then exclude historical and negated stale claims.
   const result = text
     .replace(
-      /\b(now|currently|today)(\s+(?:there\s+(?:are|is)|(?:it|the\s+report)\s+(?:is|shows|has)))?[\s:]+(\d+)(?=\s*(?:[,;.!?\n)]|$))/gi,
+      new RegExp(
+        `\\b(current(?:ly)?|now|latest|today)(\\s+(?:(?:report|there)(?:\\s+(?:are|is|shows|has))?|it\\s+(?:is|shows|has)))?[\\s:]+(${number})(?=\\s*(?:[,;.!?\\n)]|$))`,
+        "gi",
+      ),
       "$1$2 $3 pending",
+    )
+    .replace(
+      new RegExp(
+        `\\b(${number})(\\s+(?:now|currently|today|in\\s+(?:the\\s+)?(?:current|latest)\\s+report))\\b`,
+        "gi",
+      ),
+      "$1 pending$2",
     )
     .replace(
       new RegExp(
@@ -566,7 +577,7 @@ function currentReportMatches(text: string): boolean {
         "gi",
       ),
       (negated) => {
-        const value = negated.match(new RegExp(count, "i"))?.[0].match(/\d+/)?.[0];
+        const value = negated.match(new RegExp(count, "i"))?.[0].match(new RegExp(number))?.[0];
         deniesCurrent ||= value === latestReport.split(" ")[0];
         return "";
       },
@@ -575,7 +586,7 @@ function currentReportMatches(text: string): boolean {
   return (
     !deniesCurrent &&
     counts.length > 0 &&
-    counts.every((match) => match[0].match(/\d+/)?.[0] === latestReport.split(" ")[0])
+    counts.every((match) => match[0].match(new RegExp(number))?.[0] === latestReport.split(" ")[0])
   );
 }
 const freshCheckHistory = historyFixture(1000, "exact");
