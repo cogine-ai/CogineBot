@@ -548,9 +548,13 @@ function currentReportMatches(text: string): boolean {
   const countWording = `(?:${countModifier}|${reportingVerb}|contain(?:ed|s)?|be(?:en|ing)?|at|equal(?:s)?)`;
   const negation = String.raw`(?:not|never|no\s+longer|${auxiliary}n['’]t)`;
   const speaker = "(?:I(?:['’](?:m|ve|d))?|we(?:['’](?:re|ve|d))?)";
-  const recipientWord = String.raw`(?!(?:and|but|or|nor|for|then|that|because|although|though|yet|however|nevertheless|nonetheless|still|since|as|while|whereas|when|if|unless|until|after|before|so|therefore|thus|hence|consequently|otherwise|instead|despite)\b)[a-z]+(?:[-'’][a-z]+)*`;
+  const reportedSubject = String.raw`(?:there|it|${speaker}|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification))`;
+  const causalIntroducer =
+    "(?:given|considering|seeing|knowing|noting|granted|granting|owing|due|notwithstanding|whilst|albeit|inasmuch|insofar)";
+  const causalLead = String.raw`(?:that\b|to\b|as\b|${currentTime}\b|${reportedSubject}\b|(?:the\s+)?${number})`;
+  const recipientWord = String.raw`(?!(?:and|but|or|nor|for|then|that|because|although|though|yet|however|nevertheless|nonetheless|still|since|as|while|whereas|when|if|unless|until|after|before|so|therefore|thus|hence|consequently|otherwise|instead|despite|${causalIntroducer}(?=\s+${causalLead}))\b)[a-z]+(?:[-'’][a-z]+)*`;
   const recipient = String.raw`${recipientWord}(?:\s+${recipientWord}){0,2}`;
-  const embeddedSubject = String.raw`(?:\s+(?:${currentTime}\s+)?(?:there|it|${speaker}|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification)))?`;
+  const embeddedSubject = String.raw`(?:\s+(?:${currentTime}\s+)?${reportedSubject})?`;
   const claimWord = `(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})`;
   const claimWording = String.raw`(?:\s+${claimWord}){0,6}`;
   const embeddedWording = String.raw`(?:\s+(?:${currentTime}|am|${claimWord})){0,6}`;
