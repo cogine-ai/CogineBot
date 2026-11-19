@@ -46,7 +46,6 @@ function observeThreadActivity(snapshot: ThreadSnapshot, authoritative = false):
   snapshot = observeThreadRuns(snapshot, authoritative);
   let changed = false;
   const messages = snapshot.messages.map((message) => {
-    if (message.id.startsWith("progress:") || message.id.startsWith("subagent:")) return message;
     const version = (message as ObservedThreadMessage).observedEventSeq;
     if ((!authoritative && version !== undefined) || version === snapshot.cursor) return message;
     changed = true;
@@ -236,7 +235,8 @@ export function reconcileRefreshedThread(
     // A subscription can advance the cursor with progress before the send-triggered refresh
     // returns the new run record. Hydrate that matching run without rolling the transcript back.
     // Optimistic stop removes the matching progress message, so an older refresh cannot revive it.
-    const refreshedRun = snap.run;
+    const observed = observeThreadRuns(snap, true);
+    const refreshedRun = observed.run;
     const hasMatchingLiveProgress = Boolean(
       refreshedRun &&
         prev.messages.some(
@@ -249,7 +249,7 @@ export function reconcileRefreshedThread(
         snapshot: {
           ...prev,
           run: refreshedRun,
-          activeRuns: snap.activeRuns,
+          activeRuns: observed.activeRuns,
           computer: snap.computer,
         },
         computer: snap.computer ?? null,

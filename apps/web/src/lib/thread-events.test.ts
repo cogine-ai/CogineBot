@@ -987,7 +987,7 @@ describe("thread event reduction", () => {
   });
 
   it("hydrates a live run from a refresh without rolling back newer progress", () => {
-    const run = threadRun("run-1");
+    const run = threadRun("run-1", "bot-1", 11);
     const liveProgress = {
       ...message("progress:run-1", [{ kind: "progress" as const, text: "Still working" }]),
       runId: run.id,
@@ -1007,6 +1007,33 @@ describe("thread event reduction", () => {
     expect(reconciled.snapshot.run).toBe(run);
     expect(reconciled.computer?.busyBotName).toBe("Chief");
   });
+
+  it.each([10, 14])(
+    "versions stale hydration and progress before a delayed clear (%s)",
+    (observation) => {
+      const run = threadRun("missed-run", "bot-1", null);
+      const progress = {
+        ...message(`progress:${run.id}`, [{ kind: "progress" as const, text: "Working" }]),
+        runId: run.id,
+      };
+      const initial = { ...snapshot([progress], 1), cursor: observation };
+      const newer = reduceThreadSnapshot(
+        initial,
+        event({ type: "thread.meta", seq: 15, payload: { memoryCleanupPending: false } }),
+      )!;
+      const hydrated = reconcileRefreshedThread(
+        newer,
+        { ...snapshot([], 1), cursor: observation, run, activeRuns: [run] },
+        null,
+      ).snapshot;
+      expect(hydrated.run?.id).toBe(run.id);
+      expect(hydrated.cursor).toBe(15);
+      const cleared = applyThreadClearReceipt(hydrated, { clearEventSeq: 12, cancelledRunIds: [] });
+      expect(cleared.run?.id ?? null).toBe(observation > 12 ? run.id : null);
+      expect(cleared.activeRuns?.map((run) => run.id)).toEqual(observation > 12 ? [run.id] : []);
+      expect(cleared.messages.map((row) => row.id)).toEqual(observation > 12 ? [progress.id] : []);
+    },
+  );
 
   it("clears active runs and their transient progress after stop", () => {
     const run = threadRun("run-1");
@@ -1454,15 +1481,18 @@ describe("thread event reduction", () => {
   });
 
   it("advances past tool completion audit events without adding a visible message", () => {
-    const initial = snapshot(
-      [
-        message(
-          "progress:run-1",
-          [{ kind: "steps", steps: [{ label: "Slack find channels", count: 1 }] }],
-          4,
-        ),
-      ],
-      4,
+    const initial = mergeThreadSnapshot(
+      null,
+      snapshot(
+        [
+          message(
+            "progress:run-1",
+            [{ kind: "steps", steps: [{ label: "Slack find channels", count: 1 }] }],
+            4,
+          ),
+        ],
+        4,
+      ),
     );
     const next = reduceThreadSnapshot(
       initial,
