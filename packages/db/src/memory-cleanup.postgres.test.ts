@@ -64,6 +64,35 @@ describe.skipIf(!enabled).sequential("durable memory cleanup uncertainty (Postgr
   async function clear(scope: Awaited<ReturnType<typeof seed>>) {
     return clearThread(prisma, { ...scope, memoryCleanupExpected: true });
   }
+  it("publishes atomic cancelled Run IDs without including a later send", async () => {
+    const scope = await seed();
+    const createRun = async (status: string) => {
+      const task = await prisma.task.create({
+        data: { ...scope, userId, prompt: "Synthetic task", status },
+      });
+      return prisma.run.create({
+        data: { ...scope, userId, taskId: task.id, status, trigger: "user" },
+      });
+    };
+    const active = await createRun("queued");
+    const parked = await createRun("waiting_limit");
+    const ended = await createRun("completed");
+    const receipt = await clearThread(prisma, scope);
+    const newer = await createRun("queued");
+    const event = await prisma.event.findFirstOrThrow({
+      where: { threadId: scope.threadId, type: "thread.cleared" },
+    });
+    const cancelled = (event.payload as { cancelledRunIds: string[] }).cancelledRunIds;
+    expect(new Set(cancelled)).toEqual(new Set([active.id, parked.id]));
+    expect(cancelled).toHaveLength(2);
+    expect(new Set(cancelled)).toEqual(new Set(receipt.cancelledRunIds));
+    expect(cancelled).not.toContain(ended.id);
+    expect(cancelled).not.toContain(newer.id);
+    expect((await prisma.run.findUniqueOrThrow({ where: { id: active.id } })).status).toBe(
+      "cancelled",
+    );
+    expect((await prisma.run.findUniqueOrThrow({ where: { id: newer.id } })).status).toBe("queued");
+  });
   it("defaults to no recorded failure or pending work without asserting deletion", async () => {
     const row = await state(await seed());
     expect(row.memoryCleanupUnconfirmed).toBe(false);

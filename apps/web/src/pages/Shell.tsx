@@ -85,6 +85,7 @@ import {
   serializeComposerPrompt,
   shouldResetHistoryAfterClear,
   speechFromBlocks,
+  threadClearCancelledRunIds,
   timeSeparatorIds,
   truncateSlashDescription,
   userVisibleMessages,
@@ -599,6 +600,17 @@ export function ShellPage() {
   // A very fast run can finish over SSE while its threads.send response is still
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
+  const terminalRunReceiptBatches = useRef<string[][]>([]);
+  function rememberTerminalRunIds(ids: readonly string[]) {
+    if (!ids.length || ids.every((id) => terminalRunReceipts.current.has(id))) return;
+    // An atomic clear must not evict IDs from its own cancellation list.
+    terminalRunReceiptBatches.current = [
+      ...terminalRunReceiptBatches.current.slice(-99),
+      [...new Set(ids)],
+    ];
+    terminalRunReceipts.current = new Set(terminalRunReceiptBatches.current.flat());
+  }
+
   const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   const refreshDelegatedApprovals = useRef<() => void>(() => {});
   // Last-known computer/screen per bot, so switching back to an already-seen
@@ -650,7 +662,11 @@ export function ShellPage() {
         botId?: string;
         groupId?: string;
         started: ThreadWorkObservation | null;
-        receipt: MemoryCleanupObservation & { clearEventSeq: number; cancelledRunIds?: string[] };
+        receipt: MemoryCleanupObservation & {
+          clearEventSeq: number;
+          cancelledRunIds?: string[];
+          cancelledRunIdsSeq?: number;
+        };
       }
     >(),
   );
@@ -712,9 +728,7 @@ export function ShellPage() {
         ? next.groupId === pendingClear.groupId
         : next.botId === pendingClear.botId)
     ) {
-      const observed = (next as ThreadSnapshot & { observedClearSeq?: number }).observedClearSeq;
-      if (pendingClear.receipt.clearEventSeq > (observed ?? -1))
-        next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
+      next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
       next = observeMemoryCleanup(
         next,
         pendingClear.receipt,
@@ -1892,6 +1906,9 @@ export function ShellPage() {
       resume,
       ownsReader,
       beforeEvent: (event: ProductEvent) => {
+        if (event.type === "thread.cleared" && ownsReader())
+          rememberTerminalRunIds(threadClearCancelledRunIds(event.payload) ?? []);
+
         if (
           event.type === "thread.cleared" &&
           snapshotRef.current?.threadId === event.threadId &&
@@ -2439,11 +2456,7 @@ export function ShellPage() {
       beforeEvent: (event) => {
         reader.beforeEvent(event);
         if (isRunTerminalEvent(event) && event.runId) {
-          terminalRunReceipts.current.add(event.runId);
-          if (terminalRunReceipts.current.size > 100) {
-            const oldest = terminalRunReceipts.current.values().next().value;
-            if (oldest !== undefined) terminalRunReceipts.current.delete(oldest);
-          }
+          rememberTerminalRunIds([event.runId]);
         }
       },
       applyEvent: reader.applyEvent,
@@ -7577,6 +7590,7 @@ export function ShellPage() {
                     ? activeBotId.current === clearTarget.chat.id
                     : activeGroupId.current === clearTarget.chat.id;
                 const sameOwner = owner === clearReceiptOwnerKey();
+                if (sameOwner) rememberTerminalRunIds(cleared.cancelledRunIds ?? []);
                 const matches = (snapshot: ThreadSnapshot) =>
                   snapshot.threadId === receiptThreadId &&
                   (clearTarget.kind === "bot"
@@ -7598,7 +7612,13 @@ export function ShellPage() {
                             activeRuns: requestSnapshot.activeRuns?.map(({ id }) => ({ id })),
                           }
                         : null,
-                    receipt: { ...cleared, clearEventSeq: cleared.clearEventSeq },
+                    receipt: {
+                      ...cleared,
+                      clearEventSeq: cleared.clearEventSeq,
+                      ...(cleared.cancelledRunIds !== undefined
+                        ? { cancelledRunIdsSeq: cleared.clearEventSeq }
+                        : {}),
+                    },
                   };
                   const latest =
                     before && before.receipt.clearEventSeq > cleared.clearEventSeq
@@ -7612,6 +7632,10 @@ export function ShellPage() {
                         latest.receipt,
                         other?.receipt ?? {},
                         other?.receipt.memoryCleanupCursor ?? other?.receipt.clearEventSeq ?? -1,
+                      ),
+                      cancelledRunIdsSeq: Math.max(
+                        latest.receipt.cancelledRunIdsSeq ?? -1,
+                        other?.receipt.cancelledRunIdsSeq ?? -1,
                       ),
                       cancelledRunIds: [
                         ...new Set([

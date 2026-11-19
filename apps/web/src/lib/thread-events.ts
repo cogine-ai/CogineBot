@@ -15,6 +15,7 @@ import {
   RUN_TRIGGERS,
 } from "@rakazo/contracts";
 import {
+  applyThreadClearReceipt,
   isActive,
   isBackgroundRunTrigger,
   isRunTerminalEvent,
@@ -30,6 +31,7 @@ import {
   sanitizeRunErrorDetails,
   subagentBlockFromPayload,
   takeLiveMessage,
+  threadClearCancelledRunIds,
   updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
@@ -346,6 +348,23 @@ export function reduceThreadSnapshot(
     prev.cursor,
   );
   const clearSeq = threadClearSeq(prev);
+  const cancelledRunIds =
+    event.type === "thread.cleared" ? threadClearCancelledRunIds(event.payload) : undefined;
+  if (cancelledRunIds !== undefined) {
+    const cleared = applyThreadClearReceipt(
+      observeThreadMessages(observeThreadClear(prev, clearSeq)),
+      null,
+      { clearEventSeq: event.seq, cancelledRunIds },
+    );
+    if (cleared === prev && cleanup === prev && event.seq <= prev.cursor) return prev;
+    return {
+      ...cleared,
+      cursor: Math.max(prev.cursor, event.seq),
+      memoryCleanupCursor: cleanup.memoryCleanupCursor,
+      memoryCleanupPending: cleanup.memoryCleanupPending,
+      ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    };
+  }
   if (event.type === "thread.cleared" && event.seq <= prev.cursor) {
     if (event.seq <= (clearSeq ?? -1)) return prev;
     const observed = observeThreadMessages(prev);

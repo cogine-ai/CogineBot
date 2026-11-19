@@ -29,6 +29,7 @@ import type { ThreadHistory } from "@rakazo/core";
 import {
   aiConsentTarget,
   aiDataUsesForProcedure,
+  applyThreadClearReceipt,
   cancelResponseBody,
   ensureAiDataConsent,
   isActive,
@@ -48,6 +49,7 @@ import {
   sanitizeRunErrorDetails,
   signupRequiresEmailVerification,
   takeLiveMessage,
+  threadClearCancelledRunIds,
   updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
@@ -1686,6 +1688,23 @@ export function applyMobileThreadEvent(
     prev.cursor ?? -1,
   );
   const clearSeq = mobileClearSeq(prev);
+  const cancelledRunIds =
+    event.type === "thread.cleared" ? threadClearCancelledRunIds(event.payload) : undefined;
+  if (cancelledRunIds !== undefined && event.seq !== undefined) {
+    const cleared = applyThreadClearReceipt(
+      observeMobileMessages(observeMobileClear(prev, clearSeq)),
+      null,
+      { clearEventSeq: event.seq, cancelledRunIds },
+    );
+    if (cleared === prev && cleanup === prev && event.seq <= (prev.cursor ?? -1)) return prev;
+    return {
+      ...cleared,
+      cursor: Math.max(prev.cursor ?? -1, event.seq),
+      memoryCleanupCursor: cleanup.memoryCleanupCursor,
+      memoryCleanupPending: cleanup.memoryCleanupPending,
+      ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    };
+  }
   if (
     event.type === "thread.cleared" &&
     event.seq !== undefined &&

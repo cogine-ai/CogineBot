@@ -6,6 +6,7 @@ import {
   isServerUnreachable,
   observeMemoryCleanup,
   ReplyAnnouncements,
+  threadClearCancelledRunIds,
   withLiveStreamingProgress,
 } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
@@ -5181,6 +5182,7 @@ describe("mobile screen released-event callback", () => {
       commitSnap,
       applyMobileThreadEvent,
       observeMemoryCleanup,
+      threadClearCancelledRunIds,
       isRunTerminalEvent: (event: { type: string }) =>
         event.type.startsWith("run.") && event.type !== "run.waiting_input",
       expandedHistoryThread: { current: null },
@@ -5808,4 +5810,63 @@ it("retains pending cleanup when a same-thread refresh omits the metadata", () =
       memoryCleanupCursor: 12,
     }),
   ).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
+});
+
+describe("canonical clear cancellation metadata", () => {
+  it("preserves an uncancelled queued Run at the preceding event cursor", () => {
+    const run = { id: "post-clear-run", botId: "bot-1", status: "queued" };
+    const before = {
+      ...snapshot([mobileMessage("old", [])], 1),
+      cursor: 15,
+      run,
+      activeRuns: [run],
+    };
+    const next = applyMobileThreadEvent(before, {
+      type: "thread.cleared",
+      threadId: "thread-1",
+      seq: 20,
+      payload: { cancelledRunIds: ["old-run"] },
+    });
+    expect(next?.messages).toEqual([]);
+    expect(next?.run).toBe(run);
+    expect(next?.activeRuns).toEqual([run]);
+  });
+  it("applies IDs at an already observed boundary without dropping its admitted page", () => {
+    const cancelled = { id: "cancelled", botId: "bot-1", status: "queued" };
+    const fresh = { id: "fresh", botId: "bot-1", status: "queued" };
+    const before = {
+      ...snapshot([{ ...mobileMessage("anchor", []), observedEventSeq: 20 }], 1),
+      cursor: 20,
+      observedClearSeq: 20,
+      run: cancelled,
+      activeRuns: [cancelled, fresh],
+    };
+    const next = applyMobileThreadEvent(before, {
+      type: "thread.cleared",
+      threadId: "thread-1",
+      seq: 20,
+      payload: { cancelledRunIds: [cancelled.id] },
+    });
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([fresh]);
+    expect(next?.messages).toBe(before.messages);
+    expect(next?.olderCursor).toBe(1);
+  });
+  it("clears an old completed Run even when the canonical list is empty", () => {
+    const run = { id: "completed", botId: "bot-1", status: "completed" };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [] },
+      { type: "thread.cleared", seq: 20, payload: { cancelledRunIds: [] } },
+    );
+    expect(next?.run).toBeNull();
+  });
+  it("retains the prior clearing behavior when a legacy frame has no run evidence", () => {
+    const run = { id: "unknown", botId: "bot-1", status: "queued" };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [run] },
+      { type: "thread.cleared", seq: 20, payload: {} },
+    );
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([]);
+  });
 });

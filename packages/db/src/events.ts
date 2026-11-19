@@ -568,6 +568,7 @@ export async function clearThread(
       ...input,
       type: "thread.cleared",
       payload: {
+        cancelledRunIds: runIds,
         ...(thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
         ...(cleanupPending ? { memoryCleanupPending: true } : {}),
       },

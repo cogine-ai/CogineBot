@@ -56,6 +56,7 @@ import {
   resolvePersonaColorDef,
   selectedAskActionLabel,
   shouldResetHistoryAfterClear,
+  threadClearCancelledRunIds,
   threadWindowMessages,
   timeSeparatorIds,
   userVisibleMessages,
@@ -838,6 +839,7 @@ function Thread({
         pending?: boolean;
         clearEventSeq?: number;
         cancelledRunIds?: string[];
+        cancelledRunIdsSeq?: number;
       }
     >(),
   );
@@ -943,14 +945,12 @@ function Thread({
         cleanup.subscription !== liveSubscriptionGeneration.current)
     )
       return next;
-    // A page admitted after this boundary must not be filtered again at commit.
-    if (
-      cleanup.clearEventSeq !== undefined &&
-      cleanup.clearEventSeq > (next.observedClearSeq ?? -1)
-    )
+    // The shared receipt rule keeps an admitted boundary page and still applies cancellation IDs.
+    if (cleanup.clearEventSeq !== undefined)
       next = applyThreadClearReceipt(next, null, {
         clearEventSeq: cleanup.clearEventSeq,
         cancelledRunIds: cleanup.cancelledRunIds,
+        cancelledRunIdsSeq: cleanup.cancelledRunIdsSeq ?? -1,
       });
     return observeMemoryCleanup(
       { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor ?? -1 },
@@ -1663,7 +1663,16 @@ function Thread({
               ? { unconfirmed: true }
               : {}),
             ...(pending !== undefined ? { pending } : {}),
-            ...(clearEventSeq >= 0 ? { clearEventSeq, cancelledRunIds } : {}),
+            ...(clearEventSeq >= 0
+              ? {
+                  clearEventSeq,
+                  cancelledRunIds,
+                  cancelledRunIdsSeq: Math.max(
+                    sameOwner ? (previous.cancelledRunIdsSeq ?? -1) : -1,
+                    result.cancelledRunIds !== undefined ? (result.clearEventSeq ?? -1) : -1,
+                  ),
+                }
+              : {}),
           });
           return;
         }
@@ -2276,7 +2285,24 @@ function Thread({
                     ? {}
                     : { subscription: subscriptionGeneration }),
                   ...(clearEventSeq !== undefined
-                    ? { clearEventSeq, cancelledRunIds: previous?.cancelledRunIds }
+                    ? {
+                        clearEventSeq,
+                        cancelledRunIdsSeq: Math.max(
+                          previous?.cancelledRunIdsSeq ?? -1,
+                          event.type === "thread.cleared" &&
+                            threadClearCancelledRunIds(event.payload) !== undefined
+                            ? (event.seq ?? -1)
+                            : -1,
+                        ),
+                        cancelledRunIds: [
+                          ...new Set([
+                            ...(previous?.cancelledRunIds ?? []),
+                            ...(event.type === "thread.cleared"
+                              ? (threadClearCancelledRunIds(event.payload) ?? [])
+                              : []),
+                          ]),
+                        ],
+                      }
                     : {}),
                   ...(cleanup.memoryCleanupUnconfirmed ? { unconfirmed: true } : {}),
                   ...(typeof cleanup.memoryCleanupPending === "boolean"

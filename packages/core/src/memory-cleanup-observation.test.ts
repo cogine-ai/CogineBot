@@ -4,6 +4,7 @@ import {
   hasNewThreadWork,
   observeMemoryCleanup,
   shouldResetHistoryAfterClear,
+  threadClearCancelledRunIds,
 } from "./memory-cleanup-observation.js";
 
 describe("cleanup observation ordering", () => {
@@ -47,6 +48,72 @@ describe("cleanup observation ordering", () => {
 });
 
 describe("clear receipt boundaries", () => {
+  it.each([20, 18])(
+    "applies cancellation IDs independently of the known clear boundary (%s)",
+    (seq) => {
+      const run = { id: "cancelled-run", status: "queued" };
+      const fresh = { id: "fresh-run", status: "queued" };
+      const current = {
+        threadId: "thread",
+        cursor: 20,
+        observedClearSeq: 20,
+        olderCursor: 1,
+        messages: [{ id: "anchor", observedEventSeq: 20 }],
+        run,
+        activeRuns: [run, fresh],
+      };
+      const next = applyThreadClearReceipt(current, null, {
+        clearEventSeq: seq,
+        cancelledRunIds: [run.id],
+      });
+      expect(next.run).toBeNull();
+      expect(next.activeRuns).toEqual([fresh]);
+      expect(next.messages).toBe(current.messages);
+      expect(next.olderCursor).toBe(1);
+      expect(next.observedClearSeq).toBe(20);
+    },
+  );
+  it("preserves an uncancelled active send receipt before its event advances the cursor", () => {
+    const run = { id: "post-clear-run", status: "queued" };
+    const current = {
+      threadId: "thread",
+      cursor: 15,
+      messages: [{ id: "old", observedEventSeq: 15 }],
+      run,
+      activeRuns: [run],
+    };
+    const next = applyThreadClearReceipt(current, null, {
+      clearEventSeq: 20,
+      cancelledRunIds: ["old-run"],
+    });
+    expect(next.run).toBe(run);
+    expect(next.activeRuns).toEqual([run]);
+    expect(next.messages).toEqual([]);
+  });
+  it("does not treat cancellation IDs from an older clear as complete evidence for a later clear", () => {
+    const run = { id: "unknown-later-run", status: "queued" };
+    const current = { threadId: "thread", cursor: 15, messages: [], run, activeRuns: [run] };
+    const next = applyThreadClearReceipt(current, null, {
+      clearEventSeq: 20,
+      cancelledRunIds: ["older-run"],
+      cancelledRunIdsSeq: 12,
+    });
+    expect(next.run).toBeNull();
+    expect(next.activeRuns).toEqual([]);
+  });
+  it("does not filter an admitted boundary page when the same receipt is applied again", () => {
+    const current = {
+      threadId: "thread",
+      cursor: 20,
+      observedClearSeq: 20,
+      olderCursor: 1,
+      messages: [{ id: "anchor", observedEventSeq: 20 }],
+      run: null,
+    };
+    expect(applyThreadClearReceipt(current, null, { clearEventSeq: 20, cancelledRunIds: [] })).toBe(
+      current,
+    );
+  });
   it("removes pre-clear events while retaining post-clear messages and work", () => {
     const started = { threadId: "thread", cursor: 10, run: { id: "cancelled" } };
     const current = {
@@ -146,5 +213,18 @@ describe("post-clear history windows", () => {
     );
     expect(next.run).toBeNull();
     expect(next.messages).toEqual([]);
+  });
+});
+
+describe("clear cancellation evidence", () => {
+  it.each([undefined, {}, { cancelledRunIds: "run-one" }, { cancelledRunIds: [1] }])(
+    "leaves absent or malformed cancellation evidence unknown (%j)",
+    (payload) => {
+      expect(threadClearCancelledRunIds(payload)).toBeUndefined();
+    },
+  );
+  it("distinguishes a canonical empty cancellation list from missing evidence", () => {
+    expect(threadClearCancelledRunIds({ cancelledRunIds: [] })).toEqual([]);
+    expect(threadClearCancelledRunIds({ cancelledRunIds: ["run-one"] })).toEqual(["run-one"]);
   });
 });

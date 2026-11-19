@@ -5,6 +5,7 @@ import {
   hasNewThreadWork,
   observeMemoryCleanup,
   shouldResetHistoryAfterClear,
+  threadClearCancelledRunIds,
 } from "@rakazo/core";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
@@ -164,6 +165,7 @@ function fixture(
     historyEpoch,
     rpc: vi.fn(async () => nextResponse()),
     observeMemoryCleanup,
+    threadClearCancelledRunIds,
     hasNewThreadWork,
     applyThreadClearReceipt,
     shouldResetHistoryAfterClear,
@@ -256,7 +258,7 @@ function fixture(
 
 describe("native memory cleanup outcomes", () => {
   it.each(
-    ["receipt-status", "live-status", "omitted-boundary"].flatMap((mode) =>
+    ["receipt-status", "live-status", "omitted-boundary", "canonical-clear"].flatMap((mode) =>
       ["old-page", "post-clear-page"].map((page) => ({ mode, page })),
     ),
   )(
@@ -331,7 +333,10 @@ describe("native memory cleanup outcomes", () => {
         threadId: "thread-one",
         botId: "bot-one",
         seq: 20,
-        payload: { memoryCleanupPending: true },
+        payload: {
+          memoryCleanupPending: true,
+          ...(mode === "canonical-clear" ? { cancelledRunIds: ["event-cancelled"] } : {}),
+        },
       });
       f.emit({
         type: "thread.meta",
@@ -350,7 +355,14 @@ describe("native memory cleanup outcomes", () => {
       });
       const buffered = f.runtime.pendingMemoryCleanupEvents.current.get("thread-one");
       expect(buffered.clearEventSeq).toBe(20);
-      expect(buffered.cancelledRunIds).toEqual(["prior-cancelled", "receipt-cancelled"]);
+      expect(buffered.cancelledRunIds).toEqual(
+        mode === "canonical-clear"
+          ? ["prior-cancelled", "event-cancelled", "receipt-cancelled"]
+          : ["prior-cancelled", "receipt-cancelled"],
+      );
+      expect(buffered.cancelledRunIdsSeq).toBe(
+        mode === "canonical-clear" ? 20 : mode === "omitted-boundary" ? 8 : 12,
+      );
       expect(buffered.seq).toBe(mode === "receipt-status" ? 30 : 40);
       expect(buffered.pending).toBe(mode !== "receipt-status");
       expect(buffered.unconfirmed).toBe(true);
@@ -365,7 +377,7 @@ describe("native memory cleanup outcomes", () => {
       );
       expect(f.snapRef.current.run).toBeNull();
       expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual(
-        page === "old-page" ? [] : ["fresh-run"],
+        page === "old-page" && mode !== "canonical-clear" ? [] : ["fresh-run"],
       );
       expect(f.snapRef.current.memoryCleanupCursor).toBe(mode === "receipt-status" ? 30 : 40);
     },
@@ -396,6 +408,7 @@ describe("native memory cleanup outcomes", () => {
       seq: 30,
       clearEventSeq: 12,
       cancelledRunIds: ["receipt-run"],
+      cancelledRunIdsSeq: 12,
       pending: false,
     });
   });
@@ -923,6 +936,7 @@ describe("cold jump cleanup metadata commit", () => {
         jumpAnchor: { current: { release: vi.fn() } },
         seenMemoryCleanupNotices: { current: new Map() },
         observeMemoryCleanup,
+        threadClearCancelledRunIds,
         snapRef,
         memoryCleanupOwnerRef: { current: reader === "other-owner" ? "owner-two" : "owner-one" },
         liveSubscriptionGeneration: { current: reader === "old-subscription" ? 2 : 1 },
