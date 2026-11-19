@@ -33,7 +33,7 @@ const apiHandlers = ts
   .transpileModule(
     `${apiSource
       .slice(
-        apiSource.indexOf("function observeMobileMessages("),
+        apiSource.indexOf("function observeMobileActivity("),
         apiSource.indexOf("const MESSAGING_PROVIDER_LABELS"),
       )
       .replaceAll(

@@ -28,7 +28,7 @@ const file = ts.createSourceFile(
 const apiSource = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
 const apiCode = ts
   .transpileModule(
-    `${apiSource.slice(apiSource.indexOf("function observeMobileMessages("), apiSource.indexOf("const MESSAGING_PROVIDER_LABELS")).replaceAll("export ", "")}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, applyMobileThreadEvent, protectMobileMessagePage };`,
+    `${apiSource.slice(apiSource.indexOf("function observeMobileActivity("), apiSource.indexOf("const MESSAGING_PROVIDER_LABELS")).replaceAll("export ", "")}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, applyMobileThreadEvent, protectMobileMessagePage };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
   )
   .outputText.replaceAll("export ", "");
@@ -736,6 +736,39 @@ describe("native memory cleanup outcomes", () => {
     await f.finish();
     expect(f.alert).toHaveBeenCalledOnce();
   });
+  it("removes a cached Run after unrelated cleanup metadata advances the native cursor", async () => {
+    const f = fixture();
+    const run = { id: "missed-terminal", status: "running" };
+    f.snapRef.current = { ...f.snapRef.current, cursor: 10, run, activeRuns: [run] };
+    f.clear();
+    f.snapRef.current = applyMobileThreadEvent(f.snapRef.current, {
+      type: "thread.meta",
+      threadId: f.snapRef.current.threadId,
+      seq: 13,
+      payload: { memoryCleanupPending: false },
+    })!;
+    expect(f.snapRef.current.cursor).toBe(13);
+    await f.finish({ ok: true, clearEventSeq: 12, cancelledRunIds: [] });
+    expect(f.snapRef.current.run).toBeNull();
+    expect(f.snapRef.current.activeRuns).toEqual([]);
+  });
+
+  it("retains the Run from a newer authoritative native snapshot", async () => {
+    const f = fixture();
+    const run = { id: "observed-again", status: "running", observedEventSeq: 10 };
+    f.clear();
+    f.snapRef.current = mergeMobileSnapshot(f.snapRef.current, {
+      ...f.snapRef.current,
+      cursor: 13,
+      olderCursor: 1,
+      run,
+      activeRuns: [run],
+    });
+    await f.finish({ ok: true, clearEventSeq: 12, cancelledRunIds: [] });
+    expect(f.snapRef.current.run?.id).toBe(run.id);
+    expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual([run.id]);
+  });
+
   it.each([undefined, 17, 22, 23])(
     "orders a Run observed during the native clear callback (%s)",
     async (observedEventSeq) => {

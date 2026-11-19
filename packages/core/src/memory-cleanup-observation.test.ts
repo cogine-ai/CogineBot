@@ -4,9 +4,38 @@ import {
   applyThreadRunCancellations,
   hasNewThreadWork,
   observeMemoryCleanup,
+  observeThreadRuns,
   shouldResetHistoryAfterClear,
   threadClearCancelledRunIds,
 } from "./memory-cleanup-observation.js";
+
+describe("Run observation versions", () => {
+  it("does not promote old work when unrelated event cursors advance", () => {
+    const raw = { threadId: "thread", cursor: 10, run: { id: "old" } };
+    const observed = observeThreadRuns(raw);
+    expect(observed.run).toEqual({ id: "old", observedEventSeq: 10 });
+    const later = { ...observed, cursor: 13 };
+    expect(observeThreadRuns(later)).toBe(later);
+    expect(observeThreadRuns(later, true).run).toEqual({ id: "old", observedEventSeq: 13 });
+    expect(observed).not.toHaveProperty("activeRuns");
+    expect(raw.run).not.toHaveProperty("observedEventSeq");
+  });
+  it("retains a send receipt ahead of a raw snapshot cursor", () => {
+    const run = { id: "receipt", observedEventSeq: 21 };
+    const raw = { threadId: "thread", cursor: 15, run, activeRuns: [run] };
+    expect(observeThreadRuns(raw, true)).toBe(raw);
+  });
+  it("versions active Runs even when no primary Run is selected", () => {
+    const raw = { threadId: "thread", cursor: 10, run: null, activeRuns: [{ id: "active" }] };
+    expect(observeThreadRuns(raw).activeRuns).toEqual([{ id: "active", observedEventSeq: 10 }]);
+  });
+  it("preserves identity without a cursor or any work", () => {
+    const absent = { threadId: "thread", run: null };
+    const empty = { ...absent, cursor: 10, activeRuns: [] };
+    expect(observeThreadRuns(absent)).toBe(absent);
+    expect(observeThreadRuns(empty)).toBe(empty);
+  });
+});
 
 describe("cleanup observation ordering", () => {
   it("recognizes a new send receipt before its event cursor advances", () => {

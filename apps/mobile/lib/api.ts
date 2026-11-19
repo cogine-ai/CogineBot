@@ -39,6 +39,7 @@ import {
   mergeThreadHistory,
   mergeThreadMemoryCleanup,
   observeMemoryCleanup,
+  observeThreadRuns,
   prependThreadHistoryPage,
   progressMessageId,
   protectObservedThreadPage,
@@ -1354,6 +1355,7 @@ export type MobileSpaceNavigation = SpaceNavigation;
 
 type MobileRun = {
   id: string;
+  observedEventSeq?: number;
   botId?: string;
   status: string;
   error?: string | null;
@@ -1428,7 +1430,8 @@ export function mobileThreadRefreshResult(input: {
 
 export type MobileMessagePage = ThreadHistory<MobileMessage>;
 
-function observeMobileMessages(snapshot: MobileSnapshot, authoritative = false): MobileSnapshot {
+function observeMobileActivity(snapshot: MobileSnapshot, authoritative = false): MobileSnapshot {
+  snapshot = observeThreadRuns(snapshot, authoritative);
   if (snapshot.cursor === undefined) return snapshot;
   let changed = false;
   const messages = snapshot.messages.map((message) => {
@@ -1461,8 +1464,8 @@ export function mergeMobileSnapshot(
   const sameThread = prev?.threadId === next.threadId;
   if (sameThread && (prev.cursor ?? -1) > (next.cursor ?? -1)) return prev;
   let merged = mergeThreadHistory(
-    prev ? observeMobileMessages(prev) : null,
-    observeMobileMessages(next, true),
+    prev ? observeMobileActivity(prev) : null,
+    observeMobileActivity(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
   merged = mergeThreadMemoryCleanup(prev, next, merged);
@@ -1498,7 +1501,7 @@ export function protectMobileMessagePage<TPage extends MobileMessagePage>(
   requestCursor = prev?.cursor ?? -1,
 ): TPage | null {
   return protectObservedThreadPage(
-    prev ? observeMobileMessages(prev) : null,
+    prev ? observeMobileActivity(prev) : null,
     page,
     requestCursor,
     prev ? mobileClearSeq(prev) : undefined,
@@ -1512,7 +1515,7 @@ export function prependMobileMessagePage(
 ): MobileSnapshot | null {
   const protectedPage = protectMobileMessagePage(prev, page, requestCursor);
   return protectedPage && prev
-    ? prependThreadHistoryPage(observeMobileMessages(prev), protectedPage)
+    ? prependThreadHistoryPage(observeMobileActivity(prev), protectedPage)
     : prev;
 }
 
@@ -1692,7 +1695,7 @@ export function applyMobileThreadEvent(
     event.type === "thread.cleared" ? threadClearCancelledRunIds(event.payload) : undefined;
   if (cancelledRunIds !== undefined && event.seq !== undefined) {
     const cleared = applyThreadClearReceipt(
-      observeMobileMessages(observeMobileClear(prev, clearSeq)),
+      observeMobileActivity(observeMobileClear(prev, clearSeq)),
       { clearEventSeq: event.seq, cancelledRunIds },
     );
     if (cleared === prev && cleanup === prev && event.seq <= (prev.cursor ?? -1)) return prev;
@@ -1710,7 +1713,7 @@ export function applyMobileThreadEvent(
     event.seq <= (prev.cursor ?? -1)
   ) {
     if (event.seq <= (clearSeq ?? -1)) return prev;
-    const observed = observeMobileMessages(prev);
+    const observed = observeMobileActivity(prev);
     return observeMobileClear(
       {
         ...observed,
@@ -1732,7 +1735,7 @@ export function applyMobileThreadEvent(
     return cleanup === prev && (event.seq ?? -1) <= (prev.cursor ?? -1)
       ? prev
       : {
-          ...observeMobileMessages(observeMobileClear(cleanup, clearSeq)),
+          ...observeMobileActivity(observeMobileClear(cleanup, clearSeq)),
           cursor: Math.max(prev.cursor ?? -1, event.seq ?? -1),
         };
   }
@@ -1755,7 +1758,7 @@ export function applyMobileThreadEvent(
   )
     return prev;
   const cursor = event.seq === undefined ? prev.cursor : Math.max(prev.cursor ?? -1, event.seq);
-  prev = observeMobileMessages(
+  prev = observeMobileActivity(
     observeMobileClear(
       { ...prev, memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor ?? -1 },
       clearSeq,

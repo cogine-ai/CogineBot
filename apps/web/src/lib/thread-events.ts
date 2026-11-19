@@ -22,6 +22,7 @@ import {
   mergeThreadHistory,
   mergeThreadMemoryCleanup,
   observeMemoryCleanup,
+  observeThreadRuns,
   prependThreadHistoryPage,
   progressMessageId,
   protectObservedThreadPage,
@@ -41,7 +42,8 @@ type ObservedThreadMessage = ThreadMessage & { observedEventSeq?: number };
 type ObservedThreadRun = Run & { observedEventSeq?: number };
 type ObservedThreadSnapshot = ThreadSnapshot & { observedClearSeq?: number };
 
-function observeThreadMessages(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
+function observeThreadActivity(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
+  snapshot = observeThreadRuns(snapshot, authoritative);
   let changed = false;
   const messages = snapshot.messages.map((message) => {
     if (message.id.startsWith("progress:") || message.id.startsWith("subagent:")) return message;
@@ -201,8 +203,8 @@ export function mergeThreadSnapshot(
   // (e.g. ask cards applied after send's post-refresh request was already in flight).
   if (prev && prev.threadId === next.threadId && prev.cursor > next.cursor) return prev;
   let merged = mergeThreadHistory(
-    prev ? observeThreadMessages(prev) : null,
-    observeThreadMessages(next, true),
+    prev ? observeThreadActivity(prev) : null,
+    observeThreadActivity(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
   merged = mergeThreadMemoryCleanup(prev, next, merged);
@@ -300,7 +302,7 @@ export function protectThreadMessagePage<TPage extends ThreadMessagePage>(
   requestCursor = prev?.cursor ?? -1,
 ): TPage | null {
   return protectObservedThreadPage(
-    prev ? observeThreadMessages(prev) : null,
+    prev ? observeThreadActivity(prev) : null,
     page,
     requestCursor,
     prev ? threadClearSeq(prev) : undefined,
@@ -314,7 +316,7 @@ export function prependThreadMessagePage(
 ): ThreadSnapshot | null {
   const protectedPage = protectThreadMessagePage(prev, page, requestCursor);
   return protectedPage && prev
-    ? prependThreadHistoryPage(observeThreadMessages(prev), protectedPage)
+    ? prependThreadHistoryPage(observeThreadActivity(prev), protectedPage)
     : prev;
 }
 
@@ -365,7 +367,7 @@ export function reduceThreadSnapshot(
     event.type === "thread.cleared" ? threadClearCancelledRunIds(event.payload) : undefined;
   if (cancelledRunIds !== undefined) {
     const cleared = applyThreadClearReceipt(
-      observeThreadMessages(observeThreadClear(prev, clearSeq)),
+      observeThreadActivity(observeThreadClear(prev, clearSeq)),
       { clearEventSeq: event.seq, cancelledRunIds },
     );
     if (cleared === prev && cleanup === prev && event.seq <= prev.cursor) return prev;
@@ -379,7 +381,7 @@ export function reduceThreadSnapshot(
   }
   if (event.type === "thread.cleared" && event.seq <= prev.cursor) {
     if (event.seq <= (clearSeq ?? -1)) return prev;
-    const observed = observeThreadMessages(prev);
+    const observed = observeThreadActivity(prev);
     return observeThreadClear(
       {
         ...observed,
@@ -402,7 +404,7 @@ export function reduceThreadSnapshot(
     return cleanup === prev && event.seq <= prev.cursor
       ? prev
       : {
-          ...observeThreadMessages(observeThreadClear(cleanup, clearSeq)),
+          ...observeThreadActivity(observeThreadClear(cleanup, clearSeq)),
           cursor: Math.max(prev.cursor, event.seq),
         };
   }
@@ -423,7 +425,7 @@ export function reduceThreadSnapshot(
   )
     return prev;
   const cursor = Math.max(prev.cursor, event.seq);
-  prev = observeThreadMessages(
+  prev = observeThreadActivity(
     observeThreadClear(
       { ...prev, memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor },
       clearSeq,

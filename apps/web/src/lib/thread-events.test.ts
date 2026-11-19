@@ -1799,6 +1799,7 @@ describe("thread event reduction", () => {
 
   it("updates a waiting group run without replacing the newer active run", () => {
     const newerRun = {
+      observedEventSeq: 3,
       id: "run-newer",
       botId: "bot-a",
       threadId: "thread-1",
@@ -2108,12 +2109,18 @@ function snapshot(messages: ThreadMessage[], olderCursor: number | null = null):
   };
 }
 
-function threadRun(id: string, botId = "bot-1"): NonNullable<ThreadSnapshot["run"]> {
+// Observed reducer fixtures use the initial snapshot cursor; null models raw work.
+function threadRun(
+  id: string,
+  botId = "bot-1",
+  observedEventSeq: number | null = 3,
+): NonNullable<ThreadSnapshot["run"]> & { observedEventSeq?: number } {
   return {
     id,
     botId,
     threadId: "thread-1",
     taskId: `task-${id}`,
+    ...(observedEventSeq === null ? {} : { observedEventSeq }),
     status: "running",
     trigger: "user",
     routineId: null,
@@ -3095,7 +3102,11 @@ describe("Shell clear receipt snapshot commits", () => {
       );
       expect(h.snapshotRef.current).toBe(h.a);
       const run = {
-        ...threadRun(mode === "cancelled" ? "cancelled-first" : "uncancelled", "bot-B"),
+        ...threadRun(
+          mode === "cancelled" ? "cancelled-first" : "uncancelled",
+          "bot-B",
+          mode === "fresh" ? 30 : 15,
+        ),
         threadId: "thread-B",
         status: "queued" as const,
       };
@@ -3137,6 +3148,52 @@ describe("Shell clear receipt snapshot commits", () => {
       expect(h.snapshotRef.current?.activeRuns).toEqual([]);
     },
   );
+  it.each(["thread.meta", "thread.message.created"] as const)(
+    "does not promote cached Run evidence when unrelated %s advances the cursor",
+    async (type) => {
+      const h = await fixture();
+      const run = threadRun("missed-terminal", "bot-B", null);
+      h.snapshotRef.current = { ...h.b, run, activeRuns: [run] };
+      const clearing = h.confirm();
+      h.commit(
+        reduceThreadSnapshot(
+          h.snapshotRef.current,
+          event({
+            threadId: "thread-B",
+            botId: "bot-B",
+            seq: 13,
+            type,
+            payload:
+              type === "thread.meta"
+                ? { memoryCleanupPending: false }
+                : { messageId: "new-row", messageSeq: 13, role: "user", blocks: [] },
+          }),
+        )!,
+      );
+      expect(h.snapshotRef.current?.cursor).toBe(13);
+      h.complete({ ok: true, threadId: "thread-B", clearEventSeq: 12, cancelledRunIds: [] });
+      await clearing;
+      expect(h.snapshotRef.current?.run).toBeNull();
+      expect(h.snapshotRef.current?.activeRuns).toEqual([]);
+      expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(
+        type === "thread.meta" ? [] : ["new-row"],
+      );
+    },
+  );
+
+  it("retains a Run observed again in an authoritative post-clear snapshot", () => {
+    const run = { ...threadRun("observed-again"), observedEventSeq: 10 };
+    const fresh = mergeThreadSnapshot(null, {
+      ...snapshot([], 1),
+      cursor: 13,
+      run,
+      activeRuns: [run],
+    });
+    const cleared = applyThreadClearReceipt(fresh, { clearEventSeq: 12, cancelledRunIds: [] });
+    expect(cleared.run?.id).toBe(run.id);
+    expect(cleared.activeRuns?.map((run) => run.id)).toEqual([run.id]);
+  });
+
   it.each([17, 22, 23])(
     "orders a send arriving during the actual clear callback (%s)",
     async (eventSeq) => {

@@ -4456,8 +4456,8 @@ describe("mobile thread event reduction", () => {
     );
     const initial: MobileSnapshot = {
       ...snapshot([progress]),
-      run: { id: "run-user", status: "running" },
-      activeRuns: [{ id: "run-user", status: "running" }],
+      run: { id: "run-user", status: "running", observedEventSeq: 3 },
+      activeRuns: [{ id: "run-user", status: "running", observedEventSeq: 3 }],
       computer: {
         state: "running",
         controlHolder: "bot",
@@ -4476,7 +4476,7 @@ describe("mobile thread event reduction", () => {
 
     expect(waiting?.run).toEqual({ id: "run-peer", botId: "bot-peer", status: "waiting_takeover" });
     expect(waiting?.activeRuns).toEqual([
-      { id: "run-user", status: "running" },
+      { id: "run-user", status: "running", observedEventSeq: 3 },
       { id: "run-peer", botId: "bot-peer", status: "waiting_takeover" },
     ]);
     expect(waiting?.messages.some((message) => message.id.startsWith("progress:"))).toBe(false);
@@ -4523,9 +4523,9 @@ describe("mobile thread event reduction", () => {
   it("updates a waiting group run without replacing the newer active run", () => {
     const initial: MobileSnapshot = {
       ...snapshot(),
-      run: { id: "run-newer", status: "running" },
+      run: { id: "run-newer", status: "running", observedEventSeq: 3 },
       activeRuns: [
-        { id: "run-newer", status: "running" },
+        { id: "run-newer", status: "running", observedEventSeq: 3 },
         { id: "run-waiting", status: "running" },
       ],
     };
@@ -4535,15 +4535,15 @@ describe("mobile thread event reduction", () => {
       runId: "run-waiting",
     });
 
-    expect(waiting?.run).toEqual({ id: "run-newer", status: "running" });
+    expect(waiting?.run).toEqual({ id: "run-newer", status: "running", observedEventSeq: 3 });
     expect(waiting?.activeRuns).toEqual([
-      { id: "run-newer", status: "running" },
-      { id: "run-waiting", status: "waiting_input" },
+      { id: "run-newer", status: "running", observedEventSeq: 3 },
+      { id: "run-waiting", status: "waiting_input", observedEventSeq: 3 },
     ]);
   });
 
   it("updates and clears a quota wait without interrupting another group run", () => {
-    const other = { id: "run-a", botId: "bot-a", status: "running" };
+    const other = { id: "run-a", botId: "bot-a", status: "running", observedEventSeq: 3 };
     const run = { id: "run-b", botId: "bot-b", status: "running" };
     const initial: MobileSnapshot = {
       ...snapshot([
@@ -4611,7 +4611,7 @@ describe("mobile thread event reduction", () => {
   });
 
   it("keeps an actionable direct run and its supplemental quota wait", () => {
-    const ask = { id: "ask", botId: "bot-a", status: "waiting_input" };
+    const ask = { id: "ask", botId: "bot-a", status: "waiting_input", observedEventSeq: 3 };
     const initial: MobileSnapshot = { ...snapshot([]), run: ask, activeRuns: [ask] };
     const waiting = applyMobileThreadEvent(initial, {
       type: "run.waiting_limit",
@@ -4628,8 +4628,8 @@ describe("mobile thread event reduction", () => {
   });
 
   it("clears only the terminal run's live progress", () => {
-    const runA = { id: "run-a", status: "running" };
-    const runB = { id: "run-b", status: "running" };
+    const runA = { id: "run-a", status: "running", observedEventSeq: 3 };
+    const runB = { id: "run-b", status: "running", observedEventSeq: 3 };
     const initial: MobileSnapshot = {
       ...snapshot([
         {
@@ -4675,8 +4675,8 @@ describe("mobile thread event reduction", () => {
   });
 
   it("keeps a failed member run's error while another member run is still active", () => {
-    const runA = { id: "run-a", status: "running" };
-    const runB = { id: "run-b", status: "running" };
+    const runA = { id: "run-a", status: "running", observedEventSeq: 3 };
+    const runB = { id: "run-b", status: "running", observedEventSeq: 3 };
     const initial: MobileSnapshot = {
       ...snapshot([
         {
@@ -4696,7 +4696,7 @@ describe("mobile thread event reduction", () => {
     });
 
     expect(next?.activeRuns).toEqual([runA]);
-    expect(next?.run).toEqual({ id: runB.id, status: "failed", error: "member exploded" });
+    expect(next?.run).toEqual({ ...runB, status: "failed", error: "member exploded" });
     expect(next?.messages).toEqual([]);
   });
 
@@ -4894,7 +4894,7 @@ async function verifiedScopeStorage() {
 
 describe("mobile released takeover observation", () => {
   function waiting(): MobileSnapshot {
-    return {
+    return mergeMobileSnapshot(null, {
       ...snapshot(
         [
           {
@@ -4923,7 +4923,7 @@ describe("mobile released takeover observation", () => {
         { botId: "bot-1", name: "One", color: "slate", status: "waiting_takeover" },
         { botId: "bot-2", name: "Two", color: "slate", status: "running" },
       ],
-    };
+    });
   }
 
   it.each(["Done", "Skipped"])("keeps the committed %s card and releases only its Run", (state) => {
@@ -4983,7 +4983,12 @@ describe("mobile released takeover observation", () => {
 
   it("preserves the displayed failure and sibling active Runs when another Run resumes", () => {
     const initial = waiting();
-    const failed = { id: "failed", status: "failed", error: "Retained failure" };
+    const failed = {
+      id: "failed",
+      status: "failed",
+      error: "Retained failure",
+      observedEventSeq: 10,
+    };
     const next = applyMobileThreadEvent(
       { ...initial, run: failed },
       { type: "computer.takeover.released", seq: 12, runId: "run-1", botId: "bot-1" },
@@ -5011,7 +5016,10 @@ describe("mobile released takeover observation", () => {
     const old = { ...initial, cursor: 8, run: { ...initial.run!, status: "running" } };
     expect(mergeMobileSnapshot(initial, old, true)).toBe(initial);
     const other = { ...old, threadId: "thread-other", cursor: 0 };
-    expect(mergeMobileSnapshot(initial, other, true)).toMatchObject(other);
+    expect(mergeMobileSnapshot(initial, other, true)).toMatchObject({
+      ...other,
+      messages: other.messages.map((message) => ({ ...message, observedEventSeq: 0 })),
+    });
     const gate = {
       fetched: old,
       onScreen: initial,
@@ -5152,8 +5160,10 @@ describe("mobile screen released-event callback", () => {
       current: {
         ...snapshot(),
         cursor: 10,
-        run: { id: "run-1", botId: "bot-1", status: "waiting_takeover" },
-        activeRuns: [{ id: "run-1", botId: "bot-1", status: "waiting_takeover" }],
+        run: { id: "run-1", botId: "bot-1", status: "waiting_takeover", observedEventSeq: 10 },
+        activeRuns: [
+          { id: "run-1", botId: "bot-1", status: "waiting_takeover", observedEventSeq: 10 },
+        ],
       } as MobileSnapshot | null,
     };
     const activeBotId = { current: "bot-1" as string | undefined };
@@ -5398,7 +5408,7 @@ describe("mobile takeover message snapshot authority", () => {
 });
 
 it("replays a covered mobile clear without replacing newer execution state", () => {
-  const run = { id: "current-run", botId: "bot-2", status: "running" };
+  const run = { id: "current-run", botId: "bot-2", status: "running", observedEventSeq: 30 };
   const base = {
     ...snapshot([mobileMessage("recent", [{ kind: "text", text: "After clear" }], 9)], 9),
     cursor: 30,
@@ -5842,7 +5852,7 @@ describe("canonical clear cancellation metadata", () => {
   });
   it("applies IDs at an already observed boundary without dropping its admitted page", () => {
     const cancelled = { id: "cancelled", botId: "bot-1", status: "queued" };
-    const fresh = { id: "fresh", botId: "bot-1", status: "queued" };
+    const fresh = { id: "fresh", botId: "bot-1", status: "queued", observedEventSeq: 20 };
     const before = {
       ...snapshot([{ ...mobileMessage("anchor", []), observedEventSeq: 20 }], 1),
       cursor: 20,

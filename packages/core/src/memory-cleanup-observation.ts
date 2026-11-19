@@ -11,6 +11,26 @@ export type ThreadWorkObservation = {
   activeRuns?: Array<{ id: string; observedEventSeq?: number }>;
 };
 
+/** Keep a Run's snapshot observation separate from later unrelated event cursors. */
+export function observeThreadRuns<T extends ThreadWorkObservation>(
+  snapshot: T,
+  authoritative = false,
+): T {
+  const cursor = snapshot.cursor;
+  if (cursor === undefined) return snapshot;
+  let changed = false;
+  const observe = <R extends { id: string; observedEventSeq?: number }>(run: R): R => {
+    const seq = Math.max(run.observedEventSeq ?? -1, cursor);
+    if ((!authoritative && run.observedEventSeq !== undefined) || run.observedEventSeq === seq)
+      return run;
+    changed = true;
+    return { ...run, observedEventSeq: seq };
+  };
+  const run = snapshot.run ? observe(snapshot.run) : null;
+  const activeRuns = snapshot.activeRuns?.map(observe);
+  return changed ? { ...snapshot, run, ...(activeRuns ? { activeRuns } : {}) } : snapshot;
+}
+
 /** Canonical clear frames identify the runs cancelled by that transaction. */
 export function threadClearCancelledRunIds(
   payload: Record<string, unknown> | undefined,
