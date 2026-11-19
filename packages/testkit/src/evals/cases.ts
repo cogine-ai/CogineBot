@@ -536,8 +536,9 @@ const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
 function currentReportMatches(text: string): boolean {
-  const number = String.raw`\d+(?:[.,/]\d+)*`;
-  const count = String.raw`\b(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending|pending(?:\s+count)?[:\s]+${number})\b`;
+  const number = String.raw`[+−-]?\d+(?:[.,/–—-]\d+)*%?`;
+  const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
+  const expected = Number.parseInt(latestReport, 10);
   const current = String.raw`\b(?:current(?:ly)?|now|latest|today)\b`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   let deniesCurrent = false;
@@ -552,7 +553,7 @@ function currentReportMatches(text: string): boolean {
     )
     .replace(
       new RegExp(
-        `\\b(${number})(\\s+(?:now|currently|today|in\\s+(?:the\\s+)?(?:current|latest)\\s+report))\\b`,
+        `(?<![\\w.,/–—+%−-])(${number})(\\s+(?:now|currently|today|in\\s+(?:the\\s+)?(?:current|latest)\\s+report))\\b`,
         "gi",
       ),
       "$1 pending$2",
@@ -578,7 +579,7 @@ function currentReportMatches(text: string): boolean {
       ),
       (negated) => {
         const value = negated.match(new RegExp(count, "i"))?.[0].match(new RegExp(number))?.[0];
-        deniesCurrent ||= value === latestReport.split(" ")[0];
+        deniesCurrent ||= Number(value) === expected;
         return "";
       },
     );
@@ -586,7 +587,7 @@ function currentReportMatches(text: string): boolean {
   return (
     !deniesCurrent &&
     counts.length > 0 &&
-    counts.every((match) => match[0].match(new RegExp(number))?.[0] === latestReport.split(" ")[0])
+    counts.every((match) => Number(match[0].match(new RegExp(number))?.[0]) === expected)
   );
 }
 const freshCheckHistory = historyFixture(1000, "exact");
