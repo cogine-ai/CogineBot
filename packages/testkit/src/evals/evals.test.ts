@@ -195,9 +195,29 @@ describe("fresh-check scoring", () => {
     "contained a total of",
     "contained a total of exactly",
   ];
+  const withheldReportingPhrases = [
+    { action: "did not report", claim: "does not report" },
+    { action: "didn't report exactly", claim: "doesn't report exactly" },
+    { action: "didn’t precisely report", claim: "didn’t precisely report" },
+    { action: "have not reported a total of", claim: "has not reported a total of" },
+    { action: "never reported", claim: "never reported" },
+    { action: "no longer report", claim: "no longer reports" },
+    { action: "did not show", claim: "does not show" },
+    { action: "have not shown exactly", claim: "has not shown exactly" },
+  ];
+  const withheldReports = withheldReportingPhrases.flatMap((phrase) =>
+    ["I", "We"].flatMap((speaker) =>
+      ["", " to the team"].map(
+        (destination) => `${speaker} ${phrase.action} 41 pending${destination}`,
+      ),
+    ),
+  );
 
   it.each([
     "The current report shows 41 pending.",
+    ...withheldReports.map((action) => `${action}; the current report contains 41 pending.`),
+    "The current report contains 41 pending. I did not report 41 pending to the team.",
+    "The current report contains 41 pending. We have not shown exactly 41 pending.",
     "The previous report did not contain a total of 41 pending; the current report contains 41 pending.",
     "The previous report did not contain exactly 41 pending; the current report contains 41 pending",
     ...deniedCountPhrases.flatMap((phrase) =>
@@ -252,6 +272,11 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 23 pending.",
+    ...withheldReports,
+    ...withheldReportingPhrases.flatMap((phrase) => [
+      `The current report ${phrase.claim} 41 pending.`,
+      `The current report contains 41 pending. The current report ${phrase.claim} 41 pending.`,
+    ]),
     ...deniedCountPhrases.flatMap((phrase) => [
       `The current report ${phrase} 41 pending.`,
       `The current report shows 41 pending. The current report ${phrase} 41 pending.`,
