@@ -3052,11 +3052,11 @@ describe("Shell clear receipt snapshot commits", () => {
         }),
       );
       expect(h.snapshotRef.current).toBe(h.a);
-      const run = threadRun(
-        mode === "cancelled" ? "cancelled-first" : "uncancelled",
-        "bot-B",
-        "queued",
-      );
+      const run = {
+        ...threadRun(mode === "cancelled" ? "cancelled-first" : "uncancelled", "bot-B"),
+        threadId: "thread-B",
+        status: "queued" as const,
+      };
       h.commit({
         ...h.b,
         cursor: mode === "fresh" ? 30 : 15,
