@@ -173,6 +173,10 @@ describe("fresh-check scoring", () => {
   const deniedCountPhrases = [
     "did not contain",
     "did not contain exactly",
+    "did not contain a total of",
+    "didn't contain exactly a total of",
+    "did not contain a total of exactly",
+    "has not contained a total of precisely",
     "didn't contain exactly",
     "didn’t contain exactly",
     "did not exactly contain",
@@ -184,10 +188,17 @@ describe("fresh-check scoring", () => {
     "hasn't contained exactly",
     "no longer contains",
   ];
-  const affirmedCountPhrases = ["contained exactly", "had precisely", "did contain exactly"];
+  const affirmedCountPhrases = [
+    "contained exactly",
+    "had precisely",
+    "did contain exactly",
+    "contained a total of",
+    "contained a total of exactly",
+  ];
 
   it.each([
     "The current report shows 41 pending.",
+    "The previous report did not contain a total of 41 pending; the current report contains 41 pending.",
     "The previous report did not contain exactly 41 pending; the current report contains 41 pending",
     ...deniedCountPhrases.flatMap((phrase) =>
       ["previous", "earlier"].map(

@@ -541,8 +541,9 @@ function currentReportMatches(text: string): boolean {
   const expected = Number.parseInt(latestReport, 10);
   const postfixCurrent = String.raw`(?:now|currently|today|in\s+(?:the\s+)?(?:current|latest)\s+report)`;
   const auxiliary = "(?:did|does|do|is|are|was|were|has|have|had)";
-  const countWording =
-    "(?:exactly|precisely|show(?:ed|s|ing)?|contain(?:ed|s)?|report(?:ed|s|ing)?|be(?:en|ing)?|at|equal(?:s)?)";
+  const countModifier = "(?:exactly|precisely)";
+  const countClaim = String.raw`(?:a\s+total\s+of\s+)?(?:${countModifier}\s+)?${count}`;
+  const countWording = `(?:${countModifier}|show(?:ed|s|ing)?|contain(?:ed|s)?|report(?:ed|s|ing)?|be(?:en|ing)?|at|equal(?:s)?)`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?|there|it))?`;
   let deniesCurrent = false;
@@ -568,14 +569,14 @@ function currentReportMatches(text: string): boolean {
     )
     .replace(
       new RegExp(
-        `${historical}${historicalSubject}(?:\\s+(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})){0,6}[:\\s]+${count}(?!\\s+${postfixCurrent}\\b)`,
+        `${historical}${historicalSubject}(?:\\s+(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})){0,6}[:\\s]+${countClaim}(?!\\s+${postfixCurrent}\\b)`,
         "gi",
       ),
       "",
     )
     .replace(
       new RegExp(
-        `\\b(?:not|never|no\\s+longer|${auxiliary}n['’]t)\\b(?:\\s+(?:currently|now|today|${auxiliary}|${countWording})){0,6}\\s+(?:a\\s+total\\s+of\\s+)?${count}`,
+        `\\b(?:not|never|no\\s+longer|${auxiliary}n['’]t)\\b(?:\\s+(?:currently|now|today|${auxiliary}|${countWording})){0,6}\\s+${countClaim}`,
         "gi",
       ),
       (negated) => {
