@@ -551,7 +551,9 @@ function currentReportMatches(text: string): boolean {
   const reportedSubject = String.raw`(?:there|it|${speaker}|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification))`;
   const causalIntroducer =
     "(?:given|considering|seeing|knowing|noting|granted|granting|owing|due|notwithstanding|whilst|albeit|inasmuch|insofar)";
-  const causalLead = String.raw`(?:that\b|to\b|as\b|${currentTime}\b|${reportedSubject}\b|(?:the\s+)?(?:(?:current|latest)\s+)?(?:${countModifier}\s+)?${countClaim})`;
+  const quantityRestriction = String.raw`(?:only|just|merely|simply|solely|a\s+mere)`;
+  const causalCountLead = String.raw`(?:(?:the|current|latest|${countModifier}|${quantityRestriction})\s+){0,4}${countClaim}`;
+  const causalLead = String.raw`(?:that\b|to\b|as\b|${currentTime}\b|${reportedSubject}\b|${causalCountLead})`;
   const recipientWord = String.raw`(?!(?:and|but|or|nor|for|then|that|because|although|though|yet|however|nevertheless|nonetheless|still|since|as|while|whereas|when|if|unless|until|after|before|so|therefore|thus|hence|consequently|otherwise|instead|despite|${causalIntroducer}(?=\s+${causalLead}))\b)[a-z]+(?:[-'’][a-z]+)*`;
   const recipient = String.raw`${recipientWord}(?:\s+${recipientWord}){0,2}`;
   const embeddedSubject = String.raw`(?:\s+(?:${currentTime}\s+)?${reportedSubject})?`;

@@ -219,6 +219,21 @@ describe("fresh-check scoring", () => {
     { prefix: "I did not report given the precisely", suffix: "pending" },
     { prefix: "I did not report given exactly a total of", suffix: "pending" },
     { prefix: "I did not report given a total of exactly", suffix: "pending" },
+    ...["only", "just", "merely", "simply", "solely", "a mere"].map((word) => ({
+      prefix: `I did not report given ${word}`,
+      suffix: "pending",
+    })),
+    { prefix: "I did not report considering only", suffix: "pending" },
+    { prefix: "I did not report given only exactly", suffix: "pending" },
+    { prefix: "I did not report given just precisely", suffix: "pending" },
+    { prefix: "I did not report given merely a total of", suffix: "pending" },
+    { prefix: "I did not report given only a total of exactly", suffix: "pending" },
+    { prefix: "I did not report given the only", suffix: "pending" },
+    { prefix: "I did not report given the current only", suffix: "pending" },
+    { prefix: "I did not report given only the current pending count:", suffix: "" },
+    { prefix: "I did not report given just latest pending count:", suffix: "" },
+    { prefix: "I did not report given a mere current pending count:", suffix: "" },
+    { prefix: "I did not report given only exactly a total of", suffix: "pending" },
   ];
   it.each(
     independentReportingClauses.flatMap(({ prefix, suffix }) => [
@@ -322,6 +337,7 @@ describe("fresh-check scoring", () => {
     "We did not report that we are at 41 pending",
     "We did not report that we're at 41 pending",
     "I did not report to the given team that there are 41 pending",
+    "I did not report to the only team that there are 41 pending",
   ];
   const countDenialsWithReportingWords = [
     "I do not have 41 reported tasks pending",
