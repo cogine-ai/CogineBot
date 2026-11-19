@@ -22,6 +22,31 @@ export function threadClearCancelledRunIds(
   return Array.isArray(ids) && ids.every((id) => typeof id === "string") ? ids : undefined;
 }
 
+/** Cancellation evidence does not consume history or change its clear boundary. */
+export function applyThreadRunCancellations<
+  T extends ThreadWorkObservation & { messages: Array<{ id: string; runId?: string | null }> },
+>(snapshot: T, cancelledRunIds: readonly string[]): T {
+  if (!cancelledRunIds.length) return snapshot;
+  const cancelled = new Set(cancelledRunIds);
+  const run = snapshot.run && !cancelled.has(snapshot.run.id) ? snapshot.run : null;
+  const activeRuns = snapshot.activeRuns?.filter((run) => !cancelled.has(run.id));
+  const remaining = snapshot.messages.filter(
+    (message) => !message.runId || !cancelled.has(message.runId),
+  );
+  if (
+    run === snapshot.run &&
+    activeRuns?.length === snapshot.activeRuns?.length &&
+    remaining.length === snapshot.messages.length
+  )
+    return snapshot;
+  return {
+    ...snapshot,
+    run,
+    activeRuns,
+    messages: remaining.length === snapshot.messages.length ? snapshot.messages : remaining,
+  };
+}
+
 /** The clear commit is earlier than cleanup settlement and owns only pre-clear activity. */
 export function applyThreadClearReceipt<
   T extends ThreadWorkObservation & {
@@ -36,7 +61,8 @@ export function applyThreadClearReceipt<
 ): T {
   const observed = snapshot.observedClearSeq ?? -1;
   // History is consumed once; cancellation IDs still apply to late receipts.
-  const alreadyObserved = receipt.clearEventSeq <= observed;
+  if (receipt.clearEventSeq <= observed)
+    return applyThreadRunCancellations(snapshot, receipt.cancelledRunIds ?? []);
   const cancelled = new Set(receipt.cancelledRunIds ?? []);
   const previous = new Set([
     ...(started?.activeRuns ?? []).map((run) => run.id),
@@ -44,30 +70,21 @@ export function applyThreadClearReceipt<
   ]);
   const keepRun = (run: { id: string; status?: string }) =>
     !cancelled.has(run.id) &&
-    (alreadyObserved ||
-      // An older buffered list cannot prove a later clear's cancellation set complete.
-      (receipt.cancelledRunIds !== undefined &&
-        (receipt.cancelledRunIdsSeq ?? receipt.clearEventSeq) >= receipt.clearEventSeq &&
-        run.status !== undefined &&
-        isActive(run.status as RunStatus)) ||
+    // An older buffered list cannot prove a later clear's cancellation set complete.
+    ((receipt.cancelledRunIds !== undefined &&
+      (receipt.cancelledRunIdsSeq ?? receipt.clearEventSeq) >= receipt.clearEventSeq &&
+      run.status !== undefined &&
+      isActive(run.status as RunStatus)) ||
       (snapshot.cursor ?? -1) > receipt.clearEventSeq ||
       (started?.threadId === snapshot.threadId && !previous.has(run.id)));
   const remaining = snapshot.messages.filter(
     (message) =>
-      (alreadyObserved ||
-        (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq) &&
+      (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq &&
       (!message.runId || !cancelled.has(message.runId)),
   );
   const messages = remaining.length === snapshot.messages.length ? snapshot.messages : remaining;
   const run = snapshot.run && keepRun(snapshot.run) ? snapshot.run : null;
   const activeRuns = snapshot.activeRuns?.filter(keepRun);
-  if (
-    alreadyObserved &&
-    run === snapshot.run &&
-    messages === snapshot.messages &&
-    activeRuns?.length === snapshot.activeRuns?.length
-  )
-    return snapshot;
   const preservesPage =
     messages.length > 0 &&
     messages.length === snapshot.messages.length &&
@@ -77,7 +94,7 @@ export function applyThreadClearReceipt<
     cursor: Math.max(snapshot.cursor ?? -1, receipt.clearEventSeq),
     observedClearSeq: Math.max(observed, receipt.clearEventSeq),
     messages,
-    olderCursor: alreadyObserved || preservesPage ? snapshot.olderCursor : null,
+    olderCursor: preservesPage ? snapshot.olderCursor : null,
     run,
     activeRuns,
   };

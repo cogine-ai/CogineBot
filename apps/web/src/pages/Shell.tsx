@@ -46,6 +46,7 @@ import type {
 } from "@rakazo/core";
 import {
   applyThreadClearReceipt,
+  applyThreadRunCancellations,
   attachmentLabels,
   buildComposerMentionOptions,
   type ComposerMention,
@@ -652,6 +653,7 @@ export function ShellPage() {
         seq: number;
         payload: ProductEvent["payload"];
         clear?: ProductEvent;
+        cancelledRunIds?: string[];
       }
     >(),
   );
@@ -738,6 +740,7 @@ export function ShellPage() {
     const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
     if (cleanup?.scope === draftScopeKeyRef.current && cleanup.owner === clearReceiptOwnerKey()) {
       if (cleanup.clear) next = reduceThreadSnapshot(next, cleanup.clear) ?? next;
+      next = applyThreadRunCancellations(next, cleanup.cancelledRunIds ?? []);
       next = observeMemoryCleanup(
         { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor },
         cleanup.payload,
@@ -1851,6 +1854,14 @@ export function ShellPage() {
           seq,
           payload,
           ...(clear ? { clear } : {}),
+          cancelledRunIds: [
+            ...new Set([
+              ...(before?.cancelledRunIds ?? []),
+              ...(event.type === "thread.cleared"
+                ? (threadClearCancelledRunIds(event.payload) ?? [])
+                : []),
+            ]),
+          ],
         });
         return true;
       }

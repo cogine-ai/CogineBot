@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyThreadClearReceipt,
+  applyThreadRunCancellations,
   hasNewThreadWork,
   observeMemoryCleanup,
   shouldResetHistoryAfterClear,
@@ -48,6 +49,35 @@ describe("cleanup observation ordering", () => {
 });
 
 describe("clear receipt boundaries", () => {
+  it("applies cumulative cancellation evidence without changing admitted history boundaries", () => {
+    const run = { id: "cancelled", status: "queued" };
+    const fresh = { id: "fresh", status: "queued" };
+    const anchor = { id: "anchor", observedEventSeq: 20, runId: fresh.id };
+    const current = {
+      threadId: "thread",
+      cursor: 30,
+      observedClearSeq: 24,
+      olderCursor: 1,
+      memoryCleanupCursor: 35,
+      messages: [anchor, { id: "cancelled-row", runId: run.id }],
+      run,
+      activeRuns: [run, fresh],
+    };
+    const next = applyThreadRunCancellations(current, [run.id]);
+    expect(next).toEqual({ ...current, run: null, activeRuns: [fresh], messages: [anchor] });
+    expect(next.messages[0]).toBe(anchor);
+  });
+  it("keeps the same snapshot when cumulative cancellations have no matching work", () => {
+    const current = {
+      threadId: "thread",
+      cursor: 30,
+      olderCursor: null,
+      messages: [{ id: "boundary", observedEventSeq: 24 }],
+      run: { id: "fresh", status: "queued" },
+    };
+    expect(applyThreadRunCancellations(current, [])).toBe(current);
+    expect(applyThreadRunCancellations(current, ["cancelled"])).toBe(current);
+  });
   it.each([20, 18])(
     "applies cancellation IDs independently of the known clear boundary (%s)",
     (seq) => {

@@ -8,6 +8,7 @@ import type {
 } from "@rakazo/contracts";
 import {
   applyThreadClearReceipt,
+  applyThreadRunCancellations,
   hasNewThreadWork,
   isApprovalAskBlock,
   isRunTerminalEvent,
@@ -2883,6 +2884,7 @@ describe("Shell clear receipt snapshot commits", () => {
       refreshBots: vi.fn(async () => undefined),
       hasNewThreadWork,
       applyThreadClearReceipt,
+      applyThreadRunCancellations,
       observeMemoryCleanup,
       threadClearCancelledRunIds,
       shouldResetHistoryAfterClear,
@@ -3017,6 +3019,63 @@ describe("Shell clear receipt snapshot commits", () => {
     },
   );
 
+  it.each(
+    [false, true].flatMap((reverse) =>
+      ["cancelled", "fresh", "legacy"].map((mode) => ({ reverse, mode })),
+    ),
+  )(
+    "keeps every buffered cancellation without confusing the latest clear evidence ($reverse, $mode)",
+    async ({ reverse, mode }) => {
+      const h = await fixture();
+      const first = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 22,
+        type: "thread.cleared",
+        payload: { cancelledRunIds: ["cancelled-first"] },
+      });
+      const latest = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 24,
+        type: "thread.cleared",
+        payload: mode === "legacy" ? {} : { cancelledRunIds: [] },
+      });
+      for (const frame of reverse ? [latest, first] : [first, latest]) h.reader.beforeEvent(frame);
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 35,
+          type: "thread.meta",
+          payload: { memoryCleanupPending: true },
+        }),
+      );
+      expect(h.snapshotRef.current).toBe(h.a);
+      const run = threadRun(
+        mode === "cancelled" ? "cancelled-first" : "uncancelled",
+        "bot-B",
+        "queued",
+      );
+      h.commit({
+        ...h.b,
+        cursor: mode === "fresh" ? 30 : 15,
+        olderCursor: 1,
+        run,
+        activeRuns: [run],
+      });
+      expect(h.snapshotRef.current?.run?.id ?? null).toBe(mode === "fresh" ? "uncancelled" : null);
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(
+        mode === "fresh" ? ["uncancelled"] : [],
+      );
+      expect(h.snapshotRef.current).toMatchObject({
+        observedClearSeq: 24,
+        memoryCleanupCursor: 35,
+        memoryCleanupPending: true,
+      });
+      expect(h.scope.pendingMemoryCleanupEvents.current.size).toBe(0);
+    },
+  );
   it("keeps the post-clear queued Run when a visible clear arrives before its run event", async () => {
     const h = await fixture();
     h.snapshotRef.current = applyThreadSendReceipt(
