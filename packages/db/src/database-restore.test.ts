@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { setImmediate } from "node:timers/promises";
+import type * as Pg from "pg";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyDatabaseRestore } from "./database-restore.js";
 
@@ -15,7 +16,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("pg", async (importActual) => {
-  const actual = await importActual<typeof import("pg")>();
+  const actual = await importActual<typeof Pg>();
   return {
     ...actual,
     Client: class {
