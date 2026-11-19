@@ -1842,10 +1842,66 @@ export function ShellPage() {
       }
       return false;
     };
+    const applyReaderEvent = (event: ProductEvent) => {
+      if (!ownsReader()) return;
+      const current = snapshotRef.current;
+      if (bufferCleanupEvent(event)) return;
+      if (current?.threadId === event.threadId && event.seq <= current.cursor) {
+        // The committed snapshot already owns run/computer/approval state.
+        // Replay only durable history so old execution events cannot roll it back.
+        if (
+          event.type === "thread.cleared" ||
+          event.type === "thread.meta" ||
+          event.type === "thread.message.created" ||
+          event.type === "thread.message.updated" ||
+          event.type === "group.handoff" ||
+          event.type === "thread.message.reaction"
+        ) {
+          const next = reduceThreadSnapshot(current, event);
+          if (current && next) {
+            const messageId = String(event.payload.messageId ?? event.id);
+            if (
+              next !== current &&
+              (event.type === "thread.message.created" ||
+                event.type === "thread.message.updated" ||
+                event.type === "group.handoff") &&
+              typeof event.payload.messageSeq === "number" &&
+              !current.messages.some((message) => message.id === messageId) &&
+              next.messages.some((message) => message.id === messageId)
+            )
+              expandedHistoryThread.current = event.threadId;
+            if (event.type === "thread.cleared") reconcileClearHistory(current, next);
+            commitSnapshot(next);
+          }
+        }
+        return;
+      }
+      applyThreadEvent(
+        event,
+        (next) => {
+          if (event.type === "thread.cleared" && current && next)
+            reconcileClearHistory(current, next);
+          commitSnapshot(next);
+        },
+        (next) => commitReaderComputer(next, event),
+        snapshotRef,
+        computerRef,
+      );
+    };
     return {
       resume,
       ownsReader,
-      beforeEvent: bufferCleanupEvent,
+      beforeEvent: (event: ProductEvent) => {
+        if (
+          event.type === "thread.cleared" &&
+          snapshotRef.current?.threadId === event.threadId &&
+          ownsReader()
+        ) {
+          applyReaderEvent(event);
+          return true;
+        }
+        return bufferCleanupEvent(event);
+      },
       onCursor: (next: { threadId: string; cursor: number }) => {
         if (scope !== null && ownsReader()) threadCheckpoint.current = { ...next, scope };
       },
@@ -1860,52 +1916,7 @@ export function ShellPage() {
           expandedHistoryThread.current = consumed.threadId;
         return request;
       },
-      applyEvent: (event: ProductEvent) => {
-        if (!ownsReader()) return;
-        const current = snapshotRef.current;
-        if (bufferCleanupEvent(event)) return;
-        if (current?.threadId === event.threadId && event.seq <= current.cursor) {
-          // The committed snapshot already owns run/computer/approval state.
-          // Replay only durable history so old execution events cannot roll it back.
-          if (
-            event.type === "thread.cleared" ||
-            event.type === "thread.meta" ||
-            event.type === "thread.message.created" ||
-            event.type === "thread.message.updated" ||
-            event.type === "group.handoff" ||
-            event.type === "thread.message.reaction"
-          ) {
-            const next = reduceThreadSnapshot(current, event);
-            if (current && next) {
-              const messageId = String(event.payload.messageId ?? event.id);
-              if (
-                next !== current &&
-                (event.type === "thread.message.created" ||
-                  event.type === "thread.message.updated" ||
-                  event.type === "group.handoff") &&
-                typeof event.payload.messageSeq === "number" &&
-                !current.messages.some((message) => message.id === messageId) &&
-                next.messages.some((message) => message.id === messageId)
-              )
-                expandedHistoryThread.current = event.threadId;
-              if (event.type === "thread.cleared") reconcileClearHistory(current, next);
-              commitSnapshot(next);
-            }
-          }
-          return;
-        }
-        applyThreadEvent(
-          event,
-          (next) => {
-            if (event.type === "thread.cleared" && current && next)
-              reconcileClearHistory(current, next);
-            commitSnapshot(next);
-          },
-          (next) => commitReaderComputer(next, event),
-          snapshotRef,
-          computerRef,
-        );
-      },
+      applyEvent: applyReaderEvent,
     };
   }
 

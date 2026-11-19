@@ -9,8 +9,11 @@ import type {
 import {
   applyThreadClearReceipt,
   hasNewThreadWork,
+  isApprovalAskBlock,
+  isRunTerminalEvent,
   observeMemoryCleanup,
   ReplyAnnouncements,
+  runThreadSubscription,
   searchHitThreadTarget,
   shouldResetHistoryAfterClear,
   userVisibleMessages,
@@ -18,6 +21,7 @@ import {
 } from "@rakazo/core";
 import { transformWithOxc } from "vite";
 import { describe, expect, it, vi } from "vitest";
+import { publishComputerCommand } from "./computer-workspace";
 import {
   activeThreadRuns,
   applyThreadSendReceipt,
@@ -25,6 +29,7 @@ import {
   computerPanelNeedsMaintenance,
   computerPanelNeedsScreen,
   computerTakeoverBlocked,
+  isComputerStatusEvent,
   isThreadSnapshotEvent,
   mergeThreadSnapshot,
   prependThreadMessagePage,
@@ -2472,16 +2477,19 @@ it("replays a covered clear as a history barrier while retaining newer snapshot 
 
 it("the Shell reader retains a covered clear barrier without replacing current execution", () => {
   const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
-  const start = source.indexOf("      applyEvent: (event: ProductEvent) => {");
-  const end = source.indexOf("\n      },\n    };\n  }", start);
+  const start = source.indexOf("    const applyReaderEvent = (event: ProductEvent) => {");
+  const end = source.indexOf("\n    return {\n      resume,", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  const body = `${source.slice(start + "      applyEvent: ".length, end)}\n}`;
+  const body = source
+    .slice(start + "    const applyReaderEvent = ".length, end)
+    .trim()
+    .replace(/;$/, "");
   const bufferStart = source.indexOf(
     "    const bufferCleanupEvent =",
     source.indexOf("function createThreadReader"),
   );
-  const bufferEnd = source.indexOf("    return {\n      resume,", bufferStart);
+  const bufferEnd = source.indexOf("    const applyReaderEvent =", bufferStart);
   const buffer = source.slice(bufferStart, bufferEnd).replace("(event: ProductEvent)", "(event)");
   const historyStart = source.indexOf("  function reconcileClearHistory(");
   const historyEnd = source.indexOf("  function retryCurrentThread()", historyStart);
@@ -2804,6 +2812,12 @@ describe("Shell clear receipt snapshot commits", () => {
       reconcileRefreshedThread,
       protectThreadMessagePage,
       reduceThreadSnapshot,
+      publishComputerCommand,
+      isThreadSnapshotEvent,
+      isComputerStatusEvent,
+      reduceComputerStatus,
+      isApprovalAskBlock,
+      isRunTerminalEvent,
       jumpGeneration: { current: 0 },
       initiallyScrolledThread: { current: null },
       messageScroll: { current: null },
@@ -2869,7 +2883,12 @@ describe("Shell clear receipt snapshot commits", () => {
       observeMemoryCleanup,
       shouldResetHistoryAfterClear,
     };
+    const eventHelperStart = source.indexOf("\nfunction applyThreadEvent(") + 1;
+    const eventHelperEnd = source.indexOf("\nfunction ComputerReleaseActions(", eventHelperStart);
+    expect(eventHelperStart).toBeGreaterThan(0);
+    expect(eventHelperEnd).toBeGreaterThan(eventHelperStart);
     const script = `function buildCallbacks() {
+      ${source.slice(eventHelperStart, eventHelperEnd)}
       ${declaration("clearReceiptOwnerKey")}
       ${declaration("reconcileClearHistory")}
       ${declaration("reconcileBufferedThreadSnapshot")}
@@ -2887,7 +2906,11 @@ describe("Shell clear receipt snapshot commits", () => {
       commit(value: ThreadSnapshot | null): void;
       confirm(): Promise<void>;
       jump(target: { botId?: string; groupId?: string; messageId: string }): Promise<void>;
-      reader: { beforeEvent(event: ProductEvent): boolean; ownsReader(): boolean };
+      reader: {
+        beforeEvent(event: ProductEvent): boolean;
+        ownsReader(): boolean;
+        applyEvent(event: ProductEvent): void;
+      };
     };
     commit = callbacks.commit;
     return {
@@ -2905,6 +2928,89 @@ describe("Shell clear receipt snapshot commits", () => {
       pageStarted,
     };
   }
+  it.each([false, true].flatMap((group) => [false, true].map((resume) => ({ group, resume }))))(
+    "applies a visible clear before recovery without replay restoring old rows ($group, $resume)",
+    async ({ group, resume }) => {
+      const h = await fixture(group);
+      const before = { ...h.b, cursor: 15, olderCursor: 1 };
+      h.snapshotRef.current = before;
+      let releaseRecovery!: () => void;
+      const recovery = new Promise<void>((resolve) => {
+        releaseRecovery = resolve;
+      });
+      const abort = new AbortController();
+      const stopped = new Promise<void>((resolve) =>
+        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      const clear = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 22,
+        type: "thread.cleared",
+        payload: {},
+      });
+      const ordinary = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 21,
+        type: "thread.message.created",
+        payload: { messageId: "ordinary", messageSeq: 2, role: "user", blocks: [] },
+      });
+      const apply = vi.fn(h.reader.applyEvent);
+      const observe = vi.fn();
+      const refresh = vi.fn(async () => {
+        await recovery;
+        h.commit(
+          reconcileRefreshedThread(
+            h.snapshotRef.current,
+            { ...before, cursor: 30, olderCursor: 20, messages: [message("new-after-clear", [])] },
+            null,
+            true,
+          ).snapshot,
+        );
+      });
+      vi.useFakeTimers();
+      const running = runThreadSubscription({
+        signal: abort.signal,
+        loadInitial: async () => {
+          throw new Error("snapshot interrupted");
+        },
+        loadHead: async () => ({ threadId: "thread-B", cursor: 20 }),
+        refresh,
+        currentSnapshot: () => h.snapshotRef.current,
+        subscribe: async () =>
+          (async function* () {
+            yield ordinary;
+            yield clear;
+            await stopped;
+          })(),
+        beforeEvent: h.reader.beforeEvent,
+        applyEvent: apply,
+        onEvent: observe,
+        onCursor: vi.fn(),
+        ...(resume ? { resume: { threadId: "thread-B", cursor: 20 } } : {}),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(observe).toHaveBeenCalledTimes(2);
+        expect(apply).not.toHaveBeenCalled();
+        expect(h.snapshotRef.current?.messages).toEqual([]);
+        expect(h.snapshotRef.current).toMatchObject({ observedClearSeq: 22, cursor: 22 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        releaseRecovery();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(["new-after-clear"]);
+        expect(h.snapshotRef.current).toMatchObject({ observedClearSeq: 22, cursor: 30 });
+      } finally {
+        releaseRecovery();
+        abort.abort();
+        await running;
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(
     [false, true].flatMap((group) =>
       ["in-flight", "before-page", "post-clear-snapshot"].flatMap((timing) =>

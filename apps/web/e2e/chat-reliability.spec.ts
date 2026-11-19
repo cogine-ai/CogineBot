@@ -3788,11 +3788,29 @@ for (const postClear of [false, true]) {
       await pageHeld.promise;
       return json(route, { threadId: anchor.threadId, messages: [anchor], olderCursor: null });
     };
-    await ready(page);
+    await page.clock.install({ time: new Date(stamp) });
+    await page.clock.pauseAt(new Date(Date.parse(stamp) + 1000));
+    await page.goto("/app/chief");
+    let startupMilliseconds = 0;
+    await expect
+      .poll(
+        async () => {
+          if (startupMilliseconds < 2000) {
+            await page.clock.runFor(10);
+            startupMilliseconds += 10;
+          }
+          const shell = page.getByTestId("shell-root");
+          return (await shell.count()) ? shell.getAttribute("data-ready") : null;
+        },
+        { intervals: [50] },
+      )
+      .toBe("true");
+    expect(startupMilliseconds).toBeLessThan(2000);
     await page.evaluate(() => {
       window.history.pushState({}, "", "/app/research-one?m=cold-clear-anchor");
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
+    await page.clock.runFor(34);
     try {
       await pageStarted.promise;
       await expect.poll(stream.activeTargets).toContain("bot:research-one");
@@ -3820,11 +3838,19 @@ for (const postClear of [false, true]) {
         },
       ]);
       // The clear's real onEvent callback refreshes the roster after beforeEvent runs.
-      // Wait for that receipt before releasing the page, independently of recovery's timer.
-      await expect.poll(() => state.listRequests).toBeGreaterThan(navigationReadsBeforeClear);
+      // The frozen clock keeps the unrelated 3s poll from satisfying this receipt.
+      await expect
+        .poll(() => state.listRequests, { timeout: 5_000 })
+        .toBe(navigationReadsBeforeClear + 1);
+      await page.clock.runFor(250);
       await recoveryStarted.promise;
+      const pageResponse = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/rpc/threads/messages",
+      );
       pageHeld.resolve();
+      await pageResponse;
       await expect(page).toHaveURL(/\/app\/research-one$/);
+      await page.clock.runFor(64);
       await expect(page.getByTestId("composer-error")).toHaveText(
         "External memory cleanup could not be confirmed.",
       );
