@@ -187,6 +187,9 @@ describe("fresh-check scoring", () => {
     "has not contained exactly",
     "hasn't contained exactly",
     "no longer contains",
+    "would not report",
+    "wouldn't report",
+    "wouldn’t report",
   ];
   const affirmedCountPhrases = [
     "contained exactly",
@@ -221,6 +224,15 @@ describe("fresh-check scoring", () => {
     "We’ve not shown 41 pending",
     "I had not reported 41 pending",
     "We have not been showing 41 pending",
+    "I would not report 41 pending",
+    "We would not show 41 pending",
+    "I would not have reported 41 pending",
+    "We would not have shown 41 pending",
+    "I wouldn't report 41 pending",
+    "We wouldn’t show 41 pending",
+    "I'd not report 41 pending",
+    "We’d not show 41 pending",
+    "I’d not reported 41 pending",
   );
 
   it.each([

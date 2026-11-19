@@ -540,7 +540,7 @@ function currentReportMatches(text: string): boolean {
   const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
   const expected = Number.parseInt(latestReport, 10);
   const postfixCurrent = String.raw`(?:now|currently|today|in\s+(?:the\s+)?(?:current|latest)\s+report)`;
-  const auxiliary = "(?:did|does|do|is|are|was|were|has|have|had)";
+  const auxiliary = "(?:did|does|do|is|are|was|were|has|have|had|would)";
   const countModifier = "(?:exactly|precisely)";
   const countClaim = String.raw`(?:a\s+total\s+of\s+)?(?:${countModifier}\s+)?${count}`;
   const reportingVerb = "(?:show(?:ed|n|s|ing)?|report(?:ed|s|ing)?)";
