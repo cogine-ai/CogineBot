@@ -410,6 +410,27 @@ async function ready(page: Page) {
   await expect(page.getByRole("combobox", { name: "Message Chief", exact: true })).toBeVisible();
 }
 
+async function readyWithFrozenClock(page: Page) {
+  await page.clock.install({ time: new Date(stamp) });
+  await page.clock.pauseAt(new Date(Date.parse(stamp) + 1000));
+  await page.goto("/app/chief");
+  let startupMilliseconds = 0;
+  await expect
+    .poll(
+      async () => {
+        if (startupMilliseconds < 2000) {
+          await page.clock.runFor(10);
+          startupMilliseconds += 10;
+        }
+        const shell = page.getByTestId("shell-root");
+        return (await shell.count()) ? shell.getAttribute("data-ready") : null;
+      },
+      { intervals: [50] },
+    )
+    .toBe("true");
+  expect(startupMilliseconds).toBeLessThan(2000);
+}
+
 for (const target of ["peer", "group"] as const) {
   for (const width of [1280, 390]) {
     test(`selected ${target} files arrive live and download from their original chat at ${width}px`, async ({
@@ -3788,24 +3809,7 @@ for (const postClear of [false, true]) {
       await pageHeld.promise;
       return json(route, { threadId: anchor.threadId, messages: [anchor], olderCursor: null });
     };
-    await page.clock.install({ time: new Date(stamp) });
-    await page.clock.pauseAt(new Date(Date.parse(stamp) + 1000));
-    await page.goto("/app/chief");
-    let startupMilliseconds = 0;
-    await expect
-      .poll(
-        async () => {
-          if (startupMilliseconds < 2000) {
-            await page.clock.runFor(10);
-            startupMilliseconds += 10;
-          }
-          const shell = page.getByTestId("shell-root");
-          return (await shell.count()) ? shell.getAttribute("data-ready") : null;
-        },
-        { intervals: [50] },
-      )
-      .toBe("true");
-    expect(startupMilliseconds).toBeLessThan(2000);
+    await readyWithFrozenClock(page);
     await page.evaluate(() => {
       window.history.pushState({}, "", "/app/research-one?m=cold-clear-anchor");
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -3878,6 +3882,101 @@ for (const postClear of [false, true]) {
     }
   });
 }
+
+test("a visible clear removes loaded history before recovery and keeps it removed afterward", async ({
+  page,
+}, testInfo) => {
+  const { state, errors, unknown } = await mockChat(page);
+  const stream = await controlledStream(page);
+  const pageHeld = deferred();
+  const pageStarted = deferred();
+  const recoveryHeld = deferred();
+  const recoveryStarted = deferred();
+  const old: ThreadMessage = {
+    id: "visible-recovery-anchor",
+    threadId: "thread-research-one",
+    seq: 1,
+    role: "user",
+    createdAt: stamp,
+    blocks: [{ kind: "text", text: "History before recovering clear" }],
+  };
+  const newer: ThreadMessage = {
+    ...old,
+    id: "visible-recovery-new",
+    seq: 20,
+    blocks: [{ kind: "text", text: "History after recovering clear" }],
+  };
+  let researchReads = 0;
+  state.thread = async (route, data) => {
+    if (data.botId !== "research-one") return json(route, data);
+    const recovering = ++researchReads > 2;
+    if (recovering) {
+      recoveryStarted.resolve();
+      await recoveryHeld.promise;
+    }
+    return json(route, {
+      ...data,
+      cursor: recovering ? 30 : 15,
+      olderCursor: recovering ? 20 : 1,
+      messages: recovering ? [newer] : [old],
+    });
+  };
+  state.messages = async (route) => {
+    pageStarted.resolve();
+    await pageHeld.promise;
+    return json(route, { threadId: old.threadId, messages: [old], olderCursor: 1 });
+  };
+  await readyWithFrozenClock(page);
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/app/research-one?m=visible-recovery-anchor");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await page.clock.runFor(34);
+  try {
+    await pageStarted.promise;
+    await expect.poll(stream.activeTargets).toContain("bot:research-one");
+    // Subscribe while A is still committed, then commit B without completing reader recovery.
+    pageHeld.resolve();
+    await expect(page).toHaveURL(/\/app\/research-one$/);
+    await page.clock.runFor(64);
+    const previous = page
+      .getByTestId("transcript")
+      .getByText("History before recovering clear", { exact: true });
+    await expect(previous).toBeVisible();
+    await page.clock.runFor(250);
+    await recoveryStarted.promise;
+    const navigationReads = state.listRequests;
+    await stream.emit({
+      id: "visible-recovery-clear",
+      spaceId: "space-primary",
+      threadId: old.threadId,
+      botId: "research-one",
+      seq: 20,
+      type: "thread.cleared",
+      createdAt: stamp,
+      payload: { memoryCleanupPending: true },
+    });
+    await expect.poll(() => state.listRequests, { timeout: 5_000 }).toBe(navigationReads + 1);
+    await expect(previous).toHaveCount(0);
+    await expect(page.getByTestId("composer-error")).toHaveText(
+      "External memory cleanup could not be confirmed.",
+    );
+    await captureScreenshot(page, testInfo, "memory-cleanup-visible-clear-before-recovery");
+    recoveryHeld.resolve();
+    await expect(
+      page.getByTestId("transcript").getByText("History after recovering clear", { exact: true }),
+    ).toBeVisible();
+    await expect(previous).toHaveCount(0);
+    await captureScreenshot(page, testInfo, "memory-cleanup-visible-clear-after-recovery");
+    expect(state.sends).toEqual([]);
+    expect(state.uploads).toEqual([]);
+    expect(unknown).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    pageHeld.resolve();
+    recoveryHeld.resolve();
+  }
+});
 
 test("a delayed clear receipt stays with its target while another thread snapshot is visible", async ({
   page,
