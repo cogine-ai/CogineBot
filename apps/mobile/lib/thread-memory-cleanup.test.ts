@@ -40,6 +40,7 @@ let notify = "";
 let clear = "";
 let effect = "";
 let commit = "";
+let reconcilePending = "";
 let ownerExpression = "";
 let subscriptionCallback = "";
 let refreshCommit = "";
@@ -56,6 +57,8 @@ function collect(node: ts.Node) {
     clear = node.getText(file);
   if (ts.isFunctionDeclaration(node) && node.name?.text === "commitSnap")
     commit = node.getText(file);
+  if (ts.isFunctionDeclaration(node) && node.name?.text === "reconcilePendingThreadSnapshot")
+    reconcilePending = node.getText(file);
   if (
     ts.isCallExpression(node) &&
     node.expression.getText(file) === "useEffect" &&
@@ -65,6 +68,7 @@ function collect(node: ts.Node) {
   ts.forEachChild(node, collect);
 }
 collect(file);
+commit = [reconcilePending, commit].join("\n");
 if (!notify || !clear || !effect) throw new Error("Missing actual cleanup callbacks");
 const code = ts.transpileModule(
   `${notify}\n${clear}\nreturn { clear: clearConversation, notify: showMemoryCleanupNotice, effect: ${effect} };`,

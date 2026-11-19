@@ -3491,6 +3491,7 @@ export function ShellPage() {
   }, [
     activeSnapshot?.memoryCleanupUnconfirmed,
     activeSnapshot?.memoryCleanupPending,
+    activeSnapshot?.memoryCleanupCursor,
     memoryCleanupScope,
     pendingMemoryCleanupClears,
     showMemoryCleanupNotice,
