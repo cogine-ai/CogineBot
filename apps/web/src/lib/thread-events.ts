@@ -119,7 +119,7 @@ export function activeThreadRuns(
  */
 export function applyThreadSendReceipt(
   snapshot: ThreadSnapshot | null,
-  receipt: { botId: string; runId: string; taskId: string; createdAt?: string },
+  receipt: { botId: string; runId: string; taskId: string; eventSeq?: number; createdAt?: string },
   terminalRunIds: ReadonlySet<string> = new Set(),
 ): ThreadSnapshot | null {
   if (
@@ -127,14 +127,17 @@ export function applyThreadSendReceipt(
     snapshot.groupId ||
     snapshot.botId !== receipt.botId ||
     snapshot.run?.id === receipt.runId ||
-    terminalRunIds.has(receipt.runId)
+    terminalRunIds.has(receipt.runId) ||
+    (receipt.eventSeq === undefined &&
+      (snapshot as ObservedThreadSnapshot).observedClearSeq !== undefined) ||
+    (receipt.eventSeq !== undefined && receipt.eventSeq <= (threadClearSeq(snapshot) ?? -1))
   ) {
     return snapshot;
   }
   const currentRuns = activeThreadRuns(snapshot);
   if (currentRuns.some((run) => isActive(run.status as RunStatus))) return snapshot;
   const createdAt = receipt.createdAt ?? new Date().toISOString();
-  const run: Run = {
+  const run: Run & { observedEventSeq?: number } = {
     id: receipt.runId,
     botId: receipt.botId,
     threadId: snapshot.threadId,
@@ -148,6 +151,7 @@ export function applyThreadSendReceipt(
     startedAt: null,
     completedAt: null,
     createdAt,
+    ...(receipt.eventSeq !== undefined ? { observedEventSeq: receipt.eventSeq } : {}),
   };
   return { ...snapshot, run, activeRuns: [run] };
 }

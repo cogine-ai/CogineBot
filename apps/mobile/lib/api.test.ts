@@ -5813,8 +5813,17 @@ it("retains pending cleanup when a same-thread refresh omits the metadata", () =
 });
 
 describe("canonical clear cancellation metadata", () => {
+  it.each(["queued", "running"])("removes cached %s state absent from a later clear", (status) => {
+    const run = { id: "stale-run", botId: "bot-1", status };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [run] },
+      { type: "thread.cleared", seq: 22, payload: { cancelledRunIds: [] } },
+    );
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([]);
+  });
   it("preserves an uncancelled queued Run at the preceding event cursor", () => {
-    const run = { id: "post-clear-run", botId: "bot-1", status: "queued" };
+    const run = { id: "post-clear-run", botId: "bot-1", status: "queued", observedEventSeq: 21 };
     const before = {
       ...snapshot([mobileMessage("old", [])], 1),
       cursor: 15,

@@ -1630,16 +1630,17 @@ describe("sendThreadMessage", () => {
         }),
       },
       event: {
-        findFirst: vi.fn(async ({ select }: { select?: { seq?: boolean } }) =>
-          select?.seq
-            ? { seq: 9 }
-            : {
+        findFirst: vi.fn(async ({ select }: { select?: { payload?: boolean } }) =>
+          select?.payload
+            ? {
+                seq: 7,
                 payload: {
                   messageId: "msg-1",
                   role: "user",
                   runIds: ["run-waiting-1", "run-waiting-2"],
                 },
-              },
+              }
+            : { seq: 9 },
         ),
       },
       run: {
@@ -1681,6 +1682,7 @@ describe("sendThreadMessage", () => {
       runId: "run-waiting-1",
       taskId: "task-1",
       seq: 4,
+      eventSeq: 7,
       runIds: ["run-waiting-1", "run-waiting-2"],
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();

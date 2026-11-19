@@ -49,6 +49,19 @@ describe("cleanup observation ordering", () => {
 });
 
 describe("clear receipt boundaries", () => {
+  it.each(["queued", "running"])(
+    "removes stale %s work when only a later empty clear is delivered",
+    (status) => {
+      const run = { id: "missed-terminal-or-clear", status };
+      const current = { threadId: "thread", cursor: 10, messages: [], run, activeRuns: [run] };
+      const next = applyThreadClearReceipt(current, null, {
+        clearEventSeq: 22,
+        cancelledRunIds: [],
+      });
+      expect(next.run).toBeNull();
+      expect(next.activeRuns).toEqual([]);
+    },
+  );
   it("applies cumulative cancellation evidence without changing admitted history boundaries", () => {
     const run = { id: "cancelled", status: "queued" };
     const fresh = { id: "fresh", status: "queued" };
@@ -104,7 +117,7 @@ describe("clear receipt boundaries", () => {
     },
   );
   it("preserves an uncancelled active send receipt before its event advances the cursor", () => {
-    const run = { id: "post-clear-run", status: "queued" };
+    const run = { id: "post-clear-run", status: "queued", observedEventSeq: 21 };
     const current = {
       threadId: "thread",
       cursor: 15,
@@ -120,13 +133,12 @@ describe("clear receipt boundaries", () => {
     expect(next.activeRuns).toEqual([run]);
     expect(next.messages).toEqual([]);
   });
-  it("does not treat cancellation IDs from an older clear as complete evidence for a later clear", () => {
+  it("does not treat an uncancelled cached Run as evidence of admission after a later clear", () => {
     const run = { id: "unknown-later-run", status: "queued" };
     const current = { threadId: "thread", cursor: 15, messages: [], run, activeRuns: [run] };
     const next = applyThreadClearReceipt(current, null, {
       clearEventSeq: 20,
       cancelledRunIds: ["older-run"],
-      cancelledRunIdsSeq: 12,
     });
     expect(next.run).toBeNull();
     expect(next.activeRuns).toEqual([]);

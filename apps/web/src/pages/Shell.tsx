@@ -667,7 +667,6 @@ export function ShellPage() {
         receipt: MemoryCleanupObservation & {
           clearEventSeq: number;
           cancelledRunIds?: string[];
-          cancelledRunIdsSeq?: number;
         };
       }
     >(),
@@ -4222,7 +4221,12 @@ export function ShellPage() {
             updateSnapshot((current) =>
               applyThreadSendReceipt(
                 current,
-                { botId: botTarget, runId: sent.runId, taskId: sent.taskId },
+                {
+                  botId: botTarget,
+                  runId: sent.runId,
+                  taskId: sent.taskId,
+                  eventSeq: sent.eventSeq,
+                },
                 terminalRunReceipts.current,
               ),
             );
@@ -7626,9 +7630,6 @@ export function ShellPage() {
                     receipt: {
                       ...cleared,
                       clearEventSeq: cleared.clearEventSeq,
-                      ...(cleared.cancelledRunIds !== undefined
-                        ? { cancelledRunIdsSeq: cleared.clearEventSeq }
-                        : {}),
                     },
                   };
                   const latest =
@@ -7643,10 +7644,6 @@ export function ShellPage() {
                         latest.receipt,
                         other?.receipt ?? {},
                         other?.receipt.memoryCleanupCursor ?? other?.receipt.clearEventSeq ?? -1,
-                      ),
-                      cancelledRunIdsSeq: Math.max(
-                        latest.receipt.cancelledRunIdsSeq ?? -1,
-                        other?.receipt.cancelledRunIdsSeq ?? -1,
                       ),
                       cancelledRunIds: [
                         ...new Set([

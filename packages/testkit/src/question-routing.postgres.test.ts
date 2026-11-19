@@ -7,7 +7,13 @@ import {
   formatBotSecretHttpApprovalDetail,
   runSecretKind,
 } from "@rakazo/core";
-import { answerRunInput, createDb, createThreadMessage, pauseRunForInput } from "@rakazo/db";
+import {
+  answerRunInput,
+  appendEvent,
+  createDb,
+  createThreadMessage,
+  pauseRunForInput,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveThreadTarget, sendThreadMessage } from "../../../apps/api/src/thread-target.js";
 import { reconcileStuckWork } from "../../adapters/src/stuck-work.js";
@@ -124,6 +130,41 @@ describe.skipIf(!enabled).sequential("question routing (PostgreSQL)", () => {
       chatGroup,
     };
   }
+
+  it.each([false, true])(
+    "returns the original send event cursor on nonce replay (group: %s)",
+    async (group) => {
+      const f = await fixture(undefined, group);
+      await db.prisma.thread.update({ where: { id: f.threadId }, data: { nextEventSeq: 40 } });
+      const nonce = randomUUID();
+      const sent = await f.send("Paris", nonce);
+      const event = await db.prisma.event.findFirstOrThrow({
+        where: { threadId: f.threadId, type: "thread.message.created" },
+        orderBy: { seq: "desc" },
+      });
+      expect(sent.eventSeq).toBe(event.seq);
+      expect(sent.eventSeq).toBeGreaterThan(sent.seq);
+      const runCount = await db.prisma.run.count({ where: { threadId: f.threadId } });
+      const messageCount = await db.prisma.message.count({ where: { threadId: f.threadId } });
+      const later = await appendEvent(db.prisma, {
+        spaceId: f.spaceId,
+        botId: f.botId,
+        threadId: f.threadId,
+        type: "thread.meta",
+        payload: {},
+      });
+      expect(later.seq).toBeGreaterThan(event.seq);
+      expect(await f.send("Paris", nonce)).toEqual(sent);
+      expect(await db.prisma.run.count({ where: { threadId: f.threadId } })).toBe(runCount);
+      expect(await db.prisma.message.count({ where: { threadId: f.threadId } })).toBe(messageCount);
+      await db.prisma.event.delete({ where: { id: event.id } });
+      const unknown = await f.send("Paris", nonce);
+      expect(unknown.seq).toBe(sent.seq);
+      expect(unknown.eventSeq).toBeUndefined();
+      expect(await db.prisma.run.count({ where: { threadId: f.threadId } })).toBe(runCount);
+      expect(await db.prisma.message.count({ where: { threadId: f.threadId } })).toBe(messageCount);
+    },
+  );
 
   it.each(["screen", "voice", "clipped", "unmarked"] as const)(
     "requires an exact on-screen authenticated request approval for %s",

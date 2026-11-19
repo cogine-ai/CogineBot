@@ -304,6 +304,29 @@ describe("thread event reduction", () => {
     expect(next?.messages).toBe(initial.messages);
   });
 
+  it.each([undefined, 19, 20, 21])(
+    "orders a late send receipt by event cursor (%s)",
+    (eventSeq) => {
+      const initial = {
+        ...snapshot([]),
+        cursor: 30,
+        olderCursor: 1,
+        observedClearSeq: 20,
+      };
+      const next = applyThreadSendReceipt(initial, {
+        botId: "bot-1",
+        runId: "receipt-run",
+        taskId: "receipt-task",
+        eventSeq,
+      });
+      expect(next?.run?.id ?? null).toBe(
+        eventSeq !== undefined && eventSeq > 20 ? "receipt-run" : null,
+      );
+      expect(next?.cursor).toBe(30);
+      if (eventSeq === undefined || eventSeq <= 20) expect(next).toBe(initial);
+    },
+  );
+
   it("does not replace authoritative active or group run state with a send receipt", () => {
     const active = threadRun("run-active");
     const direct: ThreadSnapshot = { ...snapshot([]), run: active, activeRuns: [active] };
@@ -3076,11 +3099,30 @@ describe("Shell clear receipt snapshot commits", () => {
       expect(h.scope.pendingMemoryCleanupEvents.current.size).toBe(0);
     },
   );
+  it.each(["queued", "running"] as const)(
+    "removes a cached %s Run when only the replacement clear is received",
+    async (status) => {
+      const h = await fixture();
+      const run = { ...threadRun("stale-run", "bot-B"), status };
+      h.snapshotRef.current = { ...h.b, cursor: 15, olderCursor: 1, run, activeRuns: [run] };
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 22,
+          type: "thread.cleared",
+          payload: { cancelledRunIds: [] },
+        }),
+      );
+      expect(h.snapshotRef.current?.run).toBeNull();
+      expect(h.snapshotRef.current?.activeRuns).toEqual([]);
+    },
+  );
   it("keeps the post-clear queued Run when a visible clear arrives before its run event", async () => {
     const h = await fixture();
     h.snapshotRef.current = applyThreadSendReceipt(
       { ...h.b, cursor: 15, olderCursor: 1, run: null, activeRuns: [] },
-      { botId: "bot-B", runId: "new-send", taskId: "new-task" },
+      { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 21 },
     );
     h.reader.beforeEvent(
       event({
@@ -3166,7 +3208,7 @@ describe("Shell clear receipt snapshot commits", () => {
     expect(h.scope.terminalRunReceipts.current.has(receipt.runId)).toBe(true);
     h.snapshotRef.current = applyThreadSendReceipt(
       h.snapshotRef.current,
-      { ...receipt, runId: "uncancelled" },
+      { ...receipt, runId: "uncancelled", eventSeq: 21 },
       h.scope.terminalRunReceipts.current,
     );
     expect(h.snapshotRef.current?.run?.id).toBe("uncancelled");
@@ -3185,7 +3227,7 @@ describe("Shell clear receipt snapshot commits", () => {
     );
     h.snapshotRef.current = applyThreadSendReceipt(
       h.snapshotRef.current,
-      { botId: "bot-B", runId: "new-send", taskId: "new-task" },
+      { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 23 },
       h.scope.terminalRunReceipts.current,
     );
     expect(h.snapshotRef.current?.run?.id).toBe("new-send");

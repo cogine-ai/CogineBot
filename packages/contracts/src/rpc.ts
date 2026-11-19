@@ -303,6 +303,7 @@ const threadSendResult = z.object({
   taskId: Id,
   runId: Id,
   seq: z.number().int(),
+  eventSeq: z.number().int().nonnegative().optional(),
   runIds: z.array(Id).optional(),
   deliveredImageHandling: threadSendFields.shape.imageHandling,
 });

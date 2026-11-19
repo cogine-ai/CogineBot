@@ -208,7 +208,7 @@ async function replayExistingSend(
       payload: { path: ["messageId"], equals: message.id },
     },
     orderBy: { seq: "desc" },
-    select: { payload: true },
+    select: { payload: true, seq: true },
   });
   const receiptRunIds = sendEventRunIds(receiptEvent?.payload);
   const receiptRuns = receiptRunIds.length
@@ -240,7 +240,7 @@ async function replayExistingSend(
       getLogger().error("thread send realtime notification", error);
     });
   }
-  return sendResult(message, runs);
+  return sendResult(message, runs, receiptEvent?.seq);
 }
 
 function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
@@ -252,6 +252,7 @@ function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
 function sendResult(
   message: { seq: number; blocks?: Prisma.JsonValue },
   runs: Array<{ id: string; taskId: string }>,
+  eventSeq?: number,
 ) {
   const first = runs[0];
   if (!first) throw new IsolationError("Send did not create a run");
@@ -266,6 +267,7 @@ function sendResult(
     taskId: first.taskId,
     runId: first.id,
     seq: message.seq,
+    ...(eventSeq !== undefined ? { eventSeq } : {}),
     runIds: runs.map((run) => run.id),
     ...(deliveredImageHandling ? { deliveredImageHandling } : {}),
   };
@@ -1500,7 +1502,7 @@ export async function sendThreadMessage(
   const runsToWake = new Map(committed.routineRuns.map((run) => [run.id, run]));
   for (const run of committed.runs) runsToWake.set(run.id, run);
   await enqueueRunsNeedingContinue(deps.jobs, [...runsToWake.values()]);
-  return sendResult(committed.message, committed.runs);
+  return sendResult(committed.message, committed.runs, committed.eventSeq);
 }
 
 /**

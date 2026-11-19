@@ -1,6 +1,3 @@
-import type { RunStatus } from "@rakazo/contracts";
-import { isActive } from "./run-state.js";
-
 export type MemoryCleanupObservation = {
   memoryCleanupCursor?: number;
   memoryCleanupPending?: boolean;
@@ -10,8 +7,8 @@ export type MemoryCleanupObservation = {
 export type ThreadWorkObservation = {
   threadId: string;
   cursor?: number;
-  run: { id: string; status?: string } | null;
-  activeRuns?: Array<{ id: string; status?: string }>;
+  run: { id: string; observedEventSeq?: number } | null;
+  activeRuns?: Array<{ id: string; observedEventSeq?: number }>;
 };
 
 /** Canonical clear frames identify the runs cancelled by that transaction. */
@@ -57,7 +54,7 @@ export function applyThreadClearReceipt<
 >(
   snapshot: T,
   started: ThreadWorkObservation | null,
-  receipt: { clearEventSeq: number; cancelledRunIds?: string[]; cancelledRunIdsSeq?: number },
+  receipt: { clearEventSeq: number; cancelledRunIds?: string[] },
 ): T {
   const observed = snapshot.observedClearSeq ?? -1;
   // History is consumed once; cancellation IDs still apply to late receipts.
@@ -68,13 +65,9 @@ export function applyThreadClearReceipt<
     ...(started?.activeRuns ?? []).map((run) => run.id),
     ...(started?.run ? [started.run.id] : []),
   ]);
-  const keepRun = (run: { id: string; status?: string }) =>
+  const keepRun = (run: { id: string; observedEventSeq?: number }) =>
     !cancelled.has(run.id) &&
-    // An older buffered list cannot prove a later clear's cancellation set complete.
-    ((receipt.cancelledRunIds !== undefined &&
-      (receipt.cancelledRunIdsSeq ?? receipt.clearEventSeq) >= receipt.clearEventSeq &&
-      run.status !== undefined &&
-      isActive(run.status as RunStatus)) ||
+    ((run.observedEventSeq ?? -1) > receipt.clearEventSeq ||
       (snapshot.cursor ?? -1) > receipt.clearEventSeq ||
       (started?.threadId === snapshot.threadId && !previous.has(run.id)));
   const remaining = snapshot.messages.filter(

@@ -294,7 +294,11 @@ describe("native memory cleanup outcomes", () => {
         run: { id: "receipt-cancelled", status: "running" },
         activeRuns: [
           { id: "prior-cancelled", status: "running" },
-          { id: "fresh-run", status: "running" },
+          {
+            id: "fresh-run",
+            status: "running",
+            ...(mode === "canonical-clear" ? { observedEventSeq: 21 } : {}),
+          },
         ],
       };
       const runtime = {
@@ -360,9 +364,6 @@ describe("native memory cleanup outcomes", () => {
           ? ["prior-cancelled", "event-cancelled", "receipt-cancelled"]
           : ["prior-cancelled", "receipt-cancelled"],
       );
-      expect(buffered.cancelledRunIdsSeq).toBe(
-        mode === "canonical-clear" ? 20 : mode === "omitted-boundary" ? 8 : 12,
-      );
       expect(buffered.seq).toBe(mode === "receipt-status" ? 30 : 40);
       expect(buffered.pending).toBe(mode !== "receipt-status");
       expect(buffered.unconfirmed).toBe(true);
@@ -408,7 +409,6 @@ describe("native memory cleanup outcomes", () => {
       seq: 30,
       clearEventSeq: 12,
       cancelledRunIds: ["receipt-run"],
-      cancelledRunIdsSeq: 12,
       pending: false,
     });
   });

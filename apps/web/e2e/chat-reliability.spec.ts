@@ -3935,7 +3935,12 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
       if (scenario !== "history") {
         state.send = async (route) => {
           if (scenario !== "new-send") await sendHeld.promise;
-          return json(route, { runId: sentRunId, taskId: queued.taskId, seq: 2 });
+          return json(route, {
+            runId: sentRunId,
+            taskId: queued.taskId,
+            seq: 2,
+            eventSeq: scenario === "new-send" ? 21 : 19,
+          });
         };
       }
       if (scenario === "cancelled-before" || scenario === "cancelled-after") {
@@ -4034,7 +4039,6 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
             await clearStarted.promise;
           }
         }
-        const navigationReads = state.listRequests;
         await stream.emit({
           id: "visible-recovery-clear",
           spaceId: "space-primary",
@@ -4048,12 +4052,11 @@ for (const scenario of ["history", "new-send", "cancelled-before", "cancelled-af
             ...(scenario === "new-send" ? { cancelledRunIds: ["old-run"] } : {}),
           },
         });
-        await expect.poll(() => state.listRequests, { timeout: 5_000 }).toBe(navigationReads + 1);
         await expect(previous).toHaveCount(0);
         if (scenario === "cancelled-before") {
           sendHeld.resolve();
           await expect(composer).toHaveValue("");
-          await expect(stop).toBeVisible();
+          await expect(stop).toHaveCount(0);
         }
         if (clearing) {
           clearHeld.resolve();

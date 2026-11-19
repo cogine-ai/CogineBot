@@ -839,7 +839,6 @@ function Thread({
         pending?: boolean;
         clearEventSeq?: number;
         cancelledRunIds?: string[];
-        cancelledRunIdsSeq?: number;
       }
     >(),
   );
@@ -950,7 +949,6 @@ function Thread({
       next = applyThreadClearReceipt(next, null, {
         clearEventSeq: cleanup.clearEventSeq,
         cancelledRunIds: cleanup.cancelledRunIds,
-        cancelledRunIdsSeq: cleanup.cancelledRunIdsSeq ?? -1,
       });
     return observeMemoryCleanup(
       { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor ?? -1 },
@@ -1667,10 +1665,6 @@ function Thread({
               ? {
                   clearEventSeq,
                   cancelledRunIds,
-                  cancelledRunIdsSeq: Math.max(
-                    sameOwner ? (previous.cancelledRunIdsSeq ?? -1) : -1,
-                    result.cancelledRunIds !== undefined ? (result.clearEventSeq ?? -1) : -1,
-                  ),
                 }
               : {}),
           });
@@ -2287,13 +2281,6 @@ function Thread({
                   ...(clearEventSeq !== undefined
                     ? {
                         clearEventSeq,
-                        cancelledRunIdsSeq: Math.max(
-                          previous?.cancelledRunIdsSeq ?? -1,
-                          event.type === "thread.cleared" &&
-                            threadClearCancelledRunIds(event.payload) !== undefined
-                            ? (event.seq ?? -1)
-                            : -1,
-                        ),
                         cancelledRunIds: [
                           ...new Set([
                             ...(previous?.cancelledRunIds ?? []),
