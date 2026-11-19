@@ -536,11 +536,11 @@ const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
 function currentReportMatches(text: string): boolean {
-  const number = String.raw`[+−-]?\d+(?:[.,/–—-]\d+)*%?`;
+  const number = String.raw`[+−-]?\d+(?:\s*[.,/–—-]\s*\d+|\s+\d{3})*%?`;
   const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
   const expected = Number.parseInt(latestReport, 10);
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
-  const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?(?:\s+(?:showed|shows|had|has|was|were|is|reported))?|there\s+(?:were|was)|it\s+(?:was|showed)))?`;
+  const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?(?:\s+(?:showed|shows|had|has|was|were|is|reported))?|there\s+(?:were|was)|it\s+(?:was|showed)))?`;
   let deniesCurrent = false;
   // Normalize contextual current counts, then exclude historical and negated stale claims.
   const result = text
@@ -567,7 +567,7 @@ function currentReportMatches(text: string): boolean {
     )
     .replace(
       new RegExp(
-        `${historical}${historicalSubject}[:\\s]+(?:not\\s+)?${count}(?!\\s+(?:now|currently|today)\\b)`,
+        `${historical}${historicalSubject}[:\\s]+(?:not\\s+)?${count}(?!\\s+(?:now|currently|today|in\\s+(?:the\\s+)?(?:current|latest)\\s+report)\\b)`,
         "gi",
       ),
       "",
