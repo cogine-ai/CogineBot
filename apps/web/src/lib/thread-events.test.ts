@@ -3137,6 +3137,28 @@ describe("Shell clear receipt snapshot commits", () => {
       expect(h.snapshotRef.current?.activeRuns).toEqual([]);
     },
   );
+  it.each([17, 22, 23])(
+    "orders a send arriving during the actual clear callback (%s)",
+    async (eventSeq) => {
+      const h = await fixture();
+      h.snapshotRef.current = h.b;
+      const clearing = h.confirm();
+      h.snapshotRef.current = applyThreadSendReceipt(h.snapshotRef.current, {
+        botId: "bot-B",
+        runId: "in-flight-send",
+        taskId: "task",
+        eventSeq,
+      });
+      h.complete({ ok: true, threadId: "thread-B", clearEventSeq: 22, cancelledRunIds: [] });
+      await clearing;
+      expect(h.snapshotRef.current?.run?.id ?? null).toBe(eventSeq > 22 ? "in-flight-send" : null);
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(
+        eventSeq > 22 ? ["in-flight-send"] : [],
+      );
+      expect(h.snapshotRef.current?.messages).toEqual([]);
+    },
+  );
+
   it.each([false, true])(
     "keeps the post-clear queued Run before its run event (cached active: %s)",
     async (active) => {
@@ -3432,32 +3454,55 @@ describe("Shell clear receipt snapshot commits", () => {
     );
     expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(true);
   });
-  it("keeps a newer matching snapshot ahead of the buffered cleanup receipt", async () => {
+  it.each([undefined, 20])(
+    "keeps a newer matching snapshot ahead of the buffered cleanup receipt (%s)",
+    async (memoryCleanupCursor) => {
+      const h = await fixture();
+      const clearing = h.confirm();
+      h.complete({
+        ok: true,
+        threadId: "thread-B",
+        clearEventSeq: 12,
+        memoryCleanupPending: true,
+        memoryCleanupCursor: 15,
+      });
+      await clearing;
+      const after = {
+        ...h.b,
+        cursor: 20,
+        memoryCleanupPending: false,
+        memoryCleanupCursor,
+        messages: [message("after", [{ kind: "text", text: "After clear" }])],
+      };
+      h.commit(after);
+      expect(h.snapshotRef.current).toMatchObject({
+        cursor: 20,
+        memoryCleanupPending: false,
+        memoryCleanupCursor: 20,
+        messages: after.messages,
+      });
+    },
+  );
+  it("orders buffered cleanup against the raw snapshot before advancing its clear boundary", async () => {
     const h = await fixture();
     const clearing = h.confirm();
     h.complete({
       ok: true,
       threadId: "thread-B",
-      clearEventSeq: 12,
+      clearEventSeq: 22,
       memoryCleanupPending: true,
-      memoryCleanupCursor: 15,
+      memoryCleanupCursor: 21,
     });
     await clearing;
-    const after = {
-      ...h.b,
-      cursor: 20,
-      memoryCleanupPending: false,
-      memoryCleanupCursor: 20,
-      messages: [message("after", [{ kind: "text", text: "After clear" }])],
-    };
-    h.commit(after);
+    h.commit({ ...h.b, cursor: 20, memoryCleanupPending: false });
     expect(h.snapshotRef.current).toMatchObject({
-      cursor: 20,
-      memoryCleanupPending: false,
-      memoryCleanupCursor: 20,
-      messages: after.messages,
+      cursor: 22,
+      memoryCleanupCursor: 21,
+      memoryCleanupPending: true,
+      messages: [],
     });
   });
+
   it.each(["user", "session", "selection"] as const)(
     "does not apply another %s owner's buffered receipt",
     async (change) => {

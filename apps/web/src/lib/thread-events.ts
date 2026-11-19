@@ -366,7 +366,6 @@ export function reduceThreadSnapshot(
   if (cancelledRunIds !== undefined) {
     const cleared = applyThreadClearReceipt(
       observeThreadMessages(observeThreadClear(prev, clearSeq)),
-      null,
       { clearEventSeq: event.seq, cancelledRunIds },
     );
     if (cleared === prev && cleanup === prev && event.seq <= prev.cursor) return prev;

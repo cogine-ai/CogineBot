@@ -51,25 +51,15 @@ export function applyThreadClearReceipt<
     olderCursor?: number | null;
     observedClearSeq?: number;
   },
->(
-  snapshot: T,
-  started: ThreadWorkObservation | null,
-  receipt: { clearEventSeq: number; cancelledRunIds?: string[] },
-): T {
+>(snapshot: T, receipt: { clearEventSeq: number; cancelledRunIds?: string[] }): T {
   const observed = snapshot.observedClearSeq ?? -1;
   // History is consumed once; cancellation IDs still apply to late receipts.
   if (receipt.clearEventSeq <= observed)
     return applyThreadRunCancellations(snapshot, receipt.cancelledRunIds ?? []);
   const cancelled = new Set(receipt.cancelledRunIds ?? []);
-  const previous = new Set([
-    ...(started?.activeRuns ?? []).map((run) => run.id),
-    ...(started?.run ? [started.run.id] : []),
-  ]);
   const keepRun = (run: { id: string; observedEventSeq?: number }) =>
     !cancelled.has(run.id) &&
-    ((run.observedEventSeq ?? -1) > receipt.clearEventSeq ||
-      (snapshot.cursor ?? -1) > receipt.clearEventSeq ||
-      (started?.threadId === snapshot.threadId && !previous.has(run.id)));
+    (run.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq;
   const remaining = snapshot.messages.filter(
     (message) =>
       (message.observedEventSeq ?? snapshot.cursor ?? -1) > receipt.clearEventSeq &&

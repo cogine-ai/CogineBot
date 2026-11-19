@@ -1693,7 +1693,6 @@ export function applyMobileThreadEvent(
   if (cancelledRunIds !== undefined && event.seq !== undefined) {
     const cleared = applyThreadClearReceipt(
       observeMobileMessages(observeMobileClear(prev, clearSeq)),
-      null,
       { clearEventSeq: event.seq, cancelledRunIds },
     );
     if (cleared === prev && cleanup === prev && event.seq <= (prev.cursor ?? -1)) return prev;

@@ -736,18 +736,26 @@ describe("native memory cleanup outcomes", () => {
     await f.finish();
     expect(f.alert).toHaveBeenCalledOnce();
   });
-  it("preserves a newer native send receipt without a cursor advance", async () => {
-    const f = fixture();
-    f.clear();
-    f.snapRef.current = {
-      ...f.snapRef.current,
-      run: { id: "new-receipt-run", status: "queued" },
-      activeRuns: [{ id: "new-receipt-run", status: "queued" }],
-    };
-    await f.finish();
-    expect(f.snapRef.current.run?.id).toBe("new-receipt-run");
-    expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual(["new-receipt-run"]);
-  });
+  it.each([undefined, 17, 22, 23])(
+    "orders a Run observed during the native clear callback (%s)",
+    async (observedEventSeq) => {
+      const f = fixture();
+      f.clear();
+      const run = { id: "new-receipt-run", status: "queued", observedEventSeq };
+      f.snapRef.current = {
+        ...f.snapRef.current,
+        run,
+        activeRuns: [run],
+      };
+      await f.finish({ ok: true, clearEventSeq: 22, cancelledRunIds: [] });
+      expect(f.snapRef.current.run?.id ?? null).toBe(
+        (observedEventSeq ?? -1) > 22 ? "new-receipt-run" : null,
+      );
+      expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual(
+        (observedEventSeq ?? -1) > 22 ? ["new-receipt-run"] : [],
+      );
+    },
+  );
   it("does not show a false warning after pending cleanup is confirmed", async () => {
     const f = fixture();
     f.clear();

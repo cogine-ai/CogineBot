@@ -946,7 +946,7 @@ function Thread({
       return next;
     // The shared receipt rule keeps an admitted boundary page and still applies cancellation IDs.
     if (cleanup.clearEventSeq !== undefined)
-      next = applyThreadClearReceipt(next, null, {
+      next = applyThreadClearReceipt(next, {
         clearEventSeq: cleanup.clearEventSeq,
         cancelledRunIds: cleanup.cancelledRunIds,
       });
@@ -1705,7 +1705,7 @@ function Thread({
         if (epoch !== historyEpoch.current) return;
         if (snapRef.current && result.clearEventSeq !== undefined) {
           commitSnap(
-            applyThreadClearReceipt(snapRef.current, requestSnapshot, {
+            applyThreadClearReceipt(snapRef.current, {
               clearEventSeq: result.clearEventSeq,
               cancelledRunIds: result.cancelledRunIds,
             }),

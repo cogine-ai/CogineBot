@@ -49,12 +49,33 @@ describe("cleanup observation ordering", () => {
 });
 
 describe("clear receipt boundaries", () => {
+  it("lets cancellation evidence override a post-clear admission sequence", () => {
+    const run = { id: "cancelled", observedEventSeq: 23 };
+    const current = { threadId: "thread", cursor: 30, run, activeRuns: [run], messages: [] };
+    const next = applyThreadClearReceipt(current, { clearEventSeq: 22, cancelledRunIds: [run.id] });
+    expect(next.run).toBeNull();
+    expect(next.activeRuns).toEqual([]);
+  });
+  it.each([15, 30].flatMap((cursor) => [17, 22, 23].map((seq) => ({ cursor, seq }))))(
+    "orders an in-flight send by its admission sequence ($cursor, $seq)",
+    ({ cursor, seq }) => {
+      const started = { threadId: "thread", cursor: 10, run: null };
+      const run = { id: "in-flight-send", observedEventSeq: seq };
+      const current = { ...started, cursor, run, activeRuns: [run], messages: [] };
+      const next = applyThreadClearReceipt(current, {
+        clearEventSeq: 22,
+        cancelledRunIds: [],
+      });
+      expect(next.run).toBe(seq > 22 ? run : null);
+      expect(next.activeRuns).toEqual(seq > 22 ? [run] : []);
+    },
+  );
   it.each(["queued", "running"])(
     "removes stale %s work when only a later empty clear is delivered",
     (status) => {
       const run = { id: "missed-terminal-or-clear", status };
       const current = { threadId: "thread", cursor: 10, messages: [], run, activeRuns: [run] };
-      const next = applyThreadClearReceipt(current, null, {
+      const next = applyThreadClearReceipt(current, {
         clearEventSeq: 22,
         cancelledRunIds: [],
       });
@@ -105,7 +126,7 @@ describe("clear receipt boundaries", () => {
         run,
         activeRuns: [run, fresh],
       };
-      const next = applyThreadClearReceipt(current, null, {
+      const next = applyThreadClearReceipt(current, {
         clearEventSeq: seq,
         cancelledRunIds: [run.id],
       });
@@ -125,7 +146,7 @@ describe("clear receipt boundaries", () => {
       run,
       activeRuns: [run],
     };
-    const next = applyThreadClearReceipt(current, null, {
+    const next = applyThreadClearReceipt(current, {
       clearEventSeq: 20,
       cancelledRunIds: ["old-run"],
     });
@@ -136,7 +157,7 @@ describe("clear receipt boundaries", () => {
   it("does not treat an uncancelled cached Run as evidence of admission after a later clear", () => {
     const run = { id: "unknown-later-run", status: "queued" };
     const current = { threadId: "thread", cursor: 15, messages: [], run, activeRuns: [run] };
-    const next = applyThreadClearReceipt(current, null, {
+    const next = applyThreadClearReceipt(current, {
       clearEventSeq: 20,
       cancelledRunIds: ["older-run"],
     });
@@ -152,7 +173,7 @@ describe("clear receipt boundaries", () => {
       messages: [{ id: "anchor", observedEventSeq: 20 }],
       run: null,
     };
-    expect(applyThreadClearReceipt(current, null, { clearEventSeq: 20, cancelledRunIds: [] })).toBe(
+    expect(applyThreadClearReceipt(current, { clearEventSeq: 20, cancelledRunIds: [] })).toBe(
       current,
     );
   });
@@ -170,7 +191,7 @@ describe("clear receipt boundaries", () => {
       activeRuns: [{ id: "cancelled" }, { id: "new" }],
       memoryCleanupCursor: 20,
     };
-    const cleared = applyThreadClearReceipt(current, started, {
+    const cleared = applyThreadClearReceipt(current, {
       clearEventSeq: 12,
       cancelledRunIds: ["cancelled"],
     });
@@ -180,7 +201,7 @@ describe("clear receipt boundaries", () => {
     expect(cleared.cursor).toBe(14);
     expect(cleared.memoryCleanupCursor).toBe(20);
   });
-  it("retains an uncancelled send receipt at the original event cursor", () => {
+  it("removes an unsequenced send receipt at the original event cursor", () => {
     const started = { threadId: "thread", cursor: 10, run: null };
     const current = {
       ...started,
@@ -188,12 +209,13 @@ describe("clear receipt boundaries", () => {
       activeRuns: [{ id: "new" }],
       messages: [{ id: "old", observedEventSeq: 10 }],
     };
-    const cleared = applyThreadClearReceipt(current, started, {
+    const cleared = applyThreadClearReceipt(current, {
       clearEventSeq: 12,
       cancelledRunIds: [],
     });
     expect(cleared.messages).toEqual([]);
-    expect(cleared.run?.id).toBe("new");
+    expect(cleared.run).toBeNull();
+    expect(cleared.activeRuns).toEqual([]);
     expect(cleared.cursor).toBe(12);
   });
 });
@@ -207,7 +229,7 @@ describe("post-clear history windows", () => {
       messages: [{ id: "anchor", observedEventSeq: 15 }],
       olderCursor: 7,
     };
-    const next = applyThreadClearReceipt(current, null, { clearEventSeq: 12 });
+    const next = applyThreadClearReceipt(current, { clearEventSeq: 12 });
     expect(next.olderCursor).toBe(7);
     expect(shouldResetHistoryAfterClear(current, next, "anchor")).toBe(false);
   });
@@ -222,7 +244,7 @@ describe("post-clear history windows", () => {
       ],
       olderCursor: 7,
     };
-    const next = applyThreadClearReceipt(current, null, { clearEventSeq: 12 });
+    const next = applyThreadClearReceipt(current, { clearEventSeq: 12 });
     expect(next.messages.map(({ id }) => id)).toEqual(["anchor"]);
     expect(next.olderCursor).toBeNull();
     expect(shouldResetHistoryAfterClear(current, next, "anchor")).toBe(false);
@@ -237,22 +259,18 @@ describe("post-clear history windows", () => {
       messages: [{ id: "anchor", observedEventSeq: 26 }],
       olderCursor: 7,
     };
-    const next = applyThreadClearReceipt(current, null, { clearEventSeq: 12 });
+    const next = applyThreadClearReceipt(current, { clearEventSeq: 12 });
     expect(next).toBe(current);
     expect(shouldResetHistoryAfterClear(current, next, "anchor")).toBe(false);
   });
-  it("does not treat another thread's request snapshot as a new send receipt", () => {
+  it("removes unsequenced cached work from a pre-clear snapshot", () => {
     const current = {
       threadId: "thread",
       cursor: 10,
       run: { id: "old-completed-run" },
       messages: [{ id: "old", observedEventSeq: 10 }],
     };
-    const next = applyThreadClearReceipt(
-      current,
-      { threadId: "other", cursor: 10, run: null },
-      { clearEventSeq: 12, cancelledRunIds: [] },
-    );
+    const next = applyThreadClearReceipt(current, { clearEventSeq: 12, cancelledRunIds: [] });
     expect(next.run).toBeNull();
     expect(next.messages).toEqual([]);
   });

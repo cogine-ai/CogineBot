@@ -38,12 +38,7 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
-import type {
-  AnnouncementEvent,
-  BotCreationReceipt,
-  MemoryCleanupObservation,
-  ThreadWorkObservation,
-} from "@rakazo/core";
+import type { AnnouncementEvent, BotCreationReceipt, MemoryCleanupObservation } from "@rakazo/core";
 import {
   applyThreadClearReceipt,
   applyThreadRunCancellations,
@@ -663,7 +658,6 @@ export function ShellPage() {
       {
         botId?: string;
         groupId?: string;
-        started: ThreadWorkObservation | null;
         receipt: MemoryCleanupObservation & {
           clearEventSeq: number;
           cancelledRunIds?: string[];
@@ -729,9 +723,10 @@ export function ShellPage() {
         ? next.groupId === pendingClear.groupId
         : next.botId === pendingClear.botId)
     ) {
-      next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
+      const cleanupBaseline = next.memoryCleanupCursor ?? next.cursor;
+      next = applyThreadClearReceipt(next, pendingClear.receipt);
       next = observeMemoryCleanup(
-        next,
+        { ...next, memoryCleanupCursor: cleanupBaseline },
         pendingClear.receipt,
         pendingClear.receipt.memoryCleanupCursor ?? pendingClear.receipt.clearEventSeq,
       );
@@ -7618,15 +7613,6 @@ export function ShellPage() {
                     ...(clearTarget.kind === "bot"
                       ? { botId: clearTarget.chat.id }
                       : { groupId: clearTarget.chat.id }),
-                    started:
-                      requestSnapshot?.threadId === receiptThreadId
-                        ? {
-                            threadId: requestSnapshot.threadId,
-                            cursor: requestSnapshot.cursor,
-                            run: requestSnapshot.run ? { id: requestSnapshot.run.id } : null,
-                            activeRuns: requestSnapshot.activeRuns?.map(({ id }) => ({ id })),
-                          }
-                        : null,
                     receipt: {
                       ...cleared,
                       clearEventSeq: cleared.clearEventSeq,
