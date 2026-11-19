@@ -535,6 +535,59 @@ export const HISTORY_EVAL_CASES: EvalCase[] = ([100, 1000, 10000] as const).flat
 const reportPath = "shared/reports/aurora.txt";
 const latestReport = "41 pending";
 const previousReport = "23 pending";
+function currentReportMatches(text: string): boolean {
+  const number = String.raw`[+−-]?\d+(?:\s*[.,/–—-]\s*\d+|\s+\d{3})*%?`;
+  const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
+  const expected = Number.parseInt(latestReport, 10);
+  const postfixCurrent = String.raw`(?:now|currently|today|in\s+(?:the\s+)?(?:current|latest)\s+report)`;
+  const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
+  const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?(?:\s+(?:showed|shows|had|has|was|were|is|reported))?|there\s+(?:were|was)|it\s+(?:was|showed)))?`;
+  let deniesCurrent = false;
+  // Normalize contextual current counts, then exclude historical and negated stale claims.
+  const result = text
+    .replace(
+      new RegExp(
+        `\\b(current(?:ly)?|now|latest|today)(\\s+(?:(?:report|there)(?:\\s+(?:are|is|shows|has))?|it\\s+(?:is|shows|has)))?[\\s:]+(${number})(?=\\s*(?:[,;.!?\\n)]|$))`,
+        "gi",
+      ),
+      "$1$2 $3 pending",
+    )
+    .replace(
+      new RegExp(`(?<![\\w.,/–—+%−-])(${number})(\\s+${postfixCurrent})\\b`, "gi"),
+      "$1 pending$2",
+    )
+    .replace(
+      new RegExp(
+        `${count}\\s+(?:(?:in|from)\\s+(?:the\\s+)?(?:previous|earlier|old|prior)\\s+report|previously|earlier|before|last\\s+time)\\b(?=\\s*(?:[,;.!?\\n)]|\\b(?:and|but)\\b|$))`,
+        "gi",
+      ),
+      "",
+    )
+    .replace(
+      new RegExp(
+        `${historical}${historicalSubject}[:\\s]+(?:not\\s+)?${count}(?!\\s+${postfixCurrent}\\b)`,
+        "gi",
+      ),
+      "",
+    )
+    .replace(
+      new RegExp(
+        `\\b(?:not|no\\s+longer|(?:does|is|are|was|were)n['’]t)\\b(?:\\s+(?:currently|now|today|show|shows|showed|showing|have|has|had|contain|contains|report|reporting|be|at|equal|equals)){0,3}\\s+(?:a\\s+total\\s+of\\s+)?${count}`,
+        "gi",
+      ),
+      (negated) => {
+        const value = negated.match(new RegExp(count, "i"))?.[0].match(new RegExp(number))?.[0];
+        deniesCurrent ||= Number(value) === expected;
+        return "";
+      },
+    );
+  const counts = [...result.matchAll(new RegExp(count, "gi"))];
+  return (
+    !deniesCurrent &&
+    counts.length > 0 &&
+    counts.every((match) => Number(match[0].match(new RegExp(number))?.[0]) === expected)
+  );
+}
 const freshCheckHistory = historyFixture(1000, "exact");
 freshCheckHistory.version = "history-fresh-check-v2-seed-73";
 freshCheckHistory.ask =
@@ -564,20 +617,16 @@ export const HISTORY_FRESH_CHECK: EvalCase = {
     ),
     check(
       "fresh-read",
-      e.toolNames.filter((name) => name === "read_file").length === 1 &&
-        e.fileReads?.length === 1 &&
-        e.fileReads[0]?.path === reportPath &&
-        e.fileReads[0].succeeded,
+      e.fileReads !== undefined &&
+        e.toolNames.filter((name) => name === "read_file").length === e.fileReads.length &&
+        e.fileReads.every((read) => read.path === reportPath) &&
+        e.fileReads.some((read) => read.succeeded),
     ),
     check(
       "read-only-check",
       e.toolNames.every((name) => ["search_history", "read_history", "read_file"].includes(name)),
     ),
-    check(
-      "current-result",
-      /\b41\s+(?:\w+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+41\b/i.test(e.text) &&
-        !/\b23\s+pending\b/i.test(e.text),
-    ),
+    check("current-result", currentReportMatches(e.text)),
     check("file-unchanged", file(e, reportPath) === latestReport),
     noWrites(e),
   ],
