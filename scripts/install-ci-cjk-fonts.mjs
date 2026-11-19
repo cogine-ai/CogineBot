@@ -2,15 +2,20 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const runnerMirror = "mirror+file:/etc/apt/apt-mirrors.txt";
-const officialArchive = "https://archive.ubuntu.com/ubuntu";
-// Hosted runners may use direct Ubuntu archives; APT still receives the fixed HTTPS source.
+const officialMirrors = [
+  "https://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
+  "https://archive.ubuntu.com/ubuntu/\tpriority:2",
+  "https://security.ubuntu.com/ubuntu/\tpriority:3",
+  "",
+].join("\n");
 const officialMirrorPattern =
   /^https?:\/\/(?:(?:(?:[a-z]{2}|azure)\.)?archive\.ubuntu\.com|security\.ubuntu\.com|[a-z]{2}(?:-[a-z]+)+-\d+\.ec2\.archive\.ubuntu\.com)\/ubuntu\/?$/;
 
 /** Replace supported URI fields while preserving all other Deb822 bytes. */
-function officialSources(contents) {
+function officialSources(contents, selection) {
   let found = false;
   let stanzaHasUri = false;
   let uriContinuation = false;
@@ -34,7 +39,7 @@ function officialSources(contents) {
         found = true;
         stanzaHasUri = true;
         uriContinuation = true;
-        return line.replace(uri, officialArchive);
+        return line.replace(uri, selection);
       } else {
         uriContinuation = false;
       }
@@ -55,23 +60,27 @@ function main() {
     throw new Error("Expected one readable Ubuntu sources file.");
   }
   // Validate the complete input before creating configuration or calling APT.
-  const sources = officialSources(contents);
+  officialSources(contents, runnerMirror);
   const directory = mkdtempSync(join(tmpdir(), "ci-fonts-"));
   try {
     const sourceFile = join(directory, "ubuntu.sources");
+    const mirrorsFile = join(directory, "ubuntu-mirrors.txt");
     const sourceParts = join(directory, "empty-sourceparts");
+    const sources = officialSources(contents, `mirror+${pathToFileURL(mirrorsFile).href}`);
     chmodSync(directory, 0o755);
     mkdirSync(sourceParts, { mode: 0o755 });
     writeFileSync(sourceFile, sources, { mode: 0o644 });
+    writeFileSync(mirrorsFile, officialMirrors, { mode: 0o644 });
     chmodSync(sourceParts, 0o755);
     chmodSync(sourceFile, 0o644);
+    chmodSync(mirrorsFile, 0o644);
     const options = [
       "-o",
-      "Acquire::Retries=2",
+      "Acquire::Retries=1",
       "-o",
-      "Acquire::http::Timeout=20",
+      "Acquire::http::Timeout=15",
       "-o",
-      "Acquire::https::Timeout=20",
+      "Acquire::https::Timeout=15",
       "-o",
       "APT::Get::List-Cleanup=0",
       "-o",

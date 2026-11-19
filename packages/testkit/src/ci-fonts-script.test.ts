@@ -12,13 +12,17 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repo = path.resolve(import.meta.dirname, "../../..");
 const helper = path.join(repo, "scripts/install-ci-cjk-fonts.mjs");
 const directories: string[] = [];
 const mirror = "mirror+file:/etc/apt/apt-mirrors.txt";
-const archive = "https://archive.ubuntu.com/ubuntu";
+function mirrorUri(call: Call) {
+  expect(call.mirrorsFile).toBeTruthy();
+  return `mirror+${pathToFileURL(call.mirrorsFile!).href}`;
+}
 const runnerSources = [
   "# Keep comments and all non-URI fields.",
   "Types: deb",
@@ -50,6 +54,9 @@ type Call = {
   sourceMode?: number | null;
   directoryMode?: number | null;
   partsMode?: number | null;
+  mirrorsFile?: string | null;
+  mirrors?: string | null;
+  mirrorsMode?: number | null;
 };
 
 afterEach(() => {
@@ -89,7 +96,7 @@ function fixture() {
   }
   const stub = [
     "#!" + process.execPath,
-    "const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path');",
+    "const fs=require('node:fs'),cp=require('node:child_process'),path=require('node:path'),url=require('node:url');",
     "const name=path.basename(process.argv[1]),args=process.argv.slice(2);",
     "if(name==='sudo'){if(args[0]!=='apt-get')process.exit(91);const r=cp.spawnSync(args[0],args.slice(1),{stdio:'inherit'});process.exit(r.status??92);}",
     "const call={name,args};",
@@ -97,6 +104,10 @@ function fixture() {
     " const option=k=>args.find(v=>v.startsWith(k+'='))?.slice(k.length+1)??null;",
     " call.sourceFile=option('Dir::Etc::sourcelist');call.parts=option('Dir::Etc::sourceparts');",
     " call.source=call.sourceFile?fs.readFileSync(call.sourceFile,'utf8'):null;",
+    " const uri=call.source?.match(/^uris:[ \\t]*(mirror\\+file:[^\\r\\n]+)/im)?.[1];",
+    " call.mirrorsFile=uri?url.fileURLToPath(uri.slice('mirror+'.length)):null;",
+    " call.mirrors=call.mirrorsFile?fs.readFileSync(call.mirrorsFile,'utf8'):null;",
+    " call.mirrorsMode=call.mirrorsFile?fs.statSync(call.mirrorsFile).mode&511:null;",
     " call.partFiles=call.parts?fs.readdirSync(call.parts):null;",
     " call.sourceMode=call.sourceFile?fs.statSync(call.sourceFile).mode&511:null;",
     " call.directoryMode=call.sourceFile?fs.statSync(path.dirname(call.sourceFile)).mode&511:null;",
@@ -172,7 +183,10 @@ describe("browser CI font source selection", () => {
       "fc-match",
       "pnpm",
     ]);
-    const expected = contents.replace(/^([Uu][Rr][Ii][Ss]: ).+$/gm, "$1" + archive);
+    const expected = contents.replace(
+      /^([Uu][Rr][Ii][Ss]: ).+$/gm,
+      "$1" + mirrorUri(result.calls[0]!),
+    );
     expect(result.calls[0]!.source).toBe(expected);
     expect(result.calls[1]!.source).toBe(expected);
   });
@@ -194,7 +208,10 @@ describe("browser CI font source selection", () => {
     );
     const result = fixture().run(contents);
     expect(result.status).toBe(0);
-    const expected = contents.replace(/^([Uu][Rr][Ii][Ss]: ).+$/gm, "$1" + archive);
+    const expected = contents.replace(
+      /^([Uu][Rr][Ii][Ss]: ).+$/gm,
+      "$1" + mirrorUri(result.calls[0]!),
+    );
     expect(result.calls[0]!.source).toBe(expected);
     expect(result.calls[1]!.source).toBe(expected);
   });
@@ -212,7 +229,7 @@ describe("browser CI font source selection", () => {
     const [update, install] = result.calls;
     const expected = runnerSources.replace(
       /^([Uu][Rr][Ii][Ss]: )mirror\+file:\/etc\/apt\/apt-mirrors\.txt/gm,
-      "$1" + archive,
+      "$1" + mirrorUri(update!),
     );
     for (const call of [update!, install!]) {
       expect(call.sourceFile).not.toBeNull();
@@ -223,11 +240,17 @@ describe("browser CI font source selection", () => {
       expect(call.sourceMode).toBe(0o644);
       expect(call.directoryMode).toBe(0o755);
       expect(call.partsMode).toBe(0o755);
+      expect(call.mirrorsMode).toBe(0o644);
+      expect(call.mirrors).toBe(
+        "https://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n" +
+          "https://archive.ubuntu.com/ubuntu/\tpriority:2\n" +
+          "https://security.ubuntu.com/ubuntu/\tpriority:3\n",
+      );
       expect(call.args).toEqual(
         expect.arrayContaining([
-          "Acquire::Retries=2",
-          "Acquire::http::Timeout=20",
-          "Acquire::https::Timeout=20",
+          "Acquire::Retries=1",
+          "Acquire::http::Timeout=15",
+          "Acquire::https::Timeout=15",
           "APT::Get::List-Cleanup=0",
         ]),
       );
@@ -236,8 +259,10 @@ describe("browser CI font source selection", () => {
       );
       expect(existsSync(call.sourceFile!)).toBe(false);
       expect(existsSync(call.parts!)).toBe(false);
+      expect(existsSync(call.mirrorsFile!)).toBe(false);
     }
     expect(update!.sourceFile).toBe(install!.sourceFile);
+    expect(update!.source).toContain("%20");
     expect(update!.parts).toBe(install!.parts);
     expect(update!.args.at(-1)).toBe("update");
     expect(install!.args.slice(-4)).toEqual([
@@ -255,7 +280,7 @@ describe("browser CI font source selection", () => {
     expect(result.calls[0]!.source).toBe(
       contents.replace(
         /^([Uu][Rr][Ii][Ss]: )mirror\+file:\/etc\/apt\/apt-mirrors\.txt/gm,
-        "$1" + archive,
+        "$1" + mirrorUri(result.calls[0]!),
       ),
     );
   });
@@ -267,6 +292,7 @@ describe("browser CI font source selection", () => {
       expect(call.sourceMode).toBe(0o644);
       expect(call.directoryMode).toBe(0o755);
       expect(call.partsMode).toBe(0o755);
+      expect(call.mirrorsMode).toBe(0o644);
     }
   });
 
