@@ -632,7 +632,16 @@ export function ShellPage() {
   }
 
   const pendingMemoryCleanupEvents = useRef(
-    new Map<string, { scope: string | null; seq: number; payload: ProductEvent["payload"] }>(),
+    new Map<
+      string,
+      {
+        scope: string | null;
+        owner: string;
+        seq: number;
+        payload: ProductEvent["payload"];
+        clear?: ProductEvent;
+      }
+    >(),
   );
   const pendingClearReceipts = useRef(
     new Map<
@@ -659,30 +668,22 @@ export function ShellPage() {
       const nextThreadId = next.threadId;
       const key = JSON.stringify([clearReceiptOwnerKey(), nextThreadId]);
       const pendingClear = pendingClearReceipts.current.get(key);
-      if (
+      const matchesReceipt =
         pendingClear &&
         (pendingClear.groupId
           ? next.groupId === pendingClear.groupId
-          : next.botId === pendingClear.botId)
-      ) {
-        const before = next;
-        next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
-        reconcileClearHistory(before, next);
-        next = observeMemoryCleanup(
-          next,
-          pendingClear.receipt,
-          pendingClear.receipt.memoryCleanupCursor ?? pendingClear.receipt.clearEventSeq,
-        );
-        pendingClearReceipts.current.delete(key);
-      }
+          : next.botId === pendingClear.botId);
       const cleanup = pendingMemoryCleanupEvents.current.get(nextThreadId);
-      if (cleanup?.scope === draftScopeKeyRef.current) {
-        next = observeMemoryCleanup(
-          { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor },
-          cleanup.payload,
-          cleanup.seq,
-        );
-      }
+      const before = next;
+      next = reconcileBufferedThreadSnapshot(next);
+      if (
+        matchesReceipt ||
+        (cleanup?.scope === draftScopeKeyRef.current &&
+          cleanup.owner === clearReceiptOwnerKey() &&
+          cleanup.clear)
+      )
+        reconcileClearHistory(before, next);
+      if (matchesReceipt) pendingClearReceipts.current.delete(key);
       pendingMemoryCleanupEvents.current.delete(nextThreadId);
       if (next.memoryCleanupPending === false && !next.memoryCleanupUnconfirmed) {
         const actor = groupSettingsActor.current;
@@ -700,6 +701,36 @@ export function ShellPage() {
     }
     snapshotRef.current = next;
     setSnapshot(withLiveStreamingProgress(next, streamResponsesRef.current));
+  }
+
+  function reconcileBufferedThreadSnapshot(next: ThreadSnapshot) {
+    const key = JSON.stringify([clearReceiptOwnerKey(), next.threadId]);
+    const pendingClear = pendingClearReceipts.current.get(key);
+    if (
+      pendingClear &&
+      (pendingClear.groupId
+        ? next.groupId === pendingClear.groupId
+        : next.botId === pendingClear.botId)
+    ) {
+      const observed = (next as ThreadSnapshot & { observedClearSeq?: number }).observedClearSeq;
+      if (pendingClear.receipt.clearEventSeq > (observed ?? -1))
+        next = applyThreadClearReceipt(next, pendingClear.started, pendingClear.receipt);
+      next = observeMemoryCleanup(
+        next,
+        pendingClear.receipt,
+        pendingClear.receipt.memoryCleanupCursor ?? pendingClear.receipt.clearEventSeq,
+      );
+    }
+    const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
+    if (cleanup?.scope === draftScopeKeyRef.current && cleanup.owner === clearReceiptOwnerKey()) {
+      if (cleanup.clear) next = reduceThreadSnapshot(next, cleanup.clear) ?? next;
+      next = observeMemoryCleanup(
+        { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor },
+        cleanup.payload,
+        cleanup.seq,
+      );
+    }
+    return next;
   }
 
   useEffect(() => {
@@ -1764,8 +1795,10 @@ export function ShellPage() {
     const targetGroupId = activeGroupId.current;
     const checkpoint = threadCheckpoint.current;
     const resume = checkpoint?.scope === scope ? checkpoint : undefined;
+    const owner = clearReceiptOwnerKey();
     const ownsReader = () =>
       !abort.signal.aborted &&
+      clearReceiptOwnerKey() === owner &&
       draftScopeKeyRef.current === scope &&
       actor.userId === groupSettingsActor.current.userId &&
       actor.spaceId === groupSettingsActor.current.spaceId &&
@@ -1776,22 +1809,34 @@ export function ShellPage() {
       if (!ownsReader()) return false;
       const current = snapshotRef.current;
       if (
-        event.type === "thread.meta" &&
-        (event.payload.memoryCleanupUnconfirmed === true ||
-          typeof event.payload.memoryCleanupPending === "boolean") &&
-        current?.threadId !== event.threadId
+        current?.threadId !== event.threadId &&
+        (event.type === "thread.cleared" ||
+          (event.type === "thread.meta" &&
+            (event.payload.memoryCleanupUnconfirmed === true ||
+              typeof event.payload.memoryCleanupPending === "boolean")))
       ) {
-        const before = pendingMemoryCleanupEvents.current.get(event.threadId);
-        pendingMemoryCleanupEvents.current.set(event.threadId, {
-          scope,
-          seq: Math.max(before?.scope === scope ? before.seq : -1, event.seq),
-          payload: {
-            ...(before?.scope === scope ? before.payload : {}),
-            ...(event.seq >= (before?.scope === scope ? before.seq : -1) ? event.payload : {}),
-            ...(event.payload.memoryCleanupUnconfirmed === true
-              ? { memoryCleanupUnconfirmed: true }
+        const entry = pendingMemoryCleanupEvents.current.get(event.threadId);
+        const before = entry?.scope === scope && entry.owner === owner ? entry : undefined;
+        const clear =
+          event.type === "thread.cleared" && (!before?.clear || event.seq > before.clear.seq)
+            ? event
+            : before?.clear;
+        const { memoryCleanupCursor: seq, ...payload } = observeMemoryCleanup(
+          { ...before?.payload, memoryCleanupCursor: before?.seq ?? -1 },
+          {
+            ...event.payload,
+            ...(event.type === "thread.cleared"
+              ? { memoryCleanupPending: event.payload.memoryCleanupPending === true }
               : {}),
           },
+          event.seq,
+        );
+        pendingMemoryCleanupEvents.current.set(event.threadId, {
+          scope,
+          owner,
+          seq,
+          payload,
+          ...(clear ? { clear } : {}),
         });
         return true;
       }
@@ -3103,7 +3148,9 @@ export function ShellPage() {
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
-    const atDispatch = snapshotRef.current;
+    const atDispatch = reconcileBufferedThreadSnapshot(
+      reconcileRefreshedThread(snapshotRef.current, snap, computerRef.current).snapshot,
+    );
     const requestCursor = Math.max(
       snap.cursor,
       atDispatch?.threadId === snap.threadId ? atDispatch.cursor : -1,
@@ -3132,6 +3179,7 @@ export function ShellPage() {
     const jumpSnapshot =
       savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
     const reconciled = reconcileRefreshedThread(current, jumpSnapshot, computerRef.current);
+    reconciled.snapshot = reconcileBufferedThreadSnapshot(reconciled.snapshot);
     const page = protectThreadMessagePage(reconciled.snapshot, fetchedPage, requestCursor);
     const targetInPage =
       page !== null &&

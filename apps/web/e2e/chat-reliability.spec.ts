@@ -3751,6 +3751,108 @@ test("cleanup metadata received during a cold search jump reaches the committed 
   }
 });
 
+for (const postClear of [false, true]) {
+  test(`cold search ${postClear ? "preserves a post-clear page" : "rejects a pre-clear page"} before recovery returns`, async ({
+    page,
+  }, testInfo) => {
+    const { state, errors, unknown } = await mockChat(page);
+    const stream = await controlledStream(page);
+    const pageHeld = deferred();
+    const pageStarted = deferred();
+    const recoveryHeld = deferred();
+    const recoveryStarted = deferred();
+    const anchor: ThreadMessage = {
+      id: "cold-clear-anchor",
+      threadId: "thread-research-one",
+      seq: 1,
+      role: "user",
+      createdAt: stamp,
+      blocks: [{ kind: "text", text: postClear ? "History after clear" : "History before clear" }],
+    };
+    let researchReads = 0;
+    state.thread = async (route, data) => {
+      if (data.botId !== "research-one") return json(route, data);
+      if (++researchReads > 2) {
+        recoveryStarted.resolve();
+        await recoveryHeld.promise;
+      }
+      return json(route, {
+        ...data,
+        cursor: postClear ? 25 : 15,
+        olderCursor: 1,
+        messages: [anchor],
+      });
+    };
+    state.messages = async (route) => {
+      pageStarted.resolve();
+      await pageHeld.promise;
+      return json(route, { threadId: anchor.threadId, messages: [anchor], olderCursor: null });
+    };
+    await ready(page);
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/app/research-one?m=cold-clear-anchor");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    try {
+      await pageStarted.promise;
+      await expect.poll(stream.activeTargets).toContain("bot:research-one");
+      const navigationReadsBeforeClear = state.listRequests;
+      await stream.emit([
+        {
+          id: "cold-clear-cleanup",
+          spaceId: "space-primary",
+          threadId: anchor.threadId,
+          botId: "research-one",
+          seq: 40,
+          type: "thread.meta",
+          createdAt: stamp,
+          payload: { memoryCleanupPending: true, memoryCleanupUnconfirmed: true },
+        },
+        {
+          id: "cold-clear-boundary",
+          spaceId: "space-primary",
+          threadId: anchor.threadId,
+          botId: "research-one",
+          seq: 20,
+          type: "thread.cleared",
+          createdAt: stamp,
+          payload: { cancelledRunIds: [] },
+        },
+      ]);
+      // The clear's real onEvent callback refreshes the roster after beforeEvent runs.
+      // Wait for that receipt before releasing the page, independently of recovery's timer.
+      await expect.poll(() => state.listRequests).toBeGreaterThan(navigationReadsBeforeClear);
+      await recoveryStarted.promise;
+      pageHeld.resolve();
+      await expect(page).toHaveURL(/\/app\/research-one$/);
+      await expect(page.getByTestId("composer-error")).toHaveText(
+        "External memory cleanup could not be confirmed.",
+      );
+      const message = page
+        .getByTestId("transcript")
+        .getByText(postClear ? "History after clear" : "History before clear", { exact: true });
+      if (postClear) {
+        await expect(message).toBeVisible();
+        await expect(message).toBeInViewport();
+      } else await expect(message).toHaveCount(0);
+      await captureScreenshot(
+        page,
+        testInfo,
+        postClear
+          ? "memory-cleanup-live-clear-post-clear"
+          : "memory-cleanup-live-clear-cold-reject",
+      );
+      expect(state.sends).toEqual([]);
+      expect(state.uploads).toEqual([]);
+      expect(unknown).toEqual([]);
+      expect(errors).toEqual([]);
+    } finally {
+      recoveryHeld.resolve();
+      pageHeld.resolve();
+    }
+  });
+}
+
 test("a delayed clear receipt stays with its target while another thread snapshot is visible", async ({
   page,
 }, testInfo) => {

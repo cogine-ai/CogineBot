@@ -12,6 +12,7 @@ import type {
   applyMobileThreadEvent as ApplyMobileThreadEvent,
   mergeMobileSnapshot as MergeMobileSnapshot,
   MobileSnapshot,
+  protectMobileMessagePage as ProtectMobileMessagePage,
 } from "./api";
 
 // Run the actual screen callbacks with offline native/state seams.
@@ -26,21 +27,24 @@ const file = ts.createSourceFile(
 const apiSource = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
 const apiCode = ts
   .transpileModule(
-    `${apiSource.slice(apiSource.indexOf("function observeMobileMessages("), apiSource.indexOf("const MESSAGING_PROVIDER_LABELS")).replaceAll("export ", "")}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, applyMobileThreadEvent };`,
+    `${apiSource.slice(apiSource.indexOf("function observeMobileMessages("), apiSource.indexOf("const MESSAGING_PROVIDER_LABELS")).replaceAll("export ", "")}\n${apiSource.slice(apiSource.indexOf("export function applyMobileThreadEvent("), apiSource.indexOf("\nexport {", apiSource.indexOf("export function applyMobileThreadEvent("))).replaceAll("export ", "")}\nreturn { mergeMobileSnapshot, applyMobileThreadEvent, protectMobileMessagePage };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
   )
   .outputText.replaceAll("export ", "");
-const { applyMobileThreadEvent, mergeMobileSnapshot } = new Function(...Object.keys(core), apiCode)(
-  ...Object.values(core),
-) as {
+const { applyMobileThreadEvent, mergeMobileSnapshot, protectMobileMessagePage } = new Function(
+  ...Object.keys(core),
+  apiCode,
+)(...Object.values(core)) as {
   applyMobileThreadEvent: typeof ApplyMobileThreadEvent;
   mergeMobileSnapshot: typeof MergeMobileSnapshot;
+  protectMobileMessagePage: typeof ProtectMobileMessagePage;
 };
 let notify = "";
 let clear = "";
 let effect = "";
 let commit = "";
 let reconcilePending = "";
+let jumpFunction = "";
 let ownerExpression = "";
 let subscriptionCallback = "";
 let refreshCommit = "";
@@ -59,6 +63,8 @@ function collect(node: ts.Node) {
     commit = node.getText(file);
   if (ts.isFunctionDeclaration(node) && node.name?.text === "reconcilePendingThreadSnapshot")
     reconcilePending = node.getText(file);
+  if (ts.isFunctionDeclaration(node) && node.name?.text === "applyMessageJump")
+    jumpFunction = node.getText(file);
   if (
     ts.isCallExpression(node) &&
     node.expression.getText(file) === "useEffect" &&
@@ -249,6 +255,151 @@ function fixture(
 }
 
 describe("native memory cleanup outcomes", () => {
+  it.each(
+    ["receipt-status", "live-status", "omitted-boundary"].flatMap((mode) =>
+      ["old-page", "post-clear-page"].map((page) => ({ mode, page })),
+    ),
+  )(
+    "keeps the latest live clear across a delayed receipt ($mode, $page)",
+    async ({ mode, page }) => {
+      const f = fixture();
+      f.snapRef.current = null as unknown as MobileSnapshot;
+      f.clear();
+      await f.finish({
+        ok: true,
+        threadId: "thread-one",
+        clearEventSeq: 8,
+        cancelledRunIds: ["prior-cancelled"],
+        memoryCleanupCursor: 9,
+        memoryCleanupPending: false,
+      });
+      f.clear();
+      let release!: (value: unknown) => void;
+      let dispatched!: () => void;
+      const held = new Promise((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        dispatched = resolve;
+      });
+      const cursor = page === "old-page" ? 15 : 25;
+      const snapshot: MobileSnapshot = {
+        threadId: "thread-one",
+        botId: "bot-one",
+        cursor,
+        olderCursor: 1,
+        messages: [{ id: "anchor", seq: 1, role: "user", blocks: [] }],
+        run: { id: "receipt-cancelled", status: "running" },
+        activeRuns: [
+          { id: "prior-cancelled", status: "running" },
+          { id: "fresh-run", status: "running" },
+        ],
+      };
+      const runtime = {
+        ...core,
+        ...f.runtime,
+        mergeMobileSnapshot,
+        protectMobileMessagePage,
+        rpc: vi.fn(async (method: string) => {
+          if (method === "threads/get") return snapshot;
+          dispatched();
+          return held;
+        }),
+        liveSavedChatsScope: async () => ({}),
+        isIntegrationsScopeCurrent: () => true,
+        jumpGeneration: { current: 0 },
+        snapshotOrigin: { current: null },
+        newerLoadFailed: { current: false },
+        joinPinnedAfterLayout: { current: null },
+        pinnedScrollMetrics: { current: { offset: 0, viewport: 0, content: 0 } },
+        jumpAnchor: { current: { begin: vi.fn(), release: f.runtime.jumpAnchor.current.release } },
+        scrollBehavior: { current: { state: () => ({ detached: false, unread: false }) } },
+        setThreadScrollState: vi.fn(),
+        setShowingSaved: vi.fn(),
+      };
+      const jump = new Function(
+        ...Object.keys(runtime),
+        ts.transpileModule(
+          [reconcilePending, jumpFunction, "return applyMessageJump;"].join("\n"),
+          { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+        ).outputText,
+      )(...Object.values(runtime));
+      const loading = jump({ botId: "bot-one", messageId: "anchor" });
+      await started;
+      f.emit({
+        type: "thread.cleared",
+        threadId: "thread-one",
+        botId: "bot-one",
+        seq: 20,
+        payload: { memoryCleanupPending: true },
+      });
+      f.emit({
+        type: "thread.meta",
+        threadId: "thread-one",
+        botId: "bot-one",
+        seq: mode === "receipt-status" ? 21 : 40,
+        payload: { memoryCleanupPending: true, memoryCleanupUnconfirmed: true },
+      });
+      await f.finish({
+        ok: true,
+        threadId: "thread-one",
+        ...(mode === "omitted-boundary" ? {} : { clearEventSeq: 12 }),
+        cancelledRunIds: ["receipt-cancelled"],
+        memoryCleanupCursor: 30,
+        memoryCleanupPending: false,
+      });
+      const buffered = f.runtime.pendingMemoryCleanupEvents.current.get("thread-one");
+      expect(buffered.clearEventSeq).toBe(20);
+      expect(buffered.cancelledRunIds).toEqual(["prior-cancelled", "receipt-cancelled"]);
+      expect(buffered.seq).toBe(mode === "receipt-status" ? 30 : 40);
+      expect(buffered.pending).toBe(mode !== "receipt-status");
+      expect(buffered.unconfirmed).toBe(true);
+      release({ threadId: "thread-one", messages: snapshot.messages, olderCursor: 1 });
+      await loading;
+      expect(f.snapRef.current.observedClearSeq).toBe(20);
+      expect(f.snapRef.current.messages.map((message) => message.id)).toEqual(
+        page === "old-page" ? [] : ["anchor"],
+      );
+      expect(f.runtime.pinnedAroundRef.current?.messageId ?? null).toBe(
+        page === "old-page" ? null : "anchor",
+      );
+      expect(f.snapRef.current.run).toBeNull();
+      expect(f.snapRef.current.activeRuns?.map((run) => run.id)).toEqual(
+        page === "old-page" ? [] : ["fresh-run"],
+      );
+      expect(f.snapRef.current.memoryCleanupCursor).toBe(mode === "receipt-status" ? 30 : 40);
+    },
+  );
+
+  it("does not merge another owner's clear boundary or cancellation IDs into a receipt", async () => {
+    const f = fixture();
+    f.snapRef.current = null as unknown as MobileSnapshot;
+    f.runtime.pendingMemoryCleanupEvents.current.set("thread-one", {
+      owner: "other-owner",
+      seq: 50,
+      clearEventSeq: 40,
+      cancelledRunIds: ["other-run"],
+      pending: true,
+      unconfirmed: true,
+    });
+    f.clear();
+    await f.finish({
+      ok: true,
+      threadId: "thread-one",
+      clearEventSeq: 12,
+      cancelledRunIds: ["receipt-run"],
+      memoryCleanupCursor: 30,
+      memoryCleanupPending: false,
+    });
+    expect(f.runtime.pendingMemoryCleanupEvents.current.get("thread-one")).toEqual({
+      owner: "owner-one",
+      seq: 30,
+      clearEventSeq: 12,
+      cancelledRunIds: ["receipt-run"],
+      pending: false,
+    });
+  });
+
   it("keeps a post-clear search anchor and page when the receipt arrives", async () => {
     const f = fixture();
     f.clear();

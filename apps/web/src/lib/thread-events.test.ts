@@ -3,6 +3,7 @@ import type {
   ComputerStatus,
   ProductEvent,
   ThreadMessage,
+  ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
 import {
@@ -10,9 +11,12 @@ import {
   hasNewThreadWork,
   observeMemoryCleanup,
   ReplyAnnouncements,
+  searchHitThreadTarget,
   shouldResetHistoryAfterClear,
+  userVisibleMessages,
   withLiveStreamingProgress,
 } from "@rakazo/core";
+import { transformWithOxc } from "vite";
 import { describe, expect, it, vi } from "vitest";
 import {
   activeThreadRuns,
@@ -24,6 +28,7 @@ import {
   isThreadSnapshotEvent,
   mergeThreadSnapshot,
   prependThreadMessagePage,
+  protectThreadMessagePage,
   reconcileRefreshedThread,
   reduceComputerStatus,
   reduceThreadSnapshot,
@@ -2495,6 +2500,8 @@ it("the Shell reader retains a covered clear barrier without replacing current e
   };
   const scope = {
     ownsReader: () => true,
+    owner: "owner-one",
+    observeMemoryCleanup,
     pendingMemoryCleanupEvents: { current: new Map() },
     scope: "scope-one",
     shouldResetHistoryAfterClear,
@@ -2706,11 +2713,14 @@ it("keeps pending cleanup across an omitted refresh until an explicit settlement
 });
 
 describe("Shell clear receipt snapshot commits", () => {
-  function fixture() {
+  async function fixture(group = false) {
     const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
     function declaration(name: string) {
-      const start = source.indexOf(`  function ${name}(`);
+      let start = source.indexOf(`  function ${name}(`);
+      if (start < 0) start = source.indexOf(`  async function ${name}(`);
       if (start < 0) return "";
+      if (name === "jumpToMessage")
+        return source.slice(start, source.indexOf("  // The routine panel copies", start));
       const body = source.indexOf("{", start);
       let depth = 0;
       for (let end = body; end < source.length; end++) {
@@ -2735,10 +2745,27 @@ describe("Shell clear receipt snapshot commits", () => {
     };
     const b = {
       ...snapshot([message("deleted-B", [{ kind: "text", text: "Before clear B" }])]),
-      botId: "bot-B",
+      botId: group ? undefined : "bot-B",
+      ...(group ? { groupId: "group-B" } : {}),
       threadId: "thread-B",
       cursor: 10,
     };
+    let releaseGet!: (value: ThreadSnapshot) => void;
+    let releasePage!: (value: ThreadMessagePage) => void;
+    let gotGet!: () => void;
+    let gotPage!: () => void;
+    const getStarted = new Promise<void>((resolve) => {
+      gotGet = resolve;
+    });
+    const pageStarted = new Promise<void>((resolve) => {
+      gotPage = resolve;
+    });
+    const getResponse = new Promise<ThreadSnapshot>((resolve) => {
+      releaseGet = resolve;
+    });
+    const pageResponse = new Promise<ThreadMessagePage>((resolve) => {
+      releasePage = resolve;
+    });
     const snapshotRef = { current: a as ThreadSnapshot | null };
     const actor = { current: { userId: "user-one", spaceId: "space-one" as string | undefined } };
     const generation = { session: 1, selection: 1 };
@@ -2764,7 +2791,30 @@ describe("Shell clear receipt snapshot commits", () => {
       pendingClearReceipts: { current: new Map() },
       pendingMemoryCleanupEvents: { current: new Map() },
       dismissedMemoryCleanupNotices: { current: new Set<string>() },
+      draftScopeKey: "scope-B",
       draftScopeKeyRef: { current: "scope-B" },
+      readerAbort: new AbortController(),
+      threadCheckpoint: { current: null },
+      computerRef: { current: null },
+      commitComputerEvent: vi.fn(),
+      commitComputer: vi.fn(),
+      savedGroupUpdates: { current: new Map() },
+      searchHitThreadTarget,
+      userVisibleMessages,
+      reconcileRefreshedThread,
+      protectThreadMessagePage,
+      reduceThreadSnapshot,
+      jumpGeneration: { current: 0 },
+      initiallyScrolledThread: { current: null },
+      messageScroll: { current: null },
+      setRoutines: vi.fn(),
+      setRoutinesBotId: vi.fn(),
+      window: {
+        requestAnimationFrame: (callback: FrameRequestCallback) => {
+          callback(0);
+          return 1;
+        },
+      },
       snapshotRef,
       setSnapshot: vi.fn(),
       withLiveStreamingProgress: (value: ThreadSnapshot | null) => value,
@@ -2784,13 +2834,29 @@ describe("Shell clear receipt snapshot commits", () => {
       searchParamsRef: { current: new URLSearchParams() },
       setSearchParams: vi.fn(),
       clearHistoryWindow: vi.fn(),
-      clearTarget: { kind: "bot", chat: { id: "bot-B", threadId: "thread-B" } },
-      activeBotId: { current: "bot-B" },
-      activeGroupId: { current: undefined },
+      clearTarget: {
+        kind: group ? "group" : "bot",
+        chat: { id: group ? "group-B" : "bot-B", threadId: "thread-B" },
+      },
+      activeBotId: { current: group ? undefined : "bot-B" },
+      activeGroupId: { current: group ? "group-B" : undefined },
       setPendingMemoryCleanupClears: (update: (value: Set<string>) => Set<string>) => {
         pending = update(pending);
       },
-      rpc: { threads: { clear: vi.fn(async () => response) } },
+      rpc: {
+        threads: {
+          clear: vi.fn(async () => response),
+          get: vi.fn(async () => {
+            gotGet();
+            return getResponse;
+          }),
+          messages: vi.fn(async () => {
+            gotPage();
+            return pageResponse;
+          }),
+        },
+        routines: { list: vi.fn(async () => []) },
+      },
       updateSnapshot: (update: (value: ThreadSnapshot | null) => ThreadSnapshot | null) =>
         commit(update(snapshotRef.current)),
       refreshThreadRef: { current: vi.fn(async () => undefined) },
@@ -2803,20 +2869,144 @@ describe("Shell clear receipt snapshot commits", () => {
       observeMemoryCleanup,
       shouldResetHistoryAfterClear,
     };
-    const script =
-      `${declaration("clearReceiptOwnerKey")}\n${declaration("reconcileClearHistory")}\n${declaration("commitSnapshot")}\nconst confirm = ${confirm}; return { commit: commitSnapshot, confirm };`.replace(
-        /:\s*ThreadSnapshot(?:\s*\|\s*null)?/g,
-        "",
-      );
-    const callbacks = new Function(...Object.keys(scope), script)(...Object.values(scope)) as {
+    const script = `function buildCallbacks() {
+      ${declaration("clearReceiptOwnerKey")}
+      ${declaration("reconcileClearHistory")}
+      ${declaration("reconcileBufferedThreadSnapshot")}
+      ${declaration("commitSnapshot")}
+      ${declaration("createThreadReader")}
+      ${declaration("jumpToMessage")}
+      const confirm = ${confirm};
+      return { commit: commitSnapshot, confirm, jump: jumpToMessage, reader: createThreadReader(readerAbort) };
+    }`;
+    const compiled = await transformWithOxc(script, "thread-cleanup-fixture.ts");
+    const callbacks = new Function(
+      ...Object.keys(scope),
+      `${compiled.code}; return buildCallbacks();`,
+    )(...Object.values(scope)) as {
       commit(value: ThreadSnapshot | null): void;
       confirm(): Promise<void>;
+      jump(target: { botId?: string; groupId?: string; messageId: string }): Promise<void>;
+      reader: { beforeEvent(event: ProductEvent): boolean; ownsReader(): boolean };
     };
     commit = callbacks.commit;
-    return { ...callbacks, complete, a, b, snapshotRef, scope, generation, actor };
+    return {
+      ...callbacks,
+      complete,
+      a,
+      b,
+      snapshotRef,
+      scope,
+      generation,
+      actor,
+      releaseGet,
+      releasePage,
+      getStarted,
+      pageStarted,
+    };
   }
+  it.each(
+    [false, true].flatMap((group) =>
+      ["in-flight", "before-page", "post-clear-snapshot"].flatMap((timing) =>
+        ["meta-first", "clear-first"].map((order) => ({ group, timing, order })),
+      ),
+    ),
+  )(
+    "admits only post-clear web pages ($group, $timing, $order)",
+    async ({ group, timing, order }) => {
+      const h = await fixture(group);
+      const target = group ? { groupId: "group-B" } : { botId: "bot-B" };
+      const cursor = timing === "post-clear-snapshot" ? 25 : 15;
+      const base = {
+        ...h.b,
+        cursor,
+        olderCursor: 1,
+        messages: [message(timing === "in-flight" ? "anchor" : "old-from-snapshot", [])],
+      };
+      const loading = h.jump({ ...target, messageId: "anchor" });
+      await h.getStarted;
+      const clear = event({
+        type: "thread.cleared",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 20,
+        payload: {},
+      });
+      const meta = event({
+        type: "thread.meta",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 40,
+        payload: { memoryCleanupPending: true, memoryCleanupUnconfirmed: true },
+      });
+      const emit = () => {
+        if (order === "meta-first") h.reader.beforeEvent(meta);
+        h.reader.beforeEvent(clear);
+        if (order === "clear-first") h.reader.beforeEvent(meta);
+      };
+      if (timing === "before-page") emit();
+      h.releaseGet(base);
+      await h.pageStarted;
+      if (timing !== "before-page") emit();
+      expect(h.snapshotRef.current).toBe(h.a);
+      h.releasePage({ threadId: "thread-B", messages: [message("anchor", [])], olderCursor: 1 });
+      await loading;
+      const rejected = timing === "in-flight";
+      expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(
+        rejected ? [] : ["anchor"],
+      );
+      expect(h.scope.pinnedAroundRef.current?.messageId ?? null).toBe(rejected ? null : "anchor");
+      expect(h.snapshotRef.current).toMatchObject({
+        cursor: timing === "post-clear-snapshot" ? 25 : 20,
+        observedClearSeq: 20,
+        memoryCleanupCursor: 40,
+        memoryCleanupPending: true,
+        memoryCleanupUnconfirmed: true,
+      });
+      expect(h.scope.historyEpoch.current).toBe(1);
+    },
+  );
+
+  it.each(["user", "session", "selection", "abort", "target"] as const)(
+    "rejects a cold live clear from an obsolete reader after %s changes",
+    async (change) => {
+      const h = await fixture();
+      if (change === "user") h.actor.current.userId = "user-two";
+      else if (change === "session" || change === "selection") h.generation[change]++;
+      else if (change === "abort") h.scope.readerAbort.abort();
+      else h.scope.activeBotId.current = "bot-C";
+      expect(
+        h.reader.beforeEvent(
+          event({
+            type: "thread.cleared",
+            threadId: "thread-B",
+            botId: "bot-B",
+            seq: 20,
+            payload: {},
+          }),
+        ),
+      ).toBe(false);
+      expect(h.scope.pendingMemoryCleanupEvents.current.size).toBe(0);
+      expect(h.snapshotRef.current).toBe(h.a);
+    },
+  );
+
+  it("does not apply a former owner's buffered live clear to a new snapshot", async () => {
+    const h = await fixture();
+    h.scope.pendingMemoryCleanupEvents.current.set("thread-B", {
+      owner: "former-owner",
+      scope: "scope-B",
+      seq: 40,
+      clear: event({ type: "thread.cleared", threadId: "thread-B", seq: 20, payload: {} }),
+      payload: { memoryCleanupPending: true },
+    });
+    h.commit(h.b);
+    expect(h.snapshotRef.current?.messages).toEqual(h.b.messages);
+    expect(h.snapshotRef.current?.memoryCleanupPending).toBeUndefined();
+  });
+
   it("buffers B's clear boundary while A is still the committed snapshot", async () => {
-    const h = fixture();
+    const h = await fixture();
     const clearing = h.confirm();
     h.complete({
       ok: true,
@@ -2838,8 +3028,8 @@ describe("Shell clear receipt snapshot commits", () => {
     });
     expect(h.scope.pendingClearReceipts.current.size).toBe(0);
   });
-  it("rearms a dismissed web interval between consecutive committed metadata frames", () => {
-    const h = fixture();
+  it("rearms a dismissed web interval between consecutive committed metadata frames", async () => {
+    const h = await fixture();
     const current = { ...h.b, cursor: 20, memoryCleanupCursor: 20, memoryCleanupPending: true };
     h.commit(current);
     const noticeScope = JSON.stringify(["user-one", "space-one", "thread-B"]);
@@ -2885,7 +3075,7 @@ describe("Shell clear receipt snapshot commits", () => {
     expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(true);
   });
   it("keeps a newer matching snapshot ahead of the buffered cleanup receipt", async () => {
-    const h = fixture();
+    const h = await fixture();
     const clearing = h.confirm();
     h.complete({
       ok: true,
@@ -2913,7 +3103,7 @@ describe("Shell clear receipt snapshot commits", () => {
   it.each(["user", "session", "selection"] as const)(
     "does not apply another %s owner's buffered receipt",
     async (change) => {
-      const h = fixture();
+      const h = await fixture();
       const clearing = h.confirm();
       h.complete({
         ok: true,
@@ -2931,7 +3121,7 @@ describe("Shell clear receipt snapshot commits", () => {
     },
   );
   it("keeps clear ownership stable when the implicit Space proof becomes ready", async () => {
-    const h = fixture();
+    const h = await fixture();
     h.actor.current.spaceId = undefined;
     const clearing = h.confirm();
     h.actor.current.spaceId = "space-one";

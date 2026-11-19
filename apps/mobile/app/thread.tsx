@@ -1639,6 +1639,19 @@ function Thread({
           const previous = pendingMemoryCleanupEvents.current.get(result.threadId);
           const sameOwner = previous?.owner === owner;
           const receiptSeq = result.memoryCleanupCursor ?? -1;
+          const clearEventSeq = Math.max(
+            sameOwner ? (previous.clearEventSeq ?? -1) : -1,
+            result.clearEventSeq ?? -1,
+          );
+          const cancelledRunIds =
+            result.cancelledRunIds || (sameOwner && previous.cancelledRunIds)
+              ? [
+                  ...new Set([
+                    ...(sameOwner ? (previous.cancelledRunIds ?? []) : []),
+                    ...(result.cancelledRunIds ?? []),
+                  ]),
+                ]
+              : undefined;
           const pending =
             sameOwner && previous.seq > receiptSeq
               ? previous.pending
@@ -1650,12 +1663,7 @@ function Thread({
               ? { unconfirmed: true }
               : {}),
             ...(pending !== undefined ? { pending } : {}),
-            ...(result.clearEventSeq !== undefined
-              ? {
-                  clearEventSeq: result.clearEventSeq,
-                  cancelledRunIds: result.cancelledRunIds,
-                }
-              : {}),
+            ...(clearEventSeq >= 0 ? { clearEventSeq, cancelledRunIds } : {}),
           });
           return;
         }
