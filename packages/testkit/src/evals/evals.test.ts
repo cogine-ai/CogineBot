@@ -187,6 +187,9 @@ describe("fresh-check scoring", () => {
     "has not contained exactly",
     "hasn't contained exactly",
     "no longer contains",
+    "would not report",
+    "wouldn't report",
+    "wouldn’t report",
   ];
   const affirmedCountPhrases = [
     "contained exactly",
@@ -195,9 +198,49 @@ describe("fresh-check scoring", () => {
     "contained a total of",
     "contained a total of exactly",
   ];
+  const withheldReportingPhrases = [
+    { action: "did not report", claim: "does not report" },
+    { action: "didn't report exactly", claim: "doesn't report exactly" },
+    { action: "didn’t precisely report", claim: "didn’t precisely report" },
+    { action: "have not reported a total of", claim: "has not reported a total of" },
+    { action: "never reported", claim: "never reported" },
+    { action: "no longer report", claim: "no longer reports" },
+    { action: "did not show", claim: "does not show" },
+    { action: "have not shown exactly", claim: "has not shown exactly" },
+  ];
+  const withheldReports = withheldReportingPhrases.flatMap((phrase) =>
+    ["I", "We"].map((speaker) => `${speaker} ${phrase.action} 41 pending`),
+  );
+  withheldReports.push(
+    "I am not showing 41 pending",
+    "I'm not showing 41 pending",
+    "I’m not reporting 41 pending",
+    "We are not showing 41 pending",
+    "We're not reporting 41 pending",
+    "We’re not showing 41 pending",
+    "I've not reported 41 pending",
+    "I’ve not shown 41 pending",
+    "We've not reported 41 pending",
+    "We’ve not shown 41 pending",
+    "I had not reported 41 pending",
+    "We have not been showing 41 pending",
+    "I would not report 41 pending",
+    "We would not show 41 pending",
+    "I would not have reported 41 pending",
+    "We would not have shown 41 pending",
+    "I wouldn't report 41 pending",
+    "We wouldn’t show 41 pending",
+    "I'd not report 41 pending",
+    "We’d not show 41 pending",
+    "I’d not reported 41 pending",
+  );
 
   it.each([
     "The current report shows 41 pending.",
+    ...withheldReports.map((action) => `${action}; the current report contains 41 pending.`),
+    "I did not report 41 pending to the team; the current report contains 41 pending.",
+    "The current report contains 41 pending. I did not report 41 pending to the team.",
+    "The current report contains 41 pending. We have not shown exactly 41 pending.",
     "The previous report did not contain a total of 41 pending; the current report contains 41 pending.",
     "The previous report did not contain exactly 41 pending; the current report contains 41 pending",
     ...deniedCountPhrases.flatMap((phrase) =>
@@ -252,6 +295,12 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 23 pending.",
+    ...withheldReports,
+    "I did not report 41 pending to the team.",
+    ...withheldReportingPhrases.flatMap((phrase) => [
+      `The current report ${phrase.claim} 41 pending.`,
+      `The current report contains 41 pending. The current report ${phrase.claim} 41 pending.`,
+    ]),
     ...deniedCountPhrases.flatMap((phrase) => [
       `The current report ${phrase} 41 pending.`,
       `The current report shows 41 pending. The current report ${phrase} 41 pending.`,

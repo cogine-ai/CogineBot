@@ -540,10 +540,11 @@ function currentReportMatches(text: string): boolean {
   const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
   const expected = Number.parseInt(latestReport, 10);
   const postfixCurrent = String.raw`(?:now|currently|today|in\s+(?:the\s+)?(?:current|latest)\s+report)`;
-  const auxiliary = "(?:did|does|do|is|are|was|were|has|have|had)";
+  const auxiliary = "(?:did|does|do|is|are|was|were|has|have|had|would)";
   const countModifier = "(?:exactly|precisely)";
   const countClaim = String.raw`(?:a\s+total\s+of\s+)?(?:${countModifier}\s+)?${count}`;
-  const countWording = `(?:${countModifier}|show(?:ed|s|ing)?|contain(?:ed|s)?|report(?:ed|s|ing)?|be(?:en|ing)?|at|equal(?:s)?)`;
+  const reportingVerb = "(?:show(?:ed|n|s|ing)?|report(?:ed|s|ing)?)";
+  const countWording = `(?:${countModifier}|${reportingVerb}|contain(?:ed|s)?|be(?:en|ing)?|at|equal(?:s)?)`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?|there|it))?`;
   let deniesCurrent = false;
@@ -579,9 +580,15 @@ function currentReportMatches(text: string): boolean {
         `\\b(?:not|never|no\\s+longer|${auxiliary}n['’]t)\\b(?:\\s+(?:currently|now|today|${auxiliary}|${countWording})){0,6}\\s+${countClaim}`,
         "gi",
       ),
-      (negated) => {
+      (negated: string, offset: number, source: string) => {
+        const reportingAction =
+          new RegExp(
+            `\\b(?:I(?:['’](?:m|ve|d))?|we(?:['’](?:re|ve|d))?)(?:\\s+(?:${auxiliary}|am|currently|now|today))*\\s*$`,
+            "i",
+          ).test(source.slice(0, offset)) &&
+          new RegExp(`\\b${reportingVerb}\\b`, "i").test(negated);
         const value = negated.match(new RegExp(count, "i"))?.[0].match(new RegExp(number))?.[0];
-        deniesCurrent ||= Number(value) === expected;
+        deniesCurrent ||= !reportingAction && Number(value) === expected;
         return "";
       },
     );
