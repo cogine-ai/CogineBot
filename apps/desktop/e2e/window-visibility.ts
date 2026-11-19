@@ -7,7 +7,7 @@ export async function isNativeWindowVisible(
   if (page.isClosed()) return false;
   try {
     const window = await app.browserWindow(page);
-    return await window.evaluate((win) => win.isVisible());
+    return await window.evaluate((win) => !win.isDestroyed() && win.isVisible());
   } catch (error) {
     // A disappearing native window may still be listed by Playwright.
     if (

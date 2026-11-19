@@ -9,9 +9,11 @@ const missingMapping = () =>
 
 function fixture(visible = true) {
   const isClosed = vi.fn(() => false);
+  const isDestroyed = vi.fn(() => false);
   const isVisible = vi.fn(() => visible);
-  const evaluate = vi.fn(async (fn: (win: { isVisible: () => boolean }) => boolean) =>
-    fn({ isVisible }),
+  const evaluate = vi.fn(
+    async (fn: (win: { isDestroyed: () => boolean; isVisible: () => boolean }) => boolean) =>
+      fn({ isDestroyed, isVisible }),
   );
   const browserWindow = vi.fn(async () => ({ evaluate }));
   return {
@@ -20,6 +22,7 @@ function fixture(visible = true) {
     browserWindow,
     evaluate,
     isClosed,
+    isDestroyed,
     isVisible,
   };
 }
@@ -37,6 +40,17 @@ describe("desktop native window visibility", () => {
     f.isClosed.mockReturnValue(true);
     await expect(isNativeWindowVisible(f.app, f.page)).resolves.toBe(false);
     expect(f.browserWindow).not.toHaveBeenCalled();
+  });
+
+  it("skips a destroyed native window before the page closure is observed", async () => {
+    const f = fixture();
+    f.isDestroyed.mockReturnValue(true);
+    f.isVisible.mockImplementation(() => {
+      throw new Error("Synthetic destroyed window access");
+    });
+    await expect(isNativeWindowVisible(f.app, f.page)).resolves.toBe(false);
+    expect(f.isClosed).toHaveReturnedWith(false);
+    expect(f.isVisible).not.toHaveBeenCalled();
   });
 
   it("continues past a missing native mapping to a valid candidate", async () => {
