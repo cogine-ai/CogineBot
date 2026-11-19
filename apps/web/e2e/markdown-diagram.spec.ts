@@ -436,8 +436,7 @@ for (const remote of [false, true]) {
     // This input reaches Mermaid's image loader. CSP must prevent the request
     // while it is drawing, before the final SVG becomes an inert image.
     await expect.poll(() => refused.join("\n")).toMatch(/Content Security Policy|img-src/i);
-    await expect.poll(() => blocked.length).toBe(attempted.length);
-    expect(attempted.length).toBeGreaterThan(0);
+    await expect.poll(() => attempted.length > 0 && blocked.length === attempted.length).toBe(true);
     expect(blocked.every((failure) => /csp/i.test(failure))).toBe(true);
     expect(networkRequests).toBe(0);
     await update(page, fence(source));
