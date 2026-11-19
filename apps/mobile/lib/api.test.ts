@@ -2,8 +2,15 @@ import { readFileSync } from "node:fs";
 
 vi.mock("./ai-consent", () => ({ promptAiConsent: vi.fn() }));
 
-import { isServerUnreachable, ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
+import {
+  isServerUnreachable,
+  observeMemoryCleanup,
+  ReplyAnnouncements,
+  threadClearCancelledRunIds,
+  withLiveStreamingProgress,
+} from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promptAiConsent } from "./ai-consent";
 import type { MobileMessage, MobileSnapshot } from "./api.js";
@@ -4449,8 +4456,8 @@ describe("mobile thread event reduction", () => {
     );
     const initial: MobileSnapshot = {
       ...snapshot([progress]),
-      run: { id: "run-user", status: "running" },
-      activeRuns: [{ id: "run-user", status: "running" }],
+      run: { id: "run-user", status: "running", observedEventSeq: 3 },
+      activeRuns: [{ id: "run-user", status: "running", observedEventSeq: 3 }],
       computer: {
         state: "running",
         controlHolder: "bot",
@@ -4469,7 +4476,7 @@ describe("mobile thread event reduction", () => {
 
     expect(waiting?.run).toEqual({ id: "run-peer", botId: "bot-peer", status: "waiting_takeover" });
     expect(waiting?.activeRuns).toEqual([
-      { id: "run-user", status: "running" },
+      { id: "run-user", status: "running", observedEventSeq: 3 },
       { id: "run-peer", botId: "bot-peer", status: "waiting_takeover" },
     ]);
     expect(waiting?.messages.some((message) => message.id.startsWith("progress:"))).toBe(false);
@@ -4516,9 +4523,9 @@ describe("mobile thread event reduction", () => {
   it("updates a waiting group run without replacing the newer active run", () => {
     const initial: MobileSnapshot = {
       ...snapshot(),
-      run: { id: "run-newer", status: "running" },
+      run: { id: "run-newer", status: "running", observedEventSeq: 3 },
       activeRuns: [
-        { id: "run-newer", status: "running" },
+        { id: "run-newer", status: "running", observedEventSeq: 3 },
         { id: "run-waiting", status: "running" },
       ],
     };
@@ -4528,15 +4535,15 @@ describe("mobile thread event reduction", () => {
       runId: "run-waiting",
     });
 
-    expect(waiting?.run).toEqual({ id: "run-newer", status: "running" });
+    expect(waiting?.run).toEqual({ id: "run-newer", status: "running", observedEventSeq: 3 });
     expect(waiting?.activeRuns).toEqual([
-      { id: "run-newer", status: "running" },
-      { id: "run-waiting", status: "waiting_input" },
+      { id: "run-newer", status: "running", observedEventSeq: 3 },
+      { id: "run-waiting", status: "waiting_input", observedEventSeq: 3 },
     ]);
   });
 
   it("updates and clears a quota wait without interrupting another group run", () => {
-    const other = { id: "run-a", botId: "bot-a", status: "running" };
+    const other = { id: "run-a", botId: "bot-a", status: "running", observedEventSeq: 3 };
     const run = { id: "run-b", botId: "bot-b", status: "running" };
     const initial: MobileSnapshot = {
       ...snapshot([
@@ -4604,7 +4611,7 @@ describe("mobile thread event reduction", () => {
   });
 
   it("keeps an actionable direct run and its supplemental quota wait", () => {
-    const ask = { id: "ask", botId: "bot-a", status: "waiting_input" };
+    const ask = { id: "ask", botId: "bot-a", status: "waiting_input", observedEventSeq: 3 };
     const initial: MobileSnapshot = { ...snapshot([]), run: ask, activeRuns: [ask] };
     const waiting = applyMobileThreadEvent(initial, {
       type: "run.waiting_limit",
@@ -4621,8 +4628,8 @@ describe("mobile thread event reduction", () => {
   });
 
   it("clears only the terminal run's live progress", () => {
-    const runA = { id: "run-a", status: "running" };
-    const runB = { id: "run-b", status: "running" };
+    const runA = { id: "run-a", status: "running", observedEventSeq: 3 };
+    const runB = { id: "run-b", status: "running", observedEventSeq: 3 };
     const initial: MobileSnapshot = {
       ...snapshot([
         {
@@ -4668,8 +4675,8 @@ describe("mobile thread event reduction", () => {
   });
 
   it("keeps a failed member run's error while another member run is still active", () => {
-    const runA = { id: "run-a", status: "running" };
-    const runB = { id: "run-b", status: "running" };
+    const runA = { id: "run-a", status: "running", observedEventSeq: 3 };
+    const runB = { id: "run-b", status: "running", observedEventSeq: 3 };
     const initial: MobileSnapshot = {
       ...snapshot([
         {
@@ -4689,7 +4696,7 @@ describe("mobile thread event reduction", () => {
     });
 
     expect(next?.activeRuns).toEqual([runA]);
-    expect(next?.run).toEqual({ id: runB.id, status: "failed", error: "member exploded" });
+    expect(next?.run).toEqual({ ...runB, status: "failed", error: "member exploded" });
     expect(next?.messages).toEqual([]);
   });
 
@@ -4887,7 +4894,7 @@ async function verifiedScopeStorage() {
 
 describe("mobile released takeover observation", () => {
   function waiting(): MobileSnapshot {
-    return {
+    return mergeMobileSnapshot(null, {
       ...snapshot(
         [
           {
@@ -4916,7 +4923,7 @@ describe("mobile released takeover observation", () => {
         { botId: "bot-1", name: "One", color: "slate", status: "waiting_takeover" },
         { botId: "bot-2", name: "Two", color: "slate", status: "running" },
       ],
-    };
+    });
   }
 
   it.each(["Done", "Skipped"])("keeps the committed %s card and releases only its Run", (state) => {
@@ -4976,7 +4983,12 @@ describe("mobile released takeover observation", () => {
 
   it("preserves the displayed failure and sibling active Runs when another Run resumes", () => {
     const initial = waiting();
-    const failed = { id: "failed", status: "failed", error: "Retained failure" };
+    const failed = {
+      id: "failed",
+      status: "failed",
+      error: "Retained failure",
+      observedEventSeq: 10,
+    };
     const next = applyMobileThreadEvent(
       { ...initial, run: failed },
       { type: "computer.takeover.released", seq: 12, runId: "run-1", botId: "bot-1" },
@@ -5004,7 +5016,10 @@ describe("mobile released takeover observation", () => {
     const old = { ...initial, cursor: 8, run: { ...initial.run!, status: "running" } };
     expect(mergeMobileSnapshot(initial, old, true)).toBe(initial);
     const other = { ...old, threadId: "thread-other", cursor: 0 };
-    expect(mergeMobileSnapshot(initial, other, true)).toMatchObject(other);
+    expect(mergeMobileSnapshot(initial, other, true)).toMatchObject({
+      ...other,
+      messages: other.messages.map((message) => ({ ...message, observedEventSeq: 0 })),
+    });
     const gate = {
       fetched: old,
       onScreen: initial,
@@ -5145,12 +5160,16 @@ describe("mobile screen released-event callback", () => {
       current: {
         ...snapshot(),
         cursor: 10,
-        run: { id: "run-1", botId: "bot-1", status: "waiting_takeover" },
-        activeRuns: [{ id: "run-1", botId: "bot-1", status: "waiting_takeover" }],
+        run: { id: "run-1", botId: "bot-1", status: "waiting_takeover", observedEventSeq: 10 },
+        activeRuns: [
+          { id: "run-1", botId: "bot-1", status: "waiting_takeover", observedEventSeq: 10 },
+        ],
       } as MobileSnapshot | null,
     };
     const activeBotId = { current: "bot-1" as string | undefined };
     const liveSubscriptionGeneration = { current: 1 };
+    const pendingMemoryCleanupEvents = { current: new Map() };
+    const memoryCleanupOwnerRef = { current: "owner-one" };
     const commitSnap = vi.fn((next: MobileSnapshot | null) => {
       snapRef.current = next;
     });
@@ -5166,10 +5185,14 @@ describe("mobile screen released-event callback", () => {
       activeBotId,
       activeGroupId: { current: undefined },
       liveSubscriptionGeneration,
+      pendingMemoryCleanupEvents,
+      memoryCleanupOwnerRef,
       snapRef,
       replyEventObserver: { current: vi.fn() },
       commitSnap,
       applyMobileThreadEvent,
+      observeMemoryCleanup,
+      threadClearCancelledRunIds,
       isRunTerminalEvent: (event: { type: string }) =>
         event.type.startsWith("run.") && event.type !== "run.waiting_input",
       expandedHistoryThread: { current: null },
@@ -5184,9 +5207,21 @@ describe("mobile screen released-event callback", () => {
     };
     const handler = new Function(
       ...Object.keys(scope),
-      `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
+      ts.transpileModule(
+        `let cursor = 10; let retryMs = 250; const callback = ${callback}; return callback;`,
+        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } },
+      ).outputText,
     )(...Object.values(scope)) as (event: Parameters<typeof applyMobileThreadEvent>[1]) => void;
-    return { handler, snapRef, commitSnap, state, abort, activeBotId, liveSubscriptionGeneration };
+    return {
+      handler,
+      snapRef,
+      commitSnap,
+      state,
+      abort,
+      activeBotId,
+      liveSubscriptionGeneration,
+      pendingMemoryCleanupEvents,
+    };
   }
 
   it("routes the screen's real released callback into the thread reducer", () => {
@@ -5200,6 +5235,61 @@ describe("mobile screen released-event callback", () => {
     });
     expect(h.snapRef.current?.run?.status).toBe("queued");
     expect(h.snapRef.current?.cursor).toBe(11);
+  });
+
+  it("routes late cleanup metadata through the real screen subscription without changing its Run", () => {
+    const h = screenCallback();
+    const currentRun = h.snapRef.current?.run;
+    h.handler({
+      type: "thread.meta",
+      seq: 11,
+      botId: "bot-1",
+      threadId: "thread-1",
+      payload: { memoryCleanupUnconfirmed: true },
+    });
+    expect(h.snapRef.current?.memoryCleanupUnconfirmed).toBe(true);
+    expect(h.snapRef.current?.cursor).toBe(11);
+    expect(h.snapRef.current?.run).toBe(currentRun);
+    expect(h.commitSnap).toHaveBeenCalledOnce();
+  });
+
+  it("retains metadata before a cold jump commits its first snapshot", () => {
+    const h = screenCallback();
+    h.snapRef.current = null;
+    h.handler({
+      type: "thread.meta",
+      threadId: "thread-1",
+      botId: "bot-1",
+      seq: 11,
+      payload: { memoryCleanupUnconfirmed: true, memoryCleanupPending: true },
+    });
+    expect(h.commitSnap).not.toHaveBeenCalled();
+    expect(h.pendingMemoryCleanupEvents.current.get("thread-1")).toEqual({
+      seq: 11,
+      owner: "owner-one",
+      subscription: 1,
+      unconfirmed: true,
+      pending: true,
+    });
+  });
+
+  it("routes pending-only cleanup settlement through the actual visible screen callback", () => {
+    const h = screenCallback();
+    const run = h.snapRef.current?.run;
+    const event = {
+      type: "thread.meta",
+      threadId: "thread-1",
+      botId: "bot-1",
+      seq: 11,
+      payload: { memoryCleanupPending: true },
+    };
+    h.handler(event);
+    expect(h.snapRef.current?.memoryCleanupPending).toBe(true);
+    h.handler({ ...event, seq: 12, payload: { memoryCleanupPending: false } });
+    expect(h.snapRef.current?.memoryCleanupPending).toBe(false);
+    expect(h.snapRef.current?.memoryCleanupUnconfirmed).toBeUndefined();
+    expect(h.snapRef.current?.run).toBe(run);
+    expect(h.commitSnap).toHaveBeenCalledTimes(2);
   });
 
   it.each(["abort", "reader", "target", "Space", "session"])(
@@ -5318,7 +5408,7 @@ describe("mobile takeover message snapshot authority", () => {
 });
 
 it("replays a covered mobile clear without replacing newer execution state", () => {
-  const run = { id: "current-run", botId: "bot-2", status: "running" };
+  const run = { id: "current-run", botId: "bot-2", status: "running", observedEventSeq: 30 };
   const base = {
     ...snapshot([mobileMessage("recent", [{ kind: "text", text: "After clear" }], 9)], 9),
     cursor: 30,
@@ -5613,4 +5703,189 @@ it("announces the committed final message after the actual mobile reducer clears
   expect(current?.activeRuns).toEqual([]);
   expect(announcements.update("scope", true, current)).toEqual(["Committed native reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
+});
+
+describe("mobile external memory cleanup uncertainty", () => {
+  it("keeps current messages and work when late cleanup metadata arrives", () => {
+    const initial = snapshot([
+      mobileMessage("new-message", [{ kind: "text", text: "After clear" }], 3),
+    ]);
+    const event = {
+      type: "thread.meta",
+      threadId: initial.threadId,
+      seq: 4,
+      payload: { memoryCleanupUnconfirmed: true },
+    };
+    const next = applyMobileThreadEvent(initial, event)!;
+    expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect(next.observedClearSeq).toBe(initial.cursor);
+    expect(next.messages).toHaveLength(initial.messages.length);
+    expect(next.messages).toMatchObject(initial.messages);
+    expect(next.run).toEqual(initial.run);
+    expect(applyMobileThreadEvent(next, event)).toBe(next);
+    expect(applyMobileThreadEvent(next, { ...event, threadId: "another-thread", seq: 5 })).toBe(
+      next,
+    );
+  });
+  it("retains uncertainty on clear and refresh but isolates another thread", () => {
+    const initial = { ...snapshot(), memoryCleanupUnconfirmed: true as const };
+    const cleared = applyMobileThreadEvent(initial, {
+      type: "thread.cleared",
+      threadId: initial.threadId,
+      seq: 4,
+      payload: {},
+    })!;
+    expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+    expect(
+      mergeMobileSnapshot(cleared, { ...snapshot(), cursor: 5 }).memoryCleanupUnconfirmed,
+    ).toBe(true);
+    expect(
+      mergeMobileSnapshot(cleared, { ...snapshot(), threadId: "another-thread", cursor: 5 })
+        .memoryCleanupUnconfirmed,
+    ).toBeUndefined();
+  });
+});
+
+it("orders native cleanup independently of transcript events and omitted clear flags", () => {
+  const current = {
+    ...snapshot(),
+    cursor: 30,
+    observedClearSeq: 1,
+    memoryCleanupCursor: 5,
+    memoryCleanupPending: true,
+  };
+  const cleared = applyMobileThreadEvent(current, {
+    threadId: current.threadId,
+    type: "thread.cleared",
+    seq: 10,
+    payload: { memoryCleanupUnconfirmed: true },
+  })!;
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.memoryCleanupPending).toBe(false);
+  expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+  const settled = { ...current, memoryCleanupCursor: 20, memoryCleanupPending: false };
+  expect(
+    applyMobileThreadEvent(settled, {
+      threadId: current.threadId,
+      type: "thread.meta",
+      seq: 15,
+      payload: { memoryCleanupPending: true },
+    })!.memoryCleanupPending,
+  ).toBe(false);
+});
+
+it("settles pending cleanup without clearing a recorded failure or reapplying an older pending event", () => {
+  const initial = { ...snapshot(), memoryCleanupUnconfirmed: true as const };
+  const pendingEvent = {
+    type: "thread.meta",
+    threadId: initial.threadId,
+    seq: 4,
+    payload: { memoryCleanupPending: true },
+  };
+  const pending = applyMobileThreadEvent(initial, pendingEvent)!;
+  const settled = applyMobileThreadEvent(pending, {
+    ...pendingEvent,
+    seq: 5,
+    payload: { memoryCleanupPending: false },
+  })!;
+  expect(settled.memoryCleanupPending).toBe(false);
+  expect(settled.memoryCleanupUnconfirmed).toBe(true);
+  expect(settled.run).toBe(initial.run);
+  expect(applyMobileThreadEvent(settled, pendingEvent)).toBe(settled);
+});
+
+it("retains pending cleanup when a same-thread refresh omits the metadata", () => {
+  const previous = {
+    botId: "bot",
+    threadId: "thread",
+    cursor: 10,
+    messages: [],
+    olderCursor: null,
+    run: null,
+    memoryCleanupPending: true,
+    memoryCleanupCursor: 10,
+  };
+  const refreshed = mergeMobileSnapshot(previous, {
+    ...previous,
+    cursor: 25,
+    memoryCleanupPending: undefined,
+    memoryCleanupCursor: undefined,
+  });
+  expect(refreshed).toMatchObject({ memoryCleanupPending: true, memoryCleanupCursor: 10 });
+  expect(
+    mergeMobileSnapshot(refreshed, {
+      ...previous,
+      cursor: 25,
+      memoryCleanupPending: false,
+      memoryCleanupCursor: 12,
+    }),
+  ).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
+});
+
+describe("canonical clear cancellation metadata", () => {
+  it.each(["queued", "running"])("removes cached %s state absent from a later clear", (status) => {
+    const run = { id: "stale-run", botId: "bot-1", status };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [run] },
+      { type: "thread.cleared", seq: 22, payload: { cancelledRunIds: [] } },
+    );
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([]);
+  });
+  it("preserves an uncancelled queued Run at the preceding event cursor", () => {
+    const run = { id: "post-clear-run", botId: "bot-1", status: "queued", observedEventSeq: 21 };
+    const before = {
+      ...snapshot([mobileMessage("old", [])], 1),
+      cursor: 15,
+      run,
+      activeRuns: [run],
+    };
+    const next = applyMobileThreadEvent(before, {
+      type: "thread.cleared",
+      threadId: "thread-1",
+      seq: 20,
+      payload: { cancelledRunIds: ["old-run"] },
+    });
+    expect(next?.messages).toEqual([]);
+    expect(next?.run).toBe(run);
+    expect(next?.activeRuns).toEqual([run]);
+  });
+  it("applies IDs at an already observed boundary without dropping its admitted page", () => {
+    const cancelled = { id: "cancelled", botId: "bot-1", status: "queued" };
+    const fresh = { id: "fresh", botId: "bot-1", status: "queued", observedEventSeq: 20 };
+    const before = {
+      ...snapshot([{ ...mobileMessage("anchor", []), observedEventSeq: 20 }], 1),
+      cursor: 20,
+      observedClearSeq: 20,
+      run: cancelled,
+      activeRuns: [cancelled, fresh],
+    };
+    const next = applyMobileThreadEvent(before, {
+      type: "thread.cleared",
+      threadId: "thread-1",
+      seq: 20,
+      payload: { cancelledRunIds: [cancelled.id] },
+    });
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([fresh]);
+    expect(next?.messages).toBe(before.messages);
+    expect(next?.olderCursor).toBe(1);
+  });
+  it("clears an old completed Run even when the canonical list is empty", () => {
+    const run = { id: "completed", botId: "bot-1", status: "completed" };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [] },
+      { type: "thread.cleared", seq: 20, payload: { cancelledRunIds: [] } },
+    );
+    expect(next?.run).toBeNull();
+  });
+  it("retains the prior clearing behavior when a legacy frame has no run evidence", () => {
+    const run = { id: "unknown", botId: "bot-1", status: "queued" };
+    const next = applyMobileThreadEvent(
+      { ...snapshot([], 1), cursor: 15, run, activeRuns: [run] },
+      { type: "thread.cleared", seq: 20, payload: {} },
+    );
+    expect(next?.run).toBeNull();
+    expect(next?.activeRuns).toEqual([]);
+  });
 });

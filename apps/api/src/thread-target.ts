@@ -51,6 +51,7 @@ import {
   eligibleWaitingTextAnswer,
   expireComputerExecutionLeases,
   groupMemberOrderBy,
+  hasPendingMemoryCleanup,
   IsolationError,
   loadThreadAttention,
   lockOwnedGroup,
@@ -207,7 +208,7 @@ async function replayExistingSend(
       payload: { path: ["messageId"], equals: message.id },
     },
     orderBy: { seq: "desc" },
-    select: { payload: true },
+    select: { payload: true, seq: true },
   });
   const receiptRunIds = sendEventRunIds(receiptEvent?.payload);
   const receiptRuns = receiptRunIds.length
@@ -239,7 +240,7 @@ async function replayExistingSend(
       getLogger().error("thread send realtime notification", error);
     });
   }
-  return sendResult(message, runs);
+  return sendResult(message, runs, receiptEvent?.seq);
 }
 
 function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
@@ -251,6 +252,7 @@ function sendEventRunIds(payload: Prisma.JsonValue | undefined): string[] {
 function sendResult(
   message: { seq: number; blocks?: Prisma.JsonValue },
   runs: Array<{ id: string; taskId: string }>,
+  eventSeq?: number,
 ) {
   const first = runs[0];
   if (!first) throw new IsolationError("Send did not create a run");
@@ -265,6 +267,7 @@ function sendResult(
     taskId: first.taskId,
     runId: first.id,
     seq: message.seq,
+    ...(eventSeq !== undefined ? { eventSeq } : {}),
     runIds: runs.map((run) => run.id),
     ...(deliveredImageHandling ? { deliveredImageHandling } : {}),
   };
@@ -394,7 +397,15 @@ export async function threadSnapshot(
       }),
       deps.prisma.$transaction(
         async (tx) => {
-          await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
+          const [cleanupState] = await tx.$queryRaw<
+            Array<{
+              memoryCleanupUnconfirmed: boolean;
+              memoryCleanupIntents: Prisma.JsonValue;
+              historyCompactionGeneration: number;
+            }>
+          >`
+            SELECT id, "memoryCleanupUnconfirmed", "memoryCleanupIntents", "historyCompactionGeneration" FROM threads WHERE id = ${target.threadId} FOR SHARE
+          `;
           const [messagePage, last, waitingRun, busyOrFailed, quotaRuns, attention] =
             await Promise.all([
               loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
@@ -478,7 +489,19 @@ export async function threadSnapshot(
                   orderBy: { seq: "asc" },
                 })
               : [];
-          return { messagePage, last, run: currentRun, quotaRuns, liveEvents, attention };
+          return {
+            messagePage,
+            last,
+            run: currentRun,
+            quotaRuns,
+            liveEvents,
+            attention,
+            cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
+            cleanupPending: hasPendingMemoryCleanup(
+              cleanupState?.memoryCleanupIntents ?? [],
+              cleanupState?.historyCompactionGeneration ?? 0,
+            ),
+          };
         },
         { timeout: 15_000, maxWait: 5_000 },
       ),
@@ -493,6 +516,8 @@ export async function threadSnapshot(
     return {
       botId: target.botId,
       threadId: target.threadId,
+      ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+      memoryCleanupPending: core.cleanupPending,
       cursor: core.last?.seq ?? -1,
       messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
       olderCursor: core.messagePage.olderCursor,
@@ -507,7 +532,15 @@ export async function threadSnapshot(
 
   const core = await deps.prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR SHARE`;
+      const [cleanupState] = await tx.$queryRaw<
+        Array<{
+          memoryCleanupUnconfirmed: boolean;
+          memoryCleanupIntents: Prisma.JsonValue;
+          historyCompactionGeneration: number;
+        }>
+      >`
+            SELECT id, "memoryCleanupUnconfirmed", "memoryCleanupIntents", "historyCompactionGeneration" FROM threads WHERE id = ${target.threadId} FOR SHARE
+          `;
       const [messagePage, last, activeRuns, recentTerminals, attention] = await Promise.all([
         loadMessagePage(tx, target.threadId, undefined, THREAD_MESSAGE_PAGE_SIZE),
         tx.event.findFirst({
@@ -569,6 +602,11 @@ export async function threadSnapshot(
         terminalRun: pickLatestTerminalRun(recentTerminals),
         liveEvents,
         attention,
+        cleanupUnconfirmed: cleanupState?.memoryCleanupUnconfirmed === true,
+        cleanupPending: hasPendingMemoryCleanup(
+          cleanupState?.memoryCleanupIntents ?? [],
+          cleanupState?.historyCompactionGeneration ?? 0,
+        ),
       };
     },
     { timeout: 15_000, maxWait: 5_000 },
@@ -579,6 +617,8 @@ export async function threadSnapshot(
     groupName: target.groupName,
     members: target.members,
     threadId: target.threadId,
+    ...(core.cleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    memoryCleanupPending: core.cleanupPending,
     cursor: core.last?.seq ?? -1,
     messages: messagesWithLiveEvents(core.messagePage.messages, core.liveEvents),
     olderCursor: core.messagePage.olderCursor,
@@ -1462,7 +1502,7 @@ export async function sendThreadMessage(
   const runsToWake = new Map(committed.routineRuns.map((run) => [run.id, run]));
   for (const run of committed.runs) runsToWake.set(run.id, run);
   await enqueueRunsNeedingContinue(deps.jobs, [...runsToWake.values()]);
-  return sendResult(committed.message, committed.runs);
+  return sendResult(committed.message, committed.runs, committed.eventSeq);
 }
 
 /**

@@ -56,7 +56,20 @@ describe("Supermemory request URLs", () => {
   it.each(["", "/", "/memory", "/memory/"])(
     "preserves the base prefix and provider route for every method: %s",
     async (prefix) => {
-      const fetchMock = vi.fn().mockImplementation(async () => Response.json({ results: [] }));
+      const fetchMock = vi.fn().mockImplementation(async (_url, init) =>
+        Response.json(
+          init.method === "DELETE"
+            ? {
+                success: true,
+                containerTag: "fake:tag",
+                deletedDocumentsCount: 0,
+                deletedMemoriesCount: 0,
+              }
+            : init.method === "GET"
+              ? []
+              : { results: [] },
+        ),
+      );
       vi.stubGlobal("fetch", fetchMock);
       for (const { request, method, path } of operations) {
         expect(await request({ ...config, baseUrl: `http://[::1]:6767${prefix}` })).toMatchObject({
@@ -302,7 +315,14 @@ describe("saveSupermemoryMemoryToContainers", () => {
 
 describe("deleteSupermemoryContainer", () => {
   it("deletes the container tag on success", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        success: true,
+        containerTag: "rakazo:bot-123",
+        deletedDocumentsCount: 0,
+        deletedMemoriesCount: 0,
+      }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await deleteSupermemoryContainer("rakazo:bot-123", config);
@@ -422,7 +442,7 @@ describe("private-host transport", () => {
     const sockets = new Set<Socket>();
     const server = createServer((request, response) => {
       request.resume();
-      response.writeHead(request.url?.includes("search") ? 500 : 200, {
+      response.writeHead(request.url?.includes("memories") ? 200 : 500, {
         "content-type": "application/json",
       });
       response.flushHeaders();
@@ -439,12 +459,16 @@ describe("private-host transport", () => {
       resolveHostname: async () => [{ address: "127.0.0.1", family: 4 as const }],
     };
     try {
-      await expect(probeSupermemory(connection)).resolves.toEqual({ ok: true });
+      await expect(probeSupermemory(connection)).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("500"),
+      });
       await expect(saveSupermemoryMemory("fact", "fake:tag", connection)).resolves.toEqual({
         ok: true,
       });
-      await expect(deleteSupermemoryContainer("fake:tag", connection)).resolves.toEqual({
-        ok: true,
+      await expect(deleteSupermemoryContainer("fake:tag", connection)).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("500"),
       });
       await expect(searchSupermemory("query", "fake:tag", connection)).resolves.toEqual({
         ok: false,

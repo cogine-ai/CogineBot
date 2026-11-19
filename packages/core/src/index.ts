@@ -41,6 +41,7 @@ export * from "./http-response.js";
 export * from "./load-failure.js";
 export * from "./markdown-plain.js";
 export * from "./mcp.js";
+export * from "./memory-cleanup-observation.js";
 export * from "./message-pages.js";
 export * from "./message-presentation.js";
 export * from "./message-reactions.js";

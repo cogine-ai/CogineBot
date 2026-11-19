@@ -7567,3 +7567,11 @@ msgstr "El máximo de tokens de salida debe ser inferior al límite de contexto.
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "La conexión del modelo cambió. Vuelve a cargar e inténtalo de nuevo."
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Mensajes borrados. No se pudo confirmar la limpieza de la memoria externa."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "No se pudo confirmar la limpieza de la memoria externa."

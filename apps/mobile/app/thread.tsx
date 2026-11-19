@@ -25,6 +25,7 @@ import type { AnnouncementEvent, ComposerMention, SlashActionId, ThreadItem } fr
 import {
   abortableDelay,
   appendNewerThreadPage,
+  applyThreadClearReceipt,
   attachmentLabels,
   attachmentsForThread,
   buildComposerMentionOptions,
@@ -33,6 +34,7 @@ import {
   formatMessageTime,
   forwardProbeAfterPage,
   groupVoiceChats,
+  hasNewThreadWork,
   isApprovalAskBlock,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
@@ -42,6 +44,7 @@ import {
   liveNarrationStatusLine,
   messageAttachmentLabels,
   newestPageCards,
+  observeMemoryCleanup,
   openThreadWindow,
   pageReply,
   plainTextFromMarkdown,
@@ -52,6 +55,8 @@ import {
   resolveComposerSendPlan,
   resolvePersonaColorDef,
   selectedAskActionLabel,
+  shouldResetHistoryAfterClear,
+  threadClearCancelledRunIds,
   threadWindowMessages,
   timeSeparatorIds,
   userVisibleMessages,
@@ -821,6 +826,54 @@ function Thread({
   );
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
   const snapRef = useRef<MobileSnapshot | null>(null);
+  const seenMemoryCleanupNotices = useRef(new Map<string, boolean>());
+  const pendingMemoryCleanupClears = useRef(new Set<string>());
+  const pendingMemoryCleanupEvents = useRef(
+    new Map<
+      string,
+      {
+        seq: number;
+        owner: string;
+        subscription?: number;
+        unconfirmed?: true;
+        pending?: boolean;
+        clearEventSeq?: number;
+        cancelledRunIds?: string[];
+      }
+    >(),
+  );
+  const memoryCleanupAlertBlocked = useRef(false);
+  const memoryCleanupOwner = JSON.stringify([
+    ownerUserId,
+    sessionEpoch,
+    currentApiBaseGeneration(),
+    spaceEpoch,
+  ]);
+  const memoryCleanupOwnerRef = useRef(memoryCleanupOwner);
+  memoryCleanupOwnerRef.current = memoryCleanupOwner;
+  const showMemoryCleanupNotice = useCallback(
+    (id: string, immediate: boolean) => {
+      if (memoryCleanupAlertBlocked.current) return;
+      const key = JSON.stringify([memoryCleanupOwner, id]);
+      if (
+        !immediate &&
+        pendingMemoryCleanupClears.current.has(JSON.stringify([memoryCleanupOwner, "bot", botId]))
+      )
+        return;
+      const failed =
+        snapRef.current?.threadId === id && snapRef.current.memoryCleanupUnconfirmed === true;
+      const previous = seenMemoryCleanupNotices.current.get(key);
+      if (!immediate && previous !== undefined && (previous || !failed)) return;
+      seenMemoryCleanupNotices.current.set(key, failed);
+      Alert.alert(
+        t("Clear conversation"),
+        immediate
+          ? t("Messages cleared. External memory cleanup could not be confirmed.")
+          : t("External memory cleanup could not be confirmed."),
+      );
+    },
+    [memoryCleanupOwner, botId, t],
+  );
   // The copy saved on this device stays on screen until a live snapshot replaces it.
   const [showingSaved, setShowingSaved] = useState(false);
   const snapshotOrigin = useRef<SavedChatsScope | null>(null);
@@ -833,10 +886,78 @@ function Thread({
   const streamResponsesRef = useRef(streamResponses);
   streamResponsesRef.current = streamResponses;
 
-  function commitSnap(next: MobileSnapshot | null) {
+  function commitSnap(
+    next: MobileSnapshot | null,
+    observation?: { clearEventSeq?: number; memoryCleanupSettledAt?: number },
+  ) {
+    const previous = snapRef.current?.threadId === next?.threadId ? snapRef.current : next;
+    if (next) {
+      const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
+      if (
+        cleanup?.owner === memoryCleanupOwnerRef.current &&
+        (cleanup.subscription === undefined ||
+          cleanup.subscription === liveSubscriptionGeneration.current)
+      ) {
+        if (cleanup.clearEventSeq !== undefined)
+          observation = { ...observation, clearEventSeq: cleanup.clearEventSeq };
+        next = reconcilePendingThreadSnapshot(next);
+        if (cleanup.pending === false)
+          observation = { ...observation, memoryCleanupSettledAt: cleanup.seq };
+      }
+      pendingMemoryCleanupEvents.current.delete(next.threadId);
+      if (
+        observation?.clearEventSeq !== undefined &&
+        previous &&
+        shouldResetHistoryAfterClear(
+          previous,
+          next,
+          jumpScrollTarget.current ?? pinnedAroundRef.current?.messageId,
+        )
+      ) {
+        expandedHistoryThread.current = null;
+        pinnedAroundRef.current = null;
+        jumpScrollTarget.current = null;
+        jumpAnchor.current.release();
+      }
+      if (
+        observation?.memoryCleanupSettledAt !== undefined &&
+        next.memoryCleanupPending === false &&
+        next.memoryCleanupCursor === observation.memoryCleanupSettledAt
+      ) {
+        const key = JSON.stringify([memoryCleanupOwnerRef.current, next.threadId]);
+        if (seenMemoryCleanupNotices.current.get(key) === false)
+          seenMemoryCleanupNotices.current.delete(key);
+      }
+    }
     snapRef.current = next;
     const visible = withLiveStreamingProgress(next, streamResponsesRef.current);
     setSnap((previous) => reconcileVisibleThreadSnapshot(previous, visible));
+    return next;
+  }
+
+  function reconcilePendingThreadSnapshot(next: MobileSnapshot): MobileSnapshot {
+    const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
+    if (
+      !cleanup ||
+      cleanup.owner !== memoryCleanupOwnerRef.current ||
+      (cleanup.subscription !== undefined &&
+        cleanup.subscription !== liveSubscriptionGeneration.current)
+    )
+      return next;
+    // The shared receipt rule keeps an admitted boundary page and still applies cancellation IDs.
+    if (cleanup.clearEventSeq !== undefined)
+      next = applyThreadClearReceipt(next, {
+        clearEventSeq: cleanup.clearEventSeq,
+        cancelledRunIds: cleanup.cancelledRunIds,
+      });
+    return observeMemoryCleanup(
+      { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor ?? -1 },
+      {
+        ...(cleanup.unconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+        ...(typeof cleanup.pending === "boolean" ? { memoryCleanupPending: cleanup.pending } : {}),
+      },
+      cleanup.seq,
+    );
   }
 
   useEffect(() => {
@@ -1482,8 +1603,120 @@ function Thread({
 
   function clearConversation() {
     if (!botId) return;
-    void rpc("threads/clear", { botId })
-      .then(() => {
+    const owner = memoryCleanupOwner;
+    const targetThreadId = snapRef.current?.threadId;
+    const cleanupKey = JSON.stringify([owner, "bot", botId]);
+    if (cleanupKey && pendingMemoryCleanupClears.current.has(cleanupKey)) return;
+    if (cleanupKey) {
+      pendingMemoryCleanupClears.current.add(cleanupKey);
+      if (targetThreadId)
+        seenMemoryCleanupNotices.current.delete(JSON.stringify([owner, targetThreadId]));
+    }
+    const epoch = historyEpoch.current;
+    const requestSnapshot = snapRef.current;
+    void rpc<{
+      ok: true;
+      threadId?: string;
+      clearEventSeq?: number;
+      cancelledRunIds?: string[];
+      memoryCleanupUnconfirmed?: true;
+      memoryCleanupPending?: boolean;
+      memoryCleanupCursor?: number;
+    }>("threads/clear", { botId })
+      .then((result) => {
+        if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
+        if (
+          memoryCleanupOwnerRef.current !== owner ||
+          activeBotId.current !== botId ||
+          (targetThreadId && result.threadId && result.threadId !== targetThreadId) ||
+          (targetThreadId && snapRef.current && snapRef.current.threadId !== targetThreadId) ||
+          (result.threadId && snapRef.current && snapRef.current.threadId !== result.threadId)
+        )
+          return;
+        if (!snapRef.current && result.threadId) {
+          const previous = pendingMemoryCleanupEvents.current.get(result.threadId);
+          const sameOwner = previous?.owner === owner;
+          const receiptSeq = result.memoryCleanupCursor ?? -1;
+          const clearEventSeq = Math.max(
+            sameOwner ? (previous.clearEventSeq ?? -1) : -1,
+            result.clearEventSeq ?? -1,
+          );
+          const cancelledRunIds =
+            result.cancelledRunIds || (sameOwner && previous.cancelledRunIds)
+              ? [
+                  ...new Set([
+                    ...(sameOwner ? (previous.cancelledRunIds ?? []) : []),
+                    ...(result.cancelledRunIds ?? []),
+                  ]),
+                ]
+              : undefined;
+          const pending =
+            sameOwner && previous.seq > receiptSeq
+              ? previous.pending
+              : (result.memoryCleanupPending ?? (sameOwner ? previous.pending : undefined));
+          pendingMemoryCleanupEvents.current.set(result.threadId, {
+            seq: Math.max(sameOwner ? previous.seq : -1, receiptSeq),
+            owner,
+            ...(result.memoryCleanupUnconfirmed || (sameOwner && previous.unconfirmed)
+              ? { unconfirmed: true }
+              : {}),
+            ...(pending !== undefined ? { pending } : {}),
+            ...(clearEventSeq >= 0
+              ? {
+                  clearEventSeq,
+                  cancelledRunIds,
+                }
+              : {}),
+          });
+          return;
+        }
+        if (snapRef.current) {
+          seenMemoryCleanupNotices.current.delete(
+            JSON.stringify([owner, snapRef.current.threadId]),
+          );
+          commitSnap(
+            observeMemoryCleanup(
+              snapRef.current,
+              result,
+              result.memoryCleanupCursor ??
+                snapRef.current.memoryCleanupCursor ??
+                snapRef.current.cursor ??
+                -1,
+              snapRef.current.cursor ?? -1,
+            ),
+            {
+              memoryCleanupSettledAt:
+                result.memoryCleanupPending === false ? result.memoryCleanupCursor : undefined,
+            },
+          );
+        }
+        if (
+          (snapRef.current?.memoryCleanupUnconfirmed || snapRef.current?.memoryCleanupPending) &&
+          (result.memoryCleanupUnconfirmed || result.memoryCleanupPending) &&
+          snapRef.current
+        ) {
+          showMemoryCleanupNotice(snapRef.current.threadId, true);
+        } else if (
+          snapRef.current?.memoryCleanupUnconfirmed ||
+          snapRef.current?.memoryCleanupPending
+        ) {
+          showMemoryCleanupNotice(snapRef.current.threadId, false);
+        }
+        if (epoch !== historyEpoch.current) return;
+        if (snapRef.current && result.clearEventSeq !== undefined) {
+          commitSnap(
+            applyThreadClearReceipt(snapRef.current, {
+              clearEventSeq: result.clearEventSeq,
+              cancelledRunIds: result.cancelledRunIds,
+            }),
+            { clearEventSeq: result.clearEventSeq },
+          );
+          return;
+        }
+        if (snapRef.current && hasNewThreadWork(snapRef.current, requestSnapshot)) {
+          void refresh().catch(() => undefined);
+          return;
+        }
         expandedHistoryThread.current = null;
         pinnedAroundRef.current = null;
         jumpScrollTarget.current = null;
@@ -1495,9 +1728,23 @@ function Thread({
             : snapRef.current,
         );
       })
-      .catch((err: unknown) =>
-        Alert.alert(t("Could not clear conversation"), errorText(err, t("Try again."))),
-      );
+      .catch((err: unknown) => {
+        Alert.alert(t("Could not clear conversation"), errorText(err, t("Try again.")), [
+          {
+            text: t("Close"),
+            onPress: () => {
+              if (cleanupKey) pendingMemoryCleanupClears.current.delete(cleanupKey);
+              if (
+                memoryCleanupOwnerRef.current === owner &&
+                activeBotId.current === botId &&
+                (!targetThreadId || snapRef.current?.threadId === targetThreadId) &&
+                (snapRef.current?.memoryCleanupUnconfirmed || snapRef.current?.memoryCleanupPending)
+              )
+                showMemoryCleanupNotice(snapRef.current.threadId, false);
+            },
+          },
+        ]);
+      });
   }
 
   const botActions = [
@@ -1640,8 +1887,13 @@ function Thread({
       );
       snapshotOrigin.current = scope;
       pendingSave.current = null;
-      writeSavedThread(scope, savedChatTarget(committed), committed);
-      commitSnap(committed);
+      const accepted = commitSnap(committed, {
+        memoryCleanupSettledAt:
+          next.memoryCleanupPending === false
+            ? (next.memoryCleanupCursor ?? next.cursor)
+            : undefined,
+      });
+      if (accepted) writeSavedThread(scope, savedChatTarget(accepted), accepted);
       setShowingSaved(false);
     }
     if (isCurrentTarget(targetBotId, targetGroupId)) {
@@ -1668,7 +1920,7 @@ function Thread({
       return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const atDispatch = snapRef.current;
+    const atDispatch = reconcilePendingThreadSnapshot(mergeMobileSnapshot(snapRef.current, snap));
     const requestCursor = Math.max(
       snap.cursor ?? -1,
       atDispatch?.threadId === snap.threadId ? (atDispatch.cursor ?? -1) : -1,
@@ -1686,7 +1938,7 @@ function Thread({
       return;
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
-    const latest = mergeMobileSnapshot(snapRef.current, snap);
+    const latest = reconcilePendingThreadSnapshot(mergeMobileSnapshot(snapRef.current, snap));
     const page = protectMobileMessagePage(latest, requestedPage, requestCursor);
     const targetInPage = Boolean(page?.messages.some((message) => message.id === target.messageId));
     const opened = targetInPage && page ? openThreadWindow(latest, page) : null;
@@ -1972,13 +2224,80 @@ function Thread({
                 activeGroupId.current !== groupId ||
                 (event.threadId &&
                   snapRef.current?.threadId &&
-                  event.threadId !== snapRef.current.threadId)
+                  event.threadId !== snapRef.current.threadId &&
+                  !(
+                    (event.type === "thread.meta" &&
+                      (event.payload?.memoryCleanupUnconfirmed === true ||
+                        typeof event.payload?.memoryCleanupPending === "boolean")) ||
+                    (event.type === "thread.cleared" && event.seq !== undefined)
+                  ))
               )
                 return;
               replyEventObserver.current(event);
               if (event.type === "thread.message.updated") refreshDelegatedApprovals.current();
               cursor = Math.max(cursor, event.seq ?? -1);
               retryMs = 250;
+              if (
+                event.threadId &&
+                snapRef.current?.threadId !== event.threadId &&
+                ((event.type === "thread.meta" &&
+                  (event.payload?.memoryCleanupUnconfirmed === true ||
+                    typeof event.payload?.memoryCleanupPending === "boolean")) ||
+                  (event.type === "thread.cleared" && event.seq !== undefined))
+              ) {
+                const entry = pendingMemoryCleanupEvents.current.get(event.threadId);
+                const previous =
+                  entry?.owner === memoryCleanupOwnerRef.current &&
+                  (entry.subscription === undefined ||
+                    entry.subscription === subscriptionGeneration)
+                    ? entry
+                    : undefined;
+                const clearEventSeq =
+                  event.type === "thread.cleared"
+                    ? Math.max(event.seq!, previous?.clearEventSeq ?? -1)
+                    : previous?.clearEventSeq;
+                const cleanup = observeMemoryCleanup(
+                  {
+                    memoryCleanupCursor: previous?.seq ?? -1,
+                    ...(previous?.unconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+                    ...(typeof previous?.pending === "boolean"
+                      ? { memoryCleanupPending: previous.pending }
+                      : {}),
+                  },
+                  {
+                    ...event.payload,
+                    ...(event.type === "thread.cleared"
+                      ? { memoryCleanupPending: event.payload?.memoryCleanupPending === true }
+                      : {}),
+                  },
+                  event.seq ?? -1,
+                );
+                pendingMemoryCleanupEvents.current.set(event.threadId, {
+                  seq: cleanup.memoryCleanupCursor,
+                  owner: memoryCleanupOwnerRef.current,
+                  ...(previous && previous.subscription === undefined
+                    ? {}
+                    : { subscription: subscriptionGeneration }),
+                  ...(clearEventSeq !== undefined
+                    ? {
+                        clearEventSeq,
+                        cancelledRunIds: [
+                          ...new Set([
+                            ...(previous?.cancelledRunIds ?? []),
+                            ...(event.type === "thread.cleared"
+                              ? (threadClearCancelledRunIds(event.payload) ?? [])
+                              : []),
+                          ]),
+                        ],
+                      }
+                    : {}),
+                  ...(cleanup.memoryCleanupUnconfirmed ? { unconfirmed: true } : {}),
+                  ...(typeof cleanup.memoryCleanupPending === "boolean"
+                    ? { pending: cleanup.memoryCleanupPending }
+                    : {}),
+                });
+                return;
+              }
               if (
                 event.type === "thread.progress" ||
                 event.type === "agent.tool.called" ||
@@ -1989,6 +2308,9 @@ function Thread({
                 event.type === "thread.message.reaction" ||
                 event.type === "thread.subagent" ||
                 event.type === "thread.cloud_agent" ||
+                (event.type === "thread.meta" &&
+                  (event.payload?.memoryCleanupUnconfirmed === true ||
+                    typeof event.payload?.memoryCleanupPending === "boolean")) ||
                 event.type === "thread.cleared" ||
                 event.type === "run.waiting_input" ||
                 event.type === "run.waiting_limit" ||
@@ -1997,17 +2319,18 @@ function Thread({
                 event.type === "computer.takeover.released" ||
                 isRunTerminalEvent(event)
               ) {
-                if (
-                  event.type === "thread.cleared" &&
-                  (event.seq === undefined || event.seq > (snapRef.current?.cursor ?? -1))
-                ) {
+                if (event.type === "thread.cleared" && event.seq === undefined) {
                   expandedHistoryThread.current = null;
                   pinnedAroundRef.current = null;
                   jumpScrollTarget.current = null;
                   jumpAnchor.current.release();
                   historyEpoch.current += 1;
                 }
-                commitSnap(applyMobileThreadEvent(snapRef.current, event));
+                commitSnap(applyMobileThreadEvent(snapRef.current, event), {
+                  clearEventSeq: event.type === "thread.cleared" ? event.seq : undefined,
+                  memoryCleanupSettledAt:
+                    event.payload?.memoryCleanupPending === false ? event.seq : undefined,
+                });
               }
               if (event.type === "bot.updated") {
                 void refreshMentionBots();
@@ -2563,6 +2886,50 @@ function Thread({
     error === "platform_model_forbidden" ||
     feedback.unsentSends.some((attempt) => attempt.error === "platform_model_forbidden");
   const runError = snap?.run?.status === "failed" ? (snap.run.error ?? null) : null;
+  useEffect(() => {
+    memoryCleanupAlertBlocked.current = Boolean(
+      error || runError || modelPolicyRefusal || !focused,
+    );
+  }, [error, runError, modelPolicyRefusal, focused]);
+  useEffect(() => {
+    const sameTarget = botId ? snap?.botId === botId : snap?.groupId === groupId;
+    if (
+      !showingSaved &&
+      sameTarget &&
+      snap?.memoryCleanupPending === false &&
+      !snap.memoryCleanupUnconfirmed
+    ) {
+      const key = JSON.stringify([memoryCleanupOwner, snap.threadId]);
+      if (seenMemoryCleanupNotices.current.get(key) === false)
+        seenMemoryCleanupNotices.current.delete(key);
+    }
+    if (
+      focused &&
+      !error &&
+      !runError &&
+      !modelPolicyRefusal &&
+      sameTarget &&
+      (snap?.memoryCleanupUnconfirmed || snap?.memoryCleanupPending)
+    ) {
+      showMemoryCleanupNotice(snap.threadId, false);
+    }
+  }, [
+    botId,
+    groupId,
+    focused,
+    error,
+    runError,
+    modelPolicyRefusal,
+    memoryCleanupOwner,
+    showingSaved,
+    snap?.botId,
+    snap?.groupId,
+    snap?.threadId,
+    snap?.memoryCleanupUnconfirmed,
+    snap?.memoryCleanupPending,
+    snap?.memoryCleanupCursor,
+    showMemoryCleanupNotice,
+  ]);
   useSyncExternalStore(
     subscribeRejectedSessionDraft,
     rejectedSessionDraftRevision,

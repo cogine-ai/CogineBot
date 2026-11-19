@@ -7567,3 +7567,11 @@ msgstr "최대 출력 토큰 수는 컨텍스트 한도보다 작아야 합니�
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "모델 연결이 변경되었습니다. 새로고침한 후 다시 시도하세요."
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "메시지가 삭제되었습니다. 외부 메모리 정리를 확인할 수 없습니다."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "외부 메모리 정리를 확인할 수 없습니다."

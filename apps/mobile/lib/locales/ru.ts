@@ -1,4 +1,8 @@
 export const RU_MESSAGES: Record<string, string> = {
+  "Messages cleared. External memory cleanup could not be confirmed.":
+    "Сообщения удалены. Не удалось подтвердить очистку внешней памяти.",
+  "External memory cleanup could not be confirmed.":
+    "Не удалось подтвердить очистку внешней памяти.",
   "Sending to channel": "Отправляется в канал",
   "Accepted by channel": "Принято каналом",
   "Delivered to channel": "Доставлено в канал",

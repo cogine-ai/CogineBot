@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import type { ThreadScrollState } from "@rakazo/core";
 import * as core from "@rakazo/core";
 import { openThreadWindow, withLiveStreamingProgress } from "@rakazo/core";
-import { act, useRef, useState } from "react";
+import { act, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
@@ -33,7 +33,7 @@ const apiHandlers = ts
   .transpileModule(
     `${apiSource
       .slice(
-        apiSource.indexOf("function observeMobileMessages("),
+        apiSource.indexOf("function observeMobileActivity("),
         apiSource.indexOf("const MESSAGING_PROVIDER_LABELS"),
       )
       .replaceAll(
@@ -66,6 +66,234 @@ const olderHandlers = ts.transpileModule(
   `${commitHandler}\n${source.slice(source.indexOf("  async function loadOlderMessages()"), source.indexOf("  const markReadIfVisible"))}\nreturn { older: loadOlderMessages, commit: commitSnap };`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
+
+// Read both the callback and its real dependency list for React batching tests.
+const screenFile = ts.createSourceFile(
+  "thread.tsx",
+  source,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX,
+);
+let noticeDeclaration = "";
+let noticeEffect = "";
+let liveCallback = "";
+function collectCleanupWiring(node: ts.Node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(screenFile) === "showMemoryCleanupNotice")
+    noticeDeclaration = `const ${node.getText(screenFile)};`;
+  if (
+    ts.isCallExpression(node) &&
+    node.expression.getText(screenFile) === "useEffect" &&
+    node.arguments[0]?.getText(screenFile).includes("snap?.memoryCleanupUnconfirmed")
+  )
+    noticeEffect = `${node.getText(screenFile)};`;
+  if (ts.isCallExpression(node) && node.expression.getText(screenFile) === "subscribeThread")
+    liveCallback = node.arguments[2]!.getText(screenFile);
+  ts.forEachChild(node, collectCleanupWiring);
+}
+collectCleanupWiring(screenFile);
+
+function liveCleanupCallback(scope: Record<string, unknown>, commit: unknown) {
+  const runtime = {
+    abort: new AbortController(),
+    sessionGeneration: 1,
+    selectionGeneration: 1,
+    subscriptionGeneration: 1,
+    currentSessionGeneration: () => 1,
+    currentSpaceSelectionGeneration: () => 1,
+    replyEventObserver: { current: vi.fn() },
+    refreshDelegatedApprovals: { current: vi.fn() },
+    refreshMentionBots: vi.fn(),
+    isRunTerminalEvent: () => false,
+    readVisibleTarget: { current: null },
+    markReadIfVisible: vi.fn(),
+    ...scope,
+    commitSnap: commit,
+  };
+  const code = ts.transpileModule(`let cursor = 0; let retryMs = 250; return (${liveCallback});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return new Function(...Object.keys(runtime), code)(...Object.values(runtime)) as (
+    event: Parameters<typeof api.applyMobileThreadEvent>[1],
+  ) => void;
+}
+
+it.each(["settled", "stale", "omitted", "failed"])(
+  "uses the real React effect dependencies for a batched %s pending interval",
+  async (mode) => {
+    const initial: MobileSnapshot = {
+      botId: "target-1",
+      threadId: "thread-1",
+      cursor: 20,
+      messages: [],
+      olderCursor: null,
+      run: null,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 20,
+      ...(mode === "failed" ? { memoryCleanupUnconfirmed: true as const } : {}),
+    };
+    const alert = vi.fn();
+    const stable = {
+      ...raceScope(initial, "botId", async () => undefined),
+      memoryCleanupOwner: "owner-one",
+      memoryCleanupAlertBlocked: { current: false },
+      seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
+      pendingMemoryCleanupClears: { current: new Set<string>() },
+      Alert: { alert },
+      showingSaved: false,
+      focused: true,
+      error: null,
+      runError: null,
+      modelPolicyRefusal: false,
+      useCallback,
+      useEffect,
+    };
+    let emit!: ReturnType<typeof liveCleanupCallback>;
+    function Probe() {
+      const [snap, setSnap] = useState<MobileSnapshot | null>(initial);
+      const runtime = { ...stable, snap, setSnap };
+      const code = ts.transpileModule(
+        [commitHandler, noticeDeclaration, noticeEffect, "return commitSnap;"].join("\n"),
+        { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+      ).outputText;
+      const commit = new Function(...Object.keys(runtime), code)(...Object.values(runtime));
+      emit = liveCleanupCallback(runtime, commit);
+      return null;
+    }
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(() => root.render(<Probe />));
+      expect(alert).toHaveBeenCalledOnce();
+      await act(() => {
+        emit({
+          type: "thread.meta",
+          threadId: initial.threadId,
+          botId: initial.botId,
+          seq: mode === "stale" ? 19 : 21,
+          payload:
+            mode === "omitted" ? { title: "Unrelated update" } : { memoryCleanupPending: false },
+        });
+        emit({
+          type: "thread.meta",
+          threadId: initial.threadId,
+          botId: initial.botId,
+          seq: 22,
+          payload: { memoryCleanupPending: true },
+        });
+      });
+      expect(alert).toHaveBeenCalledTimes(mode === "settled" ? 2 : 1);
+    } finally {
+      await act(() => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+it.each(
+  (["botId", "groupId"] as const).flatMap((targetKey) =>
+    ["in-flight", "before-page", "newer-metadata", "other-session", "other-subscription"].flatMap(
+      (timing) =>
+        (timing.startsWith("other-") ? ["cold"] : ["cold", "other-thread"]).map((origin) => ({
+          targetKey,
+          timing,
+          origin,
+        })),
+    ),
+  ),
+)(
+  "protects a $origin $targetKey search page from a live clear ($timing)",
+  async ({ targetKey, timing, origin }) => {
+    const initial: MobileSnapshot = {
+      threadId: "target-thread",
+      [targetKey]: "target-1",
+      cursor: 5,
+      olderCursor: null,
+      run: null,
+      messages: [
+        {
+          id: timing === "before-page" ? "deleted" : "anchor",
+          seq: 1,
+          role: "user",
+          blocks: [{ kind: "text", text: "Search anchor" }],
+        },
+      ],
+    };
+    const page = deferred<unknown>();
+    const started = deferred<void>();
+    const getCaptured = deferred<void>();
+    const getReleased = deferred<MobileSnapshot>();
+    const before =
+      origin === "other-thread"
+        ? {
+            ...initial,
+            threadId: "other-thread",
+            cursor: 100,
+            messages: [{ ...initial.messages[0]!, id: "other-thread-message" }],
+          }
+        : null;
+    const scope = {
+      ...raceScope(before, targetKey, async (method) => {
+        if (method === "threads/get") {
+          getCaptured.resolve();
+          return timing === "before-page" ? getReleased.promise : initial;
+        }
+        started.resolve();
+        return page.promise;
+      }),
+      seenMemoryCleanupNotices: { current: new Map<string, boolean>() },
+      currentSessionGeneration: () => (timing === "other-session" ? 2 : 1),
+    };
+    if (timing === "other-subscription") scope.liveSubscriptionGeneration.current = 2;
+    const callbacks = new Function(...Object.keys(scope), raceHandlers)(...Object.values(scope));
+    const emit = liveCleanupCallback(scope, callbacks.commit);
+    const clear = () =>
+      emit({
+        type: "thread.cleared",
+        threadId: initial.threadId,
+        ...(targetKey === "botId" ? { botId: "target-1" } : {}),
+        seq: 12,
+        payload: {},
+      });
+    const jump = callbacks.jump({ [targetKey]: "target-1", messageId: "anchor" });
+    await getCaptured.promise;
+    if (timing === "before-page") {
+      clear();
+      getReleased.resolve(initial);
+    }
+    await started.promise;
+    if (timing === "newer-metadata")
+      emit({
+        type: "thread.meta",
+        threadId: initial.threadId,
+        ...(targetKey === "botId" ? { botId: "target-1" } : {}),
+        seq: 20,
+        payload: { memoryCleanupPending: true },
+      });
+    if (timing !== "before-page") clear();
+    expect(scope.snapRef.current).toBe(before);
+    page.resolve({
+      threadId: initial.threadId,
+      messages: [{ ...initial.messages[0]!, id: "anchor" }],
+      olderCursor: null,
+    });
+    await jump;
+    const rejected = timing === "in-flight" || timing === "newer-metadata";
+    expect(scope.snapRef.current?.messages.some((message) => message.id === "anchor")).toBe(
+      !rejected,
+    );
+    expect(scope.pinnedAroundRef.current?.messageId ?? null).toBe(rejected ? null : "anchor");
+    if (rejected || timing === "before-page") {
+      expect(scope.snapRef.current?.observedClearSeq).toBe(12);
+      expect(scope.historyEpoch.current).toBe(0);
+    }
+    if (timing === "newer-metadata")
+      expect(scope.snapRef.current).toMatchObject({
+        memoryCleanupPending: true,
+        memoryCleanupCursor: 20,
+      });
+  },
+);
 
 describe("mobile search jump", () => {
   it.each(["botId", "groupId"] as const)(
@@ -111,6 +339,9 @@ describe("mobile search jump", () => {
           liveSavedChatsScope: async () => ({}),
           isIntegrationsScopeCurrent: () => true,
           snapshotOrigin: useRef(null),
+          pendingMemoryCleanupEvents: useRef(new Map()),
+          memoryCleanupOwnerRef: useRef("owner-one"),
+          liveSubscriptionGeneration: useRef(1),
           setShowingSaved: vi.fn(),
           historyEpoch: useRef(0),
           jumpGeneration: useRef(0),
@@ -131,6 +362,7 @@ describe("mobile search jump", () => {
           openThreadWindow,
           ...api,
           withLiveStreamingProgress,
+          observeMemoryCleanup: core.observeMemoryCleanup,
           reconcileVisibleThreadSnapshot,
         };
         jump = new Function(...Object.keys(scope), handlers)(...Object.values(scope));
@@ -303,6 +535,9 @@ function raceScope(
     liveSavedChatsScope: async () => ({}),
     isIntegrationsScopeCurrent: () => true,
     snapshotOrigin: { current: null },
+    pendingMemoryCleanupEvents: { current: new Map() },
+    memoryCleanupOwnerRef: { current: "owner-one" },
+    liveSubscriptionGeneration: { current: 1 },
     setShowingSaved: vi.fn(),
     historyEpoch: { current: 0 },
     jumpGeneration: { current: 0 },

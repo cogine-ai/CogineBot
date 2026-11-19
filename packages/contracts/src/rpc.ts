@@ -303,6 +303,7 @@ const threadSendResult = z.object({
   taskId: Id,
   runId: Id,
   seq: z.number().int(),
+  eventSeq: z.number().int().nonnegative().optional(),
   runIds: z.array(Id).optional(),
   deliveredImageHandling: threadSendFields.shape.imageHandling,
 });
@@ -637,7 +638,17 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
-    clear: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    clear: oc.input(threadTarget).output(
+      z.object({
+        ok: z.literal(true),
+        threadId: Id.optional(),
+        clearEventSeq: z.number().int().nonnegative().optional(),
+        cancelledRunIds: z.array(Id).optional(),
+        memoryCleanupUnconfirmed: z.literal(true).optional(),
+        memoryCleanupPending: z.boolean().optional(),
+        memoryCleanupCursor: z.number().int().min(-1).optional(),
+      }),
+    ),
     delegatedApprovals: oc
       .input(botId.extend({ dispatchMessageIds: z.array(Id).max(100) }))
       .output(z.array(DelegatedApprovalSchema)),

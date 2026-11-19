@@ -3,7 +3,7 @@ import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import type { PlatformModelAllowlist } from "@rakazo/core";
 import { blocksToAgentHistoryText, PlatformModelForbiddenError } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import { recordUsage, runAsSystem } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
 import { formatCurrentTimeInstruction } from "./current-time.js";
@@ -217,6 +217,7 @@ export interface CompactHistoryDeps {
   runtime: AgentRuntime;
   jobs: JobPublisher;
   memoryProviders: MemoryProviderResolver;
+  events: Pick<ThreadEvents, "beginMemorySave" | "finishMemorySave" | "settleMemoryCleanup">;
   platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   deploymentModelConfigured?: boolean;
@@ -501,7 +502,16 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
   } catch (error) {
     getLogger().error("Failed to load semantic memory provider for history compaction", error);
   }
-  let externalSaveAttempted = false;
+  let staleSavedMemory = false;
+  let saveCompletionFailed = false;
+  let registeredSave = false;
+  const saveIntent = {
+    spaceId: thread.spaceId,
+    threadId,
+    botId: thread.botId,
+    generation: previousGeneration,
+    token: `save:${previousGeneration}:${lastSeq}`,
+  };
   const memoryContext = {
     operationId: `history-compact:${threadId}`,
     traceId: `history-compact:${threadId}`,
@@ -511,56 +521,90 @@ export async function compactHistory(deps: CompactHistoryDeps, threadId: string)
     signal: new AbortController().signal,
   };
   if (semanticMemory) {
-    externalSaveAttempted = true;
+    let registered = false;
     try {
-      const result = await semanticMemory.provider.save(
-        {
-          content: summary,
-          scope: "isolated",
-          botId: thread.botId,
-          source: { kind: "history", generation: previousGeneration },
-        },
-        memoryContext,
-      );
-      if (!result.ok) {
-        getLogger().error(`Failed to save compacted semantic memory: ${result.error}`);
-      }
+      registered = await deps.events.beginMemorySave(saveIntent);
     } catch (error) {
-      getLogger().error("Failed to save compacted memory", error);
+      getLogger().error("Could not register semantic memory save", error);
+    }
+    if (registered) {
+      registeredSave = true;
+      try {
+        const result = await semanticMemory.provider.save(
+          {
+            content: summary,
+            scope: "isolated",
+            botId: thread.botId,
+            source: { kind: "history", generation: previousGeneration },
+          },
+          memoryContext,
+        );
+        if (!result.ok)
+          getLogger().error(`Failed to save compacted semantic memory: ${result.error}`);
+      } catch (error) {
+        getLogger().error("Failed to save compacted memory", error);
+      }
     }
   }
-
-  const latest = await deps.prisma.thread.findUniqueOrThrow({
-    where: { id: threadId },
-    select: {
-      nextMessageSeq: true,
-      historyCompactedUpToSeq: true,
-      historyCompactionGeneration: true,
-      historyCompactionRetryAfterSeq: true,
-    },
-  });
-
-  // A clear can commit and purge while the network save above is still in flight. Purge the old
-  // generation again so that the late save cannot leave cleared conversation data behind.
-  if (
-    externalSaveAttempted &&
-    semanticMemory &&
-    latest.historyCompactionGeneration !== previousGeneration
-  ) {
+  let latest:
+    | {
+        nextMessageSeq: number;
+        historyCompactedUpToSeq: number | null;
+        historyCompactionGeneration: number;
+        historyCompactionRetryAfterSeq: number | null;
+      }
+    | undefined;
+  let backlogError: unknown;
+  try {
+    latest = await deps.prisma.thread.findUniqueOrThrow({
+      where: { id: threadId },
+      select: {
+        nextMessageSeq: true,
+        historyCompactedUpToSeq: true,
+        historyCompactionGeneration: true,
+        historyCompactionRetryAfterSeq: true,
+      },
+    });
+  } catch (error) {
+    backlogError = error;
+  }
+  // Complete ownership after the last backlog read, even when that read failed.
+  if (semanticMemory && registeredSave) {
+    try {
+      staleSavedMemory = await deps.events.finishMemorySave(saveIntent);
+    } catch (error) {
+      saveCompletionFailed = true;
+      getLogger().error("Could not settle semantic memory save", error);
+    }
+  }
+  if (saveCompletionFailed && latest && latest.historyCompactionGeneration !== previousGeneration) {
+    staleSavedMemory = true;
+  }
+  if (semanticMemory && staleSavedMemory) {
+    let unconfirmed = false;
     try {
       const removed = await semanticMemory.provider.purgeHistory(
         { botId: thread.botId, generations: [previousGeneration] },
         memoryContext,
       );
-      if (!removed.ok) {
+      unconfirmed = !removed.ok;
+      if (!removed.ok)
         getLogger().error(
           `history.compact could not purge stale semantic memory: ${removed.error}`,
         );
-      }
     } catch (error) {
+      unconfirmed = true;
       getLogger().error("history.compact could not purge stale semantic memory", error);
     }
+    try {
+      await deps.events.settleMemoryCleanup({ ...saveIntent, unconfirmed });
+    } catch (error) {
+      // Keep the original responsibility; never substitute compaction in a newer generation.
+      getLogger().error("Could not settle stale semantic memory cleanup", error);
+    }
   }
+
+  if (!latest) throw backlogError;
 
   // Drain a pre-existing backlog at queue speed rather than one batch per completed run, which
   // for a thread that accumulated thousands of messages before semantic memory was enabled would

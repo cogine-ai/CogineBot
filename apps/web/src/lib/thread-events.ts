@@ -15,10 +15,14 @@ import {
   RUN_TRIGGERS,
 } from "@rakazo/contracts";
 import {
+  applyThreadClearReceipt,
   isActive,
   isBackgroundRunTrigger,
   isRunTerminalEvent,
   mergeThreadHistory,
+  mergeThreadMemoryCleanup,
+  observeMemoryCleanup,
+  observeThreadRuns,
   prependThreadHistoryPage,
   progressMessageId,
   protectObservedThreadPage,
@@ -28,18 +32,20 @@ import {
   sanitizeRunErrorDetails,
   subagentBlockFromPayload,
   takeLiveMessage,
+  threadClearCancelledRunIds,
   updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
 
 // A durable event version is independent of the message's position in history.
 type ObservedThreadMessage = ThreadMessage & { observedEventSeq?: number };
+type ObservedThreadRun = Run & { observedEventSeq?: number };
 type ObservedThreadSnapshot = ThreadSnapshot & { observedClearSeq?: number };
 
-function observeThreadMessages(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
+function observeThreadActivity(snapshot: ThreadSnapshot, authoritative = false): ThreadSnapshot {
+  snapshot = observeThreadRuns(snapshot, authoritative);
   let changed = false;
   const messages = snapshot.messages.map((message) => {
-    if (message.id.startsWith("progress:") || message.id.startsWith("subagent:")) return message;
     const version = (message as ObservedThreadMessage).observedEventSeq;
     if ((!authoritative && version !== undefined) || version === snapshot.cursor) return message;
     changed = true;
@@ -115,7 +121,7 @@ export function activeThreadRuns(
  */
 export function applyThreadSendReceipt(
   snapshot: ThreadSnapshot | null,
-  receipt: { botId: string; runId: string; taskId: string; createdAt?: string },
+  receipt: { botId: string; runId: string; taskId: string; eventSeq?: number; createdAt?: string },
   terminalRunIds: ReadonlySet<string> = new Set(),
 ): ThreadSnapshot | null {
   if (
@@ -123,14 +129,25 @@ export function applyThreadSendReceipt(
     snapshot.groupId ||
     snapshot.botId !== receipt.botId ||
     snapshot.run?.id === receipt.runId ||
-    terminalRunIds.has(receipt.runId)
+    terminalRunIds.has(receipt.runId) ||
+    (receipt.eventSeq === undefined &&
+      (snapshot as ObservedThreadSnapshot).observedClearSeq !== undefined) ||
+    (receipt.eventSeq !== undefined && receipt.eventSeq <= (threadClearSeq(snapshot) ?? -1))
   ) {
     return snapshot;
   }
   const currentRuns = activeThreadRuns(snapshot);
-  if (currentRuns.some((run) => isActive(run.status as RunStatus))) return snapshot;
+  const latestRunEvent = Math.max(
+    snapshot.cursor,
+    ...currentRuns.map((run) => (run as ObservedThreadRun).observedEventSeq ?? -1),
+  );
+  if (
+    currentRuns.some((run) => isActive(run.status as RunStatus)) &&
+    (receipt.eventSeq === undefined || receipt.eventSeq <= latestRunEvent)
+  )
+    return snapshot;
   const createdAt = receipt.createdAt ?? new Date().toISOString();
-  const run: Run = {
+  const run: ObservedThreadRun = {
     id: receipt.runId,
     botId: receipt.botId,
     threadId: snapshot.threadId,
@@ -144,6 +161,7 @@ export function applyThreadSendReceipt(
     startedAt: null,
     completedAt: null,
     createdAt,
+    ...(receipt.eventSeq !== undefined ? { observedEventSeq: receipt.eventSeq } : {}),
   };
   return { ...snapshot, run, activeRuns: [run] };
 }
@@ -183,11 +201,12 @@ export function mergeThreadSnapshot(
   // A threads.get started before SSE caught up must not wipe newer live state
   // (e.g. ask cards applied after send's post-refresh request was already in flight).
   if (prev && prev.threadId === next.threadId && prev.cursor > next.cursor) return prev;
-  const merged = mergeThreadHistory(
-    prev ? observeThreadMessages(prev) : null,
-    observeThreadMessages(next, true),
+  let merged = mergeThreadHistory(
+    prev ? observeThreadActivity(prev) : null,
+    observeThreadActivity(next, true),
     preserveLoadedHistory && next.olderCursor !== null,
   );
+  merged = mergeThreadMemoryCleanup(prev, next, merged);
   const clearSeq = Math.max(
     prev?.threadId === next.threadId ? (threadClearSeq(prev) ?? -1) : -1,
     threadClearSeq(next) ?? -1,
@@ -216,7 +235,8 @@ export function reconcileRefreshedThread(
     // A subscription can advance the cursor with progress before the send-triggered refresh
     // returns the new run record. Hydrate that matching run without rolling the transcript back.
     // Optimistic stop removes the matching progress message, so an older refresh cannot revive it.
-    const refreshedRun = snap.run;
+    const observed = observeThreadRuns(snap, true);
+    const refreshedRun = observed.run;
     const hasMatchingLiveProgress = Boolean(
       refreshedRun &&
         prev.messages.some(
@@ -229,7 +249,7 @@ export function reconcileRefreshedThread(
         snapshot: {
           ...prev,
           run: refreshedRun,
-          activeRuns: snap.activeRuns,
+          activeRuns: observed.activeRuns,
           computer: snap.computer,
         },
         computer: snap.computer ?? null,
@@ -282,7 +302,7 @@ export function protectThreadMessagePage<TPage extends ThreadMessagePage>(
   requestCursor = prev?.cursor ?? -1,
 ): TPage | null {
   return protectObservedThreadPage(
-    prev ? observeThreadMessages(prev) : null,
+    prev ? observeThreadActivity(prev) : null,
     page,
     requestCursor,
     prev ? threadClearSeq(prev) : undefined,
@@ -296,12 +316,15 @@ export function prependThreadMessagePage(
 ): ThreadSnapshot | null {
   const protectedPage = protectThreadMessagePage(prev, page, requestCursor);
   return protectedPage && prev
-    ? prependThreadHistoryPage(observeThreadMessages(prev), protectedPage)
+    ? prependThreadHistoryPage(observeThreadActivity(prev), protectedPage)
     : prev;
 }
 
 export function isThreadSnapshotEvent(event: ProductEvent): boolean {
   return (
+    (event.type === "thread.meta" &&
+      (event.payload.memoryCleanupUnconfirmed === true ||
+        typeof event.payload.memoryCleanupPending === "boolean")) ||
     event.type === "thread.cleared" ||
     event.type === "thread.progress" ||
     event.type === "thread.subagent" ||
@@ -328,13 +351,43 @@ export function reduceThreadSnapshot(
 ): ThreadSnapshot | null {
   if (!prev || event.threadId !== prev.threadId) return prev;
   const original = prev;
+  const cleanup = observeMemoryCleanup(
+    prev,
+    {
+      ...event.payload,
+      ...(event.type === "thread.cleared"
+        ? { memoryCleanupPending: event.payload.memoryCleanupPending === true }
+        : {}),
+    },
+    event.seq,
+    prev.cursor,
+  );
   const clearSeq = threadClearSeq(prev);
+  const cancelledRunIds =
+    event.type === "thread.cleared" ? threadClearCancelledRunIds(event.payload) : undefined;
+  if (cancelledRunIds !== undefined) {
+    const cleared = applyThreadClearReceipt(
+      observeThreadActivity(observeThreadClear(prev, clearSeq)),
+      { clearEventSeq: event.seq, cancelledRunIds },
+    );
+    if (cleared === prev && cleanup === prev && event.seq <= prev.cursor) return prev;
+    return {
+      ...cleared,
+      cursor: Math.max(prev.cursor, event.seq),
+      memoryCleanupCursor: cleanup.memoryCleanupCursor,
+      memoryCleanupPending: cleanup.memoryCleanupPending,
+      ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    };
+  }
   if (event.type === "thread.cleared" && event.seq <= prev.cursor) {
     if (event.seq <= (clearSeq ?? -1)) return prev;
-    const observed = observeThreadMessages(prev);
+    const observed = observeThreadActivity(prev);
     return observeThreadClear(
       {
         ...observed,
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
         messages: observed.messages.filter(
           (message) =>
             ((message as ObservedThreadMessage).observedEventSeq ?? original.cursor) > event.seq,
@@ -342,6 +395,18 @@ export function reduceThreadSnapshot(
       },
       event.seq,
     );
+  }
+  if (
+    event.type === "thread.meta" &&
+    (event.payload.memoryCleanupUnconfirmed === true ||
+      typeof event.payload.memoryCleanupPending === "boolean")
+  ) {
+    return cleanup === prev && event.seq <= prev.cursor
+      ? prev
+      : {
+          ...observeThreadActivity(observeThreadClear(cleanup, clearSeq)),
+          cursor: Math.max(prev.cursor, event.seq),
+        };
   }
   const messageEvent =
     event.type === "thread.message.created" ||
@@ -360,7 +425,12 @@ export function reduceThreadSnapshot(
   )
     return prev;
   const cursor = Math.max(prev.cursor, event.seq);
-  prev = observeThreadMessages(observeThreadClear(prev, clearSeq));
+  prev = observeThreadActivity(
+    observeThreadClear(
+      { ...prev, memoryCleanupCursor: prev.memoryCleanupCursor ?? prev.cursor },
+      clearSeq,
+    ),
+  );
   if (event.type === "thread.cleared") {
     return observeThreadClear(
       {
@@ -370,6 +440,9 @@ export function reduceThreadSnapshot(
         olderCursor: null,
         run: null,
         activeRuns: [],
+        memoryCleanupCursor: cleanup.memoryCleanupCursor,
+        memoryCleanupPending: cleanup.memoryCleanupPending,
+        ...(cleanup.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
       },
       event.seq,
     );

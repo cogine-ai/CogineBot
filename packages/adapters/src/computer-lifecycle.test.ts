@@ -1918,10 +1918,16 @@ describe("computer execution leases", () => {
     const create = vi.fn().mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }));
     const client = {
       $queryRaw: vi.fn().mockResolvedValue([]),
+      spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq: 0, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({
+            nextMessageSeq: 0,
+            historyCompactionGeneration: 0,
+            memoryCleanupUnconfirmed: false,
+            memoryCleanupIntents: [],
+          })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {

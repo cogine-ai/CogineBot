@@ -1122,6 +1122,10 @@ export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 
 export const ThreadSnapshotSchema = z.object({
   threadId: Id,
+  /** A prior external cleanup could not be confirmed; omission is not deletion proof. */
+  memoryCleanupUnconfirmed: z.literal(true).optional(),
+  memoryCleanupPending: z.boolean().optional(),
+  memoryCleanupCursor: z.number().int().min(-1).optional(),
   cursor: z.number().int().min(-1),
   messages: z.array(ThreadMessageSchema),
   olderCursor: z.number().int().nonnegative().nullable(),

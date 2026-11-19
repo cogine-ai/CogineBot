@@ -4011,13 +4011,19 @@ describe("clearThread", () => {
     const fanout = new TestFanout();
     const publish = vi.spyOn(fanout, "publish");
     const tx = {
-      $queryRaw: vi.fn(),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({
+            nextMessageSeq,
+            historyCompactionGeneration: 0,
+            memoryCleanupUnconfirmed: false,
+            memoryCleanupIntents: [],
+          })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {
@@ -4088,13 +4094,19 @@ describe("clearThread", () => {
   it("scopes group clear lease cleanup to cancelled run ids", async () => {
     const fanout = new TestFanout();
     const tx = {
-      $queryRaw: vi.fn(),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      spaceMemoryConfig: { findUnique: vi.fn(async () => null) },
       thread: {
         update: vi
           .fn()
-          .mockResolvedValueOnce({ nextMessageSeq: 3, historyCompactionGeneration: 0 })
+          .mockResolvedValueOnce({
+            nextMessageSeq: 3,
+            historyCompactionGeneration: 0,
+            memoryCleanupUnconfirmed: false,
+            memoryCleanupIntents: [],
+          })
           .mockResolvedValue({ nextEventSeq: 1 }),
       },
       run: {

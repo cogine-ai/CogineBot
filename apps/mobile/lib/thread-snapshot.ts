@@ -25,7 +25,12 @@ function equalValue(previous: unknown, next: unknown): boolean {
 }
 
 function visibleSnapshot(snapshot: MobileSnapshot) {
-  const { cursor: _cursor, observedClearSeq: _clear, ...visible } = snapshot;
+  const {
+    cursor: _cursor,
+    observedClearSeq: _clear,
+    memoryCleanupCursor: _cleanup,
+    ...visible
+  } = snapshot;
   return {
     ...visible,
     messages: snapshot.messages.map(({ observedEventSeq: _version, ...message }) => message),

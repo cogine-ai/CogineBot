@@ -38,6 +38,7 @@ export {
 } from "./group-run-teardowns.js";
 export * from "./groups.js";
 export * from "./history-retrieval.js";
+export * from "./memory-cleanup.js";
 export * from "./memory-config.js";
 export * from "./messages.js";
 export * from "./messaging.js";

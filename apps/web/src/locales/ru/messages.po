@@ -7623,3 +7623,11 @@ msgstr "Максимальное число выходных токенов до
 #: src/pages/model-settings-panel.tsx
 msgid "Model connection changed. Reload and try again."
 msgstr "Подключение модели изменилось. Перезагрузите и повторите попытку."
+
+#: src/pages/Shell.tsx
+msgid "Messages cleared. External memory cleanup could not be confirmed."
+msgstr "Сообщения удалены. Не удалось подтвердить очистку внешней памяти."
+
+#: src/pages/Shell.tsx
+msgid "External memory cleanup could not be confirmed."
+msgstr "Не удалось подтвердить очистку внешней памяти."

@@ -3,10 +3,27 @@ import type {
   ComputerStatus,
   ProductEvent,
   ThreadMessage,
+  ThreadMessagePage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { ReplyAnnouncements, withLiveStreamingProgress } from "@rakazo/core";
-import { describe, expect, it } from "vitest";
+import {
+  applyThreadClearReceipt,
+  applyThreadRunCancellations,
+  hasNewThreadWork,
+  isApprovalAskBlock,
+  isRunTerminalEvent,
+  observeMemoryCleanup,
+  ReplyAnnouncements,
+  runThreadSubscription,
+  searchHitThreadTarget,
+  shouldResetHistoryAfterClear,
+  threadClearCancelledRunIds,
+  userVisibleMessages,
+  withLiveStreamingProgress,
+} from "@rakazo/core";
+import { transformWithOxc } from "vite";
+import { describe, expect, it, vi } from "vitest";
+import { publishComputerCommand } from "./computer-workspace";
 import {
   activeThreadRuns,
   applyThreadSendReceipt,
@@ -14,9 +31,11 @@ import {
   computerPanelNeedsMaintenance,
   computerPanelNeedsScreen,
   computerTakeoverBlocked,
+  isComputerStatusEvent,
   isThreadSnapshotEvent,
   mergeThreadSnapshot,
   prependThreadMessagePage,
+  protectThreadMessagePage,
   reconcileRefreshedThread,
   reduceComputerStatus,
   reduceThreadSnapshot,
@@ -283,6 +302,48 @@ describe("thread event reduction", () => {
     });
     expect(next?.activeRuns).toEqual([next?.run]);
     expect(next?.messages).toBe(initial.messages);
+  });
+
+  it.each([undefined, 19, 20, 21])(
+    "orders a late send receipt by event cursor (%s)",
+    (eventSeq) => {
+      const initial = {
+        ...snapshot([]),
+        cursor: 30,
+        olderCursor: 1,
+        observedClearSeq: 20,
+      };
+      const next = applyThreadSendReceipt(initial, {
+        botId: "bot-1",
+        runId: "receipt-run",
+        taskId: "receipt-task",
+        eventSeq,
+      });
+      expect(next?.run?.id ?? null).toBe(
+        eventSeq !== undefined && eventSeq > 20 ? "receipt-run" : null,
+      );
+      expect(next?.cursor).toBe(30);
+      if (eventSeq === undefined || eventSeq <= 20) expect(next).toBe(initial);
+    },
+  );
+
+  it("keeps the newest receipt when multiple sends arrive without advancing the cursor", () => {
+    const initial = { ...snapshot([]), cursor: 15, olderCursor: 1 };
+    const newer = applyThreadSendReceipt(initial, {
+      botId: "bot-1",
+      runId: "newer-receipt",
+      taskId: "newer-task",
+      eventSeq: 33,
+    });
+    expect(
+      applyThreadSendReceipt(newer, {
+        botId: "bot-1",
+        runId: "older-receipt",
+        taskId: "older-task",
+        eventSeq: 31,
+      }),
+    ).toBe(newer);
+    expect(newer?.cursor).toBe(15);
   });
 
   it("does not replace authoritative active or group run state with a send receipt", () => {
@@ -926,7 +987,7 @@ describe("thread event reduction", () => {
   });
 
   it("hydrates a live run from a refresh without rolling back newer progress", () => {
-    const run = threadRun("run-1");
+    const run = threadRun("run-1", "bot-1", 11);
     const liveProgress = {
       ...message("progress:run-1", [{ kind: "progress" as const, text: "Still working" }]),
       runId: run.id,
@@ -946,6 +1007,33 @@ describe("thread event reduction", () => {
     expect(reconciled.snapshot.run).toBe(run);
     expect(reconciled.computer?.busyBotName).toBe("Chief");
   });
+
+  it.each([10, 14])(
+    "versions stale hydration and progress before a delayed clear (%s)",
+    (observation) => {
+      const run = threadRun("missed-run", "bot-1", null);
+      const progress = {
+        ...message(`progress:${run.id}`, [{ kind: "progress" as const, text: "Working" }]),
+        runId: run.id,
+      };
+      const initial = { ...snapshot([progress], 1), cursor: observation };
+      const newer = reduceThreadSnapshot(
+        initial,
+        event({ type: "thread.meta", seq: 15, payload: { memoryCleanupPending: false } }),
+      )!;
+      const hydrated = reconcileRefreshedThread(
+        newer,
+        { ...snapshot([], 1), cursor: observation, run, activeRuns: [run] },
+        null,
+      ).snapshot;
+      expect(hydrated.run?.id).toBe(run.id);
+      expect(hydrated.cursor).toBe(15);
+      const cleared = applyThreadClearReceipt(hydrated, { clearEventSeq: 12, cancelledRunIds: [] });
+      expect(cleared.run?.id ?? null).toBe(observation > 12 ? run.id : null);
+      expect(cleared.activeRuns?.map((run) => run.id)).toEqual(observation > 12 ? [run.id] : []);
+      expect(cleared.messages.map((row) => row.id)).toEqual(observation > 12 ? [progress.id] : []);
+    },
+  );
 
   it("clears active runs and their transient progress after stop", () => {
     const run = threadRun("run-1");
@@ -1393,15 +1481,18 @@ describe("thread event reduction", () => {
   });
 
   it("advances past tool completion audit events without adding a visible message", () => {
-    const initial = snapshot(
-      [
-        message(
-          "progress:run-1",
-          [{ kind: "steps", steps: [{ label: "Slack find channels", count: 1 }] }],
-          4,
-        ),
-      ],
-      4,
+    const initial = mergeThreadSnapshot(
+      null,
+      snapshot(
+        [
+          message(
+            "progress:run-1",
+            [{ kind: "steps", steps: [{ label: "Slack find channels", count: 1 }] }],
+            4,
+          ),
+        ],
+        4,
+      ),
     );
     const next = reduceThreadSnapshot(
       initial,
@@ -1738,6 +1829,7 @@ describe("thread event reduction", () => {
 
   it("updates a waiting group run without replacing the newer active run", () => {
     const newerRun = {
+      observedEventSeq: 3,
       id: "run-newer",
       botId: "bot-a",
       threadId: "thread-1",
@@ -2047,12 +2139,18 @@ function snapshot(messages: ThreadMessage[], olderCursor: number | null = null):
   };
 }
 
-function threadRun(id: string, botId = "bot-1"): NonNullable<ThreadSnapshot["run"]> {
+// Observed reducer fixtures use the initial snapshot cursor; null models raw work.
+function threadRun(
+  id: string,
+  botId = "bot-1",
+  observedEventSeq: number | null = 3,
+): NonNullable<ThreadSnapshot["run"]> & { observedEventSeq?: number } {
   return {
     id,
     botId,
     threadId: "thread-1",
     taskId: `task-${id}`,
+    ...(observedEventSeq === null ? {} : { observedEventSeq }),
     status: "running",
     trigger: "user",
     routineId: null,
@@ -2460,12 +2558,26 @@ it("replays a covered clear as a history barrier while retaining newer snapshot 
 
 it("the Shell reader retains a covered clear barrier without replacing current execution", () => {
   const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
-  const start = source.indexOf("      applyEvent: (event: ProductEvent) => {");
-  const end = source.indexOf("\n      },\n    };\n  }", start);
+  const start = source.indexOf("    const applyReaderEvent = (event: ProductEvent) => {");
+  const end = source.indexOf("\n    return {\n      resume,", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
-  const body = `${source.slice(start + "      applyEvent: ".length, end)}\n}`;
-  const script = `const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
+  const body = source
+    .slice(start + "    const applyReaderEvent = ".length, end)
+    .trim()
+    .replace(/;$/, "");
+  const bufferStart = source.indexOf(
+    "    const bufferCleanupEvent =",
+    source.indexOf("function createThreadReader"),
+  );
+  const bufferEnd = source.indexOf("    const applyReaderEvent =", bufferStart);
+  const buffer = source.slice(bufferStart, bufferEnd).replace("(event: ProductEvent)", "(event)");
+  const historyStart = source.indexOf("  function reconcileClearHistory(");
+  const historyEnd = source.indexOf("  function retryCurrentThread()", historyStart);
+  const history = source
+    .slice(historyStart, historyEnd)
+    .replace("(previous: ThreadSnapshot, next: ThreadSnapshot)", "(previous, next)");
+  const script = `${history} ${buffer} const handler = ${body.replace("(event: ProductEvent)", "(event)")};`;
   const run = threadRun("current-run", "bot-2");
   const snapRef = {
     current: {
@@ -2477,6 +2589,15 @@ it("the Shell reader retains a covered clear barrier without replacing current e
   };
   const scope = {
     ownsReader: () => true,
+    owner: "owner-one",
+    observeMemoryCleanup,
+    pendingMemoryCleanupEvents: { current: new Map() },
+    scope: "scope-one",
+    shouldResetHistoryAfterClear,
+    pinnedAroundRef: { current: null },
+    setScrollRequest: () => {},
+    searchParamsRef: { current: new URLSearchParams() },
+    setSearchParams: () => {},
     snapshotRef: snapRef,
     reduceThreadSnapshot,
     expandedHistoryThread: { current: null },
@@ -2560,4 +2681,949 @@ it("announces an actual completion reduction after it removes the primary Run", 
   expect(current?.activeRuns).toEqual([]);
   expect(announcements.update("scope", true, current)).toEqual(["Committed reply"]);
   expect(announcements.update("scope", true, current)).toEqual([]);
+});
+
+it("a send receipt introduces work before any event cursor advancement", () => {
+  const initial = snapshot([]);
+  const received = applyThreadSendReceipt(initial, {
+    botId: "bot-1",
+    runId: "new-receipt-run",
+    taskId: "new-task",
+  })!;
+  expect(received.cursor).toBe(initial.cursor);
+  expect(received.run?.id).toBe("new-receipt-run");
+  expect(hasNewThreadWork(received, initial)).toBe(true);
+});
+
+describe("external memory cleanup uncertainty", () => {
+  it("applies a late metadata warning without erasing messages or current work", () => {
+    const initial = snapshot([message("new-message", [{ kind: "text", text: "After clear" }])]);
+    initial.run = threadRun("active-after-clear");
+    const update = event({ type: "thread.meta", payload: { memoryCleanupUnconfirmed: true } });
+    expect(isThreadSnapshotEvent(update)).toBe(true);
+    const next = reduceThreadSnapshot(initial, update)!;
+    expect(next.memoryCleanupUnconfirmed).toBe(true);
+    expect((next as ThreadSnapshot & { observedClearSeq?: number }).observedClearSeq).toBe(
+      initial.cursor,
+    );
+    expect(next.messages).toHaveLength(initial.messages.length);
+    expect(next.messages).toMatchObject(initial.messages);
+    expect(next.run).toEqual(initial.run);
+    expect(reduceThreadSnapshot(next, update)).toBe(next);
+    expect(
+      reduceThreadSnapshot(
+        next,
+        event({
+          threadId: "another-thread",
+          seq: 5,
+          type: "thread.meta",
+          payload: { memoryCleanupUnconfirmed: true },
+        }),
+      ),
+    ).toBe(next);
+  });
+  it("retains uncertainty across clear and same-thread refresh without leaking to another thread", () => {
+    const initial = { ...snapshot([]), memoryCleanupUnconfirmed: true as const };
+    const cleared = reduceThreadSnapshot(initial, event({ type: "thread.cleared", payload: {} }))!;
+    expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+    expect(
+      mergeThreadSnapshot(cleared, { ...snapshot([]), cursor: 5 }).memoryCleanupUnconfirmed,
+    ).toBe(true);
+    expect(
+      mergeThreadSnapshot(cleared, { ...snapshot([]), threadId: "another-thread", cursor: 5 })
+        .memoryCleanupUnconfirmed,
+    ).toBeUndefined();
+  });
+});
+
+it("orders cleanup independently of newer transcript events and resets omitted pending on clear", () => {
+  const current = {
+    ...snapshot([]),
+    cursor: 30,
+    observedClearSeq: 1,
+    memoryCleanupCursor: 5,
+    memoryCleanupPending: true,
+  };
+  const cleared = reduceThreadSnapshot(
+    current,
+    event({ type: "thread.cleared", seq: 10, payload: { memoryCleanupUnconfirmed: true } }),
+  )!;
+  expect(cleared.cursor).toBe(30);
+  expect(cleared.memoryCleanupPending).toBe(false);
+  expect(cleared.memoryCleanupUnconfirmed).toBe(true);
+  const settled = { ...current, memoryCleanupCursor: 20, memoryCleanupPending: false };
+  expect(
+    reduceThreadSnapshot(
+      settled,
+      event({ type: "thread.meta", seq: 15, payload: { memoryCleanupPending: true } }),
+    )!.memoryCleanupPending,
+  ).toBe(false);
+});
+
+it("settles pending cleanup by sequence without resetting a sticky failure or current Run", () => {
+  const initial = {
+    ...snapshot([]),
+    run: threadRun("still-running"),
+    memoryCleanupUnconfirmed: true as const,
+  };
+  const pendingEvent = event({
+    type: "thread.meta",
+    seq: 4,
+    payload: { memoryCleanupPending: true },
+  });
+  const pending = reduceThreadSnapshot(initial, pendingEvent)!;
+  expect(pending.memoryCleanupPending).toBe(true);
+  const settled = reduceThreadSnapshot(
+    pending,
+    event({ type: "thread.meta", seq: 5, payload: { memoryCleanupPending: false } }),
+  )!;
+  expect(settled.memoryCleanupPending).toBe(false);
+  expect(settled.memoryCleanupUnconfirmed).toBe(true);
+  expect(settled.run).toBe(initial.run);
+  expect(reduceThreadSnapshot(settled, pendingEvent)).toBe(settled);
+});
+
+it("keeps pending cleanup across an omitted refresh until an explicit settlement", () => {
+  const previous = {
+    ...snapshot([]),
+    cursor: 10,
+    memoryCleanupPending: true,
+    memoryCleanupCursor: 10,
+  };
+  const refreshed = mergeThreadSnapshot(previous, { ...snapshot([]), cursor: 25 });
+  expect(refreshed).toMatchObject({ memoryCleanupPending: true, memoryCleanupCursor: 10 });
+  const settled = mergeThreadSnapshot(refreshed, {
+    ...snapshot([]),
+    cursor: 25,
+    memoryCleanupPending: false,
+    memoryCleanupCursor: 12,
+  });
+  expect(settled).toMatchObject({ memoryCleanupPending: false, memoryCleanupCursor: 12 });
+});
+
+describe("Shell clear receipt snapshot commits", () => {
+  async function fixture(group = false) {
+    const source = readFileSync(new URL("../pages/Shell.tsx", import.meta.url), "utf8");
+    function declaration(name: string) {
+      let start = source.indexOf(`  function ${name}(`);
+      if (start < 0) start = source.indexOf(`  async function ${name}(`);
+      if (start < 0) return "";
+      if (name === "jumpToMessage")
+        return source.slice(start, source.indexOf("  // The routine panel copies", start));
+      const body = source.indexOf("{", start);
+      let depth = 0;
+      for (let end = body; end < source.length; end++) {
+        if (source[end] === "{") depth++;
+        else if (source[end] === "}" && --depth === 0) return source.slice(start, end + 1);
+      }
+      throw new Error(`Unclosed source function ${name}`);
+    }
+    const start = source.indexOf(
+      "onConfirm={async () => {",
+      source.indexOf("<ClearConversationDialog"),
+    );
+    const end = source.indexOf("\n            }}", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const confirm = `${source.slice(start + "onConfirm={".length, end)}\n}`;
+    const a = {
+      ...snapshot([message("A-message", [{ kind: "text", text: "Thread A" }])]),
+      botId: "bot-A",
+      threadId: "thread-A",
+      cursor: 10,
+    };
+    const b = {
+      ...snapshot([message("deleted-B", [{ kind: "text", text: "Before clear B" }])]),
+      botId: group ? undefined : "bot-B",
+      ...(group ? { groupId: "group-B" } : {}),
+      threadId: "thread-B",
+      cursor: 10,
+    };
+    let releaseGet!: (value: ThreadSnapshot) => void;
+    let releasePage!: (value: ThreadMessagePage) => void;
+    let gotGet!: () => void;
+    let gotPage!: () => void;
+    const getStarted = new Promise<void>((resolve) => {
+      gotGet = resolve;
+    });
+    const pageStarted = new Promise<void>((resolve) => {
+      gotPage = resolve;
+    });
+    const getResponse = new Promise<ThreadSnapshot>((resolve) => {
+      releaseGet = resolve;
+    });
+    const pageResponse = new Promise<ThreadMessagePage>((resolve) => {
+      releasePage = resolve;
+    });
+    const snapshotRef = { current: a as ThreadSnapshot | null };
+    const actor = { current: { userId: "user-one", spaceId: "space-one" as string | undefined } };
+    const generation = { session: 1, selection: 1 };
+    let complete!: (value: {
+      ok: true;
+      threadId: string;
+      clearEventSeq: number;
+      cancelledRunIds?: string[];
+      memoryCleanupCursor?: number;
+      memoryCleanupPending?: boolean;
+      memoryCleanupUnconfirmed?: true;
+    }) => void;
+    const response = new Promise<Parameters<typeof complete>[0]>((resolve) => {
+      complete = resolve;
+    });
+    let commit!: (value: ThreadSnapshot | null) => void;
+    let pending = new Set<string>();
+    const scope = {
+      groupSettingsActor: actor,
+      selectedSpaceId: () => null,
+      currentRpcSessionGeneration: () => generation.session,
+      currentSpaceSelectionGeneration: () => generation.selection,
+      pendingClearReceipts: { current: new Map() },
+      pendingMemoryCleanupEvents: { current: new Map() },
+      dismissedMemoryCleanupNotices: { current: new Set<string>() },
+      draftScopeKey: "scope-B",
+      draftScopeKeyRef: { current: "scope-B" },
+      readerAbort: new AbortController(),
+      threadCheckpoint: { current: null },
+      computerRef: { current: null },
+      commitComputerEvent: vi.fn(),
+      commitComputer: vi.fn(),
+      savedGroupUpdates: { current: new Map() },
+      searchHitThreadTarget,
+      userVisibleMessages,
+      reconcileRefreshedThread,
+      protectThreadMessagePage,
+      reduceThreadSnapshot,
+      publishComputerCommand,
+      isThreadSnapshotEvent,
+      isComputerStatusEvent,
+      reduceComputerStatus,
+      isApprovalAskBlock,
+      isRunTerminalEvent,
+      jumpGeneration: { current: 0 },
+      initiallyScrolledThread: { current: null },
+      messageScroll: { current: null },
+      setRoutines: vi.fn(),
+      setRoutinesBotId: vi.fn(),
+      window: {
+        requestAnimationFrame: (callback: FrameRequestCallback) => {
+          callback(0);
+          return 1;
+        },
+      },
+      snapshotRef,
+      terminalRunReceipts: { current: new Set<string>() },
+      terminalRunReceiptBatches: { current: [] as string[][] },
+      setSnapshot: vi.fn(),
+      withLiveStreamingProgress: (value: ThreadSnapshot | null) => value,
+      streamResponsesRef: { current: false },
+      currentComputerStatus: (value: unknown) => value,
+      pinnedAroundRef: {
+        current: null as {
+          messageId: string;
+          threadId: string;
+          messages: ThreadMessage[];
+          olderCursor: number | null;
+        } | null,
+      },
+      expandedHistoryThread: { current: null },
+      historyEpoch: { current: 1 },
+      setScrollRequest: vi.fn(),
+      searchParamsRef: { current: new URLSearchParams() },
+      setSearchParams: vi.fn(),
+      clearHistoryWindow: vi.fn(),
+      clearTarget: {
+        kind: group ? "group" : "bot",
+        chat: { id: group ? "group-B" : "bot-B", threadId: "thread-B" },
+      },
+      activeBotId: { current: group ? undefined : "bot-B" },
+      activeGroupId: { current: group ? "group-B" : undefined },
+      setPendingMemoryCleanupClears: (update: (value: Set<string>) => Set<string>) => {
+        pending = update(pending);
+      },
+      rpc: {
+        threads: {
+          clear: vi.fn(async () => response),
+          get: vi.fn(async () => {
+            gotGet();
+            return getResponse;
+          }),
+          messages: vi.fn(async () => {
+            gotPage();
+            return pageResponse;
+          }),
+        },
+        routines: { list: vi.fn(async () => []) },
+      },
+      updateSnapshot: (update: (value: ThreadSnapshot | null) => ThreadSnapshot | null) =>
+        commit(update(snapshotRef.current)),
+      refreshThreadRef: { current: vi.fn(async () => undefined) },
+      refreshGroupThreadRef: { current: vi.fn(async () => undefined) },
+      showMemoryCleanupNotice: vi.fn(),
+      setClearTarget: vi.fn(),
+      refreshBots: vi.fn(async () => undefined),
+      hasNewThreadWork,
+      applyThreadClearReceipt,
+      applyThreadRunCancellations,
+      observeMemoryCleanup,
+      threadClearCancelledRunIds,
+      shouldResetHistoryAfterClear,
+    };
+    const eventHelperStart = source.indexOf("\nfunction applyThreadEvent(") + 1;
+    const eventHelperEnd = source.indexOf("\nfunction ComputerReleaseActions(", eventHelperStart);
+    expect(eventHelperStart).toBeGreaterThan(0);
+    expect(eventHelperEnd).toBeGreaterThan(eventHelperStart);
+    const script = `function buildCallbacks() {
+      ${source.slice(eventHelperStart, eventHelperEnd)}
+      ${declaration("rememberTerminalRunIds")}
+      ${declaration("clearReceiptOwnerKey")}
+      ${declaration("reconcileClearHistory")}
+      ${declaration("reconcileBufferedThreadSnapshot")}
+      ${declaration("commitSnapshot")}
+      ${declaration("createThreadReader")}
+      ${declaration("jumpToMessage")}
+      const confirm = ${confirm};
+      return { commit: commitSnapshot, confirm, jump: jumpToMessage, reader: createThreadReader(readerAbort) };
+    }`;
+    const compiled = await transformWithOxc(script, "thread-cleanup-fixture.ts");
+    const callbacks = new Function(
+      ...Object.keys(scope),
+      `${compiled.code}; return buildCallbacks();`,
+    )(...Object.values(scope)) as {
+      commit(value: ThreadSnapshot | null): void;
+      confirm(): Promise<void>;
+      jump(target: { botId?: string; groupId?: string; messageId: string }): Promise<void>;
+      reader: {
+        beforeEvent(event: ProductEvent): boolean;
+        ownsReader(): boolean;
+        applyEvent(event: ProductEvent): void;
+      };
+    };
+    commit = callbacks.commit;
+    return {
+      ...callbacks,
+      complete,
+      a,
+      b,
+      snapshotRef,
+      scope,
+      generation,
+      actor,
+      releaseGet,
+      releasePage,
+      getStarted,
+      pageStarted,
+    };
+  }
+  it.each([false, true].flatMap((group) => [false, true].map((resume) => ({ group, resume }))))(
+    "applies a visible clear before recovery without replay restoring old rows ($group, $resume)",
+    async ({ group, resume }) => {
+      const h = await fixture(group);
+      const before = { ...h.b, cursor: 15, olderCursor: 1 };
+      h.snapshotRef.current = before;
+      let releaseRecovery!: () => void;
+      const recovery = new Promise<void>((resolve) => {
+        releaseRecovery = resolve;
+      });
+      const abort = new AbortController();
+      const stopped = new Promise<void>((resolve) =>
+        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      const clear = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 22,
+        type: "thread.cleared",
+        payload: {},
+      });
+      const ordinary = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 21,
+        type: "thread.message.created",
+        payload: { messageId: "ordinary", messageSeq: 2, role: "user", blocks: [] },
+      });
+      const apply = vi.fn(h.reader.applyEvent);
+      const observe = vi.fn();
+      const refresh = vi.fn(async () => {
+        await recovery;
+        h.commit(
+          reconcileRefreshedThread(
+            h.snapshotRef.current,
+            { ...before, cursor: 30, olderCursor: 20, messages: [message("new-after-clear", [])] },
+            null,
+            true,
+          ).snapshot,
+        );
+      });
+      vi.useFakeTimers();
+      const running = runThreadSubscription({
+        signal: abort.signal,
+        loadInitial: async () => {
+          throw new Error("snapshot interrupted");
+        },
+        loadHead: async () => ({ threadId: "thread-B", cursor: 20 }),
+        refresh,
+        currentSnapshot: () => h.snapshotRef.current,
+        subscribe: async () =>
+          (async function* () {
+            yield ordinary;
+            yield clear;
+            await stopped;
+          })(),
+        beforeEvent: h.reader.beforeEvent,
+        applyEvent: apply,
+        onEvent: observe,
+        onCursor: vi.fn(),
+        ...(resume ? { resume: { threadId: "thread-B", cursor: 20 } } : {}),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(observe).toHaveBeenCalledTimes(2);
+        expect(apply).not.toHaveBeenCalled();
+        expect(h.snapshotRef.current?.messages).toEqual([]);
+        expect(h.snapshotRef.current).toMatchObject({ observedClearSeq: 22, cursor: 22 });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(refresh).toHaveBeenCalledTimes(1);
+        releaseRecovery();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(apply.mock.calls.map(([event]) => event)).toEqual(resume ? [ordinary, clear] : []);
+        expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(["new-after-clear"]);
+        expect(h.snapshotRef.current).toMatchObject({ observedClearSeq: 22, cursor: 30 });
+      } finally {
+        releaseRecovery();
+        abort.abort();
+        await running;
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(
+    [false, true].flatMap((reverse) =>
+      ["cancelled", "fresh", "legacy"].map((mode) => ({ reverse, mode })),
+    ),
+  )(
+    "keeps every buffered cancellation without confusing the latest clear evidence ($reverse, $mode)",
+    async ({ reverse, mode }) => {
+      const h = await fixture();
+      const first = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 22,
+        type: "thread.cleared",
+        payload: { cancelledRunIds: ["cancelled-first"] },
+      });
+      const latest = event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 24,
+        type: "thread.cleared",
+        payload: mode === "legacy" ? {} : { cancelledRunIds: [] },
+      });
+      for (const frame of reverse ? [latest, first] : [first, latest]) h.reader.beforeEvent(frame);
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 35,
+          type: "thread.meta",
+          payload: { memoryCleanupPending: true },
+        }),
+      );
+      expect(h.snapshotRef.current).toBe(h.a);
+      const run = {
+        ...threadRun(
+          mode === "cancelled" ? "cancelled-first" : "uncancelled",
+          "bot-B",
+          mode === "fresh" ? 30 : 15,
+        ),
+        threadId: "thread-B",
+        status: "queued" as const,
+      };
+      h.commit({
+        ...h.b,
+        cursor: mode === "fresh" ? 30 : 15,
+        olderCursor: 1,
+        run,
+        activeRuns: [run],
+      });
+      expect(h.snapshotRef.current?.run?.id ?? null).toBe(mode === "fresh" ? "uncancelled" : null);
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(
+        mode === "fresh" ? ["uncancelled"] : [],
+      );
+      expect(h.snapshotRef.current).toMatchObject({
+        observedClearSeq: 24,
+        memoryCleanupCursor: 35,
+        memoryCleanupPending: true,
+      });
+      expect(h.scope.pendingMemoryCleanupEvents.current.size).toBe(0);
+    },
+  );
+  it.each(["queued", "running"] as const)(
+    "removes a cached %s Run when only the replacement clear is received",
+    async (status) => {
+      const h = await fixture();
+      const run = { ...threadRun("stale-run", "bot-B"), status };
+      h.snapshotRef.current = { ...h.b, cursor: 15, olderCursor: 1, run, activeRuns: [run] };
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 22,
+          type: "thread.cleared",
+          payload: { cancelledRunIds: [] },
+        }),
+      );
+      expect(h.snapshotRef.current?.run).toBeNull();
+      expect(h.snapshotRef.current?.activeRuns).toEqual([]);
+    },
+  );
+  it.each(["thread.meta", "thread.message.created"] as const)(
+    "does not promote cached Run evidence when unrelated %s advances the cursor",
+    async (type) => {
+      const h = await fixture();
+      const run = threadRun("missed-terminal", "bot-B", null);
+      h.snapshotRef.current = { ...h.b, run, activeRuns: [run] };
+      const clearing = h.confirm();
+      h.commit(
+        reduceThreadSnapshot(
+          h.snapshotRef.current,
+          event({
+            threadId: "thread-B",
+            botId: "bot-B",
+            seq: 13,
+            type,
+            payload:
+              type === "thread.meta"
+                ? { memoryCleanupPending: false }
+                : { messageId: "new-row", messageSeq: 13, role: "user", blocks: [] },
+          }),
+        )!,
+      );
+      expect(h.snapshotRef.current?.cursor).toBe(13);
+      h.complete({ ok: true, threadId: "thread-B", clearEventSeq: 12, cancelledRunIds: [] });
+      await clearing;
+      expect(h.snapshotRef.current?.run).toBeNull();
+      expect(h.snapshotRef.current?.activeRuns).toEqual([]);
+      expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(
+        type === "thread.meta" ? [] : ["new-row"],
+      );
+    },
+  );
+
+  it("retains a Run observed again in an authoritative post-clear snapshot", () => {
+    const run = { ...threadRun("observed-again"), observedEventSeq: 10 };
+    const fresh = mergeThreadSnapshot(null, {
+      ...snapshot([], 1),
+      cursor: 13,
+      run,
+      activeRuns: [run],
+    });
+    const cleared = applyThreadClearReceipt(fresh, { clearEventSeq: 12, cancelledRunIds: [] });
+    expect(cleared.run?.id).toBe(run.id);
+    expect(cleared.activeRuns?.map((run) => run.id)).toEqual([run.id]);
+  });
+
+  it.each([17, 22, 23])(
+    "orders a send arriving during the actual clear callback (%s)",
+    async (eventSeq) => {
+      const h = await fixture();
+      h.snapshotRef.current = h.b;
+      const clearing = h.confirm();
+      h.snapshotRef.current = applyThreadSendReceipt(h.snapshotRef.current, {
+        botId: "bot-B",
+        runId: "in-flight-send",
+        taskId: "task",
+        eventSeq,
+      });
+      h.complete({ ok: true, threadId: "thread-B", clearEventSeq: 22, cancelledRunIds: [] });
+      await clearing;
+      expect(h.snapshotRef.current?.run?.id ?? null).toBe(eventSeq > 22 ? "in-flight-send" : null);
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(
+        eventSeq > 22 ? ["in-flight-send"] : [],
+      );
+      expect(h.snapshotRef.current?.messages).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps the post-clear queued Run before its run event (cached active: %s)",
+    async (active) => {
+      const h = await fixture();
+      const previous = threadRun("old-run", "bot-B");
+      h.snapshotRef.current = applyThreadSendReceipt(
+        {
+          ...h.b,
+          cursor: 15,
+          olderCursor: 1,
+          run: active ? previous : null,
+          activeRuns: active ? [previous] : [],
+        },
+        { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 21 },
+      );
+      h.reader.beforeEvent(
+        event({
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 20,
+          type: "thread.cleared",
+          payload: { cancelledRunIds: ["old-run"] },
+        }),
+      );
+      expect(h.snapshotRef.current?.messages).toEqual([]);
+      expect(h.snapshotRef.current?.run?.id).toBe("new-send");
+      expect(h.snapshotRef.current?.activeRuns?.map((run) => run.id)).toEqual(["new-send"]);
+    },
+  );
+  it.each(["before", "after"])(
+    "rejects a cancelled send receipt arriving %s the equal-boundary clear receipt",
+    async (timing) => {
+      const h = await fixture();
+      h.snapshotRef.current = {
+        ...h.b,
+        cursor: 20,
+        observedClearSeq: 20,
+        olderCursor: 1,
+        messages: [message("anchor", [])],
+        run: null,
+        activeRuns: [],
+      } as ThreadSnapshot;
+      const receipt = { botId: "bot-B", runId: "cancelled-send", taskId: "cancelled-task" };
+      const apply = () => {
+        h.snapshotRef.current = applyThreadSendReceipt(
+          h.snapshotRef.current,
+          receipt,
+          h.scope.terminalRunReceipts.current,
+        );
+      };
+      const clearing = h.confirm();
+      if (timing === "before") apply();
+      h.complete({
+        ok: true,
+        threadId: "thread-B",
+        clearEventSeq: 20,
+        cancelledRunIds: [receipt.runId],
+        memoryCleanupCursor: 30,
+        memoryCleanupPending: false,
+      });
+      await clearing;
+      if (timing === "after") apply();
+      expect(h.snapshotRef.current?.run).toBeNull();
+      expect(h.snapshotRef.current?.activeRuns).toEqual([]);
+      expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(["anchor"]);
+      expect(h.snapshotRef.current?.olderCursor).toBe(1);
+      expect(h.scope.terminalRunReceipts.current.has(receipt.runId)).toBe(true);
+    },
+  );
+  it("retains a whole atomic cancellation batch larger than the terminal history count", async () => {
+    const h = await fixture();
+    h.snapshotRef.current = {
+      ...h.b,
+      cursor: 20,
+      observedClearSeq: 20,
+      olderCursor: 1,
+      run: null,
+      activeRuns: [],
+    } as ThreadSnapshot;
+    const receipt = { botId: "bot-B", runId: "cancelled-first", taskId: "send-task" };
+    const clearing = h.confirm();
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 20,
+      cancelledRunIds: [
+        receipt.runId,
+        ...Array.from({ length: 100 }, (_, i) => `other-cancelled-${i}`),
+      ],
+    });
+    await clearing;
+    h.snapshotRef.current = applyThreadSendReceipt(
+      h.snapshotRef.current,
+      receipt,
+      h.scope.terminalRunReceipts.current,
+    );
+    expect(h.snapshotRef.current?.run).toBeNull();
+    expect(h.scope.terminalRunReceipts.current.has(receipt.runId)).toBe(true);
+    h.snapshotRef.current = applyThreadSendReceipt(
+      h.snapshotRef.current,
+      { ...receipt, runId: "uncancelled", eventSeq: 21 },
+      h.scope.terminalRunReceipts.current,
+    );
+    expect(h.snapshotRef.current?.run?.id).toBe("uncancelled");
+  });
+  it("keeps an uncancelled send after recording a different cancelled Run", async () => {
+    const h = await fixture();
+    h.snapshotRef.current = { ...h.b, cursor: 20, olderCursor: 1, run: null, activeRuns: [] };
+    h.reader.beforeEvent(
+      event({
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 22,
+        type: "thread.cleared",
+        payload: { cancelledRunIds: ["old-send"] },
+      }),
+    );
+    h.snapshotRef.current = applyThreadSendReceipt(
+      h.snapshotRef.current,
+      { botId: "bot-B", runId: "new-send", taskId: "new-task", eventSeq: 23 },
+      h.scope.terminalRunReceipts.current,
+    );
+    expect(h.snapshotRef.current?.run?.id).toBe("new-send");
+    expect(h.scope.terminalRunReceipts.current.has("old-send")).toBe(true);
+  });
+  it.each(
+    [false, true].flatMap((group) =>
+      ["in-flight", "before-page", "post-clear-snapshot"].flatMap((timing) =>
+        ["meta-first", "clear-first"].map((order) => ({ group, timing, order })),
+      ),
+    ),
+  )(
+    "admits only post-clear web pages ($group, $timing, $order)",
+    async ({ group, timing, order }) => {
+      const h = await fixture(group);
+      const target = group ? { groupId: "group-B" } : { botId: "bot-B" };
+      const cursor = timing === "post-clear-snapshot" ? 25 : 15;
+      const base = {
+        ...h.b,
+        cursor,
+        olderCursor: 1,
+        messages: [message(timing === "in-flight" ? "anchor" : "old-from-snapshot", [])],
+      };
+      const loading = h.jump({ ...target, messageId: "anchor" });
+      await h.getStarted;
+      const clear = event({
+        type: "thread.cleared",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 20,
+        payload: {},
+      });
+      const meta = event({
+        type: "thread.meta",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 40,
+        payload: { memoryCleanupPending: true, memoryCleanupUnconfirmed: true },
+      });
+      const emit = () => {
+        if (order === "meta-first") h.reader.beforeEvent(meta);
+        h.reader.beforeEvent(clear);
+        if (order === "clear-first") h.reader.beforeEvent(meta);
+      };
+      if (timing === "before-page") emit();
+      h.releaseGet(base);
+      await h.pageStarted;
+      if (timing !== "before-page") emit();
+      expect(h.snapshotRef.current).toBe(h.a);
+      h.releasePage({ threadId: "thread-B", messages: [message("anchor", [])], olderCursor: 1 });
+      await loading;
+      const rejected = timing === "in-flight";
+      expect(h.snapshotRef.current?.messages.map((row) => row.id)).toEqual(
+        rejected ? [] : ["anchor"],
+      );
+      expect(h.scope.pinnedAroundRef.current?.messageId ?? null).toBe(rejected ? null : "anchor");
+      expect(h.snapshotRef.current).toMatchObject({
+        cursor: timing === "post-clear-snapshot" ? 25 : 20,
+        observedClearSeq: 20,
+        memoryCleanupCursor: 40,
+        memoryCleanupPending: true,
+        memoryCleanupUnconfirmed: true,
+      });
+      expect(h.scope.historyEpoch.current).toBe(1);
+    },
+  );
+
+  it.each(["user", "session", "selection", "abort", "target"] as const)(
+    "rejects a cold live clear from an obsolete reader after %s changes",
+    async (change) => {
+      const h = await fixture();
+      if (change === "user") h.actor.current.userId = "user-two";
+      else if (change === "session" || change === "selection") h.generation[change]++;
+      else if (change === "abort") h.scope.readerAbort.abort();
+      else h.scope.activeBotId.current = "bot-C";
+      expect(
+        h.reader.beforeEvent(
+          event({
+            type: "thread.cleared",
+            threadId: "thread-B",
+            botId: "bot-B",
+            seq: 20,
+            payload: { cancelledRunIds: ["foreign-run"] },
+          }),
+        ),
+      ).toBe(false);
+      expect(h.scope.pendingMemoryCleanupEvents.current.size).toBe(0);
+      expect(h.scope.terminalRunReceipts.current.size).toBe(0);
+      expect(h.snapshotRef.current).toBe(h.a);
+    },
+  );
+
+  it("does not apply a former owner's buffered live clear to a new snapshot", async () => {
+    const h = await fixture();
+    h.scope.pendingMemoryCleanupEvents.current.set("thread-B", {
+      owner: "former-owner",
+      scope: "scope-B",
+      seq: 40,
+      clear: event({ type: "thread.cleared", threadId: "thread-B", seq: 20, payload: {} }),
+      payload: { memoryCleanupPending: true },
+    });
+    h.commit(h.b);
+    expect(h.snapshotRef.current?.messages).toEqual(h.b.messages);
+    expect(h.snapshotRef.current?.memoryCleanupPending).toBeUndefined();
+  });
+
+  it("buffers B's clear boundary while A is still the committed snapshot", async () => {
+    const h = await fixture();
+    const clearing = h.confirm();
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 12,
+      cancelledRunIds: [],
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+    });
+    await clearing;
+    expect(h.snapshotRef.current).toBe(h.a);
+    h.commit({ ...h.b, memoryCleanupPending: false });
+    expect(h.snapshotRef.current).toMatchObject({
+      threadId: "thread-B",
+      cursor: 12,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+      messages: [],
+    });
+    expect(h.scope.pendingClearReceipts.current.size).toBe(0);
+  });
+  it("rearms a dismissed web interval between consecutive committed metadata frames", async () => {
+    const h = await fixture();
+    const current = { ...h.b, cursor: 20, memoryCleanupCursor: 20, memoryCleanupPending: true };
+    h.commit(current);
+    const noticeScope = JSON.stringify(["user-one", "space-one", "thread-B"]);
+    const key = JSON.stringify([noticeScope, true]);
+    h.scope.dismissedMemoryCleanupNotices.current.add(key);
+    const settled = reduceThreadSnapshot(
+      current,
+      event({
+        type: "thread.meta",
+        threadId: "thread-B",
+        botId: "bot-B",
+        seq: 21,
+        payload: { memoryCleanupPending: false },
+      }),
+    )!;
+    h.commit(settled);
+    h.commit(
+      reduceThreadSnapshot(
+        settled,
+        event({
+          type: "thread.meta",
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 22,
+          payload: { memoryCleanupPending: true },
+        }),
+      ),
+    );
+    expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(false);
+    h.scope.dismissedMemoryCleanupNotices.current.add(key);
+    h.commit(
+      reduceThreadSnapshot(
+        h.snapshotRef.current,
+        event({
+          type: "thread.meta",
+          threadId: "thread-B",
+          botId: "bot-B",
+          seq: 19,
+          payload: { memoryCleanupPending: false },
+        }),
+      ),
+    );
+    expect(h.scope.dismissedMemoryCleanupNotices.current.has(key)).toBe(true);
+  });
+  it.each([undefined, 20])(
+    "keeps a newer matching snapshot ahead of the buffered cleanup receipt (%s)",
+    async (memoryCleanupCursor) => {
+      const h = await fixture();
+      const clearing = h.confirm();
+      h.complete({
+        ok: true,
+        threadId: "thread-B",
+        clearEventSeq: 12,
+        memoryCleanupPending: true,
+        memoryCleanupCursor: 15,
+      });
+      await clearing;
+      const after = {
+        ...h.b,
+        cursor: 20,
+        memoryCleanupPending: false,
+        memoryCleanupCursor,
+        messages: [message("after", [{ kind: "text", text: "After clear" }])],
+      };
+      h.commit(after);
+      expect(h.snapshotRef.current).toMatchObject({
+        cursor: 20,
+        memoryCleanupPending: false,
+        memoryCleanupCursor: 20,
+        messages: after.messages,
+      });
+    },
+  );
+  it("orders buffered cleanup against the raw snapshot before advancing its clear boundary", async () => {
+    const h = await fixture();
+    const clearing = h.confirm();
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 22,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 21,
+    });
+    await clearing;
+    h.commit({ ...h.b, cursor: 20, memoryCleanupPending: false });
+    expect(h.snapshotRef.current).toMatchObject({
+      cursor: 22,
+      memoryCleanupCursor: 21,
+      memoryCleanupPending: true,
+      messages: [],
+    });
+  });
+
+  it.each(["user", "session", "selection"] as const)(
+    "does not apply another %s owner's buffered receipt",
+    async (change) => {
+      const h = await fixture();
+      const clearing = h.confirm();
+      h.complete({
+        ok: true,
+        threadId: "thread-B",
+        clearEventSeq: 12,
+        memoryCleanupPending: true,
+        memoryCleanupCursor: 15,
+      });
+      await clearing;
+      if (change === "user") h.actor.current.userId = "user-two";
+      else h.generation[change]++;
+      h.commit(h.b);
+      expect(h.snapshotRef.current?.messages).toEqual(h.b.messages);
+      expect(h.snapshotRef.current?.memoryCleanupPending).toBeUndefined();
+    },
+  );
+  it("keeps clear ownership stable when the implicit Space proof becomes ready", async () => {
+    const h = await fixture();
+    h.actor.current.spaceId = undefined;
+    const clearing = h.confirm();
+    h.actor.current.spaceId = "space-one";
+    h.complete({
+      ok: true,
+      threadId: "thread-B",
+      clearEventSeq: 12,
+      memoryCleanupPending: true,
+      memoryCleanupCursor: 15,
+    });
+    await clearing;
+    h.commit(h.b);
+    expect(h.snapshotRef.current).toMatchObject({ memoryCleanupPending: true, messages: [] });
+  });
 });

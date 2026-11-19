@@ -38,8 +38,10 @@ import {
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
-import type { AnnouncementEvent, BotCreationReceipt } from "@rakazo/core";
+import type { AnnouncementEvent, BotCreationReceipt, MemoryCleanupObservation } from "@rakazo/core";
 import {
+  applyThreadClearReceipt,
+  applyThreadRunCancellations,
   attachmentLabels,
   buildComposerMentionOptions,
   type ComposerMention,
@@ -49,6 +51,7 @@ import {
   cronFromPreset,
   formatMessageTime,
   groupVoiceChats,
+  hasNewThreadWork,
   inferAttachmentMimeType,
   isActive,
   isApprovalAskBlock,
@@ -62,6 +65,7 @@ import {
   messageAttachmentLabels,
   messageBlocksForQuestionCards,
   nestRosterByParent,
+  observeMemoryCleanup,
   parseModelOptionKey,
   plainTextFromMarkdown,
   projectMessageReactions,
@@ -75,7 +79,9 @@ import {
   type SlashActionId,
   searchHitThreadTarget,
   serializeComposerPrompt,
+  shouldResetHistoryAfterClear,
   speechFromBlocks,
+  threadClearCancelledRunIds,
   timeSeparatorIds,
   truncateSlashDescription,
   userVisibleMessages,
@@ -516,6 +522,11 @@ export function ShellPage() {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [memoryCleanupNotices, setMemoryCleanupNotices] = useState<
+    Record<string, { message: string; provisional: boolean }>
+  >({});
+  const dismissedMemoryCleanupNotices = useRef(new Set<string>());
+  const [pendingMemoryCleanupClears, setPendingMemoryCleanupClears] = useState(new Set<string>());
   const [imageSendRefusal, setImageSendRefusal] = useState<{
     draftKey: string;
     version: number;
@@ -585,6 +596,17 @@ export function ShellPage() {
   // A very fast run can finish over SSE while its threads.send response is still
   // returning. Do not let that late receipt resurrect terminal work as queued.
   const terminalRunReceipts = useRef(new Set<string>());
+  const terminalRunReceiptBatches = useRef<string[][]>([]);
+  function rememberTerminalRunIds(ids: readonly string[]) {
+    if (!ids.length || ids.every((id) => terminalRunReceipts.current.has(id))) return;
+    // An atomic clear must not evict IDs from its own cancellation list.
+    terminalRunReceiptBatches.current = [
+      ...terminalRunReceiptBatches.current.slice(-99),
+      [...new Set(ids)],
+    ];
+    terminalRunReceipts.current = new Set(terminalRunReceiptBatches.current.flat());
+  }
+
   const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   const refreshDelegatedApprovals = useRef<() => void>(() => {});
   // Last-known computer/screen per bot, so switching back to an already-seen
@@ -617,13 +639,109 @@ export function ShellPage() {
     }
   }
 
+  const pendingMemoryCleanupEvents = useRef(
+    new Map<
+      string,
+      {
+        scope: string | null;
+        owner: string;
+        seq: number;
+        payload: ProductEvent["payload"];
+        clear?: ProductEvent;
+        cancelledRunIds?: string[];
+      }
+    >(),
+  );
+  const pendingClearReceipts = useRef(
+    new Map<
+      string,
+      {
+        botId?: string;
+        groupId?: string;
+        receipt: MemoryCleanupObservation & {
+          clearEventSeq: number;
+          cancelledRunIds?: string[];
+        };
+      }
+    >(),
+  );
+
+  function clearReceiptOwnerKey() {
+    return JSON.stringify([
+      groupSettingsActor.current.userId,
+      currentRpcSessionGeneration(),
+      currentSpaceSelectionGeneration(),
+    ]);
+  }
+
   function commitSnapshot(next: ThreadSnapshot | null) {
+    if (next) {
+      const nextThreadId = next.threadId;
+      const key = JSON.stringify([clearReceiptOwnerKey(), nextThreadId]);
+      const pendingClear = pendingClearReceipts.current.get(key);
+      const matchesReceipt =
+        pendingClear &&
+        (pendingClear.groupId
+          ? next.groupId === pendingClear.groupId
+          : next.botId === pendingClear.botId);
+      const cleanup = pendingMemoryCleanupEvents.current.get(nextThreadId);
+      const before = next;
+      next = reconcileBufferedThreadSnapshot(next);
+      if (
+        matchesReceipt ||
+        (cleanup?.scope === draftScopeKeyRef.current &&
+          cleanup.owner === clearReceiptOwnerKey() &&
+          cleanup.clear)
+      )
+        reconcileClearHistory(before, next);
+      if (matchesReceipt) pendingClearReceipts.current.delete(key);
+      pendingMemoryCleanupEvents.current.delete(nextThreadId);
+      if (next.memoryCleanupPending === false && !next.memoryCleanupUnconfirmed) {
+        const actor = groupSettingsActor.current;
+        const scope = JSON.stringify([
+          actor.userId,
+          selectedSpaceId() ?? actor.spaceId,
+          nextThreadId,
+        ]);
+        dismissedMemoryCleanupNotices.current.delete(JSON.stringify([scope, true]));
+      }
+    }
     if (next?.computer) {
       const computer = currentComputerStatus(next.computer);
       if (computer !== next.computer) next = { ...next, computer };
     }
     snapshotRef.current = next;
     setSnapshot(withLiveStreamingProgress(next, streamResponsesRef.current));
+  }
+
+  function reconcileBufferedThreadSnapshot(next: ThreadSnapshot) {
+    const key = JSON.stringify([clearReceiptOwnerKey(), next.threadId]);
+    const pendingClear = pendingClearReceipts.current.get(key);
+    if (
+      pendingClear &&
+      (pendingClear.groupId
+        ? next.groupId === pendingClear.groupId
+        : next.botId === pendingClear.botId)
+    ) {
+      const cleanupBaseline = next.memoryCleanupCursor ?? next.cursor;
+      next = applyThreadClearReceipt(next, pendingClear.receipt);
+      next = observeMemoryCleanup(
+        { ...next, memoryCleanupCursor: cleanupBaseline },
+        pendingClear.receipt,
+        pendingClear.receipt.memoryCleanupCursor ?? pendingClear.receipt.clearEventSeq,
+      );
+    }
+    const cleanup = pendingMemoryCleanupEvents.current.get(next.threadId);
+    if (cleanup?.scope === draftScopeKeyRef.current && cleanup.owner === clearReceiptOwnerKey()) {
+      if (cleanup.clear) next = reduceThreadSnapshot(next, cleanup.clear) ?? next;
+      next = applyThreadRunCancellations(next, cleanup.cancelledRunIds ?? []);
+      next = observeMemoryCleanup(
+        { ...next, memoryCleanupCursor: next.memoryCleanupCursor ?? next.cursor },
+        cleanup.payload,
+        cleanup.seq,
+      );
+    }
+    return next;
   }
 
   useEffect(() => {
@@ -1639,6 +1757,35 @@ export function ShellPage() {
     invalidateHistoryRequests();
   }
 
+  function reconcileClearHistory(previous: ThreadSnapshot, next: ThreadSnapshot) {
+    const pinned = pinnedAroundRef.current;
+    if (
+      !shouldResetHistoryAfterClear(
+        previous,
+        next,
+        pinned?.threadId === previous.threadId ? pinned.messageId : undefined,
+      )
+    ) {
+      if (pinned?.threadId === next.threadId)
+        pinnedAroundRef.current = {
+          ...pinned,
+          messages: next.messages,
+          olderCursor: next.olderCursor,
+        };
+      return;
+    }
+    expandedHistoryThread.current = null;
+    pinnedAroundRef.current = null;
+    setScrollRequest(null);
+    if (pinned && searchParamsRef.current.get("m") === pinned.messageId) {
+      const params = new URLSearchParams(searchParamsRef.current);
+      params.delete("m");
+      params.delete("attention");
+      setSearchParams(params, { replace: true });
+    }
+    // The clear watermark rejects pre-clear pages without cancelling post-clear reads.
+  }
+
   function retryCurrentThread() {
     if (threadCheckpoint.current?.scope === draftScopeKey) invalidateHistoryRequests();
     else clearHistoryWindow();
@@ -1659,17 +1806,124 @@ export function ShellPage() {
     const targetGroupId = activeGroupId.current;
     const checkpoint = threadCheckpoint.current;
     const resume = checkpoint?.scope === scope ? checkpoint : undefined;
+    const owner = clearReceiptOwnerKey();
     const ownsReader = () =>
       !abort.signal.aborted &&
+      clearReceiptOwnerKey() === owner &&
       draftScopeKeyRef.current === scope &&
       actor.userId === groupSettingsActor.current.userId &&
       actor.spaceId === groupSettingsActor.current.spaceId &&
       activeBotId.current === targetBotId &&
       activeGroupId.current === targetGroupId &&
       (selectedSpaceId() ?? groupSettingsActor.current.spaceId) === spaceId;
+    const bufferCleanupEvent = (event: ProductEvent) => {
+      if (!ownsReader()) return false;
+      const current = snapshotRef.current;
+      if (
+        current?.threadId !== event.threadId &&
+        (event.type === "thread.cleared" ||
+          (event.type === "thread.meta" &&
+            (event.payload.memoryCleanupUnconfirmed === true ||
+              typeof event.payload.memoryCleanupPending === "boolean")))
+      ) {
+        const entry = pendingMemoryCleanupEvents.current.get(event.threadId);
+        const before = entry?.scope === scope && entry.owner === owner ? entry : undefined;
+        const clear =
+          event.type === "thread.cleared" && (!before?.clear || event.seq > before.clear.seq)
+            ? event
+            : before?.clear;
+        const { memoryCleanupCursor: seq, ...payload } = observeMemoryCleanup(
+          { ...before?.payload, memoryCleanupCursor: before?.seq ?? -1 },
+          {
+            ...event.payload,
+            ...(event.type === "thread.cleared"
+              ? { memoryCleanupPending: event.payload.memoryCleanupPending === true }
+              : {}),
+          },
+          event.seq,
+        );
+        pendingMemoryCleanupEvents.current.set(event.threadId, {
+          scope,
+          owner,
+          seq,
+          payload,
+          ...(clear ? { clear } : {}),
+          cancelledRunIds: [
+            ...new Set([
+              ...(before?.cancelledRunIds ?? []),
+              ...(event.type === "thread.cleared"
+                ? (threadClearCancelledRunIds(event.payload) ?? [])
+                : []),
+            ]),
+          ],
+        });
+        return true;
+      }
+      return false;
+    };
+    const applyReaderEvent = (event: ProductEvent) => {
+      if (!ownsReader()) return;
+      const current = snapshotRef.current;
+      if (bufferCleanupEvent(event)) return;
+      if (current?.threadId === event.threadId && event.seq <= current.cursor) {
+        // The committed snapshot already owns run/computer/approval state.
+        // Replay only durable history so old execution events cannot roll it back.
+        if (
+          event.type === "thread.cleared" ||
+          event.type === "thread.meta" ||
+          event.type === "thread.message.created" ||
+          event.type === "thread.message.updated" ||
+          event.type === "group.handoff" ||
+          event.type === "thread.message.reaction"
+        ) {
+          const next = reduceThreadSnapshot(current, event);
+          if (current && next) {
+            const messageId = String(event.payload.messageId ?? event.id);
+            if (
+              next !== current &&
+              (event.type === "thread.message.created" ||
+                event.type === "thread.message.updated" ||
+                event.type === "group.handoff") &&
+              typeof event.payload.messageSeq === "number" &&
+              !current.messages.some((message) => message.id === messageId) &&
+              next.messages.some((message) => message.id === messageId)
+            )
+              expandedHistoryThread.current = event.threadId;
+            if (event.type === "thread.cleared") reconcileClearHistory(current, next);
+            commitSnapshot(next);
+          }
+        }
+        return;
+      }
+      applyThreadEvent(
+        event,
+        (next) => {
+          if (event.type === "thread.cleared" && current && next)
+            reconcileClearHistory(current, next);
+          commitSnapshot(next);
+        },
+        (next) => commitReaderComputer(next, event),
+        snapshotRef,
+        computerRef,
+      );
+    };
     return {
       resume,
       ownsReader,
+      beforeEvent: (event: ProductEvent) => {
+        if (event.type === "thread.cleared" && ownsReader())
+          rememberTerminalRunIds(threadClearCancelledRunIds(event.payload) ?? []);
+
+        if (
+          event.type === "thread.cleared" &&
+          snapshotRef.current?.threadId === event.threadId &&
+          ownsReader()
+        ) {
+          applyReaderEvent(event);
+          return true;
+        }
+        return bufferCleanupEvent(event);
+      },
       onCursor: (next: { threadId: string; cursor: number }) => {
         if (scope !== null && ownsReader()) threadCheckpoint.current = { ...next, scope };
       },
@@ -1684,45 +1938,7 @@ export function ShellPage() {
           expandedHistoryThread.current = consumed.threadId;
         return request;
       },
-      applyEvent: (event: ProductEvent) => {
-        if (!ownsReader()) return;
-        const current = snapshotRef.current;
-        if (current?.threadId === event.threadId && event.seq <= current.cursor) {
-          // The committed snapshot already owns run/computer/approval state.
-          // Replay only durable history so old execution events cannot roll it back.
-          if (
-            event.type === "thread.cleared" ||
-            event.type === "thread.message.created" ||
-            event.type === "thread.message.updated" ||
-            event.type === "group.handoff" ||
-            event.type === "thread.message.reaction"
-          ) {
-            const next = reduceThreadSnapshot(current, event);
-            if (current && next) {
-              const messageId = String(event.payload.messageId ?? event.id);
-              if (
-                next !== current &&
-                (event.type === "thread.message.created" ||
-                  event.type === "thread.message.updated" ||
-                  event.type === "group.handoff") &&
-                typeof event.payload.messageSeq === "number" &&
-                !current.messages.some((message) => message.id === messageId) &&
-                next.messages.some((message) => message.id === messageId)
-              )
-                expandedHistoryThread.current = event.threadId;
-              commitSnapshot(next);
-            }
-          }
-          return;
-        }
-        applyThreadEvent(
-          event,
-          commitSnapshot,
-          (next) => commitReaderComputer(next, event),
-          snapshotRef,
-          computerRef,
-        );
-      },
+      applyEvent: applyReaderEvent,
     };
   }
 
@@ -2243,12 +2459,9 @@ export function ShellPage() {
         if (reader.ownsReader()) refreshDelegatedApprovals.current();
       },
       beforeEvent: (event) => {
+        reader.beforeEvent(event);
         if (isRunTerminalEvent(event) && event.runId) {
-          terminalRunReceipts.current.add(event.runId);
-          if (terminalRunReceipts.current.size > 100) {
-            const oldest = terminalRunReceipts.current.values().next().value;
-            if (oldest !== undefined) terminalRunReceipts.current.delete(oldest);
-          }
+          rememberTerminalRunIds([event.runId]);
         }
       },
       applyEvent: reader.applyEvent,
@@ -2268,7 +2481,6 @@ export function ShellPage() {
         );
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
-          clearHistoryWindow();
         }
         if (event.type === "bot.archived") {
           void refreshBots(true).catch(() => undefined);
@@ -2369,13 +2581,13 @@ export function ShellPage() {
         ),
       currentSnapshot: () => snapshotRef.current,
       subscribe: (cursor) => rpc.threads.subscribe({ groupId, cursor }, { signal: abort.signal }),
+      beforeEvent: reader.beforeEvent,
       applyEvent: reader.applyEvent,
       onEvent: (event, initial) => {
         if (!reader.ownsReader()) return;
         replyEventObserver.current(event);
         if (event.type === "thread.cleared" && event.seq >= (snapshotRef.current?.cursor ?? -1)) {
           setPeerConversation(null);
-          clearHistoryWindow();
         }
         const eventBot = botsRef.current.find((bot) => bot.id === event.botId);
         notifyBrowserForEvent(
@@ -2965,7 +3177,9 @@ export function ShellPage() {
     if (target.groupId && activeGroupId.current !== target.groupId) return;
     if (target.botId && activeBotId.current !== target.botId) return;
     const messageId = target.attention ? (snap.attentionMessageId ?? null) : target.messageId;
-    const atDispatch = snapshotRef.current;
+    const atDispatch = reconcileBufferedThreadSnapshot(
+      reconcileRefreshedThread(snapshotRef.current, snap, computerRef.current).snapshot,
+    );
     const requestCursor = Math.max(
       snap.cursor,
       atDispatch?.threadId === snap.threadId ? atDispatch.cursor : -1,
@@ -2994,6 +3208,7 @@ export function ShellPage() {
     const jumpSnapshot =
       savedGroup !== savedGroupAtStart ? (syncSavedGroupSnapshot(snap, savedGroup) ?? snap) : snap;
     const reconciled = reconcileRefreshedThread(current, jumpSnapshot, computerRef.current);
+    reconciled.snapshot = reconcileBufferedThreadSnapshot(reconciled.snapshot);
     const page = protectThreadMessagePage(reconciled.snapshot, fetchedPage, requestCursor);
     const targetInPage =
       page !== null &&
@@ -3294,7 +3509,82 @@ export function ShellPage() {
     refreshTemplateExample((value) => value + 1);
   }
 
+  const memoryCleanupScope =
+    activeSnapshot &&
+    (activeGroupId.current
+      ? activeSnapshot.groupId === activeGroupId.current
+      : activeSnapshot.botId === activeBotId.current)
+      ? JSON.stringify([
+          groupSettingsActor.current.userId,
+          selectedSpaceId() ?? groupSettingsActor.current.spaceId,
+          activeSnapshot.threadId,
+        ])
+      : undefined;
+  const showMemoryCleanupNotice = useCallback(
+    (scope: string, immediate: boolean, provisional = false) => {
+      if (
+        !immediate &&
+        dismissedMemoryCleanupNotices.current.has(JSON.stringify([scope, provisional]))
+      )
+        return;
+      setMemoryCleanupNotices((current) => {
+        const previous = current[scope];
+        if (previous && !immediate && previous.provisional === provisional) return current;
+        return {
+          ...current,
+          [scope]: {
+            message:
+              previous && !immediate
+                ? previous.message
+                : immediate
+                  ? t`Messages cleared. External memory cleanup could not be confirmed.`
+                  : t`External memory cleanup could not be confirmed.`,
+            provisional,
+          },
+        };
+      });
+    },
+    [t],
+  );
+  useEffect(() => {
+    if (!memoryCleanupScope || !activeSnapshot) return;
+    if (
+      !pendingMemoryCleanupClears.has(memoryCleanupScope) &&
+      (activeSnapshot.memoryCleanupUnconfirmed || activeSnapshot.memoryCleanupPending)
+    ) {
+      showMemoryCleanupNotice(memoryCleanupScope, false, !activeSnapshot.memoryCleanupUnconfirmed);
+    } else if (
+      activeSnapshot.memoryCleanupPending === false &&
+      !activeSnapshot.memoryCleanupUnconfirmed
+    ) {
+      dismissedMemoryCleanupNotices.current.delete(JSON.stringify([memoryCleanupScope, true]));
+      setMemoryCleanupNotices((current) => {
+        if (!current[memoryCleanupScope]?.provisional) return current;
+        const next = { ...current };
+        delete next[memoryCleanupScope];
+        return next;
+      });
+    }
+  }, [
+    activeSnapshot?.memoryCleanupUnconfirmed,
+    activeSnapshot?.memoryCleanupPending,
+    activeSnapshot?.memoryCleanupCursor,
+    memoryCleanupScope,
+    pendingMemoryCleanupClears,
+    showMemoryCleanupNotice,
+  ]);
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
+  const cleanupNotice = memoryCleanupScope ? memoryCleanupNotices[memoryCleanupScope] : undefined;
+  const cleanupError =
+    cleanupNotice &&
+    !sendError &&
+    !runError &&
+    !composerDraft.deliveryNotice &&
+    (!cleanupNotice.provisional ||
+      activeSnapshot?.memoryCleanupPending ||
+      activeSnapshot?.memoryCleanupUnconfirmed)
+      ? cleanupNotice.message
+      : null;
   const displayedRunError = !sendError && !composerDraft.deliveryNotice ? runError : null;
   const displayedRunErrorId = displayedRunError ? (activeSnapshot?.run?.id ?? null) : null;
   const handleRunErrorPresented = useCallback((runId: string) => {
@@ -3926,7 +4216,12 @@ export function ShellPage() {
             updateSnapshot((current) =>
               applyThreadSendReceipt(
                 current,
-                { botId: botTarget, runId: sent.runId, taskId: sent.taskId },
+                {
+                  botId: botTarget,
+                  runId: sent.runId,
+                  taskId: sent.taskId,
+                  eventSeq: sent.eventSeq,
+                },
                 terminalRunReceipts.current,
               ),
             );
@@ -4787,6 +5082,19 @@ export function ShellPage() {
   );
 
   function dismissComposerError() {
+    if (cleanupError) {
+      if (memoryCleanupScope) {
+        dismissedMemoryCleanupNotices.current.add(
+          JSON.stringify([memoryCleanupScope, cleanupNotice?.provisional === true]),
+        );
+        setMemoryCleanupNotices((current) => {
+          const next = { ...current };
+          delete next[memoryCleanupScope];
+          return next;
+        });
+      }
+      return;
+    }
     // The strip shows one message at a time, so only dismiss the run failure when it is the
     // one on screen; otherwise a live run would be silenced before it has even failed.
     const failedRunId = displayedRunErrorId;
@@ -6303,7 +6611,7 @@ export function ShellPage() {
               attachmentNotice={
                 attachmentNotice?.scopeKey === draftScopeKey ? attachmentNotice.text : null
               }
-              sendError={sendError}
+              sendError={sendError ?? cleanupError}
               runError={displayedRunError}
               runErrorId={displayedRunErrorId}
               onAddKey={() => openSettings("models")}
@@ -7275,23 +7583,135 @@ export function ShellPage() {
               const actor = groupSettingsActor.current;
               const spaceId = selectedSpaceId() ?? actor.spaceId;
               const epoch = historyEpoch.current;
-              await rpc.threads.clear(
-                clearTarget.kind === "bot"
-                  ? { botId: clearTarget.chat.id }
-                  : { groupId: clearTarget.chat.id },
-              );
-              if (
-                epoch === historyEpoch.current &&
-                actor.userId === groupSettingsActor.current.userId &&
-                actor.spaceId === groupSettingsActor.current.spaceId &&
-                spaceId === (selectedSpaceId() ?? groupSettingsActor.current.spaceId) &&
-                ((clearTarget.kind === "bot" && activeBotId.current === clearTarget.chat.id) ||
-                  (clearTarget.kind === "group" && activeGroupId.current === clearTarget.chat.id))
-              ) {
-                clearHistoryWindow();
-                updateSnapshot((current) =>
-                  current ? { ...current, messages: [], olderCursor: null, run: null } : current,
+              const owner = clearReceiptOwnerKey();
+              const requestSnapshot = snapshotRef.current;
+              const expectedThreadId = clearTarget.chat.threadId;
+              const scope = JSON.stringify([actor.userId, spaceId, expectedThreadId]);
+              setPendingMemoryCleanupClears((current) => new Set(current).add(scope));
+              try {
+                const cleared = await rpc.threads.clear(
+                  clearTarget.kind === "bot"
+                    ? { botId: clearTarget.chat.id }
+                    : { groupId: clearTarget.chat.id },
                 );
+                const receiptThreadId = cleared.threadId ?? expectedThreadId;
+                const activeTarget =
+                  clearTarget.kind === "bot"
+                    ? activeBotId.current === clearTarget.chat.id
+                    : activeGroupId.current === clearTarget.chat.id;
+                const sameOwner = owner === clearReceiptOwnerKey();
+                if (sameOwner) rememberTerminalRunIds(cleared.cancelledRunIds ?? []);
+                const matches = (snapshot: ThreadSnapshot) =>
+                  snapshot.threadId === receiptThreadId &&
+                  (clearTarget.kind === "bot"
+                    ? snapshot.botId === clearTarget.chat.id
+                    : snapshot.groupId === clearTarget.chat.id);
+                if (sameOwner && cleared.clearEventSeq !== undefined) {
+                  const key = JSON.stringify([owner, receiptThreadId]);
+                  const before = pendingClearReceipts.current.get(key);
+                  const incoming = {
+                    ...(clearTarget.kind === "bot"
+                      ? { botId: clearTarget.chat.id }
+                      : { groupId: clearTarget.chat.id }),
+                    receipt: {
+                      ...cleared,
+                      clearEventSeq: cleared.clearEventSeq,
+                    },
+                  };
+                  const latest =
+                    before && before.receipt.clearEventSeq > cleared.clearEventSeq
+                      ? before
+                      : incoming;
+                  const other = latest === before ? incoming : before;
+                  pendingClearReceipts.current.set(key, {
+                    ...latest,
+                    receipt: {
+                      ...observeMemoryCleanup(
+                        latest.receipt,
+                        other?.receipt ?? {},
+                        other?.receipt.memoryCleanupCursor ?? other?.receipt.clearEventSeq ?? -1,
+                      ),
+                      cancelledRunIds: [
+                        ...new Set([
+                          ...(latest.receipt.cancelledRunIds ?? []),
+                          ...(other?.receipt.cancelledRunIds ?? []),
+                        ]),
+                      ],
+                    },
+                  });
+                  if (activeTarget && snapshotRef.current && matches(snapshotRef.current))
+                    commitSnapshot(snapshotRef.current);
+                }
+                if (
+                  sameOwner &&
+                  activeTarget &&
+                  epoch === historyEpoch.current &&
+                  snapshotRef.current &&
+                  matches(snapshotRef.current) &&
+                  cleared.clearEventSeq === undefined &&
+                  !hasNewThreadWork(snapshotRef.current, requestSnapshot)
+                ) {
+                  clearHistoryWindow();
+                  updateSnapshot((current) =>
+                    current && matches(current)
+                      ? { ...current, messages: [], olderCursor: null, run: null }
+                      : current,
+                  );
+                }
+                if (
+                  sameOwner &&
+                  activeTarget &&
+                  epoch === historyEpoch.current &&
+                  snapshotRef.current &&
+                  matches(snapshotRef.current) &&
+                  cleared.clearEventSeq === undefined &&
+                  hasNewThreadWork(snapshotRef.current, requestSnapshot)
+                ) {
+                  void (
+                    clearTarget.kind === "bot"
+                      ? refreshThreadRef.current(clearTarget.chat.id)
+                      : refreshGroupThreadRef.current(clearTarget.chat.id)
+                  ).catch(() => undefined);
+                }
+                if (sameOwner) {
+                  const shown = snapshotRef.current;
+                  const matchingSnapshot = shown && matches(shown) ? shown : null;
+                  const olderReceipt =
+                    matchingSnapshot &&
+                    cleared.memoryCleanupCursor !== undefined &&
+                    cleared.memoryCleanupCursor <
+                      (matchingSnapshot.memoryCleanupCursor ?? matchingSnapshot.cursor);
+                  const pending = olderReceipt
+                    ? matchingSnapshot.memoryCleanupPending
+                    : cleared.memoryCleanupPending;
+                  const unconfirmed =
+                    cleared.memoryCleanupUnconfirmed || matchingSnapshot?.memoryCleanupUnconfirmed;
+                  if (unconfirmed || pending) {
+                    showMemoryCleanupNotice(
+                      JSON.stringify([actor.userId, spaceId, receiptThreadId]),
+                      true,
+                      !unconfirmed,
+                    );
+                  }
+                  if (activeTarget)
+                    updateSnapshot((current) =>
+                      current && matches(current)
+                        ? observeMemoryCleanup(
+                            current,
+                            cleared,
+                            cleared.memoryCleanupCursor ??
+                              current.memoryCleanupCursor ??
+                              current.cursor,
+                          )
+                        : current,
+                    );
+                }
+              } finally {
+                setPendingMemoryCleanupClears((current) => {
+                  const next = new Set(current);
+                  next.delete(scope);
+                  return next;
+                });
               }
               setClearTarget(null);
               await refreshBots();

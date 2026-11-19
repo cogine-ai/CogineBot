@@ -53,6 +53,8 @@ import {
   PROTECTED_APPROVAL_TOOLS,
 } from "./delegated-approvals.js";
 import { lockRunHistoryGrant } from "./history-retrieval.js";
+import type { MemoryCleanupIntent } from "./memory-cleanup.js";
+import { hasPendingMemoryCleanup, memoryCleanupIntents } from "./memory-cleanup.js";
 import type { RunLease } from "./messages.js";
 import {
   assertRunCanWriteHistory,
@@ -104,6 +106,9 @@ export interface ThreadEvents {
   append(input: AppendEventInput): Promise<ProductEvent>;
   claimSteering(input: ClaimSteeringInput): Promise<ClaimedSteeringMessage[]>;
   clearThread(input: ClearThreadInput): Promise<ClearThreadResult>;
+  beginMemorySave(input: MemorySaveIntentInput): Promise<boolean>;
+  finishMemorySave(input: MemorySaveIntentInput): Promise<boolean>;
+  settleMemoryCleanup(input: MemoryCleanupSettlement): Promise<MemoryCleanupState>;
   finalizeComputerControlRelease(
     input: FinalizeComputerControlReleaseInput,
   ): Promise<FinalizeComputerControlReleaseResult | false>;
@@ -132,12 +137,34 @@ export interface ClearThreadInput {
   /** Event author and the bot-scoped target for one-to-one chats. */
   botId: string;
   groupId?: string;
+  memoryCleanupExpected?: true;
+}
+
+export interface MemorySaveIntentInput {
+  spaceId: string;
+  threadId: string;
+  botId: string;
+  token: string;
+  generation: number;
+}
+
+export interface MemoryCleanupSettlement extends Omit<MemorySaveIntentInput, "generation"> {
+  unconfirmed: boolean;
+}
+
+export interface MemoryCleanupState {
+  memoryCleanupCursor?: number;
+  memoryCleanupUnconfirmed?: true;
+  memoryCleanupPending: boolean;
 }
 
 export interface ClearThreadResult {
   event: ProductEvent;
   cancelledRunIds: string[];
   historyCompactionGeneration: number;
+  memoryCleanupUnconfirmed?: true;
+  memoryCleanupPending?: boolean;
+  cleanup?: MemoryCleanupIntent;
 }
 
 export interface FinalizeComputerControlReleaseInput {
@@ -416,6 +443,9 @@ export function createThreadEvents(
     append: (input) => appendEvent(prisma, input, realtime),
     claimSteering: (input) => claimSteering(prisma, input),
     clearThread: (input) => clearThread(prisma, input, realtime),
+    beginMemorySave: (input) => beginMemorySave(prisma, input, realtime),
+    finishMemorySave: (input) => finishMemorySave(prisma, input, realtime),
+    settleMemoryCleanup: (input) => settleMemoryCleanup(prisma, input, realtime),
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
     finalizeRun: (input) => finalizeRun(prisma, input, realtime),
@@ -457,8 +487,19 @@ export async function clearThread(
         ...(input.groupId ? { groupId: input.groupId } : { botId: input.botId }),
       },
       data: { unread: false },
-      select: { nextMessageSeq: true, historyCompactionGeneration: true },
+      select: {
+        nextMessageSeq: true,
+        historyCompactionGeneration: true,
+        memoryCleanupUnconfirmed: true,
+        memoryCleanupIntents: true,
+      },
     });
+    const [memoryConfig] = input.groupId
+      ? []
+      : await tx.$queryRaw<Array<{ secretId: string }>>`
+      SELECT "secretId" FROM space_memory_configs WHERE "spaceId" = ${input.spaceId} FOR SHARE
+    `;
+
     const activeRuns = await tx.run.findMany({
       where: {
         spaceId: input.spaceId,
@@ -470,6 +511,24 @@ export async function clearThread(
     });
     const now = new Date();
     const runIds = activeRuns.map((run) => run.id);
+    const cleanup: MemoryCleanupIntent | undefined =
+      (memoryConfig || input.memoryCleanupExpected) && !input.groupId
+        ? {
+            token: `clear:${thread.historyCompactionGeneration + 1}`,
+            ...(memoryConfig ? { connectionId: memoryConfig.secretId } : {}),
+            kind: "clear",
+            generations: [
+              Math.max(0, thread.historyCompactionGeneration - 1),
+              thread.historyCompactionGeneration,
+            ],
+          }
+        : undefined;
+    const intents = memoryCleanupIntents(thread.memoryCleanupIntents);
+    if (cleanup) intents.push(cleanup);
+    const cleanupPending = hasPendingMemoryCleanup(
+      intents as unknown as Prisma.JsonValue,
+      thread.historyCompactionGeneration + 1,
+    );
     await cancelRunsInTransaction(tx, activeRuns, now);
     await revokePendingRoutineRetries(tx, input);
     // Expire as tombstones so a still-open provider screen claim cannot reset fencing to 1.
@@ -494,6 +553,7 @@ export async function clearThread(
         historyCompactionSummary: null,
         historyCompactionGeneration: { increment: 1 },
         historyCompactionRetryAfterSeq: null,
+        ...(cleanup ? { memoryCleanupIntents: intents as unknown as Prisma.InputJsonArray } : {}),
       },
     });
     if (input.groupId) {
@@ -507,12 +567,19 @@ export async function clearThread(
     const event = await appendEventInTransaction(tx, {
       ...input,
       type: "thread.cleared",
-      payload: {},
+      payload: {
+        cancelledRunIds: runIds,
+        ...(thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
+        ...(cleanupPending ? { memoryCleanupPending: true } : {}),
+      },
     });
     return {
       event,
       cancelledRunIds: runIds,
       historyCompactionGeneration: thread.historyCompactionGeneration,
+      ...(thread.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+      memoryCleanupPending: cleanupPending,
+      ...(cleanup ? { cleanup } : {}),
     };
   });
   await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
@@ -525,7 +592,141 @@ export async function clearThread(
     event: mapProductEvent(committed.event),
     cancelledRunIds: committed.cancelledRunIds,
     historyCompactionGeneration: committed.historyCompactionGeneration,
+    ...(committed.memoryCleanupUnconfirmed ? { memoryCleanupUnconfirmed: true as const } : {}),
+    memoryCleanupPending: committed.memoryCleanupPending,
+    ...(committed.cleanup ? { cleanup: committed.cleanup } : {}),
   };
+}
+
+async function changeMemoryCleanup<T>(
+  prisma: PrismaClient,
+  input: Pick<ClearThreadInput, "spaceId" | "threadId" | "botId">,
+  change: (state: { generation: number; intents: MemoryCleanupIntent[]; unconfirmed: boolean }) => {
+    intents: MemoryCleanupIntent[];
+    unconfirmed?: true;
+    result: T;
+  },
+  realtime?: RealtimeFanout,
+): Promise<{ result: T; cursor: number }> {
+  const committed = await withTransactionRetry(() =>
+    prisma.$transaction(async (tx) => {
+      const [thread] = await tx.$queryRaw<
+        Array<{
+          historyCompactionGeneration: number;
+          nextEventSeq: number;
+          memoryCleanupIntents: Prisma.JsonValue;
+          memoryCleanupUnconfirmed: boolean;
+        }>
+      >`SELECT "historyCompactionGeneration", "nextEventSeq", "memoryCleanupIntents", "memoryCleanupUnconfirmed"
+      FROM threads WHERE id = ${input.threadId} AND "spaceId" = ${input.spaceId}
+      AND "botId" = ${input.botId} FOR UPDATE`;
+      if (!thread) throw new Error("Memory cleanup target is unavailable.");
+      const wasPending = hasPendingMemoryCleanup(
+        thread.memoryCleanupIntents,
+        thread.historyCompactionGeneration,
+      );
+      const changed = change({
+        generation: thread.historyCompactionGeneration,
+        intents: memoryCleanupIntents(thread.memoryCleanupIntents),
+        unconfirmed: thread.memoryCleanupUnconfirmed,
+      });
+      const pending = hasPendingMemoryCleanup(
+        changed.intents as unknown as Prisma.JsonValue,
+        thread.historyCompactionGeneration,
+      );
+      await tx.thread.update({
+        where: { id: input.threadId },
+        data: {
+          memoryCleanupIntents: changed.intents as unknown as Prisma.InputJsonArray,
+          ...(changed.unconfirmed ? { memoryCleanupUnconfirmed: true } : {}),
+        },
+      });
+      const event =
+        pending !== wasPending || (changed.unconfirmed && !thread.memoryCleanupUnconfirmed)
+          ? await appendEventInTransaction(tx, {
+              ...input,
+              type: "thread.meta",
+              payload: {
+                memoryCleanupPending: pending,
+                ...(thread.memoryCleanupUnconfirmed || changed.unconfirmed
+                  ? { memoryCleanupUnconfirmed: true }
+                  : {}),
+              },
+            })
+          : null;
+      return { result: changed.result, cursor: event?.seq ?? thread.nextEventSeq - 1, event };
+    }),
+  );
+  if (committed.event)
+    await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
+  return { result: committed.result, cursor: committed.cursor };
+}
+
+export function beginMemorySave(
+  prisma: PrismaClient,
+  input: MemorySaveIntentInput,
+  realtime?: RealtimeFanout,
+): Promise<boolean> {
+  return changeMemoryCleanup(
+    prisma,
+    input,
+    ({ generation, intents }) => ({
+      intents:
+        generation === input.generation && !intents.some((item) => item.token === input.token)
+          ? [...intents, { token: input.token, kind: "save", generations: [input.generation] }]
+          : intents,
+      result: generation === input.generation,
+    }),
+    realtime,
+  ).then(({ result }) => result);
+}
+
+/** A completed save and a concurrent clear decide ownership under the same row lock. */
+export function finishMemorySave(
+  prisma: PrismaClient,
+  input: MemorySaveIntentInput,
+  realtime?: RealtimeFanout,
+): Promise<boolean> {
+  return changeMemoryCleanup(
+    prisma,
+    input,
+    ({ generation, intents }) => ({
+      intents:
+        generation === input.generation
+          ? intents.filter((item) => item.token !== input.token)
+          : intents,
+      result: generation !== input.generation && intents.some((item) => item.token === input.token),
+    }),
+    realtime,
+  ).then(({ result }) => result);
+}
+
+export function settleMemoryCleanup(
+  prisma: PrismaClient,
+  input: MemoryCleanupSettlement,
+  realtime?: RealtimeFanout,
+): Promise<MemoryCleanupState> {
+  return changeMemoryCleanup(
+    prisma,
+    input,
+    ({ generation, intents, unconfirmed }) => {
+      const ownsIntent = intents.some((item) => item.token === input.token);
+      const failed = ownsIntent && input.unconfirmed;
+      const remaining = intents.filter((item) => item.token !== input.token);
+      return {
+        intents: remaining,
+        ...(failed ? { unconfirmed: true as const } : {}),
+        result: {
+          ...(unconfirmed || failed ? { memoryCleanupUnconfirmed: true as const } : {}),
+          memoryCleanupPending: hasPendingMemoryCleanup(
+            remaining as unknown as Prisma.JsonValue,
+            generation,
+          ),
+        },
+      };
+    },
+    realtime,
+  ).then(({ result, cursor }) => ({ ...result, memoryCleanupCursor: cursor }));
 }
 
 async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUserMessageInput) {
