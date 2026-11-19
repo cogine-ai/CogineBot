@@ -288,6 +288,10 @@ export async function verifyDatabaseRestore(
       WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth')`);
     for (const url of new Set(runtimeUrls)) {
       const { prisma, pool } = createDb(url, { poolMax: 1, rowSecurity: true });
+      const connectionsClosed: Promise<void>[] = [];
+      pool.on("connect", (client) => {
+        connectionsClosed.push(new Promise<void>((resolve) => client.once("end", resolve)));
+      });
       try {
         const key = await installDbContext(pool)();
         selectedDigests.add(createHash("sha256").update(key).digest("hex"));
@@ -312,6 +316,8 @@ export async function verifyDatabaseRestore(
           await prisma.$disconnect();
         } finally {
           await pool.end();
+          // Pool shutdown can finish before its idle clients' sockets have closed.
+          await Promise.all(connectionsClosed);
         }
       }
     }
