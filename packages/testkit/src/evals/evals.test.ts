@@ -208,6 +208,13 @@ describe("fresh-check scoring", () => {
     { prefix: "I did not report given currently", suffix: "pending" },
     { prefix: "I did not report given now", suffix: "pending" },
     { prefix: "I did not report given today", suffix: "pending" },
+    { prefix: "I did not report given pending count:", suffix: "" },
+    { prefix: "I did not report given the pending count:", suffix: "" },
+    { prefix: "I did not report considering the pending count:", suffix: "" },
+    { prefix: "I did not report given exactly", suffix: "pending" },
+    { prefix: "I did not report given the precisely", suffix: "pending" },
+    { prefix: "I did not report given exactly a total of", suffix: "pending" },
+    { prefix: "I did not report given a total of exactly", suffix: "pending" },
   ];
   it.each(
     independentReportingClauses.flatMap(({ prefix, suffix }) => [
