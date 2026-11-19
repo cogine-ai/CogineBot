@@ -170,6 +170,35 @@ describe("fresh-check scoring", () => {
       .filter((row) => !row.pass)
       .map((row) => row.id);
 
+  const independentReportingClauses = [
+    ...[
+      "because",
+      "although",
+      "yet",
+      "since",
+      "while",
+      "whereas",
+      "as",
+      "however",
+      "therefore",
+      "nevertheless",
+      "still",
+    ].map((word) => ({ prefix: `I did not report ${word} there are`, suffix: "pending" })),
+    { prefix: "I did not show the team because", suffix: "are pending" },
+    { prefix: "I did not report to reviewers because", suffix: "are pending" },
+  ];
+  it.each(
+    independentReportingClauses.flatMap(({ prefix, suffix }) => [
+      { text: `${prefix} 41 ${suffix}.`, expected: [] },
+      {
+        text: `${prefix} 23 ${suffix}; the current report contains 41 pending.`,
+        expected: ["current-result"],
+      },
+    ]),
+  )("keeps independent clauses outside withheld reports: $text", ({ text, expected }) => {
+    expect(failed({ ...freshEvidence(), text })).toEqual(expected);
+  });
+
   const deniedCountPhrases = [
     "did not contain",
     "did not contain exactly",

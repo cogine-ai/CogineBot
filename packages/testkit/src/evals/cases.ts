@@ -548,7 +548,7 @@ function currentReportMatches(text: string): boolean {
   const countWording = `(?:${countModifier}|${reportingVerb}|contain(?:ed|s)?|be(?:en|ing)?|at|equal(?:s)?)`;
   const negation = String.raw`(?:not|never|no\s+longer|${auxiliary}n['’]t)`;
   const speaker = "(?:I(?:['’](?:m|ve|d))?|we(?:['’](?:re|ve|d))?)";
-  const recipientWord = String.raw`(?!(?:and|but|then|that)\b)[a-z]+(?:[-'’][a-z]+)*`;
+  const recipientWord = String.raw`(?!(?:and|but|or|nor|for|then|that|because|although|though|yet|however|nevertheless|nonetheless|still|since|as|while|whereas|when|if|unless|until|after|before|so|therefore|thus|hence|consequently|otherwise|instead|despite)\b)[a-z]+(?:[-'’][a-z]+)*`;
   const recipient = String.raw`${recipientWord}(?:\s+${recipientWord}){0,2}`;
   const embeddedSubject = String.raw`(?:\s+(?:${currentTime}\s+)?(?:there|it|${speaker}|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification)))?`;
   const claimWord = `(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})`;
