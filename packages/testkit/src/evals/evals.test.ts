@@ -243,6 +243,16 @@ describe("fresh-check scoring", () => {
     "I wouldn’t report to reviewers that there were 41 pending",
     "I did not report to the team 41 pending",
     "I did not report to the review team that the latest report shows 41 pending",
+    "I did not report to the team that I have 41 pending",
+    "We have not reported that we have 41 pending",
+    "I didn't report to the team that the current report does not show 41 pending",
+    "We have not reported that there weren't 41 pending",
+    "I did not report to the team that there are currently 41 pending",
+    "I did not report to the team that there are now 41 pending",
+    "I did not report to the team that there are today 41 pending",
+    "I did not report to the team that currently there are 41 pending",
+    "I did not show the team 41 pending",
+    "We have not shown the review team 41 pending",
   ];
   const countDenialsWithReportingWords = [
     "I do not have 41 reported tasks pending",
@@ -338,6 +348,8 @@ describe("fresh-check scoring", () => {
       `${denial}; the current report contains 41 pending.`,
     ]),
     ...reportedCounts,
+    "I did not report to the team and the current report does not show 41 pending; the current report shows 41 pending.",
+    "I didn't report to the team but the current report does not show 41 pending; the current report shows 41 pending.",
     ...withheldReports,
     "I did not report 41 pending to the team.",
     ...withheldReportingPhrases.flatMap((phrase) => [
