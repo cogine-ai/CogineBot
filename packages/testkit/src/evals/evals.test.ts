@@ -172,6 +172,9 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 41 pending.",
+    "Previously 23 pending, now 41.",
+    "23 pending in the previous report; 41 pending in the current report.",
+    "The previous report was not 41 pending; the current report is 41 pending.",
     "Previously 23 pending; the current report shows 41 pending.",
     "Current report: 41 pending. Previous report: 23 pending.",
     "41 pending (previously 23 pending).",
@@ -202,6 +205,9 @@ describe("fresh-check scoring", () => {
     "The current report has 42 pending.",
     "Earlier 41 pending, now 23 items pending.",
     "The current 41 is not pending.",
+    "There were 41 pending last time; now there are 23.",
+    "The current report shows 41 pending. The current report is not 41 pending.",
+    "Current report: 41 pending; previous report: 23 pending now.",
   ])("rejects a wrong or unsupported current result: %s", (text) => {
     expect(failed({ ...freshEvidence(), text })).toEqual(["current-result"]);
   });

@@ -539,11 +539,23 @@ function currentReportMatches(text: string): boolean {
   const count = String.raw`\b(?:\d+\s+(?:(?!not\b)[a-z]+\s+){0,2}pending|pending(?:\s+count)?[:\s]+\d+)\b`;
   const current = String.raw`\b(?:current(?:ly)?|now|latest|today)\b`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
+  let deniesCurrent = false;
   // Exclude explicitly historical or negated counts from the current-value check.
   const result = text
     .replace(
+      /\b(now|currently|today)(\s+(?:there\s+(?:are|is)|(?:it|the\s+report)\s+(?:is|shows|has)))?[\s:]+(\d+)(?=\s*(?:[,;.!?\n)]|$))/gi,
+      "$1$2 $3 pending",
+    )
+    .replace(
       new RegExp(
-        `${count}\\s+(?:previously|earlier|before)\\b(?=\\s*(?:[,;.!?\\n)]|\\b(?:and|but)\\b|$))`,
+        `${count}\\s+(?:(?:in|from)\\s+(?:the\\s+)?(?:previous|earlier|old|prior)\\s+report|previously|earlier|before|last\\s+time)\\b(?=\\s*(?:[,;.!?\\n)]|\\b(?:and|but)\\b|$))`,
+        "gi",
+      ),
+      "",
+    )
+    .replace(
+      new RegExp(
+        `${historical}(?:(?!${current}|${count})[^,;.!?\\n])*${count}(?!\\s+(?:now|currently|today)\\b)`,
         "gi",
       ),
       "",
@@ -553,11 +565,15 @@ function currentReportMatches(text: string): boolean {
         `\\b(?:not|no\\s+longer|(?:does|is|are|was|were)n['’]t)\\b(?:(?!\\bbut\\b)[^,;.!?\\n])*?${count}`,
         "gi",
       ),
-      "",
-    )
-    .replace(new RegExp(`${historical}(?:(?!${current}|${count})[^,;.!?\\n])*${count}`, "gi"), "");
+      (negated) => {
+        const value = negated.match(new RegExp(count, "i"))?.[0].match(/\d+/)?.[0];
+        deniesCurrent ||= value === latestReport.split(" ")[0];
+        return "";
+      },
+    );
   const counts = [...result.matchAll(new RegExp(count, "gi"))];
   return (
+    !deniesCurrent &&
     counts.length > 0 &&
     counts.every((match) => match[0].match(/\d+/)?.[0] === latestReport.split(" ")[0])
   );
