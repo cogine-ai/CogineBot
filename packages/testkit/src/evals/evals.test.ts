@@ -172,6 +172,10 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 41 pending.",
+    "Using the previous constraints I checked the report: 41 pending.",
+    "I did not modify the file and found 41 pending.",
+    "Using the prior instructions I checked the report: 41 pending.",
+    "The report does not currently show 23 pending; it shows 41 pending.",
     "The current report shows +41 pending.",
     "The current report shows 41.0 pending.",
     "Previously 23 pending, now 41.",
@@ -200,6 +204,9 @@ describe("fresh-check scoring", () => {
 
   it.each([
     "The current report shows 23 pending.",
+    "Using the previous constraints I checked the report: 23 pending.",
+    "I did not modify the file and found 23 pending.",
+    "The report does not currently show 41 pending; it shows 23 pending.",
     "Previously 41 pending; the current report shows 23 pending.",
     "Current pending count: 23; previous pending count: 41.",
     "The previous report showed 41 pending.",

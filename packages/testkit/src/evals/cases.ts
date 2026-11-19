@@ -539,8 +539,8 @@ function currentReportMatches(text: string): boolean {
   const number = String.raw`[+−-]?\d+(?:[.,/–—-]\d+)*%?`;
   const count = String.raw`(?<![\w.,/–—+%−-])(?:${number}\s+(?:(?!not\b)[a-z]+\s+){0,2}pending\b|\bpending(?:\s+count)?[:\s]+${number}(?![\w%]|[.,/–—+−-]\d))`;
   const expected = Number.parseInt(latestReport, 10);
-  const current = String.raw`\b(?:current(?:ly)?|now|latest|today)\b`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
+  const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?(?:\s+(?:showed|shows|had|has|was|were|is|reported))?|there\s+(?:were|was)|it\s+(?:was|showed)))?`;
   let deniesCurrent = false;
   // Normalize contextual current counts, then exclude historical and negated stale claims.
   const result = text
@@ -567,14 +567,14 @@ function currentReportMatches(text: string): boolean {
     )
     .replace(
       new RegExp(
-        `${historical}(?:(?!${current}|${count})[^,;.!?\\n])*${count}(?!\\s+(?:now|currently|today)\\b)`,
+        `${historical}${historicalSubject}[:\\s]+(?:not\\s+)?${count}(?!\\s+(?:now|currently|today)\\b)`,
         "gi",
       ),
       "",
     )
     .replace(
       new RegExp(
-        `\\b(?:not|no\\s+longer|(?:does|is|are|was|were)n['’]t)\\b(?:(?!\\bbut\\b)[^,;.!?\\n])*?${count}`,
+        `\\b(?:not|no\\s+longer|(?:does|is|are|was|were)n['’]t)\\b(?:\\s+(?:currently|now|today|show|shows|showed|showing|have|has|had|contain|contains|report|reporting|be|at|equal|equals)){0,3}\\s+(?:a\\s+total\\s+of\\s+)?${count}`,
         "gi",
       ),
       (negated) => {
