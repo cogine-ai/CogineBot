@@ -553,7 +553,7 @@ function currentReportMatches(text: string): boolean {
   const embeddedSubject = String.raw`(?:\s+(?:${currentTime}\s+)?(?:there|it|${speaker}|(?:the\s+)?(?:(?:current|latest)\s+)?(?:report|result|count|verification)))?`;
   const claimWord = `(?:${auxiliary}(?:n['’]t)?|not|never|no|longer|${countWording})`;
   const claimWording = String.raw`(?:\s+${claimWord}){0,6}`;
-  const embeddedWording = String.raw`(?:\s+(?:${currentTime}|${claimWord})){0,6}`;
+  const embeddedWording = String.raw`(?:\s+(?:${currentTime}|am|${claimWord})){0,6}`;
   const reportingBridge = String.raw`(?:\s+(?:(?:to\s+)?${recipient}\s+)?that${embeddedSubject}${embeddedWording}|\s+(?:to\s+)?${recipient})?`;
   const historical = String.raw`\b(?:previous(?:ly)?|earlier|prior|old(?:er)?|last\s+time|before|(?:up|down)\s+from|compared\s+(?:to|with)|versus|vs)\b`;
   const historicalSubject = String.raw`(?:\s+(?:(?:the\s+)?(?:Aurora\s+)?(?:report|result|count|verification)(?:\s*\([^)]*\))?|there|it))?`;

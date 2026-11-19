@@ -253,6 +253,12 @@ describe("fresh-check scoring", () => {
     "I did not report to the team that currently there are 41 pending",
     "I did not show the team 41 pending",
     "We have not shown the review team 41 pending",
+    "I did not report that I am at 41 pending",
+    "I did not report that I'm at 41 pending",
+    "I did not report that I am not at 41 pending",
+    "I did not report that I’m not at 41 pending",
+    "We did not report that we are at 41 pending",
+    "We did not report that we're at 41 pending",
   ];
   const countDenialsWithReportingWords = [
     "I do not have 41 reported tasks pending",
