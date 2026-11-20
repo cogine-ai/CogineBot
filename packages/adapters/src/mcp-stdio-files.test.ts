@@ -112,6 +112,7 @@ describe("managed stdio credential files", () => {
         Cookie: ['session="fixture%2Fprivate"; auxiliary=fixture-second; session=fixture-third'],
         "Set-Cookie": ["login=fixture-login; Path=/public; HttpOnly"],
       },
+      session: "sid=fixture-session",
       documentation: "key=fixture-example",
     });
     const secrets = mcpCredentialFileSecrets(file);
@@ -122,15 +123,18 @@ describe("managed stdio credential files", () => {
         "fixture-second",
         "fixture-third",
         "fixture-login",
+        "fixture-session",
       ]),
     );
     expect(secrets).not.toContain("/public");
     expect(secrets).not.toContain("fixture-example");
     const result = {
-      content: [{ type: "text", text: "fixture/private fixture-second fixture-example" }],
+      content: [
+        { type: "text", text: "fixture/private fixture-second fixture-session fixture-example" },
+      ],
     };
     expect(redactConnectorPayload(result, secrets, "mcp-result")).toEqual({
-      content: [{ type: "text", text: "[redacted] [redacted] fixture-example" }],
+      content: [{ type: "text", text: "[redacted] [redacted] [redacted] fixture-example" }],
     });
     expect(mcpCredentialFileSecrets("headers:\n  Cookie: |\n    session=fixture-yaml\n")).toContain(
       "fixture-yaml",
@@ -141,6 +145,12 @@ describe("managed stdio credential files", () => {
     );
     expect(mcpCredentialFileSecrets('[credentials]\nAPP_COOKIE="sid=fixture-env"')).toContain(
       "fixture-env",
+    );
+    expect(mcpCredentialFileSecrets('Session: "sid=fixture-yaml-session"')).toContain(
+      "fixture-yaml-session",
+    );
+    expect(mcpCredentialFileSecrets('{"sessionTimeout":"mode=fixture-config"}')).not.toContain(
+      "fixture-config",
     );
   });
 

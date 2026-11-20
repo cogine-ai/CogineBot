@@ -105,13 +105,13 @@ export function mcpCredentialValueVariants(value: string): string[] {
   return [value];
 }
 
-/** Cookie fields can contain several credentials, while Set-Cookie also has attributes. */
+/** Cookie and session fields can contain credentials, while Set-Cookie also has attributes. */
 export function mcpCookieCredentialValues(key: string, value: string): string[] {
   const normalized = normalizedCredentialKey(key);
   const responseHeader = /(?:^|_)set_cookie$/.test(normalized);
   if (
     !responseHeader &&
-    !/(?:^|_)(?:cookies?|cookie_header|session_header|x_session)$/.test(normalized)
+    !/(?:^|_)(?:cookies?|cookie_header|session|session_header)$/.test(normalized)
   )
     return [];
   const values: string[] = [];

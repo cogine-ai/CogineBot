@@ -722,7 +722,12 @@ describe("MCP discovery lifecycle", () => {
     });
     const call = vi.spyOn(McpSession.prototype, "callTool").mockResolvedValue({
       isError: false,
-      content: [{ type: "text", text: "default false production fixture-private fixture-aux" }],
+      content: [
+        {
+          type: "text",
+          text: "default false production fixture-private fixture-aux fixture-session",
+        },
+      ],
     });
     const connector = new McpConnector(
       {
@@ -741,6 +746,7 @@ describe("MCP discovery lifecycle", () => {
               API_SECRET: "false",
               TOKEN: "production",
               APP_COOKIE: "sid=a; private=fixture-private; aux=fixture-aux",
+              SESSION: "login=fixture-session",
             },
           }),
       } as never,
@@ -763,7 +769,10 @@ describe("MCP discovery lifecycle", () => {
         data: {
           isError: false,
           content: [
-            { type: "text", text: "[redacted] [redacted] production [redacted] [redacted]" },
+            {
+              type: "text",
+              text: "[redacted] [redacted] production [redacted] [redacted] [redacted]",
+            },
           ],
         },
       });
