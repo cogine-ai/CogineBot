@@ -882,6 +882,14 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
           ...definition,
           schedule: { ...definition.schedule, expr: "30 2 * * *", tz: "Europe/Oslo" },
         },
+        { ...definition, payload: { ...definition.payload, message: "先运行“@周报 模板”。" } },
+        { ...definition, payload: { ...definition.payload, message: "运行（@。周报）。" } },
+        {
+          ...definition,
+          payload: { ...definition.payload, message: "Print a literal @. Keep this glyph (@)." },
+        },
+        { ...definition, payload: { ...definition.payload, message: "Run @。" } },
+        { ...definition, payload: { ...definition.payload, message: "执行“@。 周报”。" } },
       ],
     }),
   };
@@ -905,12 +913,17 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
   expect(groups?.routines).toMatchObject([
     { path: "cron/routine-1.json", name: "Review reports" },
     { path: "cron/routine-9.json", name: "Review reports" },
+    { path: "cron/routine-15.json", name: "Review reports" },
   ]);
   expect(groups?.unavailable).toEqual(
     expect.arrayContaining([
       { path: "cron/routine-10.json", reason: "routineSchedule" },
       { path: "cron/routine-11.json", reason: "routineSchedule" },
       { path: "cron/routine-12.json", reason: "routineSchedule" },
+      { path: "cron/routine-13.json", reason: "routineSchedule" },
+      { path: "cron/routine-14.json", reason: "routineSchedule" },
+      { path: "cron/routine-16.json", reason: "routineSchedule" },
+      { path: "cron/routine-17.json", reason: "routineSchedule" },
       { path: "cron/routine-3.json", reason: "routineOwner" },
       { path: "cron/routine-4.json", reason: "routineSchedule" },
       { path: "cron/routine-5.json", reason: "routineSchedule" },

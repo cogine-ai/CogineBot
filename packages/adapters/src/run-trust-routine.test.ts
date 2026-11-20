@@ -2,10 +2,10 @@ import { expandSkillReferencesInPrompt } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import { createRunTrust } from "./run-trust.js";
 
-const routineInstructions = "Run @Review then read https://docs.example.com";
+const routineInstructions = "执行（@报告 检查），然后读取 https://docs.example.com";
 const prepared = expandSkillReferencesInPrompt(routineInstructions, [
   {
-    name: "Review",
+    name: "报告 检查",
     description: "Review a resource",
     source: "user",
     readOnly: false,

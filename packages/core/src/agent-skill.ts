@@ -109,9 +109,22 @@ const ROUTINE_SKILL_STOP = new Set([
   "a",
   "an",
 ]);
+const CJK_SKILL_PUNCTUATION = "，。、；：！？（）【】「」『』《》〈〉“”‘’";
+const ROUTINE_SKILL_ASCII_LEADING = "\\s(,";
+const ROUTINE_SKILL_TRAILING = `,.)${CJK_SKILL_PUNCTUATION}`;
+const ROUTINE_SKILL_START = `(?:^|[${ROUTINE_SKILL_ASCII_LEADING}${CJK_SKILL_PUNCTUATION}])@`;
+const ROUTINE_SKILL_END = `[\\s${ROUTINE_SKILL_TRAILING}]`;
+const ROUTINE_SKILL_STARTS = new RegExp(ROUTINE_SKILL_START, "g");
+const ROUTINE_SKILL_SEPARATOR = new RegExp(ROUTINE_SKILL_END);
+const ROUTINE_SKILL_REFERENCE = new RegExp(
+  `(?:^|[${ROUTINE_SKILL_ASCII_LEADING}])@[,.)]*[^\\s,.)]|[${CJK_SKILL_PUNCTUATION}]@\\S`,
+);
+const ROUTINE_LINE_BREAK = /[\r\n\u2028\u2029]/;
 /** Fallback when no catalog is available: @Token with optional Title-case words. */
-const ROUTINE_SKILL_MENTION =
-  /(?:^|[\s(,])@([A-Za-z][\w-]*(?:[ ]+[A-Za-z][\w-]*){0,5})(?=[\s,.)]|$)/g;
+const ROUTINE_SKILL_MENTION = new RegExp(
+  `${ROUTINE_SKILL_START}([A-Za-z][\\w-]*(?:[ ]+[A-Za-z][\\w-]*){0,5})(?=${ROUTINE_SKILL_END}|$)`,
+  "g",
+);
 
 export function isSkillReadOnly(source: SkillSource): boolean {
   return source === "builtin" || source === "plugin";
@@ -234,28 +247,78 @@ export function extractForcedSkillName(prompt: string): { name: string; rest: st
   return { name, rest };
 }
 
-/**
- * Mentions like `@Daily standup` inside a routine prompt. Returns unique names in order.
- * When `knownNames` is provided, matches those names (longest first). Otherwise uses a
- * heuristic that stops before common connector words and skips `@everyone`.
- */
+/** Detect references without resolving them against the destination's catalog. */
+export function hasRoutineSkillReference(prompt: string): boolean {
+  return ROUTINE_SKILL_REFERENCE.test(prompt);
+}
+
+type RoutineSkillMatch = { name: string; start: number; end: number };
+
+/** Keep the case equivalences of the existing non-Unicode ignore-case matcher. */
+function routineSkillKey(name: string): string {
+  return name.replace(/[\s\S]/g, (character) => {
+    const uppercase = character.toUpperCase();
+    return uppercase.length === 1 &&
+      (character.charCodeAt(0) < 128 || uppercase.charCodeAt(0) >= 128)
+      ? uppercase
+      : character;
+  });
+}
+
+function knownRoutineSkillMatches(
+  prompt: string,
+  knownNames: Iterable<string>,
+): RoutineSkillMatch[] {
+  if (!prompt.includes("@")) return [];
+  const catalog = new Map<string, string[]>();
+  const lengths = new Set<number>();
+  for (const value of knownNames) {
+    const name = value.trim();
+    const key = routineSkillKey(name);
+    if (!name) continue;
+    const names = catalog.get(key);
+    if (names) names.push(name);
+    else catalog.set(key, [name]);
+    lengths.add(name.length);
+  }
+  const longestFirst = [...lengths].sort((a, b) => b - a);
+  const matches: RoutineSkillMatch[] = [];
+  let previousEnd = 0;
+  for (const marker of prompt.matchAll(ROUTINE_SKILL_STARTS)) {
+    const start = marker.index + marker[0].length - 1;
+    if (start < previousEnd) continue;
+    for (const length of longestFirst) {
+      const end = start + 1 + length;
+      if (
+        end > prompt.length ||
+        (end < prompt.length && !ROUTINE_SKILL_SEPARATOR.test(prompt.charAt(end)))
+      )
+        continue;
+      const text = prompt.slice(start + 1, end);
+      const names = catalog.get(routineSkillKey(text));
+      if (!names) continue;
+      const spelling = text.toLowerCase();
+      const name = names.find((value) => value.toLowerCase() === spelling) ?? names[0]!;
+      matches.push({ name, start, end });
+      previousEnd = end;
+      break;
+    }
+  }
+  return matches;
+}
+
+function matchedNames(knownNames: Iterable<string>, matches: readonly RoutineSkillMatch[]) {
+  const names = new Set(matches.map((match) => match.name));
+  return [...knownNames]
+    .map((name) => name.trim())
+    .filter((name) => names.delete(name))
+    .sort((a, b) => b.length - a.length);
+}
+
+/** Known mentions use catalog priority. Without a catalog, preserve the English heuristic. */
 export function extractRoutineSkillMentions(prompt: string, knownNames?: string[]): string[] {
   if (knownNames && knownNames.length > 0) {
-    const sorted = knownNames
-      .map((name) => name.trim())
-      .filter(Boolean)
-      .sort((a, b) => b.length - a.length);
-    const found: string[] = [];
-    const seen = new Set<string>();
-    for (const name of sorted) {
-      const re = new RegExp(`(?:^|[\\s(,])@${escapeRegExp(name)}(?=[\\s,.)]|$)`, "gi");
-      if (!re.test(prompt)) continue;
-      const key = name.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      found.push(name);
-    }
-    return found;
+    return matchedNames(knownNames, knownRoutineSkillMatches(prompt, knownNames));
   }
 
   const names: string[] = [];
@@ -285,6 +348,63 @@ export function extractRoutineSkillMentions(prompt: string, knownNames?: string[
     match = ROUTINE_SKILL_MENTION.exec(prompt);
   }
   return names;
+}
+
+/**
+ * Rewrite matches against the original prompt once. Include unchanged names mapped to
+ * themselves to protect longer references. Null removes a reference during expansion.
+ */
+export function rewriteRoutineSkillMentions(
+  prompt: string,
+  replacements: ReadonlyMap<string, string | null>,
+): { prompt: string; names: string[] } {
+  const byName = new Map<string, string | null>();
+  for (const [source, to] of replacements) {
+    const name = source.trim();
+    if (!byName.has(name)) byName.set(name, to);
+  }
+  const matches = knownRoutineSkillMatches(prompt, byName.keys());
+  if (!matches.length) return { prompt, names: [] };
+  const parts: string[] = [];
+  let cursor = 0;
+  for (let index = 0; index < matches.length; index++) {
+    const { name, start, end } = matches[index]!;
+    const replacement = byName.get(name) ?? null;
+    if (replacement !== null) {
+      parts.push(
+        prompt.slice(cursor, start),
+        replacement === name ? prompt.slice(start, end) : `@${replacement}`,
+      );
+      cursor = end;
+      continue;
+    }
+
+    // Remove adjacent references together, keeping indentation and other whitespace intact.
+    let lastEnd = end;
+    let next = matches[index + 1];
+    while (
+      next &&
+      byName.get(next.name) === null &&
+      /^[ \t]+$/.test(prompt.slice(lastEnd, next.start))
+    ) {
+      lastEnd = next.end;
+      index++;
+      next = matches[index + 1];
+    }
+    let left = start;
+    let right = lastEnd;
+    while (left > cursor && /[ \t]/.test(prompt.charAt(left - 1))) left--;
+    while (/[ \t]/.test(prompt.charAt(right))) right++;
+    const before = prompt.slice(left, start);
+    const after = prompt.slice(lastEnd, right);
+    const hasLeftText = left > 0 && !ROUTINE_LINE_BREAK.test(prompt.charAt(left - 1));
+    const hasRightText = right < prompt.length && !ROUTINE_LINE_BREAK.test(prompt.charAt(right));
+    parts.push(prompt.slice(cursor, left));
+    if (hasRightText) parts.push(hasLeftText ? (before && after ? " " : before || after) : before);
+    cursor = right;
+  }
+  parts.push(prompt.slice(cursor));
+  return { prompt: parts.join(""), names: matchedNames(byName.keys(), matches) };
 }
 
 /** Keep user-owned skills reachable when a later builtin claims the same name. */
@@ -323,7 +443,9 @@ export function expandSkillReferencesInPrompt(
 ): string {
   const forced = extractForcedSkillName(prompt);
   if (forced) {
-    const skill = findSkillByName(skills, forced.name);
+    const skill =
+      skills.find((entry) => entry.name.trim() === forced.name) ??
+      findSkillByName(skills, forced.name);
     if (skill) {
       // Routines expand at fire time into `Use skill: …`; run time expands again — stay idempotent.
       if (restAlreadyIncludesSkillContent(forced.rest, skill.content)) {
@@ -333,31 +455,23 @@ export function expandSkillReferencesInPrompt(
     }
   }
 
-  const mentions = extractRoutineSkillMentions(
+  if (!prompt.includes("@")) return prompt;
+  const byName = new Map<string, SkillRecord>();
+  for (const skill of skills) {
+    const name = skill.name.trim();
+    if (!byName.has(name)) byName.set(name, skill);
+  }
+  const rewritten = rewriteRoutineSkillMentions(
     prompt,
-    skills.map((skill) => skill.name),
+    new Map([...byName.keys()].map((name) => [name, null])),
   );
-  if (mentions.length === 0) return prompt;
-
   const blocks: string[] = [];
-  let remaining = prompt;
-  for (const mention of mentions) {
-    const skill = findSkillByName(skills, mention);
-    if (!skill) continue;
-    blocks.push(formatForcedSkillPrompt(skill.name, skill.content));
-    // Strip the @mention token so the agent is not confused by a dangling pointer.
-    remaining = remaining.replace(
-      new RegExp(`(^|[\\s(,])@${escapeRegExp(mention)}(?=[\\s,.)]|$)`, "gi"),
-      "$1",
-    );
+  for (const mention of rewritten.names) {
+    const skill = byName.get(mention);
+    if (skill) blocks.push(formatForcedSkillPrompt(skill.name, skill.content));
   }
   if (blocks.length === 0) return prompt;
-  const rest = remaining.replace(/[ \t]{2,}/g, " ").trim();
-  return [...blocks, rest].filter(Boolean).join("\n\n");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [...blocks, rewritten.prompt].filter((part) => part.trim()).join("\n\n");
 }
 
 function stringifyScalar(value: unknown): string {
