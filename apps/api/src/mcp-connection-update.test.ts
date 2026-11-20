@@ -305,12 +305,37 @@ describe("deployment-managed MCP stdio registration", () => {
     f.server.enabled = true;
     f.values.set(
       "old-ref",
-      JSON.stringify({ env: { KEEP: "fixture" }, headers: { Host: "legacy" } }),
+      JSON.stringify({ env: { KEEP: "legacy\0value" }, headers: { Host: "legacy" } }),
     );
+    f.secrets.load.mockRejectedValue(new Error("Secret storage unavailable"));
     const result = await f.client.mcp.servers.update({ id: f.server.id, config });
     expect(result).toMatchObject({ enabled: false, envKeys: ["KEEP"], hasSecret: true });
+    expect(f.secrets.load).not.toHaveBeenCalled();
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
+
+  it("edits valid legacy stdio material without rotating a token or validating unused headers", async () => {
+    const f = fixture({ stdio: true });
+    f.values.set(
+      "old-ref",
+      JSON.stringify({ secret: "fixture", env: {}, headers: { Host: "legacy" } }),
+    );
+    await f.client.mcp.servers.update({ id: f.server.id, config: { ...config, enabled: true } });
+    expect(f.server.secretId).toBe("old");
+    expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it.each([{ oauthClient }, { files }, { args: ["--new-mode"] }])(
+    "refuses new registration data for an excluded command even while disabled",
+    async (patch) => {
+      const f = fixture({ stdio: true, stdioEnabled: false });
+      await expect(
+        f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(f.secrets.load).not.toHaveBeenCalled();
+      expect(f.secrets.put).not.toHaveBeenCalled();
+    },
+  );
 
   it("requires removal of references when the registered client is removed", async () => {
     const f = fixture({ stdio: true });

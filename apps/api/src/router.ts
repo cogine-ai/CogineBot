@@ -6037,57 +6037,87 @@ export function createRouter(deps: RouterDeps) {
           };
           if (connection) await assertAuthorized();
           for (let attempt = 0; attempt < (connection ? 1 : 5); attempt++) {
-            const { existing, existingSecret } = await deps.prisma.$transaction(async (tx) => {
-              if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
-              const existing = await tx.mcpServer.findFirst({
-                where: {
-                  id: input.id,
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                },
+            const { existing, existingSecret, nextArgs, replaceCredentials, disableOnly } =
+              await deps.prisma.$transaction(async (tx) => {
+                if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
+                const existing = await tx.mcpServer.findFirst({
+                  where: {
+                    id: input.id,
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                  },
+                });
+                if (!existing) throw new IsolationError();
+                if (existing.transport === "stdio" && "config" in input)
+                  assertMcpStdioOwner(context.actor);
+                if (stdio && existing.installId)
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Plugin MCP servers require a remote endpoint",
+                  });
+                const previousArgs = Array.isArray(existing.args) ? existing.args.map(String) : [];
+                const sameCommand = Boolean(
+                  stdio &&
+                    existing.transport === "stdio" &&
+                    existing.command?.trim() === stdio.command.trim(),
+                );
+                const nextArgs = stdio?.args ?? (sameCommand ? previousArgs : []);
+                const replaceCredentials =
+                  (existing.transport === "stdio") !== Boolean(stdio) ||
+                  Boolean(
+                    stdio &&
+                      (!sameCommand || JSON.stringify(nextArgs) !== JSON.stringify(previousArgs)),
+                  );
+                const disableOnly = Boolean(
+                  stdio &&
+                    !stdio.enabled &&
+                    !replaceCredentials &&
+                    !stdio.clearCredential &&
+                    stdio.oauthClient === undefined &&
+                    stdio.files === undefined &&
+                    stdio.env === undefined &&
+                    stdio.secret === undefined,
+                );
+                if (
+                  stdio &&
+                  (stdio.enabled ||
+                    replaceCredentials ||
+                    stdio.oauthClient ||
+                    Object.keys(stdio.env ?? {}).length ||
+                    Object.keys(stdio.files ?? {}).length ||
+                    stdio.secret)
+                ) {
+                  assertMcpStdioCommand(stdio.command, deps.env);
+                }
+                await lockActivePluginChild(tx, existing, context.actor);
+                if (connection && existing.revision !== connection.revision)
+                  throw new ORPCError("CONFLICT", {
+                    message: "MCP server changed; reload its connection settings",
+                  });
+                if (connection && existing.transport === "stdio")
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "A remote MCP server is required",
+                  });
+                const existingSecret =
+                  existing.secretId && (!connection || patchHeaders)
+                    ? await tx.secret.findFirst({
+                        where: {
+                          id: existing.secretId,
+                          spaceId: context.actor.spaceId,
+                          userId: context.actor.userId,
+                        },
+                      })
+                    : null;
+                return { existing, existingSecret, nextArgs, replaceCredentials, disableOnly };
               });
-              if (!existing) throw new IsolationError();
-              if (existing.transport === "stdio" && "config" in input)
-                assertMcpStdioOwner(context.actor);
-              if (stdio && existing.installId)
-                throw new ORPCError("BAD_REQUEST", {
-                  message: "Plugin MCP servers require a remote endpoint",
-                });
-              if (
-                stdio &&
-                (stdio.enabled ||
-                  existing.transport !== "stdio" ||
-                  existing.command?.trim() !== stdio.command.trim())
-              ) {
-                assertMcpStdioCommand(stdio.command, deps.env);
-              }
-              await lockActivePluginChild(tx, existing, context.actor);
-              if (connection && existing.revision !== connection.revision)
-                throw new ORPCError("CONFLICT", {
-                  message: "MCP server changed; reload its connection settings",
-                });
-              if (connection && existing.transport === "stdio")
-                throw new ORPCError("BAD_REQUEST", { message: "A remote MCP server is required" });
-              const existingSecret =
-                existing.secretId && (!connection || patchHeaders)
-                  ? await tx.secret.findFirst({
-                      where: {
-                        id: existing.secretId,
-                        spaceId: context.actor.spaceId,
-                        userId: context.actor.userId,
-                      },
-                    })
-                  : null;
-              return { existing, existingSecret };
-            });
             let existingMaterial: McpSecretMaterial = {};
             const requireStoredMaterial =
-              (connection && patchHeaders) || existing.transport === "stdio";
+              (connection && patchHeaders) ||
+              (existing.transport === "stdio" && !disableOnly && !replaceCredentials);
             if (requireStoredMaterial && existing.secretId && !existingSecret)
               throw new ORPCError("SERVICE_UNAVAILABLE", {
                 message: "Stored MCP credentials are unavailable. Retry this setting.",
               });
-            if (existingSecret) {
+            if (existingSecret && !disableOnly && !replaceCredentials) {
               try {
                 const plaintext = await deps.secrets.load(
                   existingSecret.ciphertext,
@@ -6127,24 +6157,13 @@ export function createRouter(deps: RouterDeps) {
               throw new ORPCError("BAD_REQUEST", { message: "A remote MCP server is required" });
             }
             const nextEndpoint = "endpoint" in config ? config.endpoint : null;
-            const previousArgs = Array.isArray(existing.args) ? existing.args.map(String) : [];
-            const sameCommand = Boolean(
-              stdio &&
-                existing.transport === "stdio" &&
-                existing.command?.trim() === stdio.command.trim(),
-            );
-            const nextArgs = stdio?.args ?? (sameCommand ? previousArgs : []);
-            const replaceCredentials =
-              (existing.transport === "stdio") !== Boolean(stdio) ||
-              Boolean(
-                stdio &&
-                  (!sameCommand || JSON.stringify(nextArgs) !== JSON.stringify(previousArgs)),
-              );
             if (existing.endpoint !== nextEndpoint) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
             let update: McpMaterialUpdate;
-            if (connection) {
+            if (disableOnly) {
+              update = { action: "keep" };
+            } else if (connection) {
               try {
                 update = buildMcpConnectionMaterial(existingMaterial, connection.headerUpdates);
               } catch {
@@ -6157,7 +6176,7 @@ export function createRouter(deps: RouterDeps) {
               });
             }
             const nextMaterial = update.action === "store" ? update.material : existingMaterial;
-            if (stdio)
+            if (stdio && !disableOnly)
               await assertMcpStdioMaterial(
                 { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
                 deps,
@@ -6271,11 +6290,13 @@ export function createRouter(deps: RouterDeps) {
                               endpoint: nextEndpoint,
                               command: "command" in config ? config.command : null,
                               args: nextArgs as Prisma.InputJsonValue,
-                              env: (stdio
-                                ? Object.fromEntries(
-                                    Object.keys(nextMaterial.env ?? {}).map((key) => [key, true]),
-                                  )
-                                : {}) as Prisma.InputJsonValue,
+                              env: (disableOnly
+                                ? current.env
+                                : stdio
+                                  ? Object.fromEntries(
+                                      Object.keys(nextMaterial.env ?? {}).map((key) => [key, true]),
+                                    )
+                                  : {}) as Prisma.InputJsonValue,
                               headers: ("headers" in config
                                 ? Object.fromEntries(
                                     Object.keys(config.headers).map((key) => [key, true]),

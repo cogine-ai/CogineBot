@@ -43,7 +43,9 @@ export function parseMcpConnectionMaterial(value: string): McpSecretMaterial {
 }
 
 export function parseMcpStdioMaterial(value: string): McpSecretMaterial {
-  return StdioMaterialSchema.parse(JSON.parse(value));
+  const material = StdioMaterialSchema.parse(JSON.parse(value));
+  if (material.env && Object.keys(material.env).length === 0) delete material.env;
+  return material;
 }
 
 /** Omitted/empty patches keep the exact stored credential, including OAuth. */
