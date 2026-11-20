@@ -5,6 +5,7 @@ import type {
   SemanticMemoryForgetRequest,
   SemanticMemoryProvider,
   SemanticMemoryRecallRequest,
+  SemanticMemoryRecallResponse,
   SemanticMemoryResponse,
   SemanticMemoryResult,
   SemanticMemorySaveRequest,
@@ -260,7 +261,7 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
   async recall(
     request: SemanticMemoryRecallRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse<SemanticMemoryResult[]>> {
+  ): Promise<SemanticMemoryRecallResponse> {
     // History compaction stays in Rakazo; Serenity is the durable brain only.
     const entities = recallEntities(
       request.scope,
@@ -297,7 +298,11 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
         });
       }
     }
-    return { ok: true, value: rankByQuery(request.query, candidates).slice(0, request.limit) };
+    return {
+      ok: true,
+      value: rankByQuery(request.query, candidates).slice(0, request.limit),
+      ...(errors.length > 0 && { partial: true as const }),
+    };
   }
 
   async save(

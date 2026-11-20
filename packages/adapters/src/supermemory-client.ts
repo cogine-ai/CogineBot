@@ -25,7 +25,7 @@ export interface SupermemoryResult {
 }
 
 export type SupermemorySearchResponse =
-  | { ok: true; results: SupermemoryResult[] }
+  | { ok: true; results: SupermemoryResult[]; partial?: true }
   | { ok: false; error: string };
 
 export type SupermemorySaveResponse = { ok: true } | { ok: false; error: string };
@@ -302,6 +302,7 @@ export async function searchSupermemoryContainers(
     results: [...byMemory.values()]
       .sort((left, right) => right.similarity - left.similarity)
       .slice(0, boundedLimit),
+    ...(successful.length < responses.length && { partial: true as const }),
   };
 }
 

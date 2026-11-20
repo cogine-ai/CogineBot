@@ -6,6 +6,7 @@ import { PAGE_SOURCE_MAX_BYTES } from "@rakazo/contracts";
 import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { describe, expect, it, vi } from "vitest";
 import { catalogExecuteToolName } from "./approval-effect.js";
+import { builtinAgentTools } from "./builtin-tools.js";
 import {
   boundToolResultText,
   ContextBudgetError,
@@ -13,8 +14,10 @@ import {
   markToolResultContent,
   toolResultContentProvenance,
 } from "./context-selection.js";
+import { formatRecalledMemory } from "./history-compaction.js";
 import * as outputBudget from "./pi-output-budget.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
+import { parametersFor } from "./pi-runtime.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import { markMcpToolResultRoute, mcpToolResultRoute } from "./verbatim-mcp-result.js";
 
@@ -1100,6 +1103,149 @@ describe("runtime context policy", () => {
     }).prepareContext(context, model);
     expect(prepared.messages[0]!.content).toBe(summary);
   });
+  describe.each(["retrieval", "snapshots", "cache-aware"] as const)(
+    "%s memory recall history",
+    (contextStrategy) => {
+      const partial = "Some memory sources were unavailable.";
+      it.each([
+        { scenario: "partial empty", content: partial },
+        { scenario: "unavailable", content: "Memory recall was unavailable." },
+        {
+          scenario: "partial with facts",
+          content: `${formatRecalledMemory([{ memory: "Prefer metric units.", id: "fact-1" }])}\n\n${partial}`,
+        },
+      ])("preserves $scenario recall context when pruning old history", ({ content }) => {
+        const { request, context } = fixture(100);
+        request.tools = builtinAgentTools.filter(
+          (tool) => tool.name === "read_history" || tool.name === "search_history",
+        );
+        request.executeTool = async () => ({});
+        context.tools = request.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: parametersFor(tool),
+        }));
+        // An ordinary stored message with the same text should still be pruned.
+        request.history[0]!.content = content;
+        const earlierMessage = context.messages[0]!;
+        if (earlierMessage.role !== "user") throw new Error("Expected a user history message");
+        earlierMessage.content = content;
+        request.history.unshift({ role: "user", content });
+        const recall = {
+          role: "user",
+          content,
+          timestamp: 0,
+          rakazoHistory: true,
+        } as const;
+        context.messages.unshift(recall);
+
+        const prepared = createRuntimeContextPolicy({
+          ...request,
+          contextStrategy,
+        }).prepareContext(context, { ...model, contextWindow: 8192, maxTokens: 512 });
+
+        expect(prepared.messages.length).toBeLessThan(context.messages.length);
+        expect(prepared.messages).not.toContain(earlierMessage);
+        expect(prepared.messages).toContain(recall);
+        expect(prepared.messages.at(-1)).toBe(context.messages.at(-1));
+      });
+    },
+  );
+
+  it.each([
+    {
+      contextStrategy: "retrieval",
+      historyCount: 0,
+      argumentBytes: 11389,
+      retainNotice: false,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 11150,
+      retainNotice: true,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "cache-aware",
+      historyCount: 100,
+      argumentBytes: 11150,
+      retainNotice: true,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 10620,
+      retainNotice: true,
+      catalog: "alone",
+    },
+    {
+      contextStrategy: "cache-aware",
+      historyCount: 100,
+      argumentBytes: 10620,
+      retainNotice: true,
+      catalog: "alone",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 8000,
+      retainNotice: true,
+      catalog: "together",
+    },
+  ] as const)(
+    "fits recall and $catalog navigation beside the unread tool group under $contextStrategy",
+    ({ contextStrategy, historyCount, argumentBytes, retainNotice, catalog }) => {
+      const { request, context } = fixture(historyCount);
+      request.contextStrategy = contextStrategy;
+      request.instructions = "Fixture";
+      request.prompt = "Read data";
+      context.systemPrompt = request.instructions;
+      const current = { role: "user", content: request.prompt, timestamp: 1 } as const;
+      context.messages[historyCount] = current;
+
+      const narrow = { ...model, contextWindow: 4096, maxTokens: 256 };
+      // Exercise the boundary where optional pieces fit only on their own.
+      const call = fauxAssistantMessage([
+        {
+          type: "toolCall",
+          id: "read-1",
+          name: "read_file",
+          arguments: { query: "a".repeat(argumentBytes) },
+        },
+      ]);
+      const result: Message = {
+        role: "toolResult",
+        toolCallId: "read-1",
+        toolName: "read_file",
+        content: [{ type: "text", text: "result" }],
+        isError: false,
+        timestamp: 3,
+      };
+      context.messages.push(call, result);
+      const expected = createRuntimeContextPolicy(request).prepareContext(context, narrow);
+      expect(expected.messages.slice(-3)).toEqual([current, call, result]);
+      const hasCatalog = (messages: Message[]) =>
+        messages.some((message) =>
+          String(message.content).startsWith("Historical navigation snapshots"),
+        );
+      expect(hasCatalog(expected.messages)).toBe(catalog !== "absent");
+
+      const content = "Memory recall was unavailable.";
+      request.history.unshift({ role: "user", content });
+      const notice = { role: "user", content, timestamp: 0, rakazoHistory: true } as const;
+      const degraded = { ...context, messages: [notice, ...context.messages] };
+      const prepared = createRuntimeContextPolicy(request).prepareContext(degraded, narrow);
+
+      expect(prepared.messages.slice(-3)).toEqual([current, call, result]);
+      expect(prepared.messages.includes(notice)).toBe(retainNotice);
+      expect(hasCatalog(prepared.messages)).toBe(catalog === "together");
+      if (catalog === "together") expect(prepared.messages[0]).toBe(notice);
+    },
+  );
+
   it("places a rolling summary after Pi's leading system message", () => {
     const { request, context } = fixture();
     const system = { role: "system", content: "System guidance", timestamp: 0 } as Message;

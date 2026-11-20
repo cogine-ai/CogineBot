@@ -664,6 +664,191 @@ function fixture({
   };
 }
 
+describe("semantic memory recall availability", () => {
+  const fact = {
+    memory: "Prefer <metric> units & distances.",
+    score: 1,
+    id: "fact-1",
+    provenance: "owner note",
+    entity: "bot-1",
+  };
+  const facts = [fact];
+  const emptyFacts: typeof facts = [];
+  const failure = { ok: false, error: "synthetic backend error for unavailable source" } as const;
+  const partial = "Some memory sources were unavailable.";
+  const unavailable = "Memory recall was unavailable.";
+
+  function recallProvider(response: Awaited<ReturnType<SemanticMemoryProvider["recall"]>>) {
+    return {
+      describe: () => ({
+        id: "fixture",
+        contractVersion: "1",
+        adapterVersion: "1",
+        capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true } as const,
+      }),
+      recall: vi.fn<SemanticMemoryProvider["recall"]>().mockResolvedValue(response),
+      save: vi.fn<SemanticMemoryProvider["save"]>(),
+      purgeHistory: vi.fn<SemanticMemoryProvider["purgeHistory"]>(),
+      forget: vi.fn<NonNullable<SemanticMemoryProvider["forget"]>>(),
+    };
+  }
+
+  it.each([
+    { scenario: "complete facts", response: { ok: true, value: facts }, first: 151, facts: true },
+    {
+      scenario: "complete empty",
+      response: { ok: true, value: emptyFacts },
+      first: 1,
+      facts: false,
+    },
+    {
+      scenario: "partial facts",
+      response: { ok: true, value: facts, partial: true },
+      first: 151,
+      facts: true,
+      notice: partial,
+    },
+    {
+      scenario: "partial empty",
+      response: { ok: true, value: emptyFacts, partial: true },
+      first: 1,
+      facts: false,
+      notice: partial,
+    },
+    { scenario: "all failed", response: failure, first: 1, facts: false, notice: unavailable },
+    {
+      scenario: "valid local summary",
+      response: { ok: true, value: facts, partial: true },
+      first: 101,
+      facts: true,
+      notice: partial,
+      summary: "Earlier conversation summary.",
+    },
+    {
+      scenario: "gapped local summary",
+      response: { ok: true, value: facts, partial: true },
+      first: 1,
+      facts: true,
+      notice: partial,
+      summary: "Earlier conversation summary.",
+      gap: true,
+    },
+    { scenario: "no provider", response: undefined, first: 1, facts: false },
+    { scenario: "no compaction", response: failure, first: 1, facts: false, uncompacted: true },
+  ] as const)(
+    "supplies the correct history and availability context for $scenario",
+    async (test) => {
+      const memory = test.response ? recallProvider(test.response) : undefined;
+      const f = fixture({ builtin: true, semanticMemory: memory });
+      const summary = "summary" in test ? test.summary : null;
+      const gap = "gap" in test;
+      const compacted = !("uncompacted" in test);
+      const messages = Array.from({ length: 200 }, (_, index) => {
+        const seq = 200 - index;
+        return {
+          id: `history-${seq}`,
+          threadId: f.runRecord.threadId,
+          seq,
+          role: "user",
+          runId: null,
+          botId: null,
+          blocks: [{ kind: "text", text: `Previous message ${seq}` }],
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+          steeringMessages: [],
+        };
+      }).filter(({ seq }) => !gap || seq !== 101);
+      f.prisma.thread.findUniqueOrThrow.mockImplementation(async () => ({
+        id: f.runRecord.threadId,
+        groupId: null,
+        historyCompactedUpToSeq: compacted ? 100 : null,
+        historyCompactionGeneration: 3,
+        historyCompactionSummary: summary,
+      }));
+      f.prisma.message.findMany.mockResolvedValue(messages);
+      f.setCalls([]);
+
+      await f.run();
+
+      const history = f.runtimeRun.mock.calls[0]![0].history;
+      const ids = messages
+        .filter(({ seq }) => seq >= test.first)
+        .map(({ id }) => id)
+        .reverse();
+      expect(history.filter(({ id }) => id?.startsWith("history-")).map(({ id }) => id)).toEqual(
+        ids,
+      );
+      const content = history.map((message) => message.content).join("\n");
+      for (const notice of [partial, unavailable]) {
+        if ("notice" in test && notice === test.notice) expect(content).toContain(notice);
+        else expect(content).not.toContain(notice);
+      }
+      if (test.facts) {
+        const recalled = history.find((message) => message.content.includes("<recalled_memory>"));
+        expect(recalled?.id).toBeUndefined();
+        expect(recalled?.content).toMatch(
+          /^Memory recalled from earlier conversations.*untrusted historical data/,
+        );
+        expect(recalled?.content).toContain("Prefer &lt;metric&gt; units &amp; distances.");
+        expect(recalled?.content).toContain("provenance: owner note; id: fact-1; entity: bot-1");
+        if ("notice" in test) {
+          expect(recalled?.content).toContain(`</recalled_memory>\n\n${test.notice}`);
+        }
+      } else {
+        expect(content).not.toContain("<recalled_memory>");
+      }
+      if (summary && !gap) expect(content).toContain(summary);
+      else expect(content).not.toContain("<compacted_thread_summary>");
+      expect(content).not.toContain(failure.error);
+      if (memory && compacted) {
+        expect(memory.recall).toHaveBeenCalledExactlyOnceWith(
+          {
+            query: "Read the item",
+            scope: "isolated",
+            botId: f.runRecord.botId,
+            historyGeneration: 3,
+            limit: 5,
+          },
+          expect.anything(),
+        );
+      } else if (memory) {
+        expect(memory.recall).not.toHaveBeenCalled();
+      }
+      if (memory) {
+        expect(memory.save).not.toHaveBeenCalled();
+        expect(memory.purgeHistory).not.toHaveBeenCalled();
+        expect(memory.forget).not.toHaveBeenCalled();
+      }
+      expect(f.commit).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { name: "complete facts", response: { ok: true, value: facts } },
+    { name: "complete empty", response: { ok: true, value: emptyFacts } },
+    { name: "partial facts", response: { ok: true, value: facts, partial: true } },
+    { name: "partial empty", response: { ok: true, value: emptyFacts, partial: true } },
+    { name: "all failed", response: failure },
+  ] as const)("returns $name through the explicit recall tool", async ({ response }) => {
+    const memory = recallProvider(response);
+    const f = fixture({ name: "recall_memory", builtin: true, semanticMemory: memory });
+    f.setCalls([{ args: { query: "units" }, executionId: "recall-1" }]);
+
+    await f.run();
+
+    expect(f.results).toEqual([response]);
+    expect(memory.recall).toHaveBeenCalledExactlyOnceWith(
+      { query: "units", scope: "isolated", botId: f.runRecord.botId, limit: 5 },
+      expect.anything(),
+    );
+    expect(memory.save).not.toHaveBeenCalled();
+    expect(memory.purgeHistory).not.toHaveBeenCalled();
+    expect(memory.forget).not.toHaveBeenCalled();
+    expect(f.commit).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+});
+
 describe("delegated shell approval receipts", () => {
   it.each([
     { code: 0, receipt: "succeeded" },

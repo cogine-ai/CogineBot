@@ -41,6 +41,9 @@ import {
   verbatimMcpToolResultIndexes,
 } from "./verbatim-mcp-result.js";
 
+export const PARTIAL_MEMORY_RECALL_NOTICE = "Some memory sources were unavailable.";
+export const MEMORY_RECALL_UNAVAILABLE_NOTICE = "Memory recall was unavailable.";
+
 /** Minimum whole-result window, unless the full model budget requires clipping. */
 const RECENT_TOOL_RESULTS_TO_KEEP = 3;
 
@@ -445,6 +448,7 @@ export function createRuntimeContextPolicy(
     // Apply the safety margin to the actual window, not an already tighter headroom override.
     const contextWindow = Math.min(modelWindow, reserve + inputLimit(window, reserve));
     let navigationMessage = projected?.navigation;
+    let pendingNavigation: Message | undefined;
     let catalogIds = projected?.catalogIds ?? [];
     const budget = {
       contextWindow,
@@ -455,6 +459,13 @@ export function createRuntimeContextPolicy(
       imageTokens: options.imageTokens,
       maxImages: request.model.maxImagesPerPrompt,
     };
+    const messageTokens = (message: Message) =>
+      estimateContextTokens(
+        providerContextPrefix("", [], [message]).messages[0],
+        options.imageTokens,
+      );
+    const requiredTokens = (indexes: ReadonlySet<number>) =>
+      [...indexes].reduce((total, index) => total + messageTokens(messages[index]!), fixed);
     const useSnapshots =
       strategy === "snapshots" || (strategy === "cache-aware" && predictedCache !== "likely-warm");
     const historical = messages.slice(0, currentIndex);
@@ -502,52 +513,50 @@ export function createRuntimeContextPolicy(
           ? [index]
           : [],
       );
-      if (catalog) {
-        const catalogMessage = navigation(catalogIds)!;
-        // Include the bounded catalog only if required content leaves room for it.
-        const required = protectedIndexes.map((index) => messages[index]!);
-        const fixed =
-          estimateContextTokens(budget.systemPrompt) + estimateContextTokens(budget.tools);
-        if (
-          fixed +
-            estimateContextTokens(required, options.imageTokens) +
-            estimateContextTokens(catalogMessage) <
-          contextWindow - budget.outputReserve
-        ) {
-          const insertIndex = messages[0]?.role === "system" ? 1 : 0;
-          messages.splice(insertIndex, 0, catalogMessage);
-          navigationMessage = catalogMessage;
-          protectedIndexes = [
-            insertIndex,
-            ...protectedIndexes.map((index) => index + Number(index >= insertIndex)),
-          ];
-        }
-      }
+      if (catalog) pendingNavigation = navigation(catalogIds);
     }
-    const summaries = ctx.messages.filter(
-      (message) =>
-        (message as Message & OriginalMetadata).rakazoHistory &&
-        !(message as Message & OriginalMetadata).rakazoMessageId &&
-        (text(message).startsWith("Rakazo-owned compacted context through message sequence ") ||
-          text(message).startsWith(
-            "Memory recalled from earlier conversations that fell outside the visible history.",
-          )),
-    );
-    for (const summary of summaries) {
-      const required = protectedIndexes.map((index) => messages[index]!);
-      if (
-        fixed +
-          estimateContextTokens(required, options.imageTokens) +
-          estimateContextTokens(summary, options.imageTokens) >=
-        contextWindow - reserve
-      )
-        continue;
-      if (!messages.includes(summary)) {
-        const insertIndex = messages[0]?.role === "system" ? 1 : 0;
-        messages.splice(insertIndex, 0, summary);
-        protectedIndexes = protectedIndexes.map((index) => index + Number(index >= insertIndex));
+    const historicalContext = ctx.messages.filter((message) => {
+      const metadata = message as Message & OriginalMetadata;
+      if (!metadata.rakazoHistory || metadata.rakazoMessageId) return false;
+      const content = text(message);
+      return (
+        content.startsWith("Rakazo-owned compacted context through message sequence ") ||
+        content.startsWith(
+          "Memory recalled from earlier conversations that fell outside the visible history.",
+        ) ||
+        content === PARTIAL_MEMORY_RECALL_NOTICE ||
+        content === MEMORY_RECALL_UNAVAILABLE_NOTICE
+      );
+    });
+    const contextInsertIndex = messages[0]?.role === "system" ? 1 : 0;
+    let insertedHistoryCount = 0;
+    for (const entry of historicalContext) {
+      // Optional history must fit beside the same atomic groups the selector requires.
+      const required = protectedContextIndexes(messages, protectedIndexes);
+      const entryIndex = messages.indexOf(entry);
+      if (required.has(entryIndex)) continue;
+      if (requiredTokens(required) + messageTokens(entry) >= contextWindow - reserve) continue;
+      if (entryIndex === -1) {
+        messages.splice(contextInsertIndex, 0, entry);
+        protectedIndexes = protectedIndexes.map(
+          (index) => index + Number(index >= contextInsertIndex),
+        );
+        insertedHistoryCount += 1;
       }
-      protectedIndexes.push(messages.indexOf(summary));
+      protectedIndexes.push(messages.indexOf(entry));
+    }
+    // Navigation uses the remaining room after fitting summaries and recalled memory.
+    if (pendingNavigation) {
+      const required = protectedContextIndexes(messages, protectedIndexes);
+      if (requiredTokens(required) + messageTokens(pendingNavigation) < contextWindow - reserve) {
+        const insertIndex = contextInsertIndex + insertedHistoryCount;
+        messages.splice(insertIndex, 0, pendingNavigation);
+        navigationMessage = pendingNavigation;
+        protectedIndexes = [
+          insertIndex,
+          ...protectedIndexes.map((index) => index + Number(index >= insertIndex)),
+        ];
+      }
     }
     // Completed loop steps remain useful task state even when their verbose
     // evidence is old. Keep the protocol and controls so dropping large bodies
@@ -638,12 +647,7 @@ export function createRuntimeContextPolicy(
     const retained = shortenOlderResults(true);
     // Fall back before selection can discard older progress to make room for whole results.
     const retainedTokens = retained.reduce(
-      (total, message) =>
-        total +
-        estimateContextTokens(
-          providerContextPrefix("", [], [message]).messages[0],
-          options.imageTokens,
-        ),
+      (total, message) => total + messageTokens(message),
       fixed,
     );
     messages = retainedTokens <= contextWindow - reserve ? retained : shortenOlderResults(false);

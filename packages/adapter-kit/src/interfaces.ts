@@ -70,8 +70,8 @@ import type {
   SemanticMemoryForgetRequest,
   SemanticMemoryPurgeHistoryRequest,
   SemanticMemoryRecallRequest,
+  SemanticMemoryRecallResponse,
   SemanticMemoryResponse,
-  SemanticMemoryResult,
   SemanticMemorySaveRequest,
   SnapshotRef,
   SpeechClip,
@@ -275,7 +275,7 @@ export interface SemanticMemoryProvider {
   recall(
     request: SemanticMemoryRecallRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse<SemanticMemoryResult[]>>;
+  ): Promise<SemanticMemoryRecallResponse>;
   save(
     request: SemanticMemorySaveRequest,
     context: AdapterContext,
