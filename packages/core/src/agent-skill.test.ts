@@ -486,3 +486,131 @@ describe("skill prompt helpers", () => {
     expect(JSON.stringify(entries)).toBe(original);
   });
 });
+
+describe("saved skill scalar and array fidelity", () => {
+  it.each([
+    { raw: String.raw`"Say \"go\""`, expected: 'Say "go"' },
+    { raw: String.raw`"C:\\fixtures\\one"`, expected: "C:\\fixtures\\one" },
+    { raw: String.raw`"tab\tvalue"`, expected: "tab\tvalue" },
+    { raw: String.raw`"\u96ea"`, expected: "雪" },
+    { raw: "'it''s here'", expected: "it's here" },
+  ])("decodes imported quoted metadata $raw", ({ raw, expected }) => {
+    const content = `---\nname: Fidelity recipe\ndescription: Preserve saved values\ndetail: ${raw}\n---\n# Body\n`;
+    expect(standardFrontmatter(content).detail).toBe(expected);
+    const parsed = parseSkillMd(content);
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(parsed.frontmatter.detail).toBe(expected);
+  });
+
+  it.each([
+    { raw: String.raw`"C:\path"`, expected: String.raw`C:\path` },
+    { raw: "'", expected: "'" },
+    { raw: '"', expected: '"' },
+  ])("retains legacy nonstandard quoted metadata $raw", ({ raw, expected }) => {
+    const parsed = parseSkillMd(
+      `---\nname: Fidelity recipe\ndescription: Preserve saved values\ndetail: ${raw}\n---\nbody`,
+    );
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(parsed.frontmatter.detail).toBe(expected);
+  });
+
+  const values = [
+    "1.10",
+    "010",
+    "-2.5",
+    "true",
+    "false",
+    '"quoted start',
+    "'quoted start",
+    '"',
+    "'",
+    "",
+    "  padded  ",
+    String.raw`C:\fixture, "quoted"`,
+    "tab\tvalue, comma",
+    0,
+    -2.5,
+    true,
+    false,
+    [],
+    ["a,b", "", String.raw`C:\fixture`, 'say "go"', "line\nbreak"],
+    [0, -2.5, 1e21, 1e-7],
+    [true, false],
+    ["1.10", "true", "", 2, true, false],
+  ];
+  it.each(values.map((value) => ({ value })))(
+    "preserves top-level and one-level metadata $value through three saves",
+    ({ value }) => {
+      const expected = {
+        name: "Fidelity recipe",
+        description: "Preserve saved values",
+        detail: value,
+        metadata: { detail: value, enabled: true },
+      };
+      let content = buildSkillMd({
+        ...expected,
+        body: "# Body\n",
+        frontmatter: { detail: value, metadata: expected.metadata },
+      });
+      for (let edit = 0; edit < 3; edit += 1) {
+        expect(standardFrontmatter(content)).toEqual(expected);
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.frontmatter).toEqual(expected);
+        expect(parsed.body).toBe("# Body\n");
+        content = buildSkillMd(parsed);
+      }
+    },
+  );
+
+  it.each([
+    'Use when the user says "ship it", then deploy.',
+    String.raw`Paths like C:\fixtures, #fixture`,
+    "Tabs\tand, commas",
+    '"quoted" start',
+  ])("keeps the description %j across repeated saves", (description) => {
+    let content = buildSkillMd({ name: "Fidelity recipe", description, body: "body" });
+    for (let edit = 0; edit < 3; edit += 1) {
+      expect(standardFrontmatter(content).description).toBe(description);
+      const parsed = parseSkillMd(content);
+      if ("error" in parsed) throw new Error(parsed.error);
+      expect(parsed.description).toBe(description);
+      content = buildSkillMd(parsed);
+    }
+  });
+
+  it.each(["Deploy the app", "don't panic"])(
+    "keeps plain description %j unquoted",
+    (description) => {
+      expect(buildSkillMd({ name: "Fidelity recipe", description, body: "body" })).toContain(
+        `description: ${description}\n`,
+      );
+    },
+  );
+
+  it.each([
+    { raw: "[shell, read_file]", expected: ["shell", "read_file"] },
+    { raw: "[1e400]", expected: ["1e400"] },
+    { raw: "[null]", expected: ["null"] },
+    { raw: '[{"value":1}]', expected: ['{"value":1}'] },
+    { raw: "[[1]]", expected: ["[1]"] },
+  ])("retains the scoped legacy array fallback for $raw", ({ raw, expected }) => {
+    const parsed = parseSkillMd(
+      `---\nname: Fidelity recipe\ndescription: Preserve saved values\nvalues: ${raw}\nmetadata:\n  values: ${raw}\n---\nbody`,
+    );
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(parsed.frontmatter.values).toEqual(expected);
+    expect(parsed.frontmatter.metadata).toEqual({ values: raw });
+  });
+
+  it("retains legacy overflow normalization without introducing null", () => {
+    const parsed = parseSkillMd(
+      `---\nname: Fidelity recipe\ndescription: Preserve saved values\nvalues: [${"9".repeat(400)}]\n---\nbody`,
+    );
+    if ("error" in parsed) throw new Error(parsed.error);
+    expect(parsed.frontmatter.values).toEqual([Number.POSITIVE_INFINITY]);
+    const again = parseSkillMd(buildSkillMd(parsed));
+    if ("error" in again) throw new Error(again.error);
+    expect(again.frontmatter.values).toEqual(["Infinity"]);
+  });
+});
