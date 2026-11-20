@@ -6359,7 +6359,9 @@ export function createRouter(deps: RouterDeps) {
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
                 let oauthStatus: McpServer["oauthStatus"];
-                if (!connection) oauthStatus = await mcpOAuth.statusFor(row.server, context.actor);
+                if (disableOnly) oauthStatus = row.server.secretId ? "unknown" : "none";
+                else if (!connection)
+                  oauthStatus = await mcpOAuth.statusFor(row.server, context.actor);
                 else {
                   oauthStatus = row.server.secretId ? "unknown" : "none";
                   if (patchHeaders && update.action === "store") {

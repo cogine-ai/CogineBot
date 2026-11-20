@@ -82,7 +82,8 @@ export function buildMcpUpdateMaterial(
 ): McpMaterialUpdate {
   if (config.transport === "stdio") {
     const material = buildMcpStdioMaterial(options.replaceCredentials ? {} : existing, config);
-    return !options.replaceCredentials && isDeepStrictEqual(existing, material)
+    const clearing = config.clearCredential && Object.keys(material).length === 0;
+    return !options.replaceCredentials && !clearing && isDeepStrictEqual(existing, material)
       ? { action: "keep" }
       : { action: "store", material };
   }

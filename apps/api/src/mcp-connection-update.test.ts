@@ -308,9 +308,16 @@ describe("deployment-managed MCP stdio registration", () => {
       JSON.stringify({ env: { KEEP: "legacy\0value" }, headers: { Host: "legacy" } }),
     );
     f.secrets.load.mockRejectedValue(new Error("Secret storage unavailable"));
+    f.mcpOAuth.statusFor.mockRejectedValue(new Error("Secret storage unavailable"));
     const result = await f.client.mcp.servers.update({ id: f.server.id, config });
-    expect(result).toMatchObject({ enabled: false, envKeys: ["KEEP"], hasSecret: true });
+    expect(result).toMatchObject({
+      enabled: false,
+      envKeys: ["KEEP"],
+      hasSecret: true,
+      oauthStatus: "unknown",
+    });
     expect(f.secrets.load).not.toHaveBeenCalled();
+    expect(f.mcpOAuth.statusFor).not.toHaveBeenCalled();
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
 
@@ -322,6 +329,18 @@ describe("deployment-managed MCP stdio registration", () => {
     );
     await f.client.mcp.servers.update({ id: f.server.id, config: { ...config, enabled: true } });
     expect(f.server.secretId).toBe("old");
+    expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it("removes a legacy secret containing only unused headers on explicit clear", async () => {
+    const f = fixture({ stdio: true });
+    f.values.set("old-ref", JSON.stringify({ env: {}, headers: { Host: "legacy" } }));
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, clearCredential: true },
+    });
+    expect(f.server.secretId).toBeNull();
+    expect(f.rows.has("old")).toBe(false);
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
 
