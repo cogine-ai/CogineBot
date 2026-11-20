@@ -7,8 +7,20 @@ import type {
 import { buildBotMessageWakePrompt } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
 import { preparePageToolRequest } from "./page-tool-request.js";
+import { assertSafeRemoteUrl } from "./remote-mcp.js";
 import { inferScript, ScriptedAgentRuntime } from "./scripted-runtime.js";
 import { scriptedStateDigest } from "./scripted-state.js";
+
+it("admits the scripted MCP approval fixture with the default resolver", async () => {
+  const args = inferScript("show an mcp approval card")[0]?.toolCalls?.[0]?.args;
+  expect(args).toMatchObject({
+    transport: "streamable_http",
+    endpoint: "https://203.0.113.10/mcp",
+  });
+  await expect(assertSafeRemoteUrl(String(args?.endpoint))).resolves.toMatchObject({
+    hostname: "203.0.113.10",
+  });
+});
 
 describe("inferScript message_bot", () => {
   it("relays a delegated result instead of interpreting its content as another tool call", () => {

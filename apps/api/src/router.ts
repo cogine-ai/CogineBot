@@ -6024,7 +6024,14 @@ export function createRouter(deps: RouterDeps) {
           const connection = "connection" in input ? input.connection : undefined;
           const stdio =
             "config" in input && input.config.transport === "stdio" ? input.config : undefined;
-          if (stdio) assertMcpStdioOwner(context.actor);
+          const configRevision = "config" in input ? input.revision : undefined;
+          if (stdio) {
+            assertMcpStdioOwner(context.actor);
+            if (stdio.clearCredential && configRevision === undefined)
+              throw new ORPCError("BAD_REQUEST", {
+                message: "Reload the MCP server before clearing its credentials.",
+              });
+          }
           const credentialActor = {
             userId: context.actor.userId,
             spaceId: context.actor.spaceId,
@@ -6078,9 +6085,10 @@ export function createRouter(deps: RouterDeps) {
                   !stdio.enabled &&
                   !replaceCredentials &&
                   stdio.oauthClient === undefined &&
-                  stdio.files === undefined &&
-                  stdio.env === undefined &&
-                  stdio.secret === undefined,
+                  (stdio.clearCredential ||
+                    (stdio.files === undefined &&
+                      stdio.env === undefined &&
+                      stdio.secret === undefined)),
               );
               const disableOnly = deactivating && !stdio?.clearCredential;
               const disableAndClear = deactivating && stdio?.clearCredential === true;
@@ -6089,14 +6097,16 @@ export function createRouter(deps: RouterDeps) {
                 (stdio.enabled ||
                   replaceCredentials ||
                   stdio.oauthClient ||
-                  Object.keys(stdio.env ?? {}).length ||
-                  Object.keys(stdio.files ?? {}).length ||
-                  stdio.secret)
+                  (!stdio.clearCredential &&
+                    (Object.keys(stdio.env ?? {}).length ||
+                      Object.keys(stdio.files ?? {}).length ||
+                      stdio.secret)))
               ) {
                 assertMcpStdioCommand(stdio.command, deps.env);
               }
               await lockActivePluginChild(tx, existing, context.actor);
-              if (connection && existing.revision !== connection.revision)
+              const expectedRevision = connection?.revision ?? configRevision;
+              if (expectedRevision !== undefined && existing.revision !== expectedRevision)
                 throw new ORPCError("CONFLICT", {
                   message: "MCP server changed; reload its connection settings",
                 });
@@ -6124,35 +6134,43 @@ export function createRouter(deps: RouterDeps) {
               };
             });
             let existingMaterial: McpSecretMaterial = {};
-            let clearFailed = false;
+            let clearFailure: "unavailable" | "unreadable" | undefined;
             const requireStoredMaterial =
               (connection && patchHeaders) ||
               (existing.transport === "stdio" && !disableOnly && !replaceCredentials);
-            const credentialReadFailed = () => {
-              if (disableAndClear) clearFailed = true;
+            const credentialReadFailed = (failure: "unavailable" | "unreadable") => {
+              if (disableAndClear) clearFailure = failure;
               else if (requireStoredMaterial)
                 throw new ORPCError("SERVICE_UNAVAILABLE", {
-                  message: "Stored MCP credentials are unavailable. Retry this setting.",
+                  message:
+                    stdio && failure === "unreadable"
+                      ? "Stored MCP credentials are missing or unreadable. Remove and add the server again to replace its credentials."
+                      : "Stored MCP credentials are unavailable. Retry this setting.",
                 });
             };
-            if (existing.secretId && !existingSecret) credentialReadFailed();
+            if (existing.secretId && !existingSecret) credentialReadFailed("unreadable");
             if (existingSecret && !disableOnly && !replaceCredentials) {
+              let plaintext: string | undefined;
               try {
-                const plaintext = await deps.secrets.load(
-                  existingSecret.ciphertext,
-                  existingSecret.id,
+                plaintext = await deps.secrets.load(existingSecret.ciphertext, existingSecret.id);
+              } catch (error) {
+                credentialReadFailed(
+                  error instanceof SecretStoreUnavailableError ? "unavailable" : "unreadable",
                 );
-                if (connection) existingMaterial = parseMcpConnectionMaterial(plaintext);
-                else if (existing.transport === "stdio")
-                  existingMaterial = parseMcpStdioMaterial(plaintext);
-                else {
-                  const value = JSON.parse(plaintext);
-                  if (value && typeof value === "object" && !Array.isArray(value))
-                    existingMaterial = value as McpSecretMaterial;
+              }
+              if (plaintext !== undefined) {
+                try {
+                  if (connection) existingMaterial = parseMcpConnectionMaterial(plaintext);
+                  else if (existing.transport === "stdio")
+                    existingMaterial = parseMcpStdioMaterial(plaintext);
+                  else {
+                    const value = JSON.parse(plaintext);
+                    if (value && typeof value === "object" && !Array.isArray(value))
+                      existingMaterial = value as McpSecretMaterial;
+                  }
+                } catch {
+                  credentialReadFailed("unreadable");
                 }
-              } catch {
-                credentialReadFailed();
-                /* Existing malformed secrets are replaced only when new credentials are supplied. */
               }
             }
             const config =
@@ -6177,7 +6195,7 @@ export function createRouter(deps: RouterDeps) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
             let update: McpMaterialUpdate;
-            if (disableOnly || clearFailed) {
+            if (disableOnly || clearFailure) {
               update = { action: "keep" };
             } else if (connection) {
               try {
@@ -6219,12 +6237,12 @@ export function createRouter(deps: RouterDeps) {
                       )
                       .catch((error: unknown) => {
                         if (!disableAndClear) throw error;
-                        clearFailed = true;
+                        clearFailure = "unavailable";
                         return null;
                       })
                   : null;
               const clearing =
-                !clearFailed &&
+                !clearFailure &&
                 update.action === "store" &&
                 Object.keys(update.material).length === 0;
               const row = await persistPreparedSecret(
@@ -6293,7 +6311,7 @@ export function createRouter(deps: RouterDeps) {
                     const updated = await tx.mcpServer.update({
                       where: { id: existing.id },
                       data: {
-                        ...(clearFailed
+                        ...(clearFailure
                           ? {}
                           : connection
                             ? {
@@ -6334,7 +6352,7 @@ export function createRouter(deps: RouterDeps) {
                               }),
                         enabled: config.enabled,
                         ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
-                        ...(clearFailed || config.verbatimResults === undefined
+                        ...(clearFailure || config.verbatimResults === undefined
                           ? {}
                           : { verbatimResults: config.verbatimResults }),
                         revision: { increment: 1 },
@@ -6387,10 +6405,12 @@ export function createRouter(deps: RouterDeps) {
               );
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
-                if (clearFailed)
+                if (clearFailure)
                   throw new ORPCError("SERVICE_UNAVAILABLE", {
                     message:
-                      "MCP server was disabled. Its credentials could not be cleared. Retry this setting.",
+                      clearFailure === "unreadable"
+                        ? "MCP server was disabled. Its stored credentials are missing or unreadable. Remove and add the server again to replace its credentials."
+                        : "MCP server was disabled. Its credentials could not be cleared. Reload the server and try again.",
                   });
                 let oauthStatus: McpServer["oauthStatus"];
                 if (disableOnly || disableAndClear)

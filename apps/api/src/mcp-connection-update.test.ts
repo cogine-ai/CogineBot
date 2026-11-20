@@ -1,4 +1,5 @@
 import { createRouterClient } from "@orpc/server";
+import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { McpOAuthBroker } from "@rakazo/adapters";
 import type { Actor, McpStdioOAuthClient } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -330,18 +331,20 @@ describe("deployment-managed MCP stdio registration", () => {
       if (failure === "missing record") f.rows.delete("old");
       if (failure === "unreadable blob") f.values.set("old-ref", "broken");
       if (failure === "store read failure")
-        f.secrets.load.mockRejectedValue(new Error("Read failed"));
+        f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError());
       if (failure === "store write failure")
         f.secrets.put.mockRejectedValue(new Error("Write failed"));
       await expect(
         f.client.mcp.servers.update({
           id: f.server.id,
+          revision: f.server.revision,
           config: { ...config, clearCredential: true, verbatimResults: false },
         }),
       ).rejects.toMatchObject({
         code: "SERVICE_UNAVAILABLE",
-        message:
-          "MCP server was disabled. Its credentials could not be cleared. Retry this setting.",
+        message: failure.startsWith("store")
+          ? "MCP server was disabled. Its credentials could not be cleared. Reload the server and try again."
+          : "MCP server was disabled. Its stored credentials are missing or unreadable. Remove and add the server again to replace its credentials.",
       });
       expect(f.server).toMatchObject({
         enabled: false,
@@ -353,6 +356,30 @@ describe("deployment-managed MCP stdio registration", () => {
       expect(f.mcpOAuth.statusFor).not.toHaveBeenCalled();
     },
   );
+
+  it("requires a revision for stdio clearing and rejects a retry after another edit", async () => {
+    const f = fixture({ stdio: true });
+    f.server.enabled = true;
+    const request = { id: f.server.id, config: { ...config, clearCredential: true } };
+    await expect(f.client.mcp.servers.update(request)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    expect(f.secrets.load).not.toHaveBeenCalled();
+    const original = { ...request, revision: f.server.revision };
+    f.secrets.load.mockRejectedValueOnce(new SecretStoreUnavailableError());
+    await expect(f.client.mcp.servers.update(original)).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+    const saved = await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, env: { API_KEY: "fixture-new-credential" } },
+    });
+    await expect(f.client.mcp.servers.update(original)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.server.revision).toBe(saved.revision);
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toMatchObject({
+      env: { API_KEY: "fixture-new-credential" },
+    });
+  });
 
   it("edits valid legacy stdio material without rotating a token or validating unused headers", async () => {
     const f = fixture({ stdio: true });
@@ -370,6 +397,7 @@ describe("deployment-managed MCP stdio registration", () => {
     f.values.set("old-ref", JSON.stringify({ env: {}, headers: { Host: "legacy" } }));
     await f.client.mcp.servers.update({
       id: f.server.id,
+      revision: f.server.revision,
       config: { ...config, clearCredential: true },
     });
     expect(f.server.secretId).toBeNull();
