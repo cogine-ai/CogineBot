@@ -61,13 +61,26 @@ describe("managed stdio credential files", () => {
       "fixture with spaces",
     );
     expect(mcpCredentialFileSecrets('VALUE="fixture\\nline"')).toContain("fixture\nline");
-    expect(mcpCredentialFileSecrets('{"authorization":"Basic Zml4dHVyZTpjdXN0b20="}')).toEqual(
-      expect.arrayContaining(["Zml4dHVyZTpjdXN0b20=", "custom"]),
-    );
     expect(mcpCredentialFileSecrets('{"instruction":"Basic user"}')).not.toContain("user");
     expect(mcpCredentialFileSecrets("KEY=fixture-value")).toContain("fixture-value");
     expect(mcpCredentialFileSecrets('KEY="fixture-value"#comment')).toContain("fixture-value");
     expect(mcpCredentialFileSecrets("KEY=fixture-value#comment")).toContain("fixture-value");
+  });
+
+  it.each([
+    ["fixture-key", "fixture-secret"],
+    ["fixture-key", ""],
+    ["", "fixture-secret"],
+  ])("retains nonempty Basic credential parts for redaction", (username, password) => {
+    const encoded = Buffer.from(`${username}:${password}`).toString("base64");
+    const authorization = `Basic ${encoded}`;
+    const file = JSON.stringify({ authorization });
+    expect(mcpCredentialFileSecrets(file)).toEqual([
+      file,
+      authorization,
+      encoded,
+      ...[username, password].filter(Boolean),
+    ]);
   });
 
   it("retains lossless numeric credential text in JSON and YAML", () => {

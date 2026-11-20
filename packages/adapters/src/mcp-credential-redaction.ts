@@ -97,8 +97,9 @@ export function mcpCredentialValueVariants(value: string): string[] {
     const decoded = Buffer.from(basic, "base64").toString("utf8");
     const separator = decoded.indexOf(":");
     if (separator !== -1) {
+      const username = decoded.slice(0, separator);
       const password = decoded.slice(separator + 1);
-      return password ? [value, basic, password] : [value, basic];
+      return [value, basic, username, password].filter(Boolean);
     }
   }
   return [value];
