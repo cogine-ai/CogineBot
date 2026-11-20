@@ -6025,6 +6025,9 @@ export function createRouter(deps: RouterDeps) {
           const stdio =
             "config" in input && input.config.transport === "stdio" ? input.config : undefined;
           const configRevision = "config" in input ? input.revision : undefined;
+          const expectedRevision = connection?.revision ?? configRevision;
+          const clearAllStdioCredentials =
+            stdio?.clearCredential === true && stdio.oauthClient === null;
           if (stdio) {
             assertMcpStdioOwner(context.actor);
             if (stdio.clearCredential && configRevision === undefined)
@@ -6084,7 +6087,7 @@ export function createRouter(deps: RouterDeps) {
                 stdio &&
                   !stdio.enabled &&
                   !replaceCredentials &&
-                  stdio.oauthClient === undefined &&
+                  (stdio.oauthClient === undefined || clearAllStdioCredentials) &&
                   (stdio.clearCredential ||
                     (stdio.files === undefined &&
                       stdio.env === undefined &&
@@ -6105,7 +6108,6 @@ export function createRouter(deps: RouterDeps) {
                 assertMcpStdioCommand(stdio.command, deps.env);
               }
               await lockActivePluginChild(tx, existing, context.actor);
-              const expectedRevision = connection?.revision ?? configRevision;
               if (expectedRevision !== undefined && existing.revision !== expectedRevision)
                 throw new ORPCError("CONFLICT", {
                   message: "MCP server changed; reload its connection settings",
@@ -6137,7 +6139,10 @@ export function createRouter(deps: RouterDeps) {
             let clearFailure: "unavailable" | "unreadable" | undefined;
             const requireStoredMaterial =
               (connection && patchHeaders) ||
-              (existing.transport === "stdio" && !disableOnly && !replaceCredentials);
+              (existing.transport === "stdio" &&
+                !disableOnly &&
+                !replaceCredentials &&
+                !clearAllStdioCredentials);
             const credentialReadFailed = (failure: "unavailable" | "unreadable") => {
               if (disableAndClear) clearFailure = failure;
               else if (requireStoredMaterial)
@@ -6148,8 +6153,14 @@ export function createRouter(deps: RouterDeps) {
                       : "Stored MCP credentials are unavailable. Retry this setting.",
                 });
             };
-            if (existing.secretId && !existingSecret) credentialReadFailed("unreadable");
-            if (existingSecret && !disableOnly && !replaceCredentials) {
+            if (existing.secretId && !existingSecret && !clearAllStdioCredentials)
+              credentialReadFailed("unreadable");
+            if (
+              existingSecret &&
+              !disableOnly &&
+              !replaceCredentials &&
+              !clearAllStdioCredentials
+            ) {
               let plaintext: string | undefined;
               try {
                 plaintext = await deps.secrets.load(existingSecret.ciphertext, existingSecret.id);
@@ -6308,57 +6319,77 @@ export function createRouter(deps: RouterDeps) {
                         },
                       });
                     }
-                    const updated = await tx.mcpServer.update({
-                      where: { id: existing.id },
-                      data: {
-                        ...(clearFailure
-                          ? {}
-                          : connection
-                            ? {
-                                ...(patchHeaders && update.action === "store"
-                                  ? {
-                                      headers: Object.fromEntries(
-                                        Object.keys(update.material.headers ?? {}).map((key) => [
-                                          key,
-                                          true,
-                                        ]),
-                                      ) as Prisma.InputJsonValue,
-                                    }
-                                  : {}),
-                              }
-                            : {
-                                slug: config.slug,
-                                name: config.name,
-                                description: config.description,
-                                transport: config.transport,
-                                endpoint: nextEndpoint,
-                                command: "command" in config ? config.command : null,
-                                args: nextArgs as Prisma.InputJsonValue,
-                                env: (disableOnly
-                                  ? current.env
-                                  : stdio
+                    const updated = await tx.mcpServer
+                      .update({
+                        where: {
+                          id: existing.id,
+                          ...(expectedRevision === undefined ? {} : { revision: expectedRevision }),
+                        },
+                        data: {
+                          ...(clearFailure
+                            ? {}
+                            : connection
+                              ? {
+                                  ...(patchHeaders && update.action === "store"
+                                    ? {
+                                        headers: Object.fromEntries(
+                                          Object.keys(update.material.headers ?? {}).map((key) => [
+                                            key,
+                                            true,
+                                          ]),
+                                        ) as Prisma.InputJsonValue,
+                                      }
+                                    : {}),
+                                }
+                              : {
+                                  slug: config.slug,
+                                  name: config.name,
+                                  description: config.description,
+                                  transport: config.transport,
+                                  endpoint: nextEndpoint,
+                                  command: "command" in config ? config.command : null,
+                                  args: nextArgs as Prisma.InputJsonValue,
+                                  env: (disableOnly
+                                    ? current.env
+                                    : stdio
+                                      ? Object.fromEntries(
+                                          Object.keys(nextMaterial.env ?? {}).map((key) => [
+                                            key,
+                                            true,
+                                          ]),
+                                        )
+                                      : {}) as Prisma.InputJsonValue,
+                                  headers: ("headers" in config
                                     ? Object.fromEntries(
-                                        Object.keys(nextMaterial.env ?? {}).map((key) => [
-                                          key,
-                                          true,
-                                        ]),
+                                        Object.keys(config.headers).map((key) => [key, true]),
                                       )
                                     : {}) as Prisma.InputJsonValue,
-                                headers: ("headers" in config
-                                  ? Object.fromEntries(
-                                      Object.keys(config.headers).map((key) => [key, true]),
-                                    )
-                                  : {}) as Prisma.InputJsonValue,
-                              }),
-                        enabled: config.enabled,
-                        ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
-                        ...(clearFailure || config.verbatimResults === undefined
-                          ? {}
-                          : { verbatimResults: config.verbatimResults }),
-                        revision: { increment: 1 },
-                        ...(stored ? { secretId: stored.id } : clearing ? { secretId: null } : {}),
-                      },
-                    });
+                                }),
+                          enabled: config.enabled,
+                          ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
+                          ...(clearFailure || config.verbatimResults === undefined
+                            ? {}
+                            : { verbatimResults: config.verbatimResults }),
+                          revision: { increment: 1 },
+                          ...(stored
+                            ? { secretId: stored.id }
+                            : clearing
+                              ? { secretId: null }
+                              : {}),
+                        },
+                      })
+                      .catch((error: unknown) => {
+                        if (
+                          expectedRevision !== undefined &&
+                          error instanceof Prisma.PrismaClientKnownRequestError &&
+                          error.code === "P2025"
+                        ) {
+                          throw new ORPCError("CONFLICT", {
+                            message: "MCP server changed; reload its connection settings",
+                          });
+                        }
+                        throw error;
+                      });
                     if (parent?.kind === "plugin" && parent.clientNonce !== null) {
                       const entries = readPluginCleanupRefs(parent.cleanupRefs).filter(
                         (entry) => entry.id !== reservation?.id,

@@ -2,6 +2,7 @@ import { createRouterClient } from "@orpc/server";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { McpOAuthBroker } from "@rakazo/adapters";
 import type { Actor, McpStdioOAuthClient } from "@rakazo/contracts";
+import { Prisma } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
@@ -69,10 +70,12 @@ function fixture({ stdio = false, stdioEnabled = true } = {}) {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         scoped(where) ? structuredClone(server) : null,
       ),
-      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        Object.assign(server, data, { revision: server.revision + 1 });
-        return structuredClone(server);
-      }),
+      update: vi.fn(
+        async ({ data }: { data: Record<string, unknown>; where?: { revision?: number } }) => {
+          Object.assign(server, data, { revision: server.revision + 1 });
+          return structuredClone(server);
+        },
+      ),
     },
     capabilityInstall: {
       findFirst: vi.fn(async () => structuredClone(parent)),
@@ -379,6 +382,42 @@ describe("deployment-managed MCP stdio registration", () => {
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toMatchObject({
       env: { API_KEY: "fixture-new-credential" },
     });
+  });
+
+  it("checks the requested revision in the final write when another action changes the row", async () => {
+    const f = fixture({ stdio: true });
+    f.server.enabled = true;
+    f.prisma.mcpServer.update.mockImplementationOnce(async ({ where }) => {
+      f.server.revision++;
+      expect(where).toMatchObject({ revision: 1 });
+      throw new Prisma.PrismaClientKnownRequestError("The revision no longer matches", {
+        code: "P2025",
+        clientVersion: "fixture",
+      });
+    });
+    await expect(
+      f.client.mcp.servers.update({
+        id: f.server.id,
+        revision: 1,
+        config: { ...config, clearCredential: true, oauthClient: null },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.server).toMatchObject({ enabled: true, secretId: "old", revision: 2 });
+    expect(f.prisma.secret.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("can disable and explicitly remove all credentials without reading the old blob", async () => {
+    const f = fixture({ stdio: true, stdioEnabled: false });
+    f.server.enabled = true;
+    f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError());
+    const result = await f.client.mcp.servers.update({
+      id: f.server.id,
+      revision: 1,
+      config: { ...config, clearCredential: true, oauthClient: null },
+    });
+    expect(result).toMatchObject({ enabled: false, hasSecret: false, oauthStatus: "none" });
+    expect(f.secrets.load).not.toHaveBeenCalled();
+    expect(f.rows.has("old")).toBe(false);
   });
 
   it("edits valid legacy stdio material without rotating a token or validating unused headers", async () => {
