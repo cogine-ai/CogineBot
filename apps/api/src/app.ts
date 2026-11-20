@@ -383,7 +383,11 @@ async function buildApp(
     secrets,
     remoteConnectors,
     env.mcpAllowPrivateEndpoint,
-    { enabled: env.mcpStdioEnabled, allowedCommands: env.mcpStdioAllowedCommands },
+    {
+      enabled: env.mcpStdioEnabled,
+      allowedCommands: env.mcpStdioAllowedCommands,
+      databaseUrl: env.databaseUrl,
+    },
   );
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const oauthLogins = new ModelOAuth(new ModelOAuthSessions(prisma), secrets);
@@ -1232,10 +1236,11 @@ async function buildApp(
         await executor.closeRemoteMcpSessions();
         await jobs.close();
         await deploymentTransfer.close();
+        await mcp.close();
+        await mcpOAuth.close();
         await secrets.close();
         await realtime.close();
         await connector.stop();
-        await mcp.close();
         await nativeEvents.close();
         await native.close();
         await prisma.$disconnect().catch(() => undefined);

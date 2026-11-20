@@ -27,12 +27,16 @@ import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { McpStdioOAuthClient } from "@rakazo/contracts";
 import { isLocalMcpHost, McpStdioFilesSchema, McpStdioOAuthClientSchema } from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import type { Pool, Prisma, PrismaClient } from "@rakazo/db";
 import {
   assertManagedPluginActive,
+  createPool,
+  isInteractiveTransaction,
   isPluginSecretReferenced,
   lockPluginInstall,
   readPluginCleanupRefs,
+  runAsSystem,
+  runAsSystemInTransaction,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
@@ -48,9 +52,11 @@ import {
   beginMcpStdioAuthorization,
   exchangeMcpStdioAuthorization,
   mcpStdioClientInformation,
+  stdioClientBasicAuthentication,
 } from "./mcp-stdio-oauth.js";
 import { secureFetch, validateUrl, withEndpointOriginFallback } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
+import { withSeparateRefreshLock } from "./refresh-lock.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { deferPreparedSecretCleanup, persistPreparedSecret } from "./secret-persistence.js";
 import { reconcileSecretWrite } from "./secret-store-factory.js";
@@ -158,6 +164,7 @@ type ServerRef = {
   command?: string | null;
 };
 type ActorRef = { spaceId: string; userId: string };
+type RuntimeActorRef = ActorRef & { signal?: AbortSignal };
 
 export class McpReauthorizationRequiredError extends Error {
   readonly code = "MCP_REAUTHORIZATION_REQUIRED";
@@ -187,13 +194,17 @@ export function matchesMcpOAuthIssuer(issuer: string | undefined, expected: stri
   );
 }
 
+type StoredOAuthMaterial = { id: string; ref: string; material: OAuthMaterial };
+
 type ProviderOptions = {
   redirectUri?: string;
   state?: string;
   onAuthorization?: (url: URL) => void;
-  onPersisted?: (record: { id: string; ref: string; material: OAuthMaterial }) => void;
+  onPersisted?: (record: StoredOAuthMaterial) => void;
   /** Network for renewing an expired access token through its stored refresh token. */
   refreshNetwork?: () => Promise<{ fetch: typeof fetch; close: () => Promise<void> }>;
+  stdio?: boolean;
+  withCurrentStdioGrant?: (apply: (record: StoredOAuthMaterial) => Promise<void>) => Promise<void>;
 };
 
 /** Refresh before expiry to cover clock skew and request time. */
@@ -265,12 +276,28 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   async tokens(): Promise<OAuthTokens | undefined> {
     if (this.persistenceConflict) throw this.persistenceConflict;
     if (this.options.refreshNetwork && this.accessTokenExpired()) {
-      this.refreshing ??= this.refreshExpiredToken().finally(() => {
+      this.refreshing ??= this.refreshCurrentGrant().finally(() => {
         this.refreshing = undefined;
       });
       await this.refreshing;
     }
     return this.material.oauth?.tokens;
+  }
+
+  private async refreshCurrentGrant(): Promise<void> {
+    if (!this.options.withCurrentStdioGrant) return this.refreshExpiredToken();
+    await this.options.withCurrentStdioGrant(async (record) => {
+      const changed = !isDeepStrictEqual(
+        oauthAuthorization(record.material.oauth),
+        oauthAuthorization(this.storedOAuth),
+      );
+      this.material.oauth = structuredClone(record.material.oauth);
+      this.storedOAuth = structuredClone(record.material.oauth);
+      this.options.onPersisted?.(record);
+      const expiresAt = mcpOAuthAccessTokenExpiry(record.material);
+      if (changed && (expiresAt === undefined || expiresAt > Date.now())) return;
+      if (this.accessTokenExpired()) await this.refreshExpiredToken();
+    });
   }
 
   private accessTokenExpired(): boolean {
@@ -310,6 +337,9 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
         clientInformation,
         refreshToken,
         resource,
+        addClientAuthentication: this.options.stdio
+          ? stdioClientBasicAuthentication(clientInformation, discovery.authorizationServerMetadata)
+          : undefined,
         fetchFn: network.fetch,
       });
     } catch (error) {
@@ -500,6 +530,7 @@ function oauthFetch(
   material: OAuthMaterial = {},
   allowPrivateEndpoint = false,
   deadline?: AbortSignal,
+  authorizeDispatch?: () => Promise<void>,
 ): {
   fetch: typeof fetch;
   close: () => Promise<void>;
@@ -527,6 +558,7 @@ function oauthFetch(
     },
     { headers },
     network,
+    authorizeDispatch,
   );
   const fallbackFetch = withEndpointOriginFallback(url.origin, safeFetch);
   // Errors raised by this network layer (URL policy, redirects, unreachable
@@ -631,14 +663,27 @@ function formatOAuthRejection(
 
 export class McpOAuthBroker {
   private readonly pending = new Map<string, Pending>();
+  private readonly stdioRefreshes = new Set<Promise<void>>();
+  private refreshLockPool?: Pool;
+  private closing = false;
 
   constructor(
     private readonly prisma: PrismaClient,
     private readonly secrets: SecretStore,
     private readonly network: RemoteTransportDependencies = {},
     private readonly allowPrivateEndpoint = false,
-    private readonly stdio?: { enabled: boolean; allowedCommands: readonly string[] },
+    private readonly stdio?: {
+      enabled: boolean;
+      allowedCommands: readonly string[];
+      databaseUrl?: string;
+    },
   ) {}
+
+  async close(): Promise<void> {
+    this.closing = true;
+    await Promise.allSettled(this.stdioRefreshes);
+    await this.refreshLockPool?.end().catch(() => undefined);
+  }
 
   /** Parent lock precedes the existing OAuth material lock on every managed write. */
   private async withActiveServer<T>(
@@ -829,13 +874,17 @@ export class McpOAuthBroker {
 
   async providerFor(
     server: ServerRef,
-    context: ActorRef,
+    context: RuntimeActorRef,
     loaded?: { material: OAuthMaterial; secretId?: string },
     onPersisted?: ProviderOptions["onPersisted"],
   ): Promise<OAuthClientProvider | undefined> {
     const material = loaded ?? (await this.loadMaterial(server, context));
     if (!material.material.oauth) return undefined;
-    if (server.transport === "stdio" && !hasBoundStdioGrant(material.material)) return undefined;
+    if (
+      server.transport === "stdio" &&
+      (server.revision === undefined || !hasBoundStdioGrant(material.material))
+    )
+      return undefined;
     return this.createProvider(server, context, material, { onPersisted });
   }
 
@@ -1239,14 +1288,17 @@ export class McpOAuthBroker {
     );
   }
 
-  private async assertStdioOwner(
-    userId: string,
-    db: Pick<Prisma.TransactionClient, "deploymentSettings"> = this.prisma,
-  ): Promise<void> {
-    const deployment = await db.deploymentSettings.findUnique({
-      where: { id: "default" },
-      select: { ownerUserId: true },
-    });
+  private async assertStdioOwner(userId: string, tx?: Prisma.TransactionClient): Promise<void> {
+    const reason = "check deployment ownership for MCP stdio authorization";
+    const read = () =>
+      (tx ?? this.prisma).deploymentSettings.findUnique({
+        where: { id: "default" },
+        select: { ownerUserId: true },
+      });
+    const deployment =
+      tx && isInteractiveTransaction(tx)
+        ? await runAsSystemInTransaction(tx, reason, read)
+        : await runAsSystem(reason, read);
     if (deployment?.ownerUserId !== userId)
       throw new Error("MCP stdio authorization requires the deployment owner");
   }
@@ -1328,15 +1380,77 @@ export class McpOAuthBroker {
       : { material: {} };
   }
 
+  private async withCurrentStdioGrant(
+    server: ServerRef,
+    actor: RuntimeActorRef,
+    client: McpStdioOAuthClient,
+    apply: (record: StoredOAuthMaterial) => Promise<void>,
+  ): Promise<void> {
+    if (this.closing) throw new McpOAuthCredentialsChangedError(server.id);
+    const { userId, spaceId, signal } = actor;
+    signal?.throwIfAborted();
+    // The lock has its own connection. The main pool remains available for the
+    // scoped read, conditional write, and commit acknowledgement recovery.
+    const databaseUrl = this.stdio?.databaseUrl;
+    if (!databaseUrl) throw new TemporarilyUnavailableError("MCP OAuth refresh is unavailable");
+    this.refreshLockPool ??= createPool(databaseUrl, {
+      poolMax: 1,
+      applicationName: "mcp-stdio-refresh",
+    });
+    const refresh = withSeparateRefreshLock(
+      this.refreshLockPool,
+      ["mcp-stdio-oauth-refresh", server.id],
+      async (lock) => {
+        signal?.throwIfAborted();
+        const where = {
+          id: server.id,
+          userId,
+          spaceId,
+          revision: server.revision,
+          enabled: true,
+          transport: "stdio",
+        };
+        const current = await this.prisma.mcpServer.findFirst({
+          where,
+          select: { secretId: true },
+        });
+        if (!current?.secretId) throw new McpOAuthCredentialsChangedError(server.id);
+        const record = await this.prisma.secret.findFirst({
+          where: { id: current.secretId, userId, spaceId },
+        });
+        if (!record) throw new McpOAuthCredentialsChangedError(server.id);
+        const material = await this.read(record.ciphertext, record.id);
+        if (!isDeepStrictEqual(material.oauthClient, client) || !hasBoundStdioGrant(material))
+          throw new McpOAuthCredentialsChangedError(server.id);
+        const latest = await this.prisma.mcpServer.findFirst({
+          where: { ...where, secretId: record.id },
+          select: { id: true },
+        });
+        if (!latest) throw new McpOAuthCredentialsChangedError(server.id);
+        await lock.query("SELECT 1");
+        signal?.throwIfAborted();
+        await apply({ id: record.id, ref: record.ciphertext, material });
+        signal?.throwIfAborted();
+      },
+    );
+    this.stdioRefreshes.add(refresh);
+    try {
+      await refresh;
+    } finally {
+      this.stdioRefreshes.delete(refresh);
+    }
+  }
+
   private createProvider(
     server: ServerRef,
-    context: ActorRef,
+    context: RuntimeActorRef,
     loaded: { material: OAuthMaterial; secretId?: string },
     options: ProviderOptions = {},
   ): StoredMcpOAuthProvider {
     const endpoint = server.endpoint;
     const stdio = server.transport === "stdio";
-    const oauthTarget = stdio ? loaded.material.oauthClient?.authorizationServer : endpoint;
+    const stdioClient = stdio ? loaded.material.oauthClient : undefined;
+    const oauthTarget = stdio ? stdioClient?.authorizationServer : endpoint;
     const revision = server.revision;
     return new StoredMcpOAuthProvider(
       server.id,
@@ -1363,6 +1477,13 @@ export class McpOAuthBroker {
         });
       },
       {
+        stdio,
+        ...(stdioClient
+          ? {
+              withCurrentStdioGrant: (apply) =>
+                this.withCurrentStdioGrant(server, context, stdioClient, apply),
+            }
+          : {}),
         ...(oauthTarget
           ? {
               refreshNetwork: async () =>
@@ -1377,6 +1498,9 @@ export class McpOAuthBroker {
                       this.allowPrivateEndpoint,
                     )),
                   stdio ? AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) : undefined,
+                  stdio && context.signal
+                    ? async () => context.signal?.throwIfAborted()
+                    : undefined,
                 ),
             }
           : {}),

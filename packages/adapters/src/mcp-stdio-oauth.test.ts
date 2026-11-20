@@ -1,3 +1,5 @@
+import type { McpStdioOAuthClient } from "@rakazo/contracts";
+import { currentDbContext } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import { McpOAuthBroker } from "./mcp-oauth.js";
@@ -15,12 +17,15 @@ const redirectUri = "https://app.example.test/mcp/oauth/callback";
 const fixtureCode = "fixture+code/opaque";
 
 async function fixture({
+  configuration = client as McpStdioOAuthClient,
   metadataIssuer = client.authorizationServer,
+  authorizationEndpoint = `${client.authorizationServer}/authorize`,
   rejectGrant = false,
   tokenEndpoint = `${client.authorizationServer}/token`,
+  authMethod = "client_secret_post",
 } = {}) {
   const store = new EncryptedSecretStore("fixture-stdio-encryption-key");
-  const stored = await store.put(JSON.stringify({ oauthClient: client }), {
+  const stored = await store.put(JSON.stringify({ oauthClient: configuration }), {
     ...scope,
     operationId: "fixture",
     traceId: "fixture",
@@ -48,7 +53,12 @@ async function fixture({
   const pending = new Map<string, Session>();
   let deploymentOwner = scope.userId;
   const prisma = {
-    deploymentSettings: { findUnique: async () => ({ ownerUserId: deploymentOwner }) },
+    deploymentSettings: {
+      findUnique: async () => {
+        expect(currentDbContext()?.kind).toBe("system");
+        return { ownerUserId: deploymentOwner };
+      },
+    },
     mcpServer: {
       findFirst: async ({ where }: { where: Partial<typeof server> }) =>
         Object.entries(where).every(([key, value]) => Reflect.get(server, key) === value)
@@ -104,7 +114,14 @@ async function fixture({
     expect(body.get("code")).toBe(fixtureCode);
     expect(/^[A-Za-z0-9._~-]{43,128}$/.test(body.get("code_verifier") ?? "")).toBe(true);
     expect(body.get("redirect_uri")).toBe(redirectUri);
-    expect(body.get("client_secret")).toBe(client.clientSecret);
+    if (authMethod === "client_secret_basic") {
+      expect(body.has("client_id")).toBe(false);
+      expect(body.has("client_secret")).toBe(false);
+    } else {
+      expect(body.get("client_id")).toBe(configuration.clientId);
+      expect(body.get("client_secret")).toBe(configuration.clientSecret ?? null);
+      expect(request.headers.has("authorization")).toBe(false);
+    }
     expect(body.has("resource")).toBe(false);
     if (rejectGrant) {
       return Response.json(
@@ -127,9 +144,9 @@ async function fixture({
     if (path === "/.well-known/oauth-authorization-server") {
       return Response.json({
         issuer: metadataIssuer,
-        authorization_endpoint: `${client.authorizationServer}/authorize`,
+        authorization_endpoint: authorizationEndpoint,
         token_endpoint: tokenEndpoint,
-        token_endpoint_auth_methods_supported: ["client_secret_post"],
+        token_endpoint_auth_methods_supported: [authMethod],
         response_types_supported: ["code"],
         code_challenge_methods_supported: ["S256"],
       });
@@ -213,6 +230,36 @@ describe("deployment-managed stdio OAuth", () => {
     await expect(f.begin()).rejects.toThrow(/Could not start MCP OAuth/);
     expect(f.pending.size).toBe(0);
     expect(f.exchange).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "prompt=select_account"])(
+    "keeps one consent prompt for offline access with custom params %s",
+    async (authorizationParams) => {
+      const f = await fixture({
+        configuration: { ...client, authorizationParams },
+        authorizationEndpoint: `${client.authorizationServer}/authorize?prompt=login`,
+      });
+      const { authorizationUrl } = await f.begin();
+      expect(new URL(authorizationUrl).searchParams.getAll("prompt")).toEqual(["consent"]);
+    },
+  );
+
+  it("form-encodes each Basic credential and preserves the public-client exchange", async () => {
+    const basic = await fixture({
+      configuration: { ...client, clientId: "team:agent+%☃", clientSecret: "fixture secret:é%+" },
+      authMethod: "client_secret_basic",
+    });
+    await basic.complete((await basic.begin()).sessionId);
+    const authorization = basic.exchange.mock.calls[0]![0].headers.get("authorization");
+    expect(Buffer.from(authorization!.slice(6), "base64").toString()).toBe(
+      "team%3Aagent%2B%25%E2%98%83:fixture+secret%3A%C3%A9%25%2B",
+    );
+    const publicClient = await fixture({
+      configuration: { ...client, clientSecret: undefined },
+      authMethod: "none",
+    });
+    await publicClient.complete((await publicClient.begin()).sessionId);
+    expect(publicClient.exchange).toHaveBeenCalledOnce();
   });
 
   it("rejects a different Space, changed revision, or withdrawn deployment ownership before exchange", async () => {

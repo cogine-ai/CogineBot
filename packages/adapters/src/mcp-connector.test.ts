@@ -466,8 +466,16 @@ describe("MCP discovery lifecycle", () => {
       oauthClient: registered,
       env: { MCP_TOKEN: "Bearer {{oauth.access_token}}" },
       files: {
-        CONFIG_FILE:
-          '{"access":"{{oauth.access_token}}","apiKey":"private-fixture","kind":"object"}',
+        CONFIG_FILE: JSON.stringify({
+          access: "{{oauth.access_token}}",
+          credentials: { key: "private-fixture" },
+          kind: "object",
+          format: "text",
+          media: "image",
+          scope: "read",
+          enabled: false,
+        }),
+        CREDENTIAL_FILE: "details:\n  password: yaml-fixture",
       },
     };
     const calls: string[] = [];
@@ -476,25 +484,55 @@ describe("MCP discovery lifecycle", () => {
       .mockImplementation(async (options) => {
         launchNumber++;
         const env = options.env!;
-        expect(Object.keys(env).sort()).toEqual(["CONFIG_FILE", "MCP_TOKEN"]);
+        expect(Object.keys(env).sort()).toEqual(["CONFIG_FILE", "CREDENTIAL_FILE", "MCP_TOKEN"]);
         expect(env.MCP_TOKEN).toBe(`Bearer fixture-grant-${launchNumber}`);
         expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
           access: `fixture-grant-${launchNumber}`,
-          apiKey: "private-fixture",
+          credentials: { key: "private-fixture" },
           kind: "object",
+          format: "text",
+          media: "image",
+          scope: "read",
+          enabled: false,
         });
+        expect(await readFile(env.CREDENTIAL_FILE!, "utf8")).toBe(material.files.CREDENTIAL_FILE);
         expect((await stat(env.CONFIG_FILE!)).mode & 0o777).toBe(0o600);
       });
     const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
     const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
-      tools: [{ name: "echo", inputSchema: { type: "object" } }],
+      tools: [
+        {
+          name: "read_document",
+          description: "Use this tool to read a document",
+          inputSchema: {
+            type: "object",
+            properties: {
+              item: { type: "object" },
+              entries: { type: "array", uniqueItems: false },
+            },
+          },
+        },
+        {
+          name: "hidden-secret",
+          inputSchema: { type: "object", properties: { item: { default: "private-fixture" } } },
+        },
+        {
+          name: "hidden-default",
+          inputSchema: { type: "object", properties: { item: { default: { type: "object" } } } },
+        },
+      ],
     });
     const call = vi
       .spyOn(McpSession.prototype, "callTool")
       .mockImplementation(async (_name, args) => {
         calls.push(String(args?.content));
         return {
-          content: [{ type: "text", text: `fixture-grant-${launchNumber} private-fixture` }],
+          content: [
+            { type: "text", text: `fixture-grant-${launchNumber} private-fixture yaml-fixture` },
+            { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
+          ],
+          structuredContent: { type: "text", state: "read" },
+          isError: false,
         };
       });
     const oauth = {
@@ -530,7 +568,14 @@ describe("MCP discovery lifecycle", () => {
       oauth as never,
     );
     try {
-      const [tool] = await connector.discoverTools(context);
+      const [tool, ...hidden] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__read_document");
+      expect(tool?.description).toBe("Use this tool to [redacted] a document");
+      expect(tool?.inputSchema).toEqual({
+        type: "object",
+        properties: { item: { type: "object" }, entries: { type: "array", uniqueItems: false } },
+      });
+      expect(hidden).toEqual([]);
       const invoke = (content: string, beforeDispatch?: () => Promise<void>) =>
         connector
           .execute(
@@ -546,7 +591,17 @@ describe("MCP discovery lifecycle", () => {
           [Symbol.asyncIterator]()
           .next();
       await expect(invoke("first-invocation")).resolves.toMatchObject({
-        value: { type: "result", data: { content: [{ text: "[redacted] [redacted]" }] } },
+        value: {
+          type: "result",
+          data: {
+            content: [
+              { type: "text", text: "[redacted] [redacted] [redacted]" },
+              { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
+            ],
+            structuredContent: { type: "[redacted]", state: "[redacted]" },
+            isError: false,
+          },
+        },
       });
       const firstPath = connect.mock.calls[0]![0].env!.CONFIG_FILE!;
       await expect(
@@ -579,7 +634,7 @@ describe("MCP discovery lifecycle", () => {
     }
   });
 
-  it.each(["startup failure", "process exit", "deactivation"])(
+  it.each(["startup failure", "process exit", "deactivation", "disabled during setup"])(
     "removes the credential directory after %s",
     async (cause) => {
       const root = await mkdtemp(join(tmpdir(), "mcp-close-fixture-"));
@@ -604,6 +659,10 @@ describe("MCP discovery lifecycle", () => {
       const connector = new McpConnector(
         {
           mcpServer: {
+            findFirst: async () => {
+              expect(await readdir(root)).toHaveLength(1);
+              return cause === "disabled during setup" ? null : { id: server.id };
+            },
             findMany: vi.fn().mockResolvedValue([]),
             updateMany: vi.fn().mockResolvedValue({ count: 1 }),
           },
@@ -616,7 +675,10 @@ describe("MCP discovery lifecycle", () => {
       );
       try {
         const health = await connector.check(server as never, context);
-        if (cause !== "startup failure") {
+        if (cause === "disabled during setup") {
+          expect(health.status).toBe("error");
+          expect(connect).not.toHaveBeenCalled();
+        } else if (cause !== "startup failure") {
           expect(health.status).toBe("ok");
           expect(await readdir(root)).toHaveLength(1);
           if (cause === "process exit") child!.client.onclose?.();
@@ -637,6 +699,62 @@ describe("MCP discovery lifecycle", () => {
       }
     },
   );
+
+  it("screens literal stdio credentials in tool metadata without requiring a file", async () => {
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: "fixture",
+      secretId: "material",
+    };
+    const connect = vi.spyOn(McpSession.prototype, "connectStdio").mockResolvedValue(undefined);
+    const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+      tools: [
+        { name: "read", inputSchema: { type: "object" } },
+        { name: "hidden", description: "credential is default", inputSchema: { type: "object" } },
+      ],
+    });
+    const call = vi.spyOn(McpSession.prototype, "callTool").mockResolvedValue({
+      content: [{ type: "text", text: "default production" }],
+    });
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: async () => ({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      {
+        load: async () => JSON.stringify({ env: { API_KEY: "default", TOKEN: "production" } }),
+      } as never,
+      { stdioEnabled: true, allowedCommands: ["fixture"] },
+    );
+    try {
+      const [tool, ...extra] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__read");
+      expect(extra).toEqual([]);
+      const result = await connector
+        .execute(
+          { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
+          context,
+        )
+        [Symbol.asyncIterator]()
+        .next();
+      expect(result.value).toMatchObject({
+        type: "result",
+        data: { content: [{ type: "text", text: "[redacted] production" }] },
+      });
+    } finally {
+      await connector.close();
+      call.mockRestore();
+      list.mockRestore();
+      close.mockRestore();
+      connect.mockRestore();
+    }
+  });
 
   it("passes a private credential file to a real offline stdio child and removes it on close", async () => {
     const root = await mkdtemp(join(tmpdir(), "mcp-child-fixture-"));

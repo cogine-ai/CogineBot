@@ -39,17 +39,12 @@ function isAmbiguousCredentialKey(key: string): boolean {
   return false;
 }
 
-/**
- * Values under credential-shaped keys must look like secrets before entering
- * global substring redaction. Ordinary enums such as "production" or "oauth"
- * would otherwise corrupt unrelated tool output. Numeric-only filtering applies
- * only to ambiguous keys — explicit carriers still register OTP-like tokens.
- */
-function looksLikeSecretValue(value: string, options: { allowNumeric?: boolean } = {}): boolean {
+/** Ambiguous settings such as a bare TOKEN can also contain configuration enums. */
+function looksLikeSecretValue(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;
   if (COMMON_CONFIG_VALUES.has(trimmed.toLowerCase())) return false;
-  if (!options.allowNumeric && /^\d+(\.\d+)?$/.test(trimmed)) return false;
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return false;
   return true;
 }
 
@@ -88,9 +83,12 @@ const COMMON_CONFIG_VALUES = new Set([
   "async",
 ]);
 
+export function isCommonMcpConfigValue(value: string): boolean {
+  return COMMON_CONFIG_VALUES.has(value.toLowerCase());
+}
+
 export function isMcpCredentialFieldValue(key: string, value: string): boolean {
-  return (
-    (isExplicitCredentialKey(key) && looksLikeSecretValue(value, { allowNumeric: true })) ||
-    (isAmbiguousCredentialKey(key) && looksLikeSecretValue(value))
-  );
+  return isExplicitCredentialKey(key)
+    ? value.length > 0
+    : isAmbiguousCredentialKey(key) && looksLikeSecretValue(value);
 }

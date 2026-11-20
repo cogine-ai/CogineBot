@@ -16,15 +16,17 @@ const issuer = "https://auth.example.test";
 
 describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
   const databases: ReturnType<typeof createDb>[] = [];
+  const brokers: McpOAuthBroker[] = [];
   const users: string[] = [];
 
-  function openDb() {
-    const db = createDb(databaseUrl!);
+  function openDb(poolMax?: number) {
+    const db = createDb(databaseUrl!, { poolMax });
     databases.push(db);
     return db;
   }
 
   afterAll(async () => {
+    await Promise.all(brokers.map((broker) => broker.close()));
     if (databases[0]) {
       const prisma = asSystem(databases[0].prisma);
       await prisma.organization.deleteMany({ where: { id: { in: users } } });
@@ -41,8 +43,10 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     expired = true,
     expiresIn = 3600,
     stdio = false,
+    poolMax = undefined as number | undefined,
+    basic = false,
   } = {}) {
-    const db = openDb();
+    const db = openDb(poolMax);
     const entries = new Map<string, string>();
     const listeners = new Set<(ref: string) => void>();
     const store = {
@@ -80,11 +84,14 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       data: { id, organizationId: id, name: "OAuth test", isDefault: true },
     });
     const context = { userId: id, spaceId: id };
+    const credential = basic
+      ? { clientId: "team:fixture", clientSecret: "fixture+secret %" }
+      : { clientId: "synthetic-client" };
     const material: OAuthMaterial = {
       ...(withStaticCredential ? { secret: "synthetic-static-credential" } : {}),
       ...(stdio
         ? {
-            oauthClient: { authorizationServer: issuer, clientId: "synthetic-client" },
+            oauthClient: { authorizationServer: issuer, ...credential },
             files: { CONFIG_FILE: "{{oauth.access_token}}" },
           }
         : {}),
@@ -99,7 +106,11 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
           ...(stdio ? { scope: "fixture-granted-scope" } : {}),
         },
         obtainedAt: Date.now() - (expired ? 2 * 60 * 60 * 1000 : 0),
-        clientInformation: { client_id: "synthetic-client", issuer },
+        clientInformation: {
+          client_id: credential.clientId,
+          ...(credential.clientSecret ? { client_secret: credential.clientSecret } : {}),
+          issuer,
+        },
         discoveryState: {
           authorizationServerUrl: issuer,
           authorizationServerMetadata: {
@@ -107,6 +118,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
             authorization_endpoint: `${issuer}/authorize`,
             token_endpoint: `${issuer}/token`,
             response_types_supported: ["code"],
+            ...(basic ? { token_endpoint_auth_methods_supported: ["client_secret_basic"] } : {}),
           },
         },
       },
@@ -140,10 +152,26 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
         expires_in: 3600,
       });
     });
-    const broker = new McpOAuthBroker(withSecretPersistence(db.prisma, store), store, {
+    const network = {
       fetch: refresh,
       resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
-    });
+    };
+    const stdioConfig = { enabled: true, allowedCommands: ["fixture-mcp"], databaseUrl };
+    const makeBroker = (
+      db: ReturnType<typeof createDb>,
+      resolveHostname = network.resolveHostname,
+    ) => {
+      const broker = new McpOAuthBroker(
+        withSecretPersistence(db.prisma, store),
+        store,
+        { ...network, resolveHostname },
+        false,
+        stdio ? stdioConfig : undefined,
+      );
+      brokers.push(broker);
+      return broker;
+    };
+    const broker = makeBroker(db);
     const adopted = vi.fn<(record: { id: string; ref: string; material: OAuthMaterial }) => void>();
     const provider = await runAsTenant(context, () =>
       broker.providerFor(server, context, undefined, adopted),
@@ -170,6 +198,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       provider,
       read,
       broker,
+      makeBroker,
     };
   }
 
@@ -194,6 +223,109 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       files: { CONFIG_FILE: "{{oauth.access_token}}" },
       oauth: { tokens },
     });
+  });
+
+  it("serializes stdio refresh across brokers with a single connection in the main pool", async () => {
+    const f = await fixture({ stdio: true, poolMax: 1, basic: true });
+    const peer = f.makeBroker(openDb(1));
+    const adopted = vi.fn();
+    const runtimeContext = {
+      ...f.context,
+      traceId: "stdio-fixture",
+      signal: new AbortController().signal,
+    };
+    const other = await runAsTenant(f.context, () =>
+      peer.providerFor(f.server, runtimeContext, undefined, adopted),
+    );
+    const refreshFixture = f.refresh.getMockImplementation()!;
+    let receiveRequest = () => {};
+    const requested = new Promise<void>((resolve) => {
+      receiveRequest = resolve;
+    });
+    let releaseRequest = () => {};
+    const release = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    f.refresh.mockImplementationOnce(async (input, init) => {
+      receiveRequest();
+      await release;
+      const authorization = new Headers(init?.headers).get("authorization");
+      expect(Buffer.from(authorization!.slice(6), "base64").toString()).toBe(
+        "team%3Afixture:fixture%2Bsecret+%25",
+      );
+      return refreshFixture(input, init);
+    });
+    const first = runAsTenant(f.context, () => f.provider.tokens());
+    void first.catch(() => undefined);
+    let second: typeof first | undefined;
+    try {
+      await Promise.race([
+        requested,
+        first.then(() => {
+          throw new Error("Refresh request did not start");
+        }),
+      ]);
+      second = runAsTenant(f.context, () => other!.tokens());
+      void second.catch(() => undefined);
+      expect(await f.prisma.mcpServer.findUnique({ where: { id: f.server.id } })).not.toBeNull();
+    } finally {
+      releaseRequest();
+    }
+    const [one, two] = await Promise.all([first, second]);
+    expect(one).toMatchObject({ access_token: "access-1", refresh_token: "refresh-1" });
+    expect(two).toEqual(one);
+    expect(f.refresh).toHaveBeenCalledOnce();
+    expect(adopted).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: (await f.read()).row.id }),
+    );
+  });
+
+  it("skips stdio refresh when the server is disabled while its grant is loading", async () => {
+    const f = await fixture({ stdio: true });
+    const read = f.store.load.bind(f.store);
+    const load = vi.spyOn(f.store, "load").mockImplementationOnce(async (...args) => {
+      await f.prisma.mcpServer.update({
+        where: { id: f.server.id },
+        data: { enabled: false, revision: { increment: 1 } },
+      });
+      return read(...args);
+    });
+    try {
+      await expect(runAsTenant(f.context, () => f.provider.tokens())).rejects.toThrow();
+      expect(f.refresh).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("cancels a pending token request while retaining a grant issued after dispatch", async () => {
+    const f = await fixture({ stdio: true });
+    const before = new AbortController();
+    const preparing = f.makeBroker(openDb(), async () => {
+      before.abort();
+      return [{ address: "203.0.113.10", family: 4 }];
+    });
+    const context = { ...f.context, signal: before.signal };
+    const pending = await runAsTenant(f.context, () => preparing.providerFor(f.server, context));
+    await expect(runAsTenant(f.context, () => pending!.tokens())).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(f.refresh).not.toHaveBeenCalled();
+
+    const after = new AbortController();
+    const fetch = f.refresh.getMockImplementation()!;
+    f.refresh.mockImplementationOnce(async (input, init) => {
+      after.abort();
+      return fetch(input, init);
+    });
+    const dispatched = await runAsTenant(f.context, () =>
+      f.broker.providerFor(f.server, { ...f.context, signal: after.signal }),
+    );
+    await expect(runAsTenant(f.context, () => dispatched!.tokens())).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(f.refresh).toHaveBeenCalledOnce();
+    expect((await f.read()).material.oauth?.tokens).toMatchObject({ refresh_token: "refresh-1" });
   });
 
   /** Execute the physical outcome, then lose the database acknowledgement. */
@@ -235,10 +367,14 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     return { failures: () => failures };
   }
 
-  it.each(["lost-reply", "rolled-back"] as const)(
-    "recovers the issued grant after a %s save without refreshing twice",
-    async (outcome) => {
-      const f = await fixture();
+  it.each([
+    { outcome: "lost-reply", stdio: false },
+    { outcome: "rolled-back", stdio: false },
+    { outcome: "lost-reply", stdio: true },
+  ] as const)(
+    "recovers the issued grant after $outcome (stdio $stdio)",
+    async ({ outcome, stdio }) => {
+      const f = await fixture({ stdio });
       const fault = failSecretCommit(f.db.pool, outcome);
       const tokens = await runAsTenant(f.context, () => f.provider.tokens());
       expect(fault.failures()).toBe(1);

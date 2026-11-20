@@ -102,6 +102,18 @@ describe("redactConnectorPayload", () => {
     expect(redactConnectorPayload(raw, ["unrelated-credential"])).toEqual(raw);
     expect(redactConnectorPayload(raw, [])).toEqual(raw);
   });
+
+  it("keeps MCP media types valid when obscuring a credential that spans the type separator", () => {
+    const result = {
+      content: [
+        { type: "image", data: "fixture", mimeType: "image/png" },
+        { type: "image", data: "fixture", mimeType: "image/x-fixture+xml" },
+      ],
+    };
+    expect(redactConnectorPayload(result, ["image", "image/x-fixture"], "mcp-result")).toEqual({
+      content: [result.content[0], { ...result.content[1], mimeType: "application/octet-stream" }],
+    });
+  });
   it("redacts escaped credentials in malformed JSON text without claiming it is valid JSON", () => {
     const credential = 'quoted"credential';
     const text = `incomplete {"echo":${JSON.stringify(credential)}`;

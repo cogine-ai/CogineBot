@@ -1,13 +1,15 @@
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   mcpCredentialFileSecrets,
   renderMcpStdioFile,
   renderMcpStdioTemplate,
   writeMcpStdioCredentialFiles,
 } from "./mcp-stdio-files.js";
+
+vi.mock("node:fs/promises", { spy: true });
 
 describe("managed stdio credential files", () => {
   const token = 'test"token\\with\nnewlines and {{oauth.scope}}';
@@ -16,6 +18,7 @@ describe("managed stdio credential files", () => {
     const values = { access_token: token, expires_at: "1770000000000" };
     expect(renderMcpStdioTemplate("Bearer {{oauth.access_token}}", values)).toBe(`Bearer ${token}`);
     expect(renderMcpStdioFile("token={{oauth.access_token}}", values)).toBe(`token=${token}`);
+    expect(JSON.parse(renderMcpStdioFile('"{{oauth.access_token}}"', values))).toBe(token);
     expect(
       JSON.parse(
         renderMcpStdioFile(
@@ -42,14 +45,22 @@ describe("managed stdio credential files", () => {
     const text = "[credentials]\nsecret = 'fixture-value'";
     expect(mcpCredentialFileSecrets(text)).toContain("fixture-value");
     const mixed = JSON.stringify({
-      apiKey: "fixture-api",
-      privateKey: "fixture-private",
+      credentials: { key: "fixture-private", enabled: true },
       kind: "object",
       port: 443,
     });
     expect(mcpCredentialFileSecrets(mixed).sort()).toEqual(
-      [mixed, "fixture-api", "fixture-private"].sort(),
+      [mixed, "fixture-private", "true", "object", "443"].sort(),
     );
+    const yaml =
+      'username: fixture-user\npassword: "line\\nbreak"\ncredential: |-\n  line one\n  line two';
+    expect(mcpCredentialFileSecrets(yaml)).toEqual(
+      expect.arrayContaining([yaml, "fixture-user", "line\nbreak", "line one\nline two"]),
+    );
+    expect(mcpCredentialFileSecrets('export VALUE="fixture with spaces" # comment')).toContain(
+      "fixture with spaces",
+    );
+    expect(mcpCredentialFileSecrets('VALUE="fixture\\nline"')).toContain("fixture\nline");
   });
 
   it("writes same-name files into distinct private directories and cleans up only its launch", async () => {
@@ -86,6 +97,27 @@ describe("managed stdio credential files", () => {
       await expect(
         writeMcpStdioCredentialFiles({ CONFIG_FILE: token }, AbortSignal.abort(), root),
       ).rejects.toMatchObject({ name: "AbortError" });
+      expect(await readdir(root)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries cleanup of an already written file when a later write fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-partial-fixture-"));
+    const actualWrite = vi.mocked(writeFile).getMockImplementation()!;
+    vi.mocked(writeFile)
+      .mockImplementationOnce(actualWrite)
+      .mockRejectedValueOnce(new Error("fixture disk write failure"));
+    vi.mocked(rm).mockRejectedValueOnce(new Error("fixture first removal failure"));
+    try {
+      await expect(
+        writeMcpStdioCredentialFiles(
+          { FIRST: "fixture", SECOND: "fixture" },
+          new AbortController().signal,
+          root,
+        ),
+      ).rejects.toThrow("Could not write MCP credential files");
       expect(await readdir(root)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

@@ -145,16 +145,21 @@ async function main() {
     prisma,
   });
   const allowPrivateEndpoint = process.env.MCP_ALLOW_PRIVATE_ENDPOINT === "true";
-  const mcpOAuth = new McpOAuthBroker(prisma, secrets, {}, allowPrivateEndpoint);
+  const stdio = {
+    enabled: process.env.MCP_STDIO_ENABLED === "true",
+    allowedCommands: (process.env.MCP_STDIO_ALLOWED_COMMANDS ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+    databaseUrl,
+  };
+  const mcpOAuth = new McpOAuthBroker(prisma, secrets, {}, allowPrivateEndpoint, stdio);
   const mcp = new McpConnector(
     prisma,
     secrets,
     {
-      stdioEnabled: process.env.MCP_STDIO_ENABLED === "true",
-      allowedCommands: (process.env.MCP_STDIO_ALLOWED_COMMANDS ?? "")
-        .split(",")
-        .map((v) => v.trim())
-        .filter(Boolean),
+      stdioEnabled: stdio.enabled,
+      allowedCommands: stdio.allowedCommands,
       events,
       allowPrivateEndpoint,
     },
@@ -348,10 +353,11 @@ async function main() {
         runDrain.end();
         await executor.closeRemoteMcpSessions();
         await jobs.close();
+        await mcp.close();
+        await mcpOAuth.close();
         await secrets.close();
         await realtime.close();
         await connector.stop();
-        await mcp.close();
         await nativeEvents.close();
         await native.close();
         await prisma.$disconnect().catch(() => undefined);

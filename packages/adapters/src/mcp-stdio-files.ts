@@ -1,13 +1,14 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   MCP_STDIO_OAUTH_FIELDS,
   MCP_STDIO_OAUTH_REFERENCE,
   McpStdioFilesSchema,
 } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
-import { isMcpCredentialFieldValue } from "./mcp-credential-redaction.js";
+import { parseAllDocuments } from "yaml";
 
 export type McpStdioOAuthField = (typeof MCP_STDIO_OAUTH_FIELDS)[number];
 export type McpStdioOAuthValues = Partial<Record<McpStdioOAuthField, string>>;
@@ -30,7 +31,8 @@ function oauthValue(name: string, values: McpStdioOAuthValues): string {
 /** JSON strings need escaping. Only the expiry can be interpolated as a bare number. */
 export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues): string {
   const first = template.trimStart()[0];
-  if (first !== "{" && first !== "[") return renderMcpStdioTemplate(template, values);
+  if (first !== "{" && first !== "[" && first !== '"')
+    return renderMcpStdioTemplate(template, values);
   try {
     JSON.parse(template.replaceAll(MCP_STDIO_OAUTH_REFERENCE, "0"));
   } catch {
@@ -65,29 +67,44 @@ export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues
 /** A server can echo part of a credential file instead of its whole contents. */
 export function mcpCredentialFileSecrets(content: string): string[] {
   const secrets = new Set<string>([content]);
+  const pending: unknown[] = [];
   try {
-    const pending: Array<[string, unknown]> = [["", JSON.parse(content)]];
-    while (pending.length) {
-      const [key, value] = pending.pop()!;
-      if (typeof value === "string" || typeof value === "number") {
-        const text = String(value);
-        if (!key || isMcpCredentialFieldValue(key, text)) secrets.add(text);
-      } else if (Array.isArray(value)) {
-        for (const child of value) pending.push([key.replace(/s$/i, ""), child]);
-      } else if (value && typeof value === "object") {
-        for (const entry of Object.entries(value)) pending.push(entry);
-      }
-    }
+    pending.push(JSON.parse(content));
   } catch {
+    try {
+      for (const doc of parseAllDocuments(content, { logLevel: "silent" })) {
+        if (doc.contents && !doc.errors.length) pending.push(doc.toJS({ maxAliasCount: 50 }));
+      }
+    } catch {
+      // Plain-text and assignment values are still available below.
+    }
     for (const line of content.split(/\r?\n/)) {
       const value = line.trim();
-      const assigned = value.match(/^([\w.-]+)\s*=\s*(.+)$/);
-      if (assigned) {
-        const secret = assigned[2]!.replace(/^(["'])(.*)\1$/, "$2");
-        if (isMcpCredentialFieldValue(assigned[1]!, secret)) secrets.add(secret);
-      } else if (/^[A-Za-z0-9+/_=-]{16,}$/.test(value)) {
+      if (!value) continue;
+      secrets.add(value);
+      const assigned = value.match(/^(?:export\s+)?[\w.-]+\s*[:=]\s*(.+)$/)?.[1];
+      if (!assigned) continue;
+      secrets.add(assigned);
+      const quoted = assigned.match(/^(["'])(.*?)\1(?:\s+[;#].*)?$/);
+      if (quoted) {
+        const [, quote, value] = quoted as [string, string, string];
         secrets.add(value);
+        if (quote === '"') secrets.add(value.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
+      } else {
+        secrets.add(assigned.replace(/\s+[;#].*$/, ""));
       }
+    }
+  }
+  // Credential field names are arbitrary. Collect every decoded scalar.
+  const seen = new WeakSet<object>();
+  while (pending.length) {
+    const value = pending.pop();
+    if (value && typeof value === "object") {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      for (const child of Object.values(value)) pending.push(child);
+    } else if (value !== undefined) {
+      secrets.add(String(value));
     }
   }
   return [...secrets].filter(Boolean);
@@ -106,10 +123,21 @@ export async function writeMcpStdioCredentialFiles(
   });
   let removing: Promise<void> | undefined;
   const remove = () => {
-    removing ??= rm(directory, { recursive: true, force: true, maxRetries: 2 }).catch(() => {
-      removing = undefined;
-      getLogger().warn("MCP credential file cleanup failed");
-    });
+    removing ??= (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await rm(directory, { recursive: true, force: true });
+          return;
+        } catch {
+          if (attempt === 2) {
+            removing = undefined;
+            getLogger().warn("MCP credential file cleanup failed");
+            return;
+          }
+          await delay(50 * (attempt + 1));
+        }
+      }
+    })();
     return removing;
   };
   try {

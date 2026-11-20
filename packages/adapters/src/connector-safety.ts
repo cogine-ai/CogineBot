@@ -33,6 +33,79 @@ export function sanitizeConnectorError(error: unknown, secrets: string[] = []): 
 export const CONNECTOR_REDACTION_MAX_DEPTH = 64;
 export const CONNECTOR_REDACTION_MAX_NODES = 100_000;
 
+export type ConnectorPayloadFormat = "mcp-schema" | "mcp-result";
+type PayloadPosition =
+  | ConnectorPayloadFormat
+  | "schema-map"
+  | "schema-list"
+  | "content-list"
+  | "content-block"
+  | "embedded-resource";
+
+const schemaTypes = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+const schemaMaps = new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+]);
+const schemaLists = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+const childSchemas = new Set([
+  "not",
+  "if",
+  "then",
+  "else",
+  "contains",
+  "propertyNames",
+  "additionalItems",
+  "additionalProperties",
+  "unevaluatedItems",
+  "unevaluatedProperties",
+  "contentSchema",
+]);
+const schemaBooleanFields = new Set(["uniqueItems", "readOnly", "writeOnly", "deprecated"]);
+const contentTypes = new Set(["text", "image", "audio", "resource", "resource_link"]);
+const mcpResultFields = new Set(["content", "structuredContent", "isError", "_meta"]);
+const mcpBlockFields = new Set([
+  "type",
+  "text",
+  "data",
+  "mimeType",
+  "resource",
+  "uri",
+  "name",
+  "title",
+  "description",
+  "size",
+  "icons",
+  "annotations",
+  "_meta",
+]);
+const mcpResourceFields = new Set(["uri", "mimeType", "text", "blob", "_meta"]);
+
+export function isMcpProtocolLabel(value: string): boolean {
+  return schemaTypes.has(value) || contentTypes.has(value);
+}
+
+function objectFieldPosition(
+  position: PayloadPosition | undefined,
+  key: string,
+  value: unknown,
+): PayloadPosition | undefined {
+  if (position === "mcp-result" && key === "content") return "content-list";
+  if (position === "content-block" && key === "resource") return "embedded-resource";
+  if (position === "schema-map") return "mcp-schema";
+  if (position !== "mcp-schema") return undefined;
+  if (schemaMaps.has(key)) return "schema-map";
+  if (schemaLists.has(key) || (key === "items" && Array.isArray(value))) return "schema-list";
+  if (key === "items" || childSchemas.has(key)) return "mcp-schema";
+}
+
+function isSchemaType(value: unknown): boolean {
+  return typeof value === "string" && schemaTypes.has(value);
+}
+
 /** Include the JSON-escaped spellings that can appear inside serialized strings. */
 export function knownJsonSecretRedactions(secrets: string[], sourceLength: number): string[] {
   const active = secrets.filter(Boolean);
@@ -50,8 +123,12 @@ export function knownJsonSecretRedactions(secrets: string[], sourceLength: numbe
 }
 
 /** Redact complete JSON values and embedded JSON text before results leave a provider. */
-export function redactConnectorPayload(value: unknown, secrets: string[]): unknown {
-  const redacted = tryRedactConnectorPayload(value, secrets);
+export function redactConnectorPayload(
+  value: unknown,
+  secrets: string[],
+  format?: ConnectorPayloadFormat,
+): unknown {
+  const redacted = tryRedactConnectorPayload(value, secrets, format);
   return redacted.ok ? redacted.value : { error: redacted.error };
 }
 
@@ -59,6 +136,7 @@ export function redactConnectorPayload(value: unknown, secrets: string[]): unkno
 export function tryRedactConnectorPayload(
   value: unknown,
   secrets: string[],
+  format?: ConnectorPayloadFormat,
 ): { ok: true; value: unknown } | { ok: false; error: "redaction_error" } {
   if (value === undefined) return { ok: true, value: undefined };
   try {
@@ -70,7 +148,12 @@ export function tryRedactConnectorPayload(
     const maxWorkBytes = Math.max(sourceBytes * 8, 1_048_576);
     let workBytes = sourceBytes;
     let nodes = 0;
-    const visit = (item: unknown, depth: number, jsonText = false): unknown => {
+    const visit = (
+      item: unknown,
+      depth: number,
+      jsonText = false,
+      position?: PayloadPosition,
+    ): unknown => {
       nodes += 1;
       if (depth > CONNECTOR_REDACTION_MAX_DEPTH || nodes > CONNECTOR_REDACTION_MAX_NODES)
         throw new Error("redaction_error");
@@ -92,21 +175,82 @@ export function tryRedactConnectorPayload(
           ? item
           : JSON.stringify(redacted);
       }
-      if (Array.isArray(item)) return item.map((child) => visit(child, depth + 1));
+      if (Array.isArray(item)) {
+        const childPosition =
+          position === "schema-list"
+            ? "mcp-schema"
+            : position === "content-list"
+              ? "content-block"
+              : undefined;
+        return item.map((child) => visit(child, depth + 1, false, childPosition));
+      }
       if (item && typeof item === "object")
         return Object.fromEntries(
-          Object.entries(item).map(([key, child]) => [
-            redactSecrets(key, known),
-            visit(child, depth + 1, key === "text" && "type" in item && item.type === "text"),
-          ]),
+          Object.entries(item).map(([key, child]) => {
+            // These values are protocol vocabulary at these positions. Values in
+            // tool data (including defaults and structuredContent) still get scanned.
+            if (
+              key === "type" &&
+              ((position === "content-block" &&
+                typeof child === "string" &&
+                contentTypes.has(child)) ||
+                (position === "mcp-schema" &&
+                  (isSchemaType(child) || (Array.isArray(child) && child.every(isSchemaType)))))
+            )
+              return [key, child];
+            if (position === "mcp-result" && key === "isError" && typeof child === "boolean")
+              return [key, child];
+            if (
+              position === "mcp-schema" &&
+              schemaBooleanFields.has(key) &&
+              typeof child === "boolean"
+            )
+              return [key, child];
+            if (
+              position === "content-block" &&
+              key === "mimeType" &&
+              typeof child === "string" &&
+              "type" in item &&
+              (item.type === "image" || item.type === "audio")
+            ) {
+              const prefix = `${item.type}/`;
+              if (child.startsWith(prefix)) {
+                const subtype = child.slice(prefix.length);
+                // Scan the full value and the provider-supplied subtype. The
+                // major type is already present in the block's discriminator.
+                const mimeType =
+                  known.some((secret) => secret !== item.type && child.includes(secret)) ||
+                  redactSecrets(subtype, known) !== subtype
+                    ? "application/octet-stream"
+                    : child;
+                return [key, mimeType];
+              }
+            }
+            const childPosition = objectFieldPosition(position, key, child);
+            const stableField =
+              (position === "mcp-result" && mcpResultFields.has(key)) ||
+              (position === "content-block" && mcpBlockFields.has(key)) ||
+              (position === "embedded-resource" && mcpResourceFields.has(key)) ||
+              (position === "mcp-schema" && childPosition !== undefined);
+            return [
+              stableField ? key : redactSecrets(key, known),
+              visit(
+                child,
+                depth + 1,
+                key === "text" && "type" in item && item.type === "text",
+                childPosition,
+              ),
+            ];
+          }),
         );
       if (item === null || typeof item === "number" || typeof item === "boolean") {
+        if (position === "mcp-schema" && typeof item === "boolean") return item;
         const serialized = String(item);
         return redactSecrets(serialized, known) === serialized ? item : "[redacted]";
       }
       return item;
     };
-    const redacted = visit(JSON.parse(source), 0);
+    const redacted = visit(JSON.parse(source), 0, false, format);
     return { ok: true, value: redacted };
   } catch {
     return { ok: false, error: "redaction_error" };

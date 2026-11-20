@@ -26,8 +26,10 @@ import { catalogToolPrefix } from "./approval-effect.js";
 import { composioToolBatch } from "./composio-batch.js";
 import type { ConnectorDispatchCheck } from "./connector-dispatch.js";
 import { dispatchTransaction } from "./connector-dispatch.js";
+import type { ConnectorPayloadFormat } from "./connector-safety.js";
 import {
   combineSignals,
+  isMcpProtocolLabel,
   redactConnectorPayload,
   sanitizeConnectorError,
   tryRedactConnectorPayload,
@@ -43,6 +45,7 @@ import {
   lazyCatalogTools,
   resolveCatalogCall,
 } from "./lazy-tool-catalog.js";
+import { isCommonMcpConfigValue } from "./mcp-credential-redaction.js";
 import type { McpOAuthBroker, OAuthMaterial } from "./mcp-oauth.js";
 import {
   McpReauthorizationRequiredError,
@@ -94,6 +97,7 @@ type ConnectedSession = {
   ref?: string;
   recordId?: string;
   launchSecrets: string[];
+  fileSecrets: string[];
   expiresAt?: number;
   processExited?: () => boolean;
   removeCredentialFiles?: () => Promise<void>;
@@ -107,10 +111,19 @@ type SessionEntry = ConnectedSession & {
   retired?: boolean;
   closing?: Promise<void>;
 };
+
+function unchangedAfterRedaction(
+  value: unknown,
+  secrets: string[],
+  format?: ConnectorPayloadFormat,
+): boolean {
+  const redacted = tryRedactConnectorPayload(value, secrets, format);
+  return redacted.ok && JSON.stringify(redacted.value) === JSON.stringify(value);
+}
 type PendingSession = {
   revision: number;
   promise: Promise<SessionEntry>;
-  invalidated?: boolean;
+  invalidatedRef?: string;
   ref?: string;
 };
 
@@ -215,7 +228,7 @@ export class McpConnector implements ConnectorProvider {
       this.secrets.onChange?.((ref) => {
         for (const [key, entry] of this.sessions) if (entry.ref === ref) this.retire(key, entry);
         for (const entry of this.connecting.values())
-          if (entry.ref === ref) entry.invalidated = true;
+          if (entry.ref === ref) entry.invalidatedRef = ref;
       }) ?? (() => {});
   }
 
@@ -359,13 +372,33 @@ export class McpConnector implements ConnectorProvider {
     try {
       entry = await this.acquire(server, context, signal);
       listed = await withAbort(entry.session.listTools({ signal }), signal);
-      if (entry.launchSecrets.length) {
-        const secrets = [...oauthMaterialSecrets(entry.material), ...entry.launchSecrets];
+      const { fileSecrets, launchSecrets } = entry;
+      const storedCredentials = entry.stdio ? oauthMaterialSecrets(entry.material) : [];
+      if (storedCredentials.length || launchSecrets.length || fileSecrets.length) {
+        const isLabel = (value: string) =>
+          isCommonMcpConfigValue(value) || isMcpProtocolLabel(value);
+        const knownCredentials = [
+          ...storedCredentials,
+          ...launchSecrets,
+          ...fileSecrets.filter((value) => !isLabel(value)),
+        ];
+        const labels = fileSecrets.filter(isLabel);
+        const secrets = [...knownCredentials, ...labels];
         listed = {
           ...listed,
-          tools: listed.tools.filter((tool) => {
-            const redacted = tryRedactConnectorPayload(tool, secrets);
-            return redacted.ok && JSON.stringify(redacted.value) === JSON.stringify(tool);
+          tools: listed.tools.flatMap((tool) => {
+            if (
+              labels.includes(tool.name) ||
+              !unchangedAfterRedaction(tool.name, knownCredentials) ||
+              !unchangedAfterRedaction(tool.description, knownCredentials) ||
+              !unchangedAfterRedaction(tool.inputSchema, secrets, "mcp-schema")
+            )
+              return [];
+            if (!tool.description) return [tool];
+            const description = tryRedactConnectorPayload(tool.description, secrets);
+            return description.ok && typeof description.value === "string"
+              ? [{ ...tool, description: description.value }]
+              : [];
           }),
         };
       }
@@ -375,7 +408,7 @@ export class McpConnector implements ConnectorProvider {
       this.shutdown.signal.throwIfAborted();
       const reason = signal.aborted ? new Error("MCP tool discovery timed out") : error;
       const secrets = entry
-        ? [...oauthDiagnosticSecrets(entry.material), ...entry.launchSecrets]
+        ? [...oauthDiagnosticSecrets(entry.material), ...entry.launchSecrets, ...entry.fileSecrets]
         : [];
       health = mcpHealthError(reason, secrets);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
@@ -636,21 +669,7 @@ export class McpConnector implements ConnectorProvider {
       } else {
         if (stdio) {
           await checkDispatch?.();
-          const current = await withAbort(
-            this.prisma.mcpServer.findFirst({
-              where: {
-                id: server.id,
-                spaceId: context.spaceId,
-                userId: context.userId,
-                revision: server.revision,
-                enabled: true,
-                transport: "stdio",
-              },
-              select: { id: true },
-            }),
-            context.signal,
-          );
-          if (!current) throw new Error("MCP server permissions or credentials changed; retry");
+          await this.assertCurrentStdioServer(server, context);
         }
         dispatch();
       }
@@ -658,13 +677,22 @@ export class McpConnector implements ConnectorProvider {
       const secrets = [
         ...(material ? oauthMaterialSecrets(material) : []),
         ...(entry?.launchSecrets ?? []),
+        ...(entry?.fileSecrets ?? []),
       ];
-      response = { type: "result", data: redactConnectorPayload(result, secrets) };
+      response = {
+        type: "result",
+        data: redactConnectorPayload(
+          result,
+          secrets,
+          entry.fileSecrets.length ? "mcp-result" : undefined,
+        ),
+      };
     } catch (error) {
       // A thrown call means the transport or auth broke; drop the session so the next call reconnects.
       const secrets = [
         ...(material ? oauthMaterialSecrets(material) : []),
         ...(entry?.launchSecrets ?? []),
+        ...(entry?.fileSecrets ?? []),
       ];
       // Rejecting queued work must not close a session another already-dispatched
       // call is using. Permission changes are enforced by DB checks on every call.
@@ -763,6 +791,27 @@ export class McpConnector implements ConnectorProvider {
     return (
       entry.processExited?.() === true || (entry.expiresAt !== undefined && now >= entry.expiresAt)
     );
+  }
+
+  private async assertCurrentStdioServer(
+    server: McpServer,
+    context: AdapterContext,
+  ): Promise<void> {
+    const current = await withAbort(
+      this.prisma.mcpServer.findFirst({
+        where: {
+          id: server.id,
+          spaceId: context.spaceId,
+          userId: context.userId,
+          revision: server.revision,
+          enabled: true,
+          transport: "stdio",
+        },
+        select: { id: true },
+      }),
+      context.signal,
+    );
+    if (!current) throw new Error("MCP server permissions or credentials changed; retry");
   }
 
   private retire(key: string, entry: SessionEntry): void {
@@ -873,7 +922,11 @@ export class McpConnector implements ConnectorProvider {
         }
       },
     ).then(async (resources) => {
-      if (connectSignal.aborted || this.connecting.get(sessionKey)?.invalidated) {
+      const invalidatedRef = this.connecting.get(sessionKey)?.invalidatedRef;
+      if (
+        connectSignal.aborted ||
+        (invalidatedRef !== undefined && invalidatedRef === resources.ref)
+      ) {
         await resources.session.close().finally(() => resources.removeCredentialFiles?.());
         connectSignal.throwIfAborted();
         throw new Error("Secret changed during MCP connection; retry");
@@ -907,6 +960,7 @@ export class McpConnector implements ConnectorProvider {
     // Hoisted so a throw after the secret is decoded can still hand the material out.
     let material: OAuthMaterial | undefined;
     const launchSecrets: string[] = [];
+    const fileSecrets: string[] = [];
     let removeCredentialFiles: (() => Promise<void>) | undefined;
     let expiresAt: number | undefined;
     let processExited: (() => boolean) | undefined;
@@ -1005,11 +1059,10 @@ export class McpConnector implements ConnectorProvider {
           env[name] = value;
         }
         const renderedFiles = Object.fromEntries(
-          Object.entries(files).map(([name, template]) => {
-            const content = renderMcpStdioFile(template, values);
-            launchSecrets.push(...mcpCredentialFileSecrets(content));
-            return [name, content];
-          }),
+          Object.entries(files).map(([name, template]) => [
+            name,
+            renderMcpStdioFile(template, values),
+          ]),
         );
         if (Object.keys(renderedFiles).length) {
           const written = await writeMcpStdioCredentialFiles(
@@ -1018,6 +1071,8 @@ export class McpConnector implements ConnectorProvider {
             this.options.credentialTempRoot,
           );
           removeCredentialFiles = written.remove;
+          for (const content of Object.values(renderedFiles))
+            fileSecrets.push(...mcpCredentialFileSecrets(content));
           launchSecrets.push(...Object.values(written.env));
           Object.assign(env, written.env);
         }
@@ -1032,6 +1087,7 @@ export class McpConnector implements ConnectorProvider {
             void removeCredentialFiles?.();
           }
         };
+        await this.assertCurrentStdioServer(server, context);
         await session.connectStdio({
           command,
           args,
@@ -1092,6 +1148,7 @@ export class McpConnector implements ConnectorProvider {
         digest,
         recordId,
         launchSecrets,
+        fileSecrets,
         expiresAt,
         processExited,
         removeCredentialFiles,
@@ -1104,7 +1161,11 @@ export class McpConnector implements ConnectorProvider {
       // the secrets: the session never reached `sessions`. Sanitizing per caller would
       // cover only whoever looked first.
       if (!material) throw error;
-      const health = mcpHealthError(error, [...oauthDiagnosticSecrets(material), ...launchSecrets]);
+      const health = mcpHealthError(error, [
+        ...oauthDiagnosticSecrets(material),
+        ...launchSecrets,
+        ...fileSecrets,
+      ]);
       if (health.code) throw new McpOAuthClientRequiredError();
       throw new Error(health.message ?? "MCP connection failed");
     }

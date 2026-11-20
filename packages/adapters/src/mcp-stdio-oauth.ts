@@ -1,6 +1,7 @@
 import {
   discoverAuthorizationServerMetadata,
   exchangeAuthorization,
+  selectClientAuthMethod,
   startAuthorization,
 } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
@@ -26,6 +27,24 @@ export function mcpStdioClientInformation(
     ...(client.clientSecret ? { client_secret: client.clientSecret } : {}),
     issuer: new URL(client.authorizationServer).href,
   };
+}
+
+/** Follow the SDK's choice of authentication method. Basic requires form-encoded fields. */
+export function stdioClientBasicAuthentication(
+  client: OAuthClientInformationMixed,
+  metadata?: AuthorizationServerMetadata,
+): ((headers: Headers) => void) | undefined {
+  if (
+    !client.client_secret ||
+    selectClientAuthMethod(client, metadata?.token_endpoint_auth_methods_supported ?? []) !==
+      "client_secret_basic"
+  )
+    return undefined;
+  const encode = (value: string) => new URLSearchParams([["", value]]).toString().slice(1);
+  const basic = Buffer.from(`${encode(client.client_id)}:${encode(client.client_secret)}`).toString(
+    "base64",
+  );
+  return (headers) => headers.set("Authorization", `Basic ${basic}`);
 }
 
 function validateIssuerMetadata(
@@ -68,11 +87,15 @@ export async function beginMcpStdioAuthorization(input: {
     scope: input.client.scope,
     state: input.state,
   });
+  const params = start.authorizationUrl.searchParams;
+  const consent = params.getAll("prompt").includes("consent");
+  if (consent) params.set("prompt", "consent");
   if (input.client.authorizationParams) {
     for (const [name, value] of parseMcpStdioAuthorizationParams(
       input.client.authorizationParams,
     )) {
-      start.authorizationUrl.searchParams.set(name, value);
+      if (consent && name.toLowerCase() === "prompt") continue;
+      params.set(name, value);
     }
   }
   return {
@@ -99,6 +122,7 @@ export async function exchangeMcpStdioAuthorization(
     authorizationCode: input.code,
     codeVerifier: input.codeVerifier,
     redirectUri: input.redirectUri,
+    addClientAuthentication: stdioClientBasicAuthentication(clientInformation, metadata),
     fetchFn: input.fetch,
   });
   return { ...tokens, issuer: clientInformation.issuer };
