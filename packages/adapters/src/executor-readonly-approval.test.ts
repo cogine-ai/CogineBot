@@ -783,9 +783,16 @@ describe("semantic memory recall availability", () => {
         else expect(content).not.toContain(notice);
       }
       if (test.facts) {
-        expect(content).toContain("Prefer &lt;metric&gt; units &amp; distances.");
-        expect(content).toContain("provenance: owner note; id: fact-1; entity: bot-1");
-        expect(content).toContain("untrusted historical data");
+        const recalled = history.find((message) => message.content.includes("<recalled_memory>"));
+        expect(recalled?.id).toBeUndefined();
+        expect(recalled?.content).toMatch(
+          /^Memory recalled from earlier conversations.*untrusted historical data/,
+        );
+        expect(recalled?.content).toContain("Prefer &lt;metric&gt; units &amp; distances.");
+        expect(recalled?.content).toContain("provenance: owner note; id: fact-1; entity: bot-1");
+        if ("notice" in test) {
+          expect(recalled?.content).toContain(`</recalled_memory>\n\n${test.notice}`);
+        }
       } else {
         expect(content).not.toContain("<recalled_memory>");
       }

@@ -41,6 +41,9 @@ import {
   verbatimMcpToolResultIndexes,
 } from "./verbatim-mcp-result.js";
 
+export const PARTIAL_MEMORY_RECALL_NOTICE = "Some memory sources were unavailable.";
+export const MEMORY_RECALL_UNAVAILABLE_NOTICE = "Memory recall was unavailable.";
+
 /** Minimum whole-result window, unless the full model budget requires clipping. */
 const RECENT_TOOL_RESULTS_TO_KEEP = 3;
 
@@ -524,30 +527,34 @@ export function createRuntimeContextPolicy(
         }
       }
     }
-    const summaries = ctx.messages.filter(
-      (message) =>
-        (message as Message & OriginalMetadata).rakazoHistory &&
-        !(message as Message & OriginalMetadata).rakazoMessageId &&
-        (text(message).startsWith("Rakazo-owned compacted context through message sequence ") ||
-          text(message).startsWith(
-            "Memory recalled from earlier conversations that fell outside the visible history.",
-          )),
-    );
-    for (const summary of summaries) {
+    const historicalContext = ctx.messages.filter((message) => {
+      const metadata = message as Message & OriginalMetadata;
+      if (!metadata.rakazoHistory || metadata.rakazoMessageId) return false;
+      const content = text(message);
+      return (
+        content.startsWith("Rakazo-owned compacted context through message sequence ") ||
+        content.startsWith(
+          "Memory recalled from earlier conversations that fell outside the visible history.",
+        ) ||
+        content === PARTIAL_MEMORY_RECALL_NOTICE ||
+        content === MEMORY_RECALL_UNAVAILABLE_NOTICE
+      );
+    });
+    for (const entry of historicalContext) {
       const required = protectedIndexes.map((index) => messages[index]!);
       if (
         fixed +
           estimateContextTokens(required, options.imageTokens) +
-          estimateContextTokens(summary, options.imageTokens) >=
+          estimateContextTokens(entry, options.imageTokens) >=
         contextWindow - reserve
       )
         continue;
-      if (!messages.includes(summary)) {
+      if (!messages.includes(entry)) {
         const insertIndex = messages[0]?.role === "system" ? 1 : 0;
-        messages.splice(insertIndex, 0, summary);
+        messages.splice(insertIndex, 0, entry);
         protectedIndexes = protectedIndexes.map((index) => index + Number(index >= insertIndex));
       }
-      protectedIndexes.push(messages.indexOf(summary));
+      protectedIndexes.push(messages.indexOf(entry));
     }
     // Completed loop steps remain useful task state even when their verbose
     // evidence is old. Keep the protocol and controls so dropping large bodies

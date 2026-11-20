@@ -13,6 +13,7 @@ import {
   markToolResultContent,
   toolResultContentProvenance,
 } from "./context-selection.js";
+import { formatRecalledMemory } from "./history-compaction.js";
 import * as outputBudget from "./pi-output-budget.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
@@ -1100,6 +1101,47 @@ describe("runtime context policy", () => {
     }).prepareContext(context, model);
     expect(prepared.messages[0]!.content).toBe(summary);
   });
+  describe.each(["retrieval", "snapshots", "cache-aware"] as const)(
+    "%s memory recall history",
+    (contextStrategy) => {
+      const partial = "Some memory sources were unavailable.";
+      it.each([
+        { scenario: "partial empty", content: partial },
+        { scenario: "unavailable", content: "Memory recall was unavailable." },
+        {
+          scenario: "partial with facts",
+          content: `${formatRecalledMemory([{ memory: "Prefer metric units.", id: "fact-1" }])}\n\n${partial}`,
+        },
+      ])("preserves $scenario recall context when pruning old history", ({ content }) => {
+        const { request, context } = fixture(100);
+        enableHistoryRetrieval(request);
+        // An ordinary stored message with the same text should still be pruned.
+        request.history[0]!.content = content;
+        const earlierMessage = context.messages[0]!;
+        if (earlierMessage.role !== "user") throw new Error("Expected a user history message");
+        earlierMessage.content = content;
+        request.history.unshift({ role: "user", content });
+        const recall = {
+          role: "user",
+          content,
+          timestamp: 0,
+          rakazoHistory: true,
+        } as const;
+        context.messages.unshift(recall);
+
+        const prepared = createRuntimeContextPolicy({
+          ...request,
+          contextStrategy,
+        }).prepareContext(context, { ...model, contextWindow: 8192, maxTokens: 512 });
+
+        expect(prepared.messages.length).toBeLessThan(context.messages.length);
+        expect(prepared.messages).not.toContain(earlierMessage);
+        expect(prepared.messages).toContain(recall);
+        expect(prepared.messages.at(-1)).toBe(context.messages.at(-1));
+      });
+    },
+  );
+
   it("places a rolling summary after Pi's leading system message", () => {
     const { request, context } = fixture();
     const system = { role: "system", content: "System guidance", timestamp: 0 } as Message;

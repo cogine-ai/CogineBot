@@ -569,6 +569,10 @@ import {
   createRunTurnCheckpointState,
   persistRunTurnCheckpoint,
 } from "./run-turn-state.js";
+import {
+  MEMORY_RECALL_UNAVAILABLE_NOTICE,
+  PARTIAL_MEMORY_RECALL_NOTICE,
+} from "./runtime-context.js";
 import { withRuntimeCleanup } from "./runtime-stream.js";
 import {
   cancelScheduleFromTool,
@@ -4924,14 +4928,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         let recalledMemory = "";
         if (recalled?.ok) {
           recalledMemory = [
-            recalled.partial ? "Some memory sources were unavailable." : "",
             formatRecalledMemory(recalled.value),
+            recalled.partial ? PARTIAL_MEMORY_RECALL_NOTICE : "",
           ]
             .filter(Boolean)
             .join("\n\n");
         } else if (recalled) {
           getLogger().error("semantic memory recall failed", recalled.error);
-          recalledMemory = "Memory recall was unavailable.";
+          recalledMemory = MEMORY_RECALL_UNAVAILABLE_NOTICE;
         }
         if (!compactedHistory.usedLocalSummary) {
           history = history.slice(
