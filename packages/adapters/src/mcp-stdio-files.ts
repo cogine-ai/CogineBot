@@ -7,6 +7,7 @@ import {
   McpStdioFilesSchema,
 } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
+import { isMcpCredentialFieldValue } from "./mcp-credential-redaction.js";
 
 export type McpStdioOAuthField = (typeof MCP_STDIO_OAUTH_FIELDS)[number];
 export type McpStdioOAuthValues = Partial<Record<McpStdioOAuthField, string>>;
@@ -65,20 +66,28 @@ export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues
 export function mcpCredentialFileSecrets(content: string): string[] {
   const secrets = new Set<string>([content]);
   try {
-    const pending: unknown[] = [JSON.parse(content)];
+    const pending: Array<[string, unknown]> = [["", JSON.parse(content)]];
     while (pending.length) {
-      const value = pending.pop();
-      if (typeof value === "string" || typeof value === "number") secrets.add(String(value));
-      else if (value && typeof value === "object") {
-        for (const child of Object.values(value)) pending.push(child);
+      const [key, value] = pending.pop()!;
+      if (typeof value === "string" || typeof value === "number") {
+        const text = String(value);
+        if (!key || isMcpCredentialFieldValue(key, text)) secrets.add(text);
+      } else if (Array.isArray(value)) {
+        for (const child of value) pending.push([key.replace(/s$/i, ""), child]);
+      } else if (value && typeof value === "object") {
+        for (const entry of Object.entries(value)) pending.push(entry);
       }
     }
   } catch {
     for (const line of content.split(/\r?\n/)) {
       const value = line.trim();
-      if (value) secrets.add(value);
-      const assigned = value.match(/^[\w.-]+\s*=\s*(.+)$/)?.[1];
-      if (assigned) secrets.add(assigned.replace(/^(["'])(.*)\1$/, "$2"));
+      const assigned = value.match(/^([\w.-]+)\s*=\s*(.+)$/);
+      if (assigned) {
+        const secret = assigned[2]!.replace(/^(["'])(.*)\1$/, "$2");
+        if (isMcpCredentialFieldValue(assigned[1]!, secret)) secrets.add(secret);
+      } else if (/^[A-Za-z0-9+/_=-]{16,}$/.test(value)) {
+        secrets.add(value);
+      }
     }
   }
   return [...secrets].filter(Boolean);

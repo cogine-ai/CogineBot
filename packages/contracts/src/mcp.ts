@@ -39,8 +39,11 @@ export const McpHeadersSchema = z
 
 const managedOAuthParameters = new Set([
   "response_type",
+  "response_mode",
   "client_id",
   "client_secret",
+  "client_assertion",
+  "client_assertion_type",
   "redirect_uri",
   "scope",
   "state",
@@ -49,6 +52,8 @@ const managedOAuthParameters = new Set([
   "code_challenge_method",
   "code_verifier",
   "resource",
+  "request",
+  "request_uri",
   "access_token",
   "refresh_token",
   "id_token",

@@ -163,12 +163,13 @@ test("offers OAuth only for enabled stdio servers with a registered client", asy
     name: "Static MCP",
     stdioOAuthConfigured: false,
   };
-  const disabled = {
+  const disabled: McpServer = {
     ...managed,
     id: "disabled-stdio",
     slug: "disabled-stdio",
     name: "Disabled MCP",
     enabled: false,
+    oauthStatus: "connected",
   };
   await page
     .context()
@@ -195,6 +196,11 @@ test("offers OAuth only for enabled stdio servers with a registered client", asy
     managed.oauthStatus = "connected";
     await route.fulfill({ json: { json: { ok: true } } });
   });
+  await page.context().route("**/rpc/mcp/oauth/disconnect", async (route) => {
+    expect(route.request().postDataJSON().json.serverId).toBe(disabled.id);
+    disabled.oauthStatus = "none";
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
 
   await openIntegrations(page);
   await page.getByTestId("integrations-advanced").evaluate((element) => {
@@ -205,9 +211,14 @@ test("offers OAuth only for enabled stdio servers with a registered client", asy
   await expect(page.getByText("Disabled MCP", { exact: true })).toBeVisible();
   const connect = page.getByRole("button", { name: "Connect OAuth", exact: true });
   await expect(connect).toHaveCount(1);
+  await captureScreenshot(page, testInfo, "mcp-stdio-oauth-disabled-revoke");
+  const disconnect = page.getByRole("button", { name: "Disconnect", exact: true });
+  await expect(disconnect).toHaveCount(1);
+  await disconnect.click();
+  await expect(disconnect).toHaveCount(0);
   await captureScreenshot(page, testInfo, "mcp-stdio-oauth-ready");
   await connect.click();
   await expect(page.getByText("OAuth connected", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toHaveCount(1);
+  await expect(disconnect).toHaveCount(1);
   await captureScreenshot(page, testInfo, "mcp-stdio-oauth-connected");
 });

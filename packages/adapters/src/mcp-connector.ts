@@ -10,15 +10,16 @@ import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { McpServerHealth } from "@rakazo/contracts";
 import {
   isLocalMcpHost,
+  MCP_STDIO_OAUTH_REFERENCE,
   MCP_STDIO_OAUTH_REFERENCE_START,
   validateMcpStdioCredentials,
 } from "@rakazo/contracts";
-import { containsSecret } from "@rakazo/core";
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   assertManagedPluginActive,
   lockPluginInstall,
   PluginInstallInactiveError,
+  runAsSystem,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { catalogToolPrefix } from "./approval-effect.js";
@@ -29,6 +30,7 @@ import {
   combineSignals,
   redactConnectorPayload,
   sanitizeConnectorError,
+  tryRedactConnectorPayload,
 } from "./connector-safety.js";
 import { credentialDigest } from "./credential-digest.js";
 import { appendToolCompletionAudit } from "./executor.js";
@@ -97,6 +99,7 @@ type ConnectedSession = {
   removeCredentialFiles?: () => Promise<void>;
 };
 type SessionEntry = ConnectedSession & {
+  serverId: string;
   revision: number;
   active: number;
   lastUsed: number;
@@ -187,6 +190,7 @@ export class McpConnector implements ConnectorProvider {
   private readonly shutdown = new AbortController();
   private readonly retired = new Set<SessionEntry>();
   private reaper?: ReturnType<typeof setInterval>;
+  private stdioReaper?: Promise<void>;
   // Discovery runs more than once per run: once up front, then again on every lazy
   // catalog access. Each attempt needs its own executionId.
   private discoverySeq = 0;
@@ -359,7 +363,10 @@ export class McpConnector implements ConnectorProvider {
         const secrets = [...oauthMaterialSecrets(entry.material), ...entry.launchSecrets];
         listed = {
           ...listed,
-          tools: listed.tools.filter((tool) => !containsSecret(tool, secrets)),
+          tools: listed.tools.filter((tool) => {
+            const redacted = tryRedactConnectorPayload(tool, secrets);
+            return redacted.ok && JSON.stringify(redacted.value) === JSON.stringify(tool);
+          }),
         };
       }
       health = { status: "ok", message: null, code: null, toolCount: listed.tools.length };
@@ -678,6 +685,7 @@ export class McpConnector implements ConnectorProvider {
     this.unsubscribe();
     this.shutdown.abort();
     clearInterval(this.reaper);
+    await this.stdioReaper;
     await Promise.allSettled(this.probes.values());
     await Promise.allSettled([...this.connecting.values()].map(({ promise }) => promise));
     await Promise.allSettled(
@@ -689,17 +697,20 @@ export class McpConnector implements ConnectorProvider {
     this.discoveries.clear();
   }
 
-  private sessionKey(server: McpServer, context: AdapterContext): string {
+  private sessionKey(
+    server: Pick<McpServer, "id">,
+    context: Pick<AdapterContext, "spaceId" | "userId">,
+  ): string {
     // Identity headers are applied once, at connect time, so a session is only
     // valid for the identity it connected as. The key has to carry that identity.
     return `${server.id} ${context.spaceId} ${context.userId}`;
   }
 
   private startReaper(): void {
-    this.reaper ??= setInterval(() => this.reapIdle(), 60_000).unref();
+    this.reaper ??= setInterval(() => void this.reapIdle(), 60_000).unref();
   }
 
-  reapIdle(now = Date.now()): void {
+  async reapIdle(now = Date.now()): Promise<void> {
     for (const [key, entry] of this.sessions) {
       if (
         entry.stdio &&
@@ -712,6 +723,40 @@ export class McpConnector implements ConnectorProvider {
       if (now - (observation.failure?.until ?? observation.checkedAt.getTime()) >= STDIO_IDLE_MS)
         this.discoveries.delete(key);
     }
+    if (this.stdioReaper) return this.stdioReaper;
+    const managed = [...this.sessions].filter(
+      ([, entry]) => entry.stdio && (entry.removeCredentialFiles || entry.material.oauthClient),
+    );
+    if (!managed.length || this.shutdown.signal.aborted) return;
+    // A disable-only edit can leave the encrypted record intact. Check live
+    // children even if no new tool lookup arrives to observe the new revision.
+    this.stdioReaper = withAbort(
+      runAsSystem("MCP stdio child reconciliation", () =>
+        this.prisma.mcpServer.findMany({
+          where: {
+            id: { in: managed.map(([, entry]) => entry.serverId) },
+            enabled: true,
+            transport: "stdio",
+          },
+          select: { id: true, spaceId: true, userId: true, revision: true },
+        }),
+      ),
+      combineSignals(this.shutdown.signal, AbortSignal.timeout(DISCOVERY_MS)),
+    )
+      .then((rows) => {
+        const current = new Map(rows.map((row) => [this.sessionKey(row, row), row.revision]));
+        for (const [key, entry] of managed) {
+          if (current.get(key) !== entry.revision) this.retire(key, entry);
+        }
+      })
+      .catch(() => {
+        if (!this.shutdown.signal.aborted)
+          getLogger().warn("MCP stdio session reconciliation failed");
+      })
+      .finally(() => {
+        this.stdioReaper = undefined;
+      });
+    return this.stdioReaper;
   }
 
   private stdioNeedsReplacement(entry: SessionEntry, now = Date.now()): boolean {
@@ -835,6 +880,7 @@ export class McpConnector implements ConnectorProvider {
       }
       connected = {
         ...resources,
+        serverId: server.id,
         revision: server.revision,
         active: 0,
         lastUsed: Date.now(),
@@ -949,7 +995,13 @@ export class McpConnector implements ConnectorProvider {
           const value = renderMcpStdioTemplate(template, values);
           if (value.includes("\0"))
             throw new Error("MCP stdio environment values cannot contain NUL characters");
-          launchSecrets.push(value);
+          if (
+            [...template.matchAll(MCP_STDIO_OAUTH_REFERENCE)].some(([, field]) =>
+              ["access_token", "refresh_token", "client_secret"].includes(field?.trim() ?? ""),
+            )
+          ) {
+            launchSecrets.push(value);
+          }
           env[name] = value;
         }
         const renderedFiles = Object.fromEntries(

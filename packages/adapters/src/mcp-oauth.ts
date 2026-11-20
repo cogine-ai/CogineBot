@@ -37,6 +37,7 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
 import { combineSignals, sanitizeConnectorError } from "./connector-safety.js";
+import { isAuthHeaderKey, isMcpCredentialFieldValue } from "./mcp-credential-redaction.js";
 import {
   McpOAuthClientRequiredError,
   mcpHealthError,
@@ -129,30 +130,10 @@ export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
     add(client.client_secret);
   }
   for (const [key, value] of Object.entries(material.headers ?? {})) {
-    if (isAuthHeaderKey(key)) {
-      // Cookie / X-Session / Authorization always carry auth material, including short values.
-      add(value);
-    } else if (
-      isExplicitCredentialKey(key) &&
-      looksLikeSecretValue(value, { allowNumeric: true })
-    ) {
-      add(value);
-    } else if (
-      isAmbiguousCredentialKey(key) &&
-      looksLikeSecretValue(value, { allowNumeric: false })
-    ) {
-      add(value);
-    }
+    if (isAuthHeaderKey(key) || isMcpCredentialFieldValue(key, value)) add(value);
   }
   for (const [key, value] of Object.entries(material.env ?? {})) {
-    if (isExplicitCredentialKey(key) && looksLikeSecretValue(value, { allowNumeric: true })) {
-      add(value);
-    } else if (
-      isAmbiguousCredentialKey(key) &&
-      looksLikeSecretValue(value, { allowNumeric: false })
-    ) {
-      add(value);
-    }
+    if (isMcpCredentialFieldValue(key, value)) add(value);
   }
   return [...new Set(values)];
 }
@@ -166,88 +147,6 @@ export function oauthDiagnosticSecrets(material: OAuthMaterial): string[] {
     ...Object.values(material.files ?? {}),
   ];
 }
-
-/** Headers whose values are credentials even when short (e.g. Cookie, X-Session). */
-function isAuthHeaderKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/-/g, "_");
-  return (
-    normalized === "authorization" ||
-    normalized === "cookie" ||
-    normalized === "set_cookie" ||
-    normalized === "x_session" ||
-    normalized === "x_api_key" ||
-    normalized === "api_key" ||
-    normalized === "x_auth_token"
-  );
-}
-
-/** Explicit credential keys (access_token, api_key, …); numeric values stay redacted. */
-function isExplicitCredentialKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/-/g, "_");
-  if (isAuthHeaderKey(key)) return true;
-  return /(?:^|_)(secret|password|credential|access_token|refresh_token|id_token|auth_token|session_token|session_id|session_key|session_secret|api_key|api_token)$/.test(
-    normalized,
-  );
-}
-
-/** Ambiguous *_token keys where numeric-only values are usually config, not secrets. */
-function isAmbiguousCredentialKey(key: string): boolean {
-  if (isExplicitCredentialKey(key)) return false;
-  const normalized = key.toLowerCase().replace(/-/g, "_");
-  if (/(?:^|_)token$/.test(normalized)) {
-    return !/(timeout|ttl|max|count|type|mode|name)$/.test(normalized);
-  }
-  return false;
-}
-
-/**
- * Values under credential-shaped keys must look like secrets before entering
- * global substring redaction. Ordinary enums such as "production" or "oauth"
- * would otherwise corrupt unrelated tool output. Numeric-only filtering applies
- * only to ambiguous keys — explicit carriers still register OTP-like tokens.
- */
-function looksLikeSecretValue(value: string, options: { allowNumeric?: boolean } = {}): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  if (COMMON_CONFIG_VALUES.has(trimmed.toLowerCase())) return false;
-  if (!options.allowNumeric && /^\d+(\.\d+)?$/.test(trimmed)) return false;
-  return true;
-}
-
-const COMMON_CONFIG_VALUES = new Set([
-  "production",
-  "development",
-  "staging",
-  "test",
-  "testing",
-  "oauth",
-  "openid",
-  "true",
-  "false",
-  "yes",
-  "no",
-  "on",
-  "off",
-  "none",
-  "null",
-  "debug",
-  "info",
-  "warn",
-  "error",
-  "http",
-  "https",
-  "local",
-  "localhost",
-  "enabled",
-  "disabled",
-  "default",
-  "auto",
-  "manual",
-  "read",
-  "write",
-  "sync",
-  "async",
-]);
 
 type ServerRef = {
   id: string;
@@ -424,7 +323,8 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     }
     // The primitive strips response-provided issuer; stamp the server we used.
     // Persistence failures must reach the caller rather than expose an uncommitted grant.
-    await this.storeTokens({ ...next, issuer }, true);
+    const scope = next.scope ?? oauth.tokens?.scope;
+    await this.storeTokens({ ...next, ...(scope === undefined ? {} : { scope }), issuer }, true);
   }
 
   async saveTokens(value: OAuthTokens): Promise<void> {
@@ -597,7 +497,7 @@ function oauthFetch(
   network: RemoteTransportDependencies,
   material: OAuthMaterial = {},
   allowPrivateEndpoint = false,
-  deadline?: AbortSignal,
+  request?: { deadline: AbortSignal; diagnosticSecrets?: string[] },
 ): {
   fetch: typeof fetch;
   close: () => Promise<void>;
@@ -638,7 +538,9 @@ function oauthFetch(
     try {
       const response = await fallbackFetch(
         input,
-        deadline ? { ...init, signal: combineSignals(deadline, init?.signal ?? undefined) } : init,
+        request
+          ? { ...init, signal: combineSignals(request.deadline, init?.signal ?? undefined) }
+          : init,
       );
       if (!response.ok) {
         const next = await readOAuthRejection(response);
@@ -655,8 +557,12 @@ function oauthFetch(
     fetch: recordingFetch,
     close: () => safeFetch.close(),
     publicError: (error, message) => {
-      if (error instanceof Error && networkErrors.has(error)) return error;
-      const secrets = oauthDiagnosticSecrets(material);
+      const secrets = [...oauthDiagnosticSecrets(material), ...(request?.diagnosticSecrets ?? [])];
+      if (error instanceof Error && networkErrors.has(error)) {
+        return request?.diagnosticSecrets?.length
+          ? new Error(sanitizeConnectorError(error, secrets))
+          : error;
+      }
       const sdk = sanitizeConnectorError(error, secrets);
       const surfaced = rejection ? formatOAuthRejection(rejection, sdk, secrets) : undefined;
       getLogger().warn(`${message}: ${surfaced ?? sdk}`);
@@ -1099,7 +1005,7 @@ export class McpOAuthBroker {
       this.network,
       { oauthClient: client },
       false,
-      deadline,
+      { deadline },
     );
     let started: Awaited<ReturnType<typeof beginMcpStdioAuthorization>>;
     try {
@@ -1291,7 +1197,7 @@ export class McpOAuthBroker {
       this.network,
       { oauthClient: pending.client },
       false,
-      deadline,
+      { deadline, diagnosticSecrets: [input.code, pending.codeVerifier] },
     );
     let tokens: OAuthTokens;
     try {
@@ -1472,7 +1378,7 @@ export class McpOAuthBroker {
                       context.userId,
                       this.allowPrivateEndpoint,
                     )),
-                  stdio ? AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) : undefined,
+                  stdio ? { deadline: AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) } : undefined,
                 ),
             }
           : {}),

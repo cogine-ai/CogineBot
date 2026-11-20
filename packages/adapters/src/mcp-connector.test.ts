@@ -465,7 +465,10 @@ describe("MCP discovery lifecycle", () => {
     const material = {
       oauthClient: registered,
       env: { MCP_TOKEN: "Bearer {{oauth.access_token}}" },
-      files: { CONFIG_FILE: '{"access":"{{oauth.access_token}}","local":"private-fixture"}' },
+      files: {
+        CONFIG_FILE:
+          '{"access":"{{oauth.access_token}}","api_key":"private-fixture","kind":"object"}',
+      },
     };
     const calls: string[] = [];
     const connect = vi
@@ -477,7 +480,8 @@ describe("MCP discovery lifecycle", () => {
         expect(env.MCP_TOKEN).toBe(`Bearer fixture-grant-${launchNumber}`);
         expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
           access: `fixture-grant-${launchNumber}`,
-          local: "private-fixture",
+          api_key: "private-fixture",
+          kind: "object",
         });
         expect((await stat(env.CONFIG_FILE!)).mode & 0o777).toBe(0o600);
       });
@@ -575,7 +579,7 @@ describe("MCP discovery lifecycle", () => {
     }
   });
 
-  it.each(["startup failure", "process exit"])(
+  it.each(["startup failure", "process exit", "deactivation"])(
     "removes the credential directory after %s",
     async (cause) => {
       const root = await mkdtemp(join(tmpdir(), "mcp-close-fixture-"));
@@ -599,7 +603,10 @@ describe("MCP discovery lifecycle", () => {
       });
       const connector = new McpConnector(
         {
-          mcpServer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          mcpServer: {
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
           secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
         } as never,
         {
@@ -609,10 +616,11 @@ describe("MCP discovery lifecycle", () => {
       );
       try {
         const health = await connector.check(server as never, context);
-        if (cause === "process exit") {
+        if (cause !== "startup failure") {
           expect(health.status).toBe("ok");
           expect(await readdir(root)).toHaveLength(1);
-          child!.client.onclose?.();
+          if (cause === "process exit") child!.client.onclose?.();
+          else await connector.reapIdle();
         } else {
           expect(health).toMatchObject({
             status: "error",
@@ -645,7 +653,7 @@ describe("MCP discovery lifecycle", () => {
         } else if (message.method === 'tools/list') {
           result = { tools: [
             { name: 'read_fixture', inputSchema: { type: 'object' } },
-            { name: 'bad_fixture', description: process.env.CONFIG_FILE, inputSchema: { type: 'object' } },
+            { name: 'bad_fixture', description: JSON.stringify(readFileSync(process.env.CONFIG_FILE, 'utf8')), inputSchema: { type: 'object' } },
           ] };
         } else if (message.method === 'tools/call') {
           const path = process.env.CONFIG_FILE;
@@ -675,7 +683,8 @@ describe("MCP discovery lifecycle", () => {
         secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
       } as never,
       {
-        load: async () => JSON.stringify({ files: { CONFIG_FILE: "private-child-fixture" } }),
+        load: async () =>
+          JSON.stringify({ files: { CONFIG_FILE: 'private-child-"fixture\\value' } }),
       } as never,
       { stdioEnabled: true, allowedCommands: [process.execPath], credentialTempRoot: root },
     );

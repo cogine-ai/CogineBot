@@ -1,3 +1,4 @@
+import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import { McpOAuthBroker } from "./mcp-oauth.js";
 import { EncryptedSecretStore } from "./secrets.js";
@@ -12,7 +13,11 @@ const client = {
 };
 const redirectUri = "https://app.example.test/mcp/oauth/callback";
 
-async function fixture(metadataIssuer = client.authorizationServer) {
+async function fixture({
+  metadataIssuer = client.authorizationServer,
+  rejectGrant = false,
+  tokenEndpoint = `${client.authorizationServer}/token`,
+} = {}) {
   const store = new EncryptedSecretStore("fixture-stdio-encryption-key");
   const stored = await store.put(JSON.stringify({ oauthClient: client }), {
     ...scope,
@@ -100,6 +105,15 @@ async function fixture(metadataIssuer = client.authorizationServer) {
     expect(body.get("redirect_uri")).toBe(redirectUri);
     expect(body.get("client_secret")).toBe(client.clientSecret);
     expect(body.has("resource")).toBe(false);
+    if (rejectGrant) {
+      return Response.json(
+        {
+          error: "invalid_grant",
+          error_description: `Rejected ${body.get("code")}, verifier ${body.get("code_verifier")}, client ${body.get("client_secret")}`,
+        },
+        { status: 400 },
+      );
+    }
     return Response.json({
       access_token: "fixture-access",
       token_type: "Bearer",
@@ -113,7 +127,7 @@ async function fixture(metadataIssuer = client.authorizationServer) {
       return Response.json({
         issuer: metadataIssuer,
         authorization_endpoint: `${client.authorizationServer}/authorize`,
-        token_endpoint: `${client.authorizationServer}/token`,
+        token_endpoint: tokenEndpoint,
         token_endpoint_auth_methods_supported: ["client_secret_post"],
         response_types_supported: ["code"],
         code_challenge_methods_supported: ["S256"],
@@ -128,7 +142,9 @@ async function fixture(metadataIssuer = client.authorizationServer) {
       store,
       {
         fetch: fetcher,
-        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        resolveHostname: async (name) => [
+          { address: name === "private.example.test" ? "10.0.0.8" : "203.0.113.10", family: 4 },
+        ],
       },
       false,
       { enabled, allowedCommands: ["fixture-mcp"] },
@@ -191,6 +207,13 @@ describe("deployment-managed stdio OAuth", () => {
     });
   });
 
+  it("refuses a token endpoint that resolves to a private address before returning a login URL", async () => {
+    const f = await fixture({ tokenEndpoint: "https://private.example.test/token" });
+    await expect(f.begin()).rejects.toThrow(/Could not start MCP OAuth/);
+    expect(f.pending.size).toBe(0);
+    expect(f.exchange).not.toHaveBeenCalled();
+  });
+
   it("rejects a different Space, changed revision, or withdrawn deployment ownership before exchange", async () => {
     const f = await fixture();
     const { sessionId } = await f.begin();
@@ -206,9 +229,26 @@ describe("deployment-managed stdio OAuth", () => {
   });
 
   it("refuses issuer metadata that identifies a different authorization server", async () => {
-    const f = await fixture("https://different.example.test");
+    const f = await fixture({ metadataIssuer: "https://different.example.test" });
     await expect(f.begin()).rejects.toThrow(/Could not start MCP OAuth/);
     expect(f.pending.size).toBe(0);
     expect(f.exchange).not.toHaveBeenCalled();
+  });
+
+  it("redacts echoed exchange credentials from both the error and diagnostic log", async () => {
+    const f = await fixture({ rejectGrant: true });
+    const { sessionId } = await f.begin();
+    const warn = vi.spyOn(getLogger(), "warn").mockImplementation(() => undefined);
+    try {
+      await expect(f.complete(sessionId)).rejects.toThrow(
+        /Rejected \[redacted\], verifier \[redacted\], client \[redacted\]/,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Rejected [redacted], verifier [redacted], client [redacted]"),
+      );
+      expect(f.pending.size).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
