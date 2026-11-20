@@ -341,7 +341,8 @@ function decodeYamlBlockScalar(rawLines: string[], header: YamlBlockScalarHeader
   }
 
   const contentLines = rawLines.map((line) => {
-    if (line.trim() === "") return "";
+    // Only an all-blank block without an inferred indent has no content spaces.
+    if (line.trim() === "" && indent === 0) return "";
     if (leadingSpaces(line) < indent!) return line.trimStart();
     return line.slice(indent!);
   });
@@ -379,7 +380,7 @@ function decodeYamlBlockScalar(rawLines: string[], header: YamlBlockScalarHeader
         parts.push("");
         continue;
       }
-      if (/^ /.test(line)) {
+      if (/^[ \t]/.test(line)) {
         flush();
         parts.push(line);
         continue;
@@ -467,9 +468,10 @@ function parseSimpleYamlObject(text: string): Record<string, unknown> {
       result[key] = mode === "list" ? list : mode === "map" ? nested : "";
       continue;
     }
-    if (raw.startsWith("[") && raw.endsWith("]")) {
+    const jsonArray = parseJsonScalarArray(raw);
+    if (jsonArray !== undefined || (raw.startsWith("[") && raw.endsWith("]"))) {
       result[key] =
-        parseJsonScalarArray(raw) ??
+        jsonArray ??
         raw
           .slice(1, -1)
           .split(",")
@@ -493,9 +495,10 @@ function isSupportedJsonScalar(value: unknown): value is string | number | boole
 }
 
 function parseJsonScalarArray(raw: string): Array<string | number | boolean> | undefined {
-  if (!raw.startsWith("[") || !raw.endsWith("]")) return undefined;
+  const text = raw.trim();
+  if (!text.startsWith("[") || !text.endsWith("]")) return undefined;
   try {
-    const value: unknown = JSON.parse(raw);
+    const value: unknown = JSON.parse(text);
     if (Array.isArray(value) && value.every(isSupportedJsonScalar)) return value;
   } catch {
     // Hand-written non-JSON arrays keep the existing scoped fallback.
@@ -526,8 +529,11 @@ function parseYamlScalar(raw: string): string | number | boolean {
 }
 
 function stringifyYamlScalar(value: string | number | boolean): string {
-  // Keep JSON string values on one physical line for the frontmatter reader.
-  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  // Keep values printable and on one physical line for the frontmatter reader.
+  return JSON.stringify(value).replace(
+    /[\u007f-\u009f\u2028\u2029\ufffe\uffff]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 }
 
 function formatYamlBlockScalar(key: string, value: string): string {
@@ -560,7 +566,10 @@ function formatYamlBlockScalar(key: string, value: string): string {
 function formatYamlLine(key: string, value: unknown): string {
   if (value === null || value === undefined) return `${key}:`;
   if (typeof value === "string") {
-    if (/[\r\u2028\u2029]/.test(value)) {
+    if (
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: These controls require quoted YAML escape sequences.
+      /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff\ufffe\uffff]/u.test(value)
+    ) {
       return `${key}: ${stringifyYamlScalar(value)}`;
     }
     if (value.includes("\n") || value.includes(": ")) {

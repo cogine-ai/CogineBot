@@ -531,6 +531,10 @@ describe("saved skill scalar and array fidelity", () => {
     "first\nsecond",
     "First: retain this",
     "\n\n",
+    "first\n  \nsecond",
+    "first\n\t\nsecond",
+    "first\n \t ",
+    " \nfirst",
     0,
     -2.5,
     true,
@@ -595,6 +599,14 @@ describe("saved skill scalar and array fidelity", () => {
     { label: "next line", char: "\u0085" },
     { label: "line separator", char: "\u2028" },
     { label: "paragraph separator", char: "\u2029" },
+    { label: "DEL", char: "\u007f" },
+    { label: "C1 start", char: "\u0080" },
+    { label: "C1 end", char: "\u009f" },
+    { label: "noncharacter FFFE", char: "\ufffe" },
+    { label: "noncharacter FFFF", char: "\uffff" },
+    { label: "lone high surrogate", char: "\ud800" },
+    { label: "lone low surrogate", char: "\udc00" },
+    { label: "astral Unicode", char: "😀" },
   ];
   const controlCases = jsonControls.flatMap(({ label, char }) =>
     ["middle", "with newline"].flatMap((position) =>
@@ -618,10 +630,84 @@ describe("saved skill scalar and array fidelity", () => {
       };
       let content = buildSkillMd({ ...expected, body: "body", frontmatter: metadata });
       for (let edit = 0; edit < 3; edit += 1) {
+        expect(content).not.toMatch(
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: Checks forbidden YAML output codepoints deliberately.
+          /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u0084\u0086-\u009f\ud800-\udfff\ufffe\uffff]/u,
+        );
         expect(standardFrontmatter(content)).toEqual(expected);
         const parsed = parseSkillMd(content);
         if ("error" in parsed) throw new Error(parsed.error);
         expect(parsed.frontmatter).toEqual(expected);
+        content = buildSkillMd(parsed);
+      }
+    },
+  );
+
+  const whitespaceBlockCases = ["|2-", "|2", "|2+", ">2-", ">2", ">2+"].flatMap((header) =>
+    [
+      ["  first", "    ", "  second"],
+      ["  first", "  \t", "  second"],
+      ["    ", "  first", "    "],
+      ["  \t", "  first", "  \t"],
+      ["  first", "  \tcode", "  second"],
+    ].map((lines, variant) => ({ header, lines, variant })),
+  );
+  it.each(whitespaceBlockCases)(
+    "retains block content whitespace for $header variant $variant",
+    ({ header, lines }) => {
+      let content = [
+        "---",
+        "name: Whitespace recipe",
+        "description: Preserve content whitespace",
+        `detail: ${header}`,
+        ...lines,
+        "---",
+        "body",
+      ].join("\n");
+      const expected = standardFrontmatter(content);
+      for (let edit = 0; edit < 3; edit += 1) {
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.frontmatter).toEqual(expected);
+        content = buildSkillMd(parsed);
+        expect(standardFrontmatter(content)).toEqual(expected);
+      }
+    },
+  );
+
+  const arrayWhitespaceCases = [" ", "\t", " \t "].flatMap((padding) =>
+    [[], [1, true], ["a,b", "", false, 2]].map((values) => ({ padding, values })),
+  );
+  it.each(arrayWhitespaceCases)(
+    "preserves JSON arrays with whitespace $padding around $values",
+    ({ padding, values }) => {
+      const content = `---\nname: Array recipe\ndescription: Preserve typed arrays\nvalues: ${padding}${JSON.stringify(values)}${padding}\nmetadata:\n  values: ${padding}${JSON.stringify(values)}${padding}\n---\nbody`;
+      const expected = {
+        name: "Array recipe",
+        description: "Preserve typed arrays",
+        values,
+        metadata: { values },
+      };
+      expect(standardFrontmatter(content)).toEqual(expected);
+      let saved = content;
+      for (let edit = 0; edit < 3; edit += 1) {
+        const parsed = parseSkillMd(saved);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.frontmatter).toEqual(expected);
+        saved = buildSkillMd(parsed);
+      }
+    },
+  );
+
+  it.each(["[shell, read_file]", "[null]", "[1e400]", '[{"value":1}]'])(
+    "retains scoped legacy whitespace handling for unsupported array %s",
+    (raw) => {
+      let content = `---\nname: Legacy recipe\ndescription: Preserve legacy values\nvalues: ${raw} \t\nmetadata:\n  values: ${raw} \t\n---\nbody`;
+      for (let edit = 0; edit < 3; edit += 1) {
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.frontmatter.values).toBe(raw);
+        expect(parsed.frontmatter.metadata).toEqual({ values: raw });
         content = buildSkillMd(parsed);
       }
     },
