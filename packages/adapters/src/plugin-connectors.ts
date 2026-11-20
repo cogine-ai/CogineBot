@@ -1,9 +1,19 @@
 /** Portable plugin parsing plus a bounded, public-GitHub acquisition adapter.
  * No repository code is executed and no files are written to the host. */
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import type { PluginPreview } from "@rakazo/contracts";
-import { McpServerConfigInput, PluginPreviewSchema } from "@rakazo/contracts";
-import { containsSecret, parseSkillMd } from "@rakazo/core";
+import {
+  McpServerConfigInput,
+  PLUGIN_SKILL_FILE_LIMITS,
+  PluginPreviewSchema,
+} from "@rakazo/contracts";
+import {
+  containsSecret,
+  normalizeSkillFilePath,
+  parseSkillMd,
+  readSkillMarkdownReferences,
+} from "@rakazo/core";
 import { z } from "zod";
 import { assertNoSensitiveQuery, HeaderName } from "./connector-http.js";
 import { oauthMaterialSecrets } from "./mcp-oauth.js";
@@ -16,7 +26,12 @@ export type PluginRepoFetcher = (
   ref: PluginSourceRef,
   signal?: AbortSignal,
 ) => Promise<{ files: PluginRepoFile[]; sourceSha: string }>;
-export type PluginSkillEntry = { name: string; description: string; content: string };
+export type PluginSkillEntry = {
+  name: string;
+  description: string;
+  content: string;
+  files?: Record<string, string>;
+};
 export type PluginMcpServerEntry = {
   name: string;
   transport: "streamable_http" | "sse";
@@ -54,7 +69,14 @@ export type ParsedPlugin = {
 
 const MAX_FILES = 200;
 const MAX_BYTES = 4_000_000;
-const MAX_FILE_BYTES = 100_000;
+const MAX_FILE_BYTES = PLUGIN_SKILL_FILE_LIMITS.bytes;
+const FETCH_CONCURRENCY = 8;
+const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
+const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
+const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
+const INLINE_SKILL_FILE =
+  /^(?:\{baseDir\}\/|(?:\.\/|(?:\.\.\/)+)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
+const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([
   "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -269,35 +291,163 @@ export async function fetchGitHubRepo(
     return entry.type === "blob";
   });
   if (entries.length > MAX_FILES) throw new Error("Plugin directory has too many files");
-  let total = 0;
+  const skillFolders = new Set<string>();
+  for (const entry of entries) {
+    const folder = SKILL_DOCUMENT.exec(entry.path.slice(prefix.length))?.[1];
+    if (folder) skillFolders.add(folder);
+  }
+  const companionBudgets = new Map<string, { count: number; bytes: number; fetchable: boolean }>();
+  for (const entry of entries) {
+    const companion = SKILL_COMPANION.exec(entry.path.slice(prefix.length));
+    if (!companion || !skillFolders.has(companion[1]!)) continue;
+    const folder = companion[1]!;
+    const relative = companion[2]!;
+    const budget = companionBudgets.get(folder) ?? { count: 0, bytes: 0, fetchable: true };
+    budget.count += 1;
+    budget.bytes += entry.size ?? 0;
+    budget.fetchable &&= isSkillTextFile(relative) && (entry.size ?? 0) <= MAX_FILE_BYTES;
+    companionBudgets.set(folder, budget);
+  }
   const files: PluginRepoFile[] = [];
+  const wanted: Array<{ file: PluginRepoFile; companion: boolean }> = [];
   for (const entry of entries) {
     const path = entry.path.slice(prefix.length);
-    // Fetch only component text. Other paths are retained for skipped-part reporting.
+    const companionFolder = SKILL_COMPANION.exec(path)?.[1];
+    const companion = companionFolder ? companionBudgets.get(companionFolder) : undefined;
+    const file = { path: entry.path, content: "" };
+    files.push(file);
+    if (
+      companion &&
+      (!companion.fetchable ||
+        companion.count > PLUGIN_SKILL_FILE_LIMITS.count ||
+        companion.bytes > PLUGIN_SKILL_FILE_LIMITS.totalBytes)
+    ) {
+      file.content = UNAVAILABLE_SKILL_FILE;
+      continue;
+    }
     const relevant =
       MANIFESTS.includes(path) ||
       ["mcp.json", ".mcp.json"].includes(path) ||
-      /^skills\/[^/]+\/SKILL\.md$/.test(path);
-    if (!relevant) {
-      files.push({ path: entry.path, content: "" });
-      continue;
-    }
+      SKILL_DOCUMENT.test(path) ||
+      companion !== undefined;
+    if (!relevant) continue;
     if ((entry.size ?? 0) > MAX_FILE_BYTES) throw new Error("Plugin file is too large");
-    const body = await boundedRead(
-      `https://raw.githubusercontent.com${repo}/${sha}/${entry.path.split("/").map(encodeURIComponent).join("/")}`,
-      MAX_FILE_BYTES,
-      deadline,
-    );
-    total += Buffer.byteLength(body);
-    if (total > MAX_BYTES) throw new Error("Plugin content is too large");
-    files.push({ path: entry.path, content: body });
+    wanted.push({ file, companion: companion !== undefined });
   }
-  deadline.throwIfAborted();
+
+  // Abort sibling reads on fatal metadata errors or exhaustion of the shared byte budget.
+  const readAbort = new AbortController();
+  const readSignal = AbortSignal.any([deadline, readAbort.signal]);
+  let total = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(FETCH_CONCURRENCY, wanted.length) }, async () => {
+      try {
+        for (let work = wanted.shift(); work; work = wanted.shift()) {
+          readSignal.throwIfAborted();
+          const { file, companion } = work;
+          let body: string;
+          try {
+            body = await boundedRead(
+              `https://raw.githubusercontent.com${repo}/${sha}/${file.path.split("/").map(encodeURIComponent).join("/")}`,
+              MAX_FILE_BYTES,
+              readSignal,
+            );
+          } catch (error) {
+            readSignal.throwIfAborted();
+            if (!companion) throw error;
+            file.content = UNAVAILABLE_SKILL_FILE;
+            continue;
+          }
+          total += Buffer.byteLength(body);
+          if (total > MAX_BYTES) throw new Error("Plugin content is too large");
+          file.content = body;
+        }
+      } catch (error) {
+        readAbort.abort(error);
+        throw error;
+      }
+    }),
+  );
+  readSignal.throwIfAborted();
   return { files, sourceSha: sha };
 }
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSkillTextFile(path: string): boolean {
+  return normalizeSkillFilePath(path) === path && SKILL_TEXT_FILE.test(path);
+}
+
+/** Walk references from the main recipe and any Markdown reached through them. */
+function hasMissingSkillReference(body: string, files: ReadonlyMap<string, string>): boolean {
+  const visited = new Set(["SKILL.md"]);
+  const pending = [{ path: "SKILL.md", body }];
+  for (const document of pending) {
+    const { links, inlineCode } = readSkillMarkdownReferences(document.body);
+    const documentDir = posix.dirname(document.path);
+    const references = [
+      ...links.map((target) => ({ target, base: documentDir })),
+      ...inlineCode
+        .filter((text) => INLINE_SKILL_FILE.test(text))
+        .map((target) => ({
+          target,
+          base: target.startsWith("./") || target.startsWith("../") ? documentDir : ".",
+        })),
+    ];
+    for (const { target, base } of references) {
+      try {
+        const atSkillRoot = target.startsWith("{baseDir}/");
+        const decoded = decodeURIComponent(target.replace(/^\{baseDir\}\//, "").split("#", 1)[0]!);
+        if (
+          !decoded ||
+          decoded.length > 2048 ||
+          /^(?:\/|[a-z][a-z\d+.-]*:)/i.test(decoded) ||
+          /[\\%?#]/.test(decoded) ||
+          hasControlCharacters(decoded)
+        )
+          return true;
+        const path = posix.join(atSkillRoot ? "." : base, decoded);
+        const directory = decoded.endsWith("/") || decoded === "." || decoded === "..";
+        if (directory && (path === "." || path === "./")) continue;
+        const relative = normalizeSkillFilePath(directory ? path.replace(/\/$/, "") : path);
+        if (!relative) return true;
+        if (directory) {
+          if (![...files.keys()].some((file) => file.startsWith(`${relative}/`))) return true;
+          continue;
+        }
+        if (visited.has(relative)) continue;
+        const text = files.get(relative);
+        if (text === undefined) return true;
+        visited.add(relative);
+        if (/\.mdx?$/i.test(relative)) pending.push({ path: relative, body: text });
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function skillReferenceRejection(body: string, files: ReadonlyMap<string, string>): string | null {
+  const unsupported = "The skill has a missing or unsupported reference file.";
+  const unavailable =
+    "The skill has too many reference files, or a file is unreadable or too large.";
+  if ([...files.keys()].some((file) => !isSkillTextFile(file))) return unsupported;
+  if (files.size > PLUGIN_SKILL_FILE_LIMITS.count) return unavailable;
+  let totalBytes = 0;
+  for (const text of files.values()) {
+    const size = Buffer.byteLength(text);
+    totalBytes += size;
+    if (
+      text.includes(UNAVAILABLE_SKILL_FILE) ||
+      size > MAX_FILE_BYTES ||
+      totalBytes > PLUGIN_SKILL_FILE_LIMITS.totalBytes
+    )
+      return unavailable;
+  }
+  return hasMissingSkillReference(body, files) ? unsupported : null;
 }
 
 function collectSkills(
@@ -307,8 +457,8 @@ function collectSkills(
   const skills: PluginSkillEntry[] = [];
   const names = new Set<string>();
   for (const [path, content] of files) {
-    const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(path);
-    if (!match) continue;
+    const folder = SKILL_DOCUMENT.exec(path)?.[1];
+    if (!folder) continue;
     const parsed = parseSkillMd(content);
     if ("error" in parsed) {
       skipped.push({ kind: "skill_invalid", name: path, reason: "Invalid SKILL.md instructions" });
@@ -316,18 +466,23 @@ function collectSkills(
     }
     if (names.has(parsed.name.toLowerCase()))
       throw new Error("Plugin contains duplicate skill names");
-    // The current skill store persists SKILL.md text, not companion files. Do not
-    // silently install a recipe whose relative references/scripts would be missing.
-    if ([...files.keys()].some((p) => p.startsWith(`skills/${match[1]}/`) && p !== path)) {
-      skipped.push({
-        kind: "skill_invalid",
-        name: parsed.name,
-        reason: "Skills with companion files are not supported yet",
-      });
+    const companions = new Map(
+      [...files]
+        .filter(([name]) => name.startsWith(folder) && name !== path)
+        .map(([name, text]) => [name.slice(folder.length), text]),
+    );
+    const reason = skillReferenceRejection(parsed.body, companions);
+    if (reason) {
+      skipped.push({ kind: "skill_invalid", name: parsed.name, reason });
       continue;
     }
     names.add(parsed.name.toLowerCase());
-    skills.push({ name: parsed.name, description: parsed.description, content });
+    skills.push({
+      name: parsed.name,
+      description: parsed.description,
+      content,
+      ...(companions.size ? { files: Object.fromEntries(companions) } : {}),
+    });
   }
   return skills.sort((a, b) => compare(a.name, b.name));
 }
@@ -454,8 +609,11 @@ function parsePluginContent(input: {
   let bytes = 0;
   for (const file of input.files) {
     const path = safePath(file.path);
-    bytes += Buffer.byteLength(file.content);
-    if (Buffer.byteLength(file.content) > MAX_FILE_BYTES || bytes > MAX_BYTES)
+    const companion = SKILL_COMPANION.test(path);
+    const size =
+      companion && file.content === UNAVAILABLE_SKILL_FILE ? 0 : Buffer.byteLength(file.content);
+    bytes += size;
+    if ((size > MAX_FILE_BYTES && !companion) || bytes > MAX_BYTES)
       throw new Error("Plugin content is too large");
     if (files.has(path)) throw new Error("Plugin contains duplicate file paths");
     files.set(path, file.content);
@@ -524,7 +682,10 @@ function parsePluginContent(input: {
     mcpServers,
     skipped,
   };
-  assertNoCredentialEcho(toPluginPreview(result), knownCredentials);
+  assertNoCredentialEcho(
+    [toPluginPreview(result), ...skills.map((skill) => skill.files)],
+    knownCredentials,
+  );
   return result;
 }
 
@@ -619,7 +780,18 @@ export function toPluginPreview(plugin: ParsedPlugin): PluginPreview {
     name: plugin.name,
     version: plugin.version,
     description: plugin.description,
-    skills: plugin.skills.map(({ name, description, content }) => ({ name, description, content })),
+    skills: plugin.skills.map(({ name, description, content, files }) => ({
+      name,
+      description,
+      content,
+      ...(files
+        ? {
+            files: Object.entries(files)
+              .sort(([a], [b]) => compare(a, b))
+              .map(([path, body]) => ({ path, size: Buffer.byteLength(body) })),
+          }
+        : {}),
+    })),
     mcpServers: plugin.mcpServers.map(({ name, transport, endpoint, headers }) => ({
       name,
       transport,
@@ -638,7 +810,7 @@ export function toPluginPreview(plugin: ParsedPlugin): PluginPreview {
 }
 
 /** Refuse known credential echoes instead of silently changing reviewed instructions. */
-function assertNoCredentialEcho(preview: PluginPreview, credentials: string[]) {
+function assertNoCredentialEcho(content: unknown, credentials: string[]) {
   const variants = new Set<string>();
   for (const credential of credentials) {
     variants.add(credential);
@@ -648,5 +820,5 @@ function assertNoCredentialEcho(preview: PluginPreview, credentials: string[]) {
     variants.add(Buffer.from(credential).toString("base64"));
     variants.add(Buffer.from(credential).toString("base64url"));
   }
-  if (containsSecret(preview, [...variants])) throw new PluginImportError("invalid_plugin");
+  if (containsSecret(content, [...variants])) throw new PluginImportError("invalid_plugin");
 }

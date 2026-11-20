@@ -1,7 +1,11 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { PluginInstallReceipt } from "@rakazo/contracts";
 import type { PluginInstallReview, PluginInstallReviewState } from "@rakazo/core";
-import { createPluginInstallReview, initialPluginInstallReview } from "@rakazo/core";
+import {
+  createPluginInstallReview,
+  formatFileSize,
+  initialPluginInstallReview,
+} from "@rakazo/core";
 import { Badge, Button, Input } from "@rakazo/ui-web";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { newClientId } from "../../lib/client-id";
@@ -161,7 +165,7 @@ function PluginInstallsEditor({
                 <Trans>Skills</Trans>
               </h4>
               {preview.skills.map((skill) => (
-                <div key={skill.name} className="min-w-0">
+                <div key={`${preview.digest}:${skill.name}`} className="min-w-0">
                   <p className="break-words text-sm font-medium">{skill.name}</p>
                   <p className="text-sm text-muted-foreground">{skill.description}</p>
                   <details className="mt-1 text-sm">
@@ -172,6 +176,21 @@ function PluginInstallsEditor({
                       {skill.content}
                     </pre>
                   </details>
+                  {skill.files?.length ? (
+                    <details className="mt-1 text-sm text-muted-foreground">
+                      <summary className="cursor-pointer">
+                        <Trans>Reference files</Trans> ({skill.files.length})
+                      </summary>
+                      <ul className="mt-2 space-y-1 text-xs">
+                        {skill.files.map((file) => (
+                          <li key={file.path} className="break-all">
+                            {file.path}{" "}
+                            <span className="whitespace-nowrap">· {formatFileSize(file.size)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
                 </div>
               ))}
             </section>

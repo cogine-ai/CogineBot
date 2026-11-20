@@ -25,7 +25,10 @@ import { McpServerConfigInput } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { createDb } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { listAgentSkillRecords } from "../../../packages/adapters/src/skill-tools.js";
+import {
+  listAgentSkillRecords,
+  skillReadFromTool,
+} from "../../../packages/adapters/src/skill-tools.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
 
@@ -205,7 +208,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         })),
       });
     } else if (parsed.hostname === "raw.githubusercontent.com" && parts[2] === sourceSha) {
-      const content = fixture.files.get(parts.slice(3).join("/"));
+      const content = fixture.files.get(parts.slice(3).map(decodeURIComponent).join("/"));
       if (content === undefined) throw new Error("Unexpected synthetic GitHub file");
       body = content;
     } else throw new Error("Unexpected synthetic GitHub route");
@@ -896,6 +899,39 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       (await request(actor, "plugins/preview", { source: f.source }, { anonymous: true })).status,
     ).toBe(401);
     expect(read.mock.calls).toHaveLength(reads);
+  });
+
+  it("stores reviewed reference files and confines reads to the active installation owner and Space", async () => {
+    const actor = await account();
+    const other = await account();
+    const f = fixture();
+    const file = "templates/例.md";
+    const body = "Reference body exact\r\n中文\n\n";
+    const path = `skills/example/${file}`;
+    f.files.set("skills/example/SKILL.md", `${f.skill}\n[Template](${encodeURI(file)})`);
+    f.files.set(path, body);
+    const p = await preview(actor, f);
+    expect(p.skills[0]?.files).toEqual([{ path: file, size: Buffer.byteLength(body) }]);
+    expect(JSON.stringify(p)).not.toContain("Reference body exact");
+    f.files.set(path, `${body}Changed after review`);
+    expect((await request(actor, "plugins/install", intent(p))).status).toBe(409);
+    f.files.set(path, body);
+    const receipt = await install(actor, intent(p));
+    const skillId = receipt.skills[0]!.id;
+    expect(
+      await database.prisma.agentSkill.findUniqueOrThrow({ where: { id: skillId } }),
+    ).toMatchObject({ files: { [file]: body }, installId: receipt.id });
+    const readSkill = (reader: Pick<Actor, "spaceId" | "userId">) =>
+      skillReadFromTool(database.prisma, reader, { skillId, file });
+    expect(await readSkill(actor.actor)).toEqual({ name: f.skillName, file, content: body });
+    expect(await readSkill({ ...actor.actor, userId: other.actor.userId })).toEqual({
+      error: "Skill not found.",
+    });
+    expect(await readSkill({ ...actor.actor, spaceId: other.actor.spaceId })).toEqual({
+      error: "Skill not found.",
+    });
+    await uninstall(actor, receipt);
+    expect(await readSkill(actor.actor)).toEqual({ error: "Skill not found." });
   });
 
   it("previews full original instructions, persists only encrypted headers, and installs disabled servers", async () => {

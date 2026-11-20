@@ -128,6 +128,7 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
         spaceId: actor.spaceId,
         userId: actor.userId,
       },
+      omit: { files: true },
     });
     if (!row) throw new IsolationError();
     return row;
@@ -137,6 +138,7 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
     async list(actor: Actor): Promise<Omit<AgentSkill, "content">[]> {
       const rows = await prisma.agentSkill.findMany({
         where: { spaceId: actor.spaceId, userId: actor.userId, ...activePluginSkillWhere },
+        omit: { files: true },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });
       return mergeBuiltinSkills(builtinCatalog(), rows.map(mapAgentSkill)).map(
@@ -147,6 +149,7 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
     async listWithContent(actor: Actor): Promise<AgentSkill[]> {
       const rows = await prisma.agentSkill.findMany({
         where: { spaceId: actor.spaceId, userId: actor.userId, ...activePluginSkillWhere },
+        omit: { files: true },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });
       return mergeBuiltinSkills(builtinCatalog(), rows.map(mapAgentSkill));
@@ -168,6 +171,7 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
           userId: actor.userId,
           ...activePluginSkillWhere,
         },
+        omit: { files: true },
         orderBy: [{ name: "asc" }, { id: "asc" }],
       });
       const row = findSkillByName(rows, name);

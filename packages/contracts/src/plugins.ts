@@ -4,6 +4,7 @@ export const PluginSourceShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 export const PluginDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const PluginSourceSchema = z.string().min(1).max(2048);
 export const PluginNonceSchema = z.string().min(1).max(128);
+export const PLUGIN_SKILL_FILE_LIMITS = { count: 40, bytes: 100_000, totalBytes: 400_000 };
 
 /** Discovery metadata is only a hint; install still requires a reviewed SHA and digest. */
 export const PluginMarketplaceEntrySchema = z.object({
@@ -65,6 +66,15 @@ export const PluginPreviewSchema = z
             .string()
             .max(100_000)
             .refine(withinSkillByteLimit, "Skill content exceeds its byte limit"),
+          files: z
+            .array(
+              z.object({
+                path: z.string().min(1).max(2048),
+                size: z.number().int().min(0).max(PLUGIN_SKILL_FILE_LIMITS.bytes),
+              }),
+            )
+            .max(PLUGIN_SKILL_FILE_LIMITS.count)
+            .optional(),
         }),
       )
       .max(200),

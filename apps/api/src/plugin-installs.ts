@@ -23,7 +23,7 @@ import {
   runAsSystemInTransaction,
   Prisma as Sql,
 } from "@rakazo/db";
-import { pluginInstallReceipt } from "./plugin-install-receipt.js";
+import { pluginInstallReceipt, pluginReceiptChildren } from "./plugin-install-receipt.js";
 import type { RouterDeps } from "./router.js";
 
 type Context = {
@@ -39,7 +39,7 @@ type Deps = Pick<RouterDeps, "prisma" | "secrets" | "pluginRead"> & {
     input: { installId: string; expectedRevision: number },
   ) => Promise<PluginInstallReceipt>;
 };
-const includeChildren = { agentSkills: true, mcpServers: true } as const;
+const includeChildren = pluginReceiptChildren;
 type Row = Prisma.CapabilityInstallGetPayload<{ include: typeof includeChildren }>;
 type Prepared = {
   server: ParsedPlugin["mcpServers"][number];
@@ -95,7 +95,11 @@ function publicConfig(plugin: ParsedPlugin) {
   return {
     plugin: {
       ...preview,
-      skills: preview.skills.map(({ name, description }) => ({ name, description })),
+      skills: preview.skills.map(({ name, description, files }) => ({
+        name,
+        description,
+        ...(files ? { files } : {}),
+      })),
     },
     repositorySource: repositorySource(plugin.source),
     installedChildren: { skills: [], mcpServers: [] },

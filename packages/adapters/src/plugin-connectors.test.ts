@@ -37,19 +37,19 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("bounded immutable GitHub acquisition", () => {
   const TREE = "b".repeat(40);
-  function reader(
-    entries: Array<Record<string, unknown>> = files.map((f) => ({
-      path: f.path,
+  const blobs = (list: PluginRepoFile[]) =>
+    list.map((file) => ({
+      path: file.path,
       type: "blob",
       mode: "100644",
-      size: Buffer.byteLength(f.content),
-    })),
-  ) {
+      size: Buffer.byteLength(file.content),
+    }));
+  function reader(entries: Array<Record<string, unknown>> = blobs(files), contents = files) {
     return vi.fn<PluginRead>(async (url) => {
       if (url.includes("/commits/"))
         return JSON.stringify({ sha: SHA, commit: { tree: { sha: TREE } } });
       if (url.includes("/git/trees/")) return JSON.stringify({ tree: entries, truncated: false });
-      const file = files.find((f) => url.endsWith(`/${f.path}`));
+      const file = contents.find((f) => url.endsWith(`/${f.path}`));
       if (!file) throw new Error("Unexpected fixture URL");
       return file.content;
     });
@@ -93,6 +93,107 @@ describe("bounded immutable GitHub acquisition", () => {
       code: "invalid_source",
     });
     expect(read.mock.calls).toHaveLength(before);
+  });
+
+  it("keeps a skill with an unreadable reference out of the usable preview", async () => {
+    const read = reader(
+      blobs([...files, { path: "skills/example/references/notes.md", content: "" }]),
+    );
+    const plugin = await fetchGitHubPlugin(SOURCE, { read });
+    expect(plugin.skills).toEqual([]);
+    expect(plugin.mcpServers).toHaveLength(1);
+    expect(plugin.skipped).toContainEqual({
+      kind: "skill_invalid",
+      name: "example-skill",
+      reason: expect.stringContaining("unreadable"),
+    });
+    expect(read.mock.calls.some(([url]) => url.endsWith("/references/notes.md"))).toBe(true);
+  });
+
+  it.each([
+    ["count", Array<number>(41).fill(0)],
+    ["per-file size", [100_001]],
+    ["combined size", [100_000, 100_000, 100_000, 100_000, 1]],
+  ])("skips companion reads when tree metadata exceeds the %s limit", async (_, sizes) => {
+    const read = reader([
+      ...blobs(files),
+      ...sizes.map((size, index) => ({
+        path: `skills/example/references/${index}.txt`,
+        type: "blob",
+        mode: "100644",
+        size,
+      })),
+    ]);
+    const plugin = await fetchGitHubPlugin(SOURCE, { read });
+    expect(plugin.skills).toEqual([]);
+    expect(plugin.mcpServers).toHaveLength(1);
+    expect(plugin.skipped).toContainEqual(expect.objectContaining({ kind: "skill_invalid" }));
+    expect(read.mock.calls.some(([url]) => url.includes("/references/"))).toBe(false);
+  });
+
+  it.each(["complete", "cancel"])("bounds simultaneous raw reads when files %s", async (action) => {
+    const references = Array.from({ length: 12 }, (_, index) => ({
+      path: `skills/example/references/${index}.txt`,
+      content: `Reference ${index}`,
+    }));
+    const contents = [...files, ...references];
+    const read = reader(blobs(contents), contents);
+    const fixture = read.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new AbortController();
+    let active = 0;
+    let peak = 0;
+    read.mockImplementation(async (...args) => {
+      if (!args[0].startsWith("https://raw.githubusercontent.com/")) return fixture(...args);
+      active += 1;
+      peak = Math.max(peak, active);
+      await gate;
+      active -= 1;
+      return fixture(...args);
+    });
+    const pending = fetchGitHubPlugin(SOURCE, { read, signal: controller.signal });
+    try {
+      await vi.waitFor(() => expect(active).toBe(8));
+      if (action === "cancel") {
+        controller.abort();
+        await expect(pending).rejects.toMatchObject({ code: "aborted" });
+      }
+    } finally {
+      release();
+    }
+    if (action === "complete") {
+      const plugin = await pending;
+      expect(Object.values(plugin.skills[0]?.files ?? {})).toEqual(
+        references.map((f) => f.content),
+      );
+      expect(peak).toBe(8);
+    } else {
+      await new Promise<void>((done) => setImmediate(done));
+      expect(read).toHaveBeenCalledTimes(10);
+      expect(active).toBe(0);
+    }
+  });
+
+  it("stops raw reads when the combined actual plugin bytes exceed the shared limit", async () => {
+    const body = "x".repeat(100_000);
+    const contents = [
+      ...files,
+      ...Array.from({ length: 60 }, (_, index) => ({
+        path: `skills/extra-${index}/SKILL.md`,
+        content: body,
+      })),
+    ];
+    const read = reader(
+      blobs(contents).map((entry) => ({ ...entry, size: 0 })),
+      contents,
+    );
+    await expect(fetchGitHubPlugin(SOURCE, { read })).rejects.toBeInstanceOf(PluginImportError);
+    const attempts = read.mock.calls.slice(2);
+    expect(attempts.length).toBeLessThan(contents.length);
+    expect(attempts.every(([, , signal]) => signal?.aborted)).toBe(true);
   });
 
   it.each([
@@ -652,14 +753,118 @@ describe("portable format compatibility fixtures", () => {
         expect(preview.skipped[0]?.kind).toBe("mcp_invalid");
       }
     });
-    it("does not recursively discover skills or silently lose companion resources", () => {
-      const preview = parse([
+    it("collects text references without discovering nested documents as skills", () => {
+      const text = "保留\r\nreference\n\n";
+      const path = "skills/example-skill/references/guide.md";
+      const plugin = parse([
         ...files(),
         { path: "skills/nested/deeper/SKILL.md", content: skill },
-        { path: "skills/example-skill/references/guide.md", content: "guide" },
+        { path, content: text },
       ]);
-      expect(preview.skills).toEqual([]);
-      expect(preview.skipped[0]?.reason).toMatch(/companion files/);
+      expect(plugin.skills).toHaveLength(1);
+      expect(plugin.skills[0]?.files).toEqual({ "references/guide.md": text });
+      const preview = toPluginPreview(plugin);
+      expect(preview.skills[0]?.files).toEqual([
+        { path: "references/guide.md", size: Buffer.byteLength(text) },
+      ]);
+      expect(preview.skills[0]?.files?.[0]).not.toHaveProperty("content");
+      expect(parse([...files(), { path, content: `${text}x` }]).digest).not.toBe(plugin.digest);
+    });
+    it("rejects unavailable and unsupported local references but keeps ordinary web links", () => {
+      const body = files().map((file) =>
+        file.path.endsWith("/SKILL.md")
+          ? {
+              ...file,
+              content: `${file.content}\n[Notes][notes]\n\n[notes]: ./references/notes.md#intro\n\n[Web](https://example.test/)\n\n\x60[Example](not-a-file.md)\x60. Create \x60./output.md\x60.`,
+            }
+          : file,
+      );
+      expect(parse(body).skills).toEqual([]);
+      expect(
+        parse([...body, { path: "skills/example-skill/references/notes.md", content: "" }]).skills,
+      ).toHaveLength(1);
+      const unsupported = parse([
+        ...files(),
+        { path: "skills/example-skill/script.sh", content: "fixture text" },
+      ]);
+      expect(unsupported.skills).toEqual([]);
+      expect(unsupported.skipped[0]?.reason).toContain("unsupported");
+    });
+    it("requires named and nested references and accepts valid local directory and parent links", () => {
+      const body = files().map((file) =>
+        file.path.endsWith("/SKILL.md")
+          ? {
+              ...file,
+              content: `${file.content}\nRead \x60references/guide.md\x60. See [templates](templates/).`,
+            }
+          : file,
+      );
+      const template = { path: "skills/example-skill/templates/input.txt", content: "" };
+      const guide = { path: "skills/example-skill/references/guide.md", content: "" };
+      expect(parse([...body, template]).skills).toEqual([]);
+      expect(parse([...body, guide]).skills).toEqual([]);
+      expect(
+        parse([...body, template, { ...guide, content: "[Missing](policy.md)" }]).skills,
+      ).toEqual([]);
+      expect(
+        parse([
+          ...body,
+          template,
+          { ...guide, content: "Read `../templates/missing.txt` before running." },
+        ]).skills,
+      ).toEqual([]);
+      expect(
+        parse([...body, template, { ...guide, content: "[Outside](../../other/guide.md)" }]).skills,
+      ).toEqual([]);
+      const guideText =
+        "Read `templates/input.txt`, `../templates/input.txt` and `./templates/sample.txt`. [Main](../SKILL.md)";
+      const sample = {
+        path: "skills/example-skill/references/templates/sample.txt",
+        content: "Example",
+      };
+      expect(parse([...body, template, { ...guide, content: guideText }]).skills).toEqual([]);
+      expect(
+        parse([...body, template, sample, { ...guide, content: guideText }]).skills[0]?.files,
+      ).toEqual({
+        "references/guide.md": guideText,
+        "references/templates/sample.txt": "Example",
+        "templates/input.txt": "",
+      });
+    });
+    it("counts UTF-8 reference bytes and preserves exact count and size limits", () => {
+      const references = Array.from({ length: 40 }, (_, index) => ({
+        path: `skills/example-skill/references/${index}.txt`,
+        content: index < 4 ? `${"角".repeat(33_333)}x` : "",
+      }));
+      expect(parse([...files(), ...references]).skills).toHaveLength(1);
+      const tooMany = [
+        ...references,
+        { path: "skills/example-skill/references/41.txt", content: "" },
+      ];
+      const oversizedFile = [{ ...references[0]!, content: `${references[0]!.content}x` }];
+      const oversizedTotal = references.map((file, index) =>
+        index === 4 ? { ...file, content: "x" } : file,
+      );
+      for (const changed of [tooMany, oversizedFile, oversizedTotal]) {
+        expect(parse([...files(), ...changed]).skills).toEqual([]);
+      }
+    });
+    it("refuses a declared credential echoed in a stored reference body", () => {
+      expect(() =>
+        parse([
+          ...files({
+            remote: {
+              type: "streamable-http",
+              url: "https://example.test/mcp",
+              headers: { Authorization: "Bearer fixture-only-token-for-import" },
+            },
+          }),
+          {
+            path: "skills/example-skill/references/notes.md",
+            content: "fixture-only-token-for-import",
+          },
+        ]),
+      ).toThrow(PluginImportError);
     });
     it.each(["../plugin.json", "/plugin.json", "skills/../plugin.json", "dir\\plugin.json"])(
       "rejects escaping path %s",

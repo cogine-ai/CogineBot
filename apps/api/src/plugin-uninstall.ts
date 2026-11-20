@@ -16,7 +16,7 @@ import {
   readPluginCleanupRefs,
 } from "@rakazo/db";
 import { dismissMcpServerApprovals } from "./mcp-approval.js";
-import { pluginInstallReceipt } from "./plugin-install-receipt.js";
+import { pluginInstallReceipt, pluginReceiptChildren } from "./plugin-install-receipt.js";
 
 type Tx = Prisma.TransactionClient;
 type Scope = Pick<Actor, "spaceId" | "userId">;
@@ -28,7 +28,7 @@ type Deps = {
   jobs?: Pick<JobPublisher, "enqueue">;
   mcpOAuth?: Pick<McpOAuthBroker, "discardPluginPending">;
 };
-const includeChildren = { agentSkills: true, mcpServers: true } as const;
+const includeChildren = pluginReceiptChildren;
 const removedResult = {
   error: "This plugin was removed before the tool ran.",
   code: "plugin_removed",

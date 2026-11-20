@@ -25,6 +25,10 @@ const preview: PluginPreview = {
       description: "Research a topic",
       content:
         "---\nname: research\ndescription: Research a topic\n---\nRead the sources. Keep direct quotes separate from your conclusions.",
+      files: [
+        { path: "examples/sources.csv", size: 512 },
+        { path: "templates/research-outline.md", size: 1280 },
+      ],
     },
   ],
   mcpServers: [
@@ -116,6 +120,11 @@ test("GitHub plugin review pins the version, renders raw instructions and preser
   await expect(review.getByRole("heading", { name: preview.name, exact: true })).toBeVisible();
   await review.getByText("View instructions", { exact: true }).click();
   await expect(review.locator("pre")).toHaveText(preview.skills[0]!.content);
+  const references = review.getByText("Reference files (2)", { exact: true });
+  const outline = review.getByText("templates/research-outline.md · 1.3 KB", { exact: true });
+  await expect(outline).toBeHidden();
+  await references.click();
+  await expect(outline).toBeVisible();
   await expect(review.getByText(preview.mcpServers[0]!.endpoint, { exact: true })).toBeVisible();
   await review.getByText(/Skipped components/).click();
   await expect(review.getByText("Local commands are not imported", { exact: false })).toBeVisible();
@@ -127,7 +136,9 @@ test("GitHub plugin review pins the version, renders raw instructions and preser
   expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
     true,
   );
-  await panel.getByRole("button", { name: "Install plugin", exact: true }).scrollIntoViewIfNeeded();
+  await review.getByText("View instructions", { exact: true }).click();
+  await outline.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await expect(outline).toBeInViewport();
   await captureScreenshot(page, testInfo, "d011-plugin-preview-320");
   await page.setViewportSize({ width: 1280, height: 900 });
   await panel.getByRole("button", { name: "Install plugin", exact: true }).click();

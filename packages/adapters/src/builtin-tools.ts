@@ -1073,12 +1073,13 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "skill_read",
     description:
-      "Load a Claude Agent Skill (SKILL.md recipe) by exact skillId or a unique exact name. Use skillId when names are ambiguous. Follow the loaded recipe when it matches the user's request.",
+      "Load an Agent Skill by exact skillId or a unique exact name. The default returns SKILL.md and available reference paths. Call again with a listed path when you need that file.",
     inputSchema: {
       type: "object",
       properties: {
         skillId: { type: "string", description: "Exact skill id; preferred for ambiguous names." },
         name: { type: "string", description: "Exact skill name from the catalog." },
+        file: { type: "string", description: "Relative reference file path listed by skill_read." },
       },
     },
   },

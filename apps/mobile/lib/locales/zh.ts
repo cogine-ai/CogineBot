@@ -1242,6 +1242,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Skills are available to your Bots in this Space.": "Skills 可供你在此 Space 中的 Bot 使用。",
   "Skipped components": "已跳过的组件",
   "View instructions": "查看指令",
+  "Reference files": "附属文件",
   "Hide instructions": "收起指令",
   "Installation failed.": "安装失败。",
   "Another member": "其他成员",
