@@ -13,17 +13,23 @@ If one registry is unavailable, the other results remain visible with **Retry se
 Search pages belong to one catalog snapshot; retry the search if that snapshot changes.
 
 Preview does not install anything. Installation re-fetches the exact reviewed commit
-and verifies its content digest. It imports self-contained `SKILL.md` files as
-read-only Skills in the current user's Space and remote HTTPS HTTP/SSE MCP server
-definitions. Imported servers start disabled with no allowed tools. Configure and
+and verifies its content digest. It imports `SKILL.md` and supported reference
+files as read-only Skills in the current user's Space, along with remote HTTPS
+HTTP/SSE MCP server definitions. Imported servers start disabled with no allowed tools. Configure and
 approve them separately through the existing MCP controls; installation never
 connects a server, runs repository code or grants tool permissions.
 
 Only public github.com sources are supported. The importer limits acquisition to
 30 seconds, 200 files, 4,000,000 total bytes, 100,000 bytes per file and 200 supported
 components. Symlinks, submodules and paths outside the selected plugin directory
-are rejected. Local processes, hooks, companion files and variable templates are
-not imported; the preview lists skipped components.
+are rejected. Local processes, hooks and variable templates are skipped.
+
+Expand **Reference files** in a Skill preview to check the paths and sizes that
+will be installed. Each Skill can include up to 40 Markdown, MDX, plain text,
+JSON, YAML or CSV files, with a combined limit of 400,000 bytes. A Skill with a
+missing required reference, an unsupported file or an exceeded limit appears
+under **Skipped components**. A Bot can read the installed text by its listed
+relative path. Removing the plugin removes access to those files.
 
 Repository reads are unauthenticated and share GitHub's rate limits across the
 deployment's egress address. A temporary limit can delay imports; this version does

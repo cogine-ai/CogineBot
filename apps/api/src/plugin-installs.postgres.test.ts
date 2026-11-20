@@ -907,10 +907,15 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     const f = fixture();
     const file = "templates/例.md";
     const body = "Reference body exact\r\n中文\n\n";
-    f.files.set(`skills/example/${file}`, body);
+    const path = `skills/example/${file}`;
+    f.files.set("skills/example/SKILL.md", `${f.skill}\n[Template](${encodeURI(file)})`);
+    f.files.set(path, body);
     const p = await preview(actor, f);
     expect(p.skills[0]?.files).toEqual([{ path: file, size: Buffer.byteLength(body) }]);
     expect(JSON.stringify(p)).not.toContain("Reference body exact");
+    f.files.set(path, `${body}Changed after review`);
+    expect((await request(actor, "plugins/install", intent(p))).status).toBe(409);
+    f.files.set(path, body);
     const receipt = await install(actor, intent(p));
     const skillId = receipt.skills[0]!.id;
     expect(

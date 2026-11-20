@@ -793,14 +793,23 @@ export function createBotPackagesService(deps: Deps) {
             message: "The Bot has too many package components to export.",
           });
         const skillIds = [...new Set(input.skillIds)];
+        const selectedSkillWhere: Prisma.AgentSkillWhereInput = {
+          ...own(context.actor),
+          ...activePluginSkillWhere,
+          source: { in: ["user", "plugin"] },
+          id: { in: skillIds },
+        };
         const skills = skillIds.length
           ? await tx.agentSkill.findMany({
-              where: {
-                ...own(context.actor),
-                ...activePluginSkillWhere,
-                source: { in: ["user", "plugin"] },
-                id: { in: skillIds },
-              },
+              where: { ...selectedSkillWhere, files: { equals: Sql.DbNull } },
+              select: { id: true, name: true, description: true, content: true },
+              orderBy: { id: "asc" },
+            })
+          : [];
+        const referencedSkills = skillIds.length
+          ? await tx.agentSkill.findMany({
+              where: { ...selectedSkillWhere, files: { not: Sql.DbNull } },
+              select: { id: true, name: true },
               orderBy: { id: "asc" },
             })
           : [];
@@ -818,7 +827,7 @@ export function createBotPackagesService(deps: Deps) {
               select: { id: true },
             })
           : [];
-        if (input.skillIds.some((id) => !skills.some((skill) => skill.id === id)))
+        if (skills.length + referencedSkills.length !== skillIds.length)
           throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
         const routines = await tx.routine.findMany({
           where: { ...own(context.actor), botId: bot.id },
@@ -843,26 +852,42 @@ export function createBotPackagesService(deps: Deps) {
           throw new ORPCError("BAD_REQUEST", {
             message: "The Bot exceeds the package collection limits.",
           });
-        return { bot, components, skills, routines, memory, assignments, availableTargets };
+        return {
+          bot,
+          components,
+          skills,
+          referencedSkills,
+          routines,
+          memory,
+          assignments,
+          availableTargets,
+        };
       });
-      const { bot, components, skills, routines, memory, assignments, availableTargets } = snapshot;
+      const {
+        bot,
+        components,
+        skills,
+        referencedSkills,
+        routines,
+        memory,
+        assignments,
+        availableTargets,
+      } = snapshot;
       const leftOut: BotPackageLeftOut[] = [
         note(
           "profile.runtime",
           "Model, computer, fleet, conversation, file and permission bindings are not exported.",
         ),
       ];
-      const portableSkills = skills.filter((skill, index) => {
-        if (!skill.files || Object.keys(skill.files).length === 0) return true;
+      for (const skill of referencedSkills) {
         leftOut.push(
           note(
-            `skills[${index}]`,
-            `“${skill.name}” has reference files. Install its plugin on the destination.`,
+            redactSecretText(skill.name),
+            "This skill has reference files. Install its plugin on the destination.",
             "skill",
           ),
         );
-        return false;
-      });
+      }
       const portableRoutines = routines.flatMap((routine, index) => {
         if (!routine.crons.length || routine.crons.some(isOneShotRoutineCron)) {
           leftOut.push(
@@ -950,7 +975,7 @@ export function createBotPackagesService(deps: Deps) {
                 description: component.description,
                 content: component.content,
               })),
-            ...portableSkills.map((skill) => ({
+            ...skills.map((skill) => ({
               name: skill.name,
               description: skill.description,
               content: skill.content,

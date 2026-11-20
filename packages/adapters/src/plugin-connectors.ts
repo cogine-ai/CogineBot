@@ -1,6 +1,7 @@
 /** Portable plugin parsing plus a bounded, public-GitHub acquisition adapter.
  * No repository code is executed and no files are written to the host. */
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import type { PluginPreview } from "@rakazo/contracts";
 import {
   McpServerConfigInput,
@@ -9,9 +10,9 @@ import {
 } from "@rakazo/contracts";
 import {
   containsSecret,
-  localSkillLinkTargets,
   normalizeSkillFilePath,
   parseSkillMd,
+  readSkillMarkdownReferences,
 } from "@rakazo/core";
 import { z } from "zod";
 import { assertNoSensitiveQuery, HeaderName } from "./connector-http.js";
@@ -69,9 +70,11 @@ export type ParsedPlugin = {
 const MAX_FILES = 200;
 const MAX_BYTES = 4_000_000;
 const MAX_FILE_BYTES = PLUGIN_SKILL_FILE_LIMITS.bytes;
-const SKILL_DOCUMENT = /^skills\/[^/]+\/SKILL\.md$/;
+const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
 const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
 const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
+const INLINE_SKILL_FILE =
+  /^(?:\{baseDir\}\/|\.\/|(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([
@@ -287,12 +290,11 @@ export async function fetchGitHubRepo(
     return entry.type === "blob";
   });
   if (entries.length > MAX_FILES) throw new Error("Plugin directory has too many files");
-  const skillFolders = new Set(
-    entries
-      .map((entry) => entry.path.slice(prefix.length))
-      .filter((path) => SKILL_DOCUMENT.test(path))
-      .map((path) => path.slice(0, -"SKILL.md".length)),
-  );
+  const skillFolders = new Set<string>();
+  for (const entry of entries) {
+    const folder = SKILL_DOCUMENT.exec(entry.path.slice(prefix.length))?.[1];
+    if (folder) skillFolders.add(folder);
+  }
   const companionBudgets = new Map<string, { count: number; bytes: number; fetchable: boolean }>();
   for (const entry of entries) {
     const companion = SKILL_COMPANION.exec(entry.path.slice(prefix.length));
@@ -360,17 +362,64 @@ function isSkillTextFile(path: string): boolean {
   return normalizeSkillFilePath(path) === path && SKILL_TEXT_FILE.test(path);
 }
 
-/** A relative Markdown link declares a file the installed skill must have. */
-function hasMissingSkillLink(body: string, files: ReadonlyMap<string, string>): boolean {
-  for (const target of localSkillLinkTargets(body)) {
-    try {
-      const relative = normalizeSkillFilePath(decodeURIComponent(target.split("#", 1)[0]!));
-      if (relative !== "SKILL.md" && (!relative || !files.has(relative))) return true;
-    } catch {
-      return true;
+/** Walk references from the main recipe and any Markdown reached through them. */
+function hasMissingSkillReference(body: string, files: ReadonlyMap<string, string>): boolean {
+  const visited = new Set(["SKILL.md"]);
+  const pending = [{ path: "SKILL.md", body }];
+  for (const document of pending) {
+    const { links, inlineCode } = readSkillMarkdownReferences(document.body);
+    for (const target of [...links, ...inlineCode.filter((text) => INLINE_SKILL_FILE.test(text))]) {
+      try {
+        const atSkillRoot = target.startsWith("{baseDir}/");
+        const decoded = decodeURIComponent(target.replace(/^\{baseDir\}\//, "").split("#", 1)[0]!);
+        if (
+          !decoded ||
+          decoded.length > 2048 ||
+          /^(?:\/|[a-z][a-z\d+.-]*:)/i.test(decoded) ||
+          /[\\%?#]/.test(decoded) ||
+          hasControlCharacters(decoded)
+        )
+          return true;
+        const path = posix.join(atSkillRoot ? "." : posix.dirname(document.path), decoded);
+        const directory = decoded.endsWith("/") || decoded === "." || decoded === "..";
+        if (directory && (path === "." || path === "./")) continue;
+        const relative = normalizeSkillFilePath(directory ? path.replace(/\/$/, "") : path);
+        if (!relative) return true;
+        if (directory) {
+          if (![...files.keys()].some((file) => file.startsWith(`${relative}/`))) return true;
+          continue;
+        }
+        if (visited.has(relative)) continue;
+        const text = files.get(relative);
+        if (text === undefined) return true;
+        visited.add(relative);
+        if (/\.mdx?$/i.test(relative)) pending.push({ path: relative, body: text });
+      } catch {
+        return true;
+      }
     }
   }
   return false;
+}
+
+function skillReferenceRejection(body: string, files: ReadonlyMap<string, string>): string | null {
+  const unsupported = "The skill has a missing or unsupported reference file.";
+  const unavailable =
+    "The skill has too many reference files, or a file is unreadable or too large.";
+  if ([...files.keys()].some((file) => !isSkillTextFile(file))) return unsupported;
+  if (files.size > PLUGIN_SKILL_FILE_LIMITS.count) return unavailable;
+  let totalBytes = 0;
+  for (const text of files.values()) {
+    const size = Buffer.byteLength(text);
+    totalBytes += size;
+    if (
+      text.includes(UNAVAILABLE_SKILL_FILE) ||
+      size > MAX_FILE_BYTES ||
+      totalBytes > PLUGIN_SKILL_FILE_LIMITS.totalBytes
+    )
+      return unavailable;
+  }
+  return hasMissingSkillReference(body, files) ? unsupported : null;
 }
 
 function collectSkills(
@@ -380,8 +429,8 @@ function collectSkills(
   const skills: PluginSkillEntry[] = [];
   const names = new Set<string>();
   for (const [path, content] of files) {
-    const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(path);
-    if (!match) continue;
+    const folder = SKILL_DOCUMENT.exec(path)?.[1];
+    if (!folder) continue;
     const parsed = parseSkillMd(content);
     if ("error" in parsed) {
       skipped.push({ kind: "skill_invalid", name: path, reason: "Invalid SKILL.md instructions" });
@@ -389,37 +438,14 @@ function collectSkills(
     }
     if (names.has(parsed.name.toLowerCase()))
       throw new Error("Plugin contains duplicate skill names");
-    const folder = `skills/${match[1]}/`;
     const companions = new Map(
       [...files]
         .filter(([name]) => name.startsWith(folder) && name !== path)
         .map(([name, text]) => [name.slice(folder.length), text]),
     );
-    if (
-      [...companions.keys()].some((name) => !isSkillTextFile(name)) ||
-      hasMissingSkillLink(parsed.body, companions)
-    ) {
-      skipped.push({
-        kind: "skill_invalid",
-        name: parsed.name,
-        reason: "The skill has a missing or unsupported reference file.",
-      });
-      continue;
-    }
-    const bodies = [...companions.values()];
-    if (
-      companions.size > PLUGIN_SKILL_FILE_LIMITS.count ||
-      bodies.some(
-        (text) => text.includes(UNAVAILABLE_SKILL_FILE) || Buffer.byteLength(text) > MAX_FILE_BYTES,
-      ) ||
-      bodies.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) >
-        PLUGIN_SKILL_FILE_LIMITS.totalBytes
-    ) {
-      skipped.push({
-        kind: "skill_invalid",
-        name: parsed.name,
-        reason: "The skill has too many reference files, or a file is unreadable or too large.",
-      });
+    const reason = skillReferenceRejection(parsed.body, companions);
+    if (reason) {
+      skipped.push({ kind: "skill_invalid", name: parsed.name, reason });
       continue;
     }
     names.add(parsed.name.toLowerCase());

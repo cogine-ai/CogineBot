@@ -9,6 +9,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { NativeActionButton } from "../../components/native-action-button";
+import { NativeDisclosure } from "../../components/native-disclosure";
 import type { PluginRequests } from "../../components/plugin-setup";
 import { PluginDiscovery, PluginServerSetup } from "../../components/plugin-setup";
 import { captureApiRequestContext, rpc } from "../../lib/api";
@@ -203,27 +204,24 @@ export default function Plugins() {
                 </Text>
               ) : null}
               {skill.files?.length ? (
-                <>
-                  <NativeActionButton
-                    label={`${t("Reference files")} (${skill.files.length})`}
-                    prominence="quiet"
-                    onPress={() =>
-                      setExpandedFiles((current) => {
-                        const next = new Set(current);
-                        if (next.has(skill.name)) next.delete(skill.name);
-                        else next.add(skill.name);
-                        return next;
-                      })
-                    }
-                  />
-                  {expandedFiles.has(skill.name)
-                    ? skill.files.map((file) => (
-                        <Text key={file.path} selectable style={styles.metadata}>
-                          {file.path} · {formatFileSize(file.size)}
-                        </Text>
-                      ))
-                    : null}
-                </>
+                <NativeDisclosure
+                  label={`${t("Reference files")} (${skill.files.length})`}
+                  expanded={expandedFiles.has(skill.name)}
+                  onExpandedChange={(open) =>
+                    setExpandedFiles((current) => {
+                      const next = new Set(current);
+                      if (open) next.add(skill.name);
+                      else next.delete(skill.name);
+                      return next;
+                    })
+                  }
+                >
+                  {skill.files.map((file) => (
+                    <Text key={file.path} selectable style={styles.metadata}>
+                      {file.path} · {formatFileSize(file.size)}
+                    </Text>
+                  ))}
+                </NativeDisclosure>
               ) : null}
             </View>
           ))}

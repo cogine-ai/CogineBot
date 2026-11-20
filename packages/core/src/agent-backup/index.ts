@@ -24,7 +24,7 @@ import {
   isAgentBackupPath,
 } from "@rakazo/contracts";
 import type { ParsedSkillMd } from "../agent-skill.js";
-import { localSkillLinkTargets, parseSkillMd } from "../agent-skill.js";
+import { parseSkillMd, readSkillMarkdownReferences } from "../agent-skill.js";
 import {
   AGENT_IMPORT_ARCHIVE_LIMITS,
   AgentImportArchiveError,
@@ -518,7 +518,8 @@ export async function encodeAgentBackupFolder(
     if (text.length > AGENT_BACKUP_MAX_FILE_LENGTH) throw new AgentImportArchiveError("too_large");
     if (isBackupSkill(name)) {
       const skill = parseSkillMd(text);
-      if (!("error" in skill) && localSkillLinkTargets(skill.body).length) linkedSkills.add(name);
+      if (!("error" in skill) && readSkillMarkdownReferences(skill.body).links.length)
+        linkedSkills.add(name);
     }
     content.set(path, text);
   }

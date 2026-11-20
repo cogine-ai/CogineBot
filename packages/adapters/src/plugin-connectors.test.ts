@@ -710,6 +710,36 @@ describe("portable format compatibility fixtures", () => {
       expect(unsupported.skills).toEqual([]);
       expect(unsupported.skipped[0]?.reason).toContain("unsupported");
     });
+    it("requires named and nested references and accepts valid local directory and parent links", () => {
+      const body = files().map((file) =>
+        file.path.endsWith("/SKILL.md")
+          ? {
+              ...file,
+              content: `${file.content}\nRead \x60references/guide.md\x60. See [templates](templates/).`,
+            }
+          : file,
+      );
+      const template = { path: "skills/example-skill/templates/input.txt", content: "" };
+      const guide = { path: "skills/example-skill/references/guide.md", content: "" };
+      expect(parse([...body, template]).skills).toEqual([]);
+      expect(parse([...body, guide]).skills).toEqual([]);
+      expect(
+        parse([...body, template, { ...guide, content: "[Missing](policy.md)" }]).skills,
+      ).toEqual([]);
+      expect(
+        parse([...body, template, { ...guide, content: "[Outside](../../other/guide.md)" }]).skills,
+      ).toEqual([]);
+      expect(
+        parse([
+          ...body,
+          template,
+          { ...guide, content: "[Template](../templates/input.txt) [Main](../SKILL.md)" },
+        ]).skills[0]?.files,
+      ).toEqual({
+        "references/guide.md": "[Template](../templates/input.txt) [Main](../SKILL.md)",
+        "templates/input.txt": "",
+      });
+    });
     it("counts UTF-8 reference bytes and preserves exact count and size limits", () => {
       const references = Array.from({ length: 40 }, (_, index) => ({
         path: `skills/example-skill/references/${index}.txt`,

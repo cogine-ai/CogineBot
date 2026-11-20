@@ -49,6 +49,24 @@ vi.mock("expo-router", () => ({
 }));
 vi.mock("react-native", () => ({
   Linking: { openURL: api.openURL },
+  Pressable: ({
+    children,
+    onPress,
+    accessibilityState,
+  }: {
+    children?: ReactNode;
+    onPress: () => void;
+    accessibilityState: { expanded: boolean };
+  }) =>
+    createElement(
+      "button",
+      {
+        type: "button",
+        onClick: onPress,
+        "aria-expanded": accessibilityState.expanded,
+      },
+      children,
+    ),
   ScrollView: ({ children, testID }: { children?: ReactNode; testID?: string }) =>
     createElement("div", { "data-testid": testID }, children),
   View: ({
@@ -99,6 +117,7 @@ vi.mock("../components/native-action-button", () => ({
       label,
     ),
 }));
+vi.mock("../components/native-symbol", () => ({ NativeSymbol: () => null }));
 vi.mock("./i18n", () => ({
   useI18n: () => ({
     t: (key: string, values?: Record<string, string>) =>
@@ -219,7 +238,9 @@ it("projects the reviewed instructions, endpoints and unsupported components thr
   await click("View instructions");
   expect(node.textContent).toContain("Complete raw instructions");
   expect(node.textContent).not.toContain("templates/outline.md");
+  expect(button("Reference files (1)").getAttribute("aria-expanded")).toBe("false");
   await click("Reference files (1)");
+  expect(button("Reference files (1)").getAttribute("aria-expanded")).toBe("true");
   expect(node.textContent).toContain("templates/outline.md · 128 B");
   await click("Reference files (1)");
   expect(node.textContent).not.toContain("templates/outline.md");

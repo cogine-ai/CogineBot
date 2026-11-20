@@ -136,7 +136,9 @@ test("GitHub plugin review pins the version, renders raw instructions and preser
   expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(
     true,
   );
-  await panel.getByRole("button", { name: "Install plugin", exact: true }).scrollIntoViewIfNeeded();
+  await review.getByText("View instructions", { exact: true }).click();
+  await outline.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  await expect(outline).toBeInViewport();
   await captureScreenshot(page, testInfo, "d011-plugin-preview-320");
   await page.setViewportSize({ width: 1280, height: 900 });
   await panel.getByRole("button", { name: "Install plugin", exact: true }).click();

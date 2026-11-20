@@ -15,22 +15,28 @@ type SkillMarkdownNode = {
   children?: SkillMarkdownNode[];
   url?: string;
   identifier?: string;
+  value?: string;
 };
 
-/** Markdown file references, including definitions used by a link or image. */
-export function localSkillLinkTargets(body: string): string[] {
+/** File links and inline path candidates in a recipe's Markdown. */
+export function readSkillMarkdownReferences(body: string): {
+  links: string[];
+  inlineCode: string[];
+} {
   const nodes: SkillMarkdownNode[] = [skillMarkdown.parse(body)];
-  const targets: string[] = [];
+  const links: string[] = [];
+  const inlineCode: string[] = [];
   const references = new Set<string>();
   const definitions = new Map<string, string>();
   const addTarget = (url: string | undefined) => {
     const value = url?.trim();
     if (value && (!/^(?:#|\/\/|[a-z][a-z\d+.-]*:)/i.test(value) || /^file:/i.test(value)))
-      targets.push(value);
+      links.push(value);
   };
   while (nodes.length) {
     const node = nodes.pop()!;
     if (node.type === "link" || node.type === "image") addTarget(node.url);
+    if (node.type === "inlineCode" && node.value) inlineCode.push(node.value);
     if (node.identifier) {
       if (node.type === "linkReference" || node.type === "imageReference")
         references.add(node.identifier);
@@ -41,7 +47,7 @@ export function localSkillLinkTargets(body: string): string[] {
     for (let index = children.length - 1; index >= 0; index--) nodes.push(children[index]!);
   }
   for (const reference of references) addTarget(definitions.get(reference));
-  return targets;
+  return { links, inlineCode };
 }
 
 /** Normalize only the optional leading ./ on a skill's stored reference path. */
