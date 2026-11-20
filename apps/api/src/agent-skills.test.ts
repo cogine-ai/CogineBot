@@ -156,6 +156,9 @@ describe("skill save preservation", () => {
       carriage: "first\rsecond",
       crlf: "first\r\nsecond\n",
       separators: "first\u2028middle\u2029tail",
+      nul: "first\0second",
+      backspace: "first\bsecond",
+      blankLine: "first\n  \nsecond",
       version: "1.10",
       enabled: "true",
       values: ["a,b", "", 2, true],
@@ -174,11 +177,14 @@ describe("skill save preservation", () => {
       String.raw`carriage: "first\rsecond"`,
       String.raw`crlf: "first\r\nsecond\n"`,
       String.raw`separators: "first\u2028middle\u2029tail"`,
+      String.raw`nul: "first\u0000second"`,
+      String.raw`backspace: "first\bsecond"`,
+      String.raw`blankLine: "first\n  \nsecond"`,
       'version: "1.10"',
       'enabled: "true"',
-      `values: ${JSON.stringify(metadata.values)}`,
+      `values: ${JSON.stringify(metadata.values)} \t `,
       "metadata:",
-      `  values: ${JSON.stringify(metadata.metadata.values)}`,
+      `  values: ${JSON.stringify(metadata.metadata.values)} \t `,
       `  detail: ${JSON.stringify(metadata.metadata.detail)}`,
       "  owner: reviewers",
       "---",
@@ -187,6 +193,10 @@ describe("skill save preservation", () => {
       "",
     ].join("\n");
     const assertSaved = (content: string, description: string, body: string) => {
+      expect(content).not.toMatch(
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: Checks forbidden YAML output codepoints deliberately.
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u0084\u0086-\u009f\ud800-\udfff\ufffe\uffff]/u,
+      );
       const parsed = parseSkillMd(content);
       if ("error" in parsed) throw new Error(parsed.error);
       expect(parsed.frontmatter).toEqual({ ...metadata, name: "Fidelity recipe", description });
