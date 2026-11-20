@@ -5,8 +5,8 @@ import type {
   DurableMemoryScope,
   SemanticMemoryProvider,
   SemanticMemoryRecallRequest,
+  SemanticMemoryRecallResponse,
   SemanticMemoryResponse,
-  SemanticMemoryResult,
   SemanticMemorySaveRequest,
 } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost } from "@rakazo/contracts";
@@ -255,7 +255,7 @@ export class SupermemoryMemoryProvider implements SemanticMemoryProvider {
   async recall(
     request: SemanticMemoryRecallRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse<SemanticMemoryResult[]>> {
+  ): Promise<SemanticMemoryRecallResponse> {
     if (!request.query.trim()) return { ok: true, value: [] };
     const blocked = await this.localBaseUrlBlock();
     if (blocked) return { ok: false, error: blocked };
@@ -274,6 +274,7 @@ export class SupermemoryMemoryProvider implements SemanticMemoryProvider {
             score: item.similarity,
             ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
           })),
+          ...(result.partial && { partial: result.partial }),
         }
       : result;
   }

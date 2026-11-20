@@ -201,6 +201,71 @@ describe("SerenityMemoryProvider", () => {
     );
   });
 
+  it.each([
+    { scenario: "complete facts", space: "facts", bot: "facts" },
+    { scenario: "complete empty", space: "empty", bot: "empty" },
+    { scenario: "space unavailable", space: "failed", bot: "facts", partial: true },
+    { scenario: "bot unavailable", space: "facts", bot: "failed", partial: true },
+    { scenario: "partial empty", space: "failed", bot: "empty", partial: true },
+    { scenario: "all unavailable", space: "failed", bot: "failed" },
+  ] as const)("distinguishes $scenario across authorized recall entities", async (test) => {
+    const space = serenitySpaceEntity(context.spaceId);
+    const bot = serenityBotEntity(context.botId!);
+    const error = "synthetic unavailable source details";
+    recallSerenityMock.mockImplementation(async (_connection, options) => {
+      const entity = options?.entity;
+      if (entity !== space && entity !== bot) throw new Error("Unexpected fixture entity");
+      const outcome = entity === space ? test.space : test.bot;
+      if (outcome === "failed") return { ok: false, error };
+      return {
+        ok: true,
+        value:
+          outcome === "facts"
+            ? [
+                { factId: "low", fact: "Other topic", provenance: entity },
+                { factId: "fact-1", fact: "Metric units", provenance: entity },
+                { factId: "fact-2", fact: "Metric distances", provenance: entity },
+              ]
+            : [],
+      };
+    });
+
+    const result = await provider().recall(
+      { query: "metric units", scope: "shared", botId: context.botId!, limit: 2 },
+      context,
+    );
+
+    expect(recallSerenityMock.mock.calls.map(([, options]) => options?.entity)).toEqual([
+      space,
+      bot,
+    ]);
+    expect(
+      recallSerenityMock.mock.calls.every(([, options]) => options?.signal === context.signal),
+    ).toBe(true);
+    if (test.space === "failed" && test.bot === "failed") {
+      expect(result).toEqual({ ok: false, error: `${error}; ${error}` });
+      return;
+    }
+    const entity = test.space === "facts" ? space : test.bot === "facts" ? bot : undefined;
+    expect(result).toEqual({
+      ok: true,
+      value: entity
+        ? [
+            { id: "fact-1", memory: "Metric units", provenance: entity, entity, score: 1 },
+            {
+              id: "fact-2",
+              memory: "Metric distances",
+              provenance: entity,
+              entity,
+              score: expect.any(Number),
+            },
+          ]
+        : [],
+      ...("partial" in test && { partial: true }),
+    });
+    expect(JSON.stringify(result)).not.toContain(error);
+  });
+
   it("writes shared durable saves once, to the space entity", async () => {
     rememberSerenityMock.mockResolvedValue({
       ok: true,

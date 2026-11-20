@@ -4920,15 +4920,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
           recallPromise,
         ]);
         const semanticMemoryEnabled = Boolean(semanticMemory) && !messagingChannelRun;
+        const recallSucceeded = recalled?.ok === true && recalled.value.length > 0;
         let recalledMemory = "";
-        let recallSucceeded = false;
-        if (recalled) {
-          if (recalled.ok && recalled.value.length > 0) {
-            recallSucceeded = true;
-            recalledMemory = formatRecalledMemory(recalled.value);
-          } else if (!recalled.ok) {
-            getLogger().error("semantic memory recall failed", recalled.error);
-          }
+        if (recalled?.ok) {
+          recalledMemory = [
+            recalled.partial ? "Some memory sources were unavailable." : "",
+            formatRecalledMemory(recalled.value),
+          ]
+            .filter(Boolean)
+            .join("\n\n");
+        } else if (recalled) {
+          getLogger().error("semantic memory recall failed", recalled.error);
+          recalledMemory = "Memory recall was unavailable.";
         }
         if (!compactedHistory.usedLocalSummary) {
           history = history.slice(

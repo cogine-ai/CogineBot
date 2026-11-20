@@ -71,6 +71,94 @@ describe("SupermemoryMemoryProvider", () => {
     ).toEqual(["rakazo:bot-1", "rakazo:bot-1:history:3"]);
   });
 
+  it.each([
+    { scenario: "complete facts", space: "facts", bot: "facts", history: "facts" },
+    { scenario: "complete empty", space: "empty", bot: "empty", history: "empty" },
+    {
+      scenario: "space unavailable",
+      space: "failed",
+      bot: "facts",
+      history: "facts",
+      partial: true,
+    },
+    { scenario: "bot unavailable", space: "facts", bot: "failed", history: "facts", partial: true },
+    {
+      scenario: "history unavailable",
+      space: "facts",
+      bot: "facts",
+      history: "failed",
+      partial: true,
+    },
+    { scenario: "partial empty", space: "failed", bot: "empty", history: "empty", partial: true },
+    { scenario: "all unavailable", space: "failed", bot: "failed", history: "failed" },
+  ] as const)("distinguishes $scenario across scoped containers", async (test) => {
+    const spaceTag = "rakazo:workspace:workspace-1";
+    const botTag = "rakazo:bot-1";
+    const historyTag = "rakazo:bot-1:history:3";
+    const updatedAt = "2025-01-01T00:00:00Z";
+    const responses = new Map([
+      [spaceTag, { outcome: test.space, results: [{ memory: "shared", similarity: 0.7 }] }],
+      [botTag, { outcome: test.bot, results: [{ memory: "shared", similarity: 0.9, updatedAt }] }],
+      [
+        historyTag,
+        {
+          outcome: test.history,
+          results: [
+            { memory: "history", similarity: 0.8 },
+            { memory: "low", similarity: 0.1 },
+          ],
+        },
+      ],
+    ]);
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const { containerTag } = JSON.parse(String(init?.body));
+      const fixture = responses.get(containerTag);
+      if (!fixture) throw new Error("Unexpected fixture container");
+      if (fixture.outcome === "failed") {
+        return new Response("synthetic unavailable container details", { status: 503 });
+      }
+      return Response.json({ results: fixture.outcome === "empty" ? [] : fixture.results });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await provider().recall(
+      { query: "project", scope: "shared", botId: "bot-1", historyGeneration: 3, limit: 2 },
+      context,
+    );
+
+    expect(
+      fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).containerTag),
+    ).toEqual([spaceTag, botTag, historyTag]);
+    expect(
+      fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init?.body)).limit === 2),
+    ).toBe(true);
+    if (test.space === "failed" && test.bot === "failed" && test.history === "failed") {
+      const error = "Supermemory search failed: 503";
+      expect(result).toEqual({ ok: false, error: [error, error, error].join("; ") });
+      return;
+    }
+    expect(result).toEqual({
+      ok: true,
+      value: [
+        ...(test.bot === "facts" ? [{ memory: "shared", score: 0.9, updatedAt }] : []),
+        ...(test.history === "facts" ? [{ memory: "history", score: 0.8 }] : []),
+        ...(test.bot !== "facts" && test.space === "facts"
+          ? [{ memory: "shared", score: 0.7 }]
+          : []),
+      ],
+      ...("partial" in test && { partial: true }),
+    });
+  });
+
+  it("keeps blank queries empty without querying any container", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      provider().recall({ query: "  ", scope: "shared", botId: "bot-1", limit: 5 }, context),
+    ).resolves.toEqual({ ok: true, value: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("passes recall limits and cancellation through to the provider client", async () => {
     const controller = new AbortController();
     controller.abort(new Error("cancelled"));

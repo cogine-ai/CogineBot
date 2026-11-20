@@ -467,6 +467,15 @@ export type SemanticMemoryResponse<T = void> =
   | { ok: true; value: T }
   | { ok: false; error: string };
 
+export type SemanticMemoryRecallResponse =
+  | {
+      ok: true;
+      value: SemanticMemoryResult[];
+      /** Some sources failed, while at least one source completed the recall. */
+      partial?: true;
+    }
+  | { ok: false; error: string };
+
 export interface SemanticMemoryRecallRequest {
   query: string;
   scope: DurableMemoryScope;
