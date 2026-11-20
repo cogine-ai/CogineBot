@@ -467,7 +467,7 @@ describe("MCP discovery lifecycle", () => {
       env: { MCP_TOKEN: "Bearer {{oauth.access_token}}" },
       files: {
         CONFIG_FILE:
-          '{"access":"{{oauth.access_token}}","api_key":"private-fixture","kind":"object"}',
+          '{"access":"{{oauth.access_token}}","apiKey":"private-fixture","kind":"object"}',
       },
     };
     const calls: string[] = [];
@@ -480,7 +480,7 @@ describe("MCP discovery lifecycle", () => {
         expect(env.MCP_TOKEN).toBe(`Bearer fixture-grant-${launchNumber}`);
         expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
           access: `fixture-grant-${launchNumber}`,
-          api_key: "private-fixture",
+          apiKey: "private-fixture",
           kind: "object",
         });
         expect((await stat(env.CONFIG_FILE!)).mode & 0o777).toBe(0o600);

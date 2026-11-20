@@ -41,6 +41,15 @@ describe("managed stdio credential files", () => {
     expect(mcpCredentialFileSecrets(json)).toEqual([json, token]);
     const text = "[credentials]\nsecret = 'fixture-value'";
     expect(mcpCredentialFileSecrets(text)).toContain("fixture-value");
+    const mixed = JSON.stringify({
+      apiKey: "fixture-api",
+      privateKey: "fixture-private",
+      kind: "object",
+      port: 443,
+    });
+    expect(mcpCredentialFileSecrets(mixed).sort()).toEqual(
+      [mixed, "fixture-api", "fixture-private"].sort(),
+    );
   });
 
   it("writes same-name files into distinct private directories and cleans up only its launch", async () => {

@@ -497,7 +497,7 @@ function oauthFetch(
   network: RemoteTransportDependencies,
   material: OAuthMaterial = {},
   allowPrivateEndpoint = false,
-  request?: { deadline: AbortSignal; diagnosticSecrets?: string[] },
+  deadline?: AbortSignal,
 ): {
   fetch: typeof fetch;
   close: () => Promise<void>;
@@ -538,9 +538,7 @@ function oauthFetch(
     try {
       const response = await fallbackFetch(
         input,
-        request
-          ? { ...init, signal: combineSignals(request.deadline, init?.signal ?? undefined) }
-          : init,
+        deadline ? { ...init, signal: combineSignals(deadline, init?.signal ?? undefined) } : init,
       );
       if (!response.ok) {
         const next = await readOAuthRejection(response);
@@ -557,12 +555,8 @@ function oauthFetch(
     fetch: recordingFetch,
     close: () => safeFetch.close(),
     publicError: (error, message) => {
-      const secrets = [...oauthDiagnosticSecrets(material), ...(request?.diagnosticSecrets ?? [])];
-      if (error instanceof Error && networkErrors.has(error)) {
-        return request?.diagnosticSecrets?.length
-          ? new Error(sanitizeConnectorError(error, secrets))
-          : error;
-      }
+      if (error instanceof Error && networkErrors.has(error)) return error;
+      const secrets = oauthDiagnosticSecrets(material);
       const sdk = sanitizeConnectorError(error, secrets);
       const surfaced = rejection ? formatOAuthRejection(rejection, sdk, secrets) : undefined;
       getLogger().warn(`${message}: ${surfaced ?? sdk}`);
@@ -1005,7 +999,7 @@ export class McpOAuthBroker {
       this.network,
       { oauthClient: client },
       false,
-      { deadline },
+      deadline,
     );
     let started: Awaited<ReturnType<typeof beginMcpStdioAuthorization>>;
     try {
@@ -1197,7 +1191,7 @@ export class McpOAuthBroker {
       this.network,
       { oauthClient: pending.client },
       false,
-      { deadline, diagnosticSecrets: [input.code, pending.codeVerifier] },
+      deadline,
     );
     let tokens: OAuthTokens;
     try {
@@ -1210,8 +1204,10 @@ export class McpOAuthBroker {
         }),
         deadline,
       );
-    } catch (error) {
-      throw network.publicError(error, "Could not complete MCP OAuth");
+    } catch {
+      // The exchange error may echo the raw or form-encoded code, verifier or client secret.
+      getLogger().warn("MCP OAuth token exchange failed");
+      throw new Error("Could not complete MCP OAuth");
     } finally {
       await network.close().catch(() => undefined);
     }
@@ -1378,7 +1374,7 @@ export class McpOAuthBroker {
                       context.userId,
                       this.allowPrivateEndpoint,
                     )),
-                  stdio ? { deadline: AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) } : undefined,
+                  stdio ? AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) : undefined,
                 ),
             }
           : {}),

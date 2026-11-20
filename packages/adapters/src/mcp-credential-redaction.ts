@@ -1,6 +1,14 @@
+function normalizedCredentialKey(key: string): string {
+  return key
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/-/g, "_");
+}
+
 /** Headers whose values are credentials even when short (e.g. Cookie, X-Session). */
 export function isAuthHeaderKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/-/g, "_");
+  const normalized = normalizedCredentialKey(key);
   return (
     normalized === "authorization" ||
     normalized === "cookie" ||
@@ -14,9 +22,9 @@ export function isAuthHeaderKey(key: string): boolean {
 
 /** Explicit credential keys (access_token, api_key, …); numeric values stay redacted. */
 function isExplicitCredentialKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/-/g, "_");
+  const normalized = normalizedCredentialKey(key);
   if (isAuthHeaderKey(key)) return true;
-  return /(?:^|_)(secret|password|credential|access_token|refresh_token|id_token|auth_token|session_token|session_id|session_key|session_secret|api_key|api_token|private_key|signing_key)$/.test(
+  return /(?:^|_)(secret|password|credential|access_token|refresh_token|id_token|auth_token|session_token|session_id|session_key|session_secret|api_key|api_token|private_key|signing_key|access_key)$/.test(
     normalized,
   );
 }
@@ -24,7 +32,7 @@ function isExplicitCredentialKey(key: string): boolean {
 /** Ambiguous *_token keys where numeric-only values are usually config, not secrets. */
 function isAmbiguousCredentialKey(key: string): boolean {
   if (isExplicitCredentialKey(key)) return false;
-  const normalized = key.toLowerCase().replace(/-/g, "_");
+  const normalized = normalizedCredentialKey(key);
   if (/(?:^|_)token$/.test(normalized)) {
     return !/(timeout|ttl|max|count|type|mode|name)$/.test(normalized);
   }

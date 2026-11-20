@@ -12,6 +12,7 @@ const client = {
   authorizationParams: "access_type=offline&prompt=consent",
 };
 const redirectUri = "https://app.example.test/mcp/oauth/callback";
+const fixtureCode = "fixture+code/opaque";
 
 async function fixture({
   metadataIssuer = client.authorizationServer,
@@ -100,7 +101,7 @@ async function fixture({
   };
   const exchange = vi.fn(async (request: Request) => {
     const body = new URLSearchParams(await request.text());
-    expect(body.get("code")).toBe("fixture-code");
+    expect(body.get("code")).toBe(fixtureCode);
     expect(/^[A-Za-z0-9._~-]{43,128}$/.test(body.get("code_verifier") ?? "")).toBe(true);
     expect(body.get("redirect_uri")).toBe(redirectUri);
     expect(body.get("client_secret")).toBe(client.clientSecret);
@@ -109,7 +110,7 @@ async function fixture({
       return Response.json(
         {
           error: "invalid_grant",
-          error_description: `Rejected ${body.get("code")}, verifier ${body.get("code_verifier")}, client ${body.get("client_secret")}`,
+          error_description: `Rejected ${body.get("code")}, ${body.toString()}`,
         },
         { status: 400 },
       );
@@ -157,7 +158,7 @@ async function fixture({
     return result;
   };
   const complete = (sessionId: string, broker = newBroker(), actor = scope) =>
-    broker.complete({ ...actor, sessionId, state: sessionId, code: "fixture-code" });
+    broker.complete({ ...actor, sessionId, state: sessionId, code: fixtureCode });
   return {
     begin,
     complete,
@@ -240,12 +241,8 @@ describe("deployment-managed stdio OAuth", () => {
     const { sessionId } = await f.begin();
     const warn = vi.spyOn(getLogger(), "warn").mockImplementation(() => undefined);
     try {
-      await expect(f.complete(sessionId)).rejects.toThrow(
-        /Rejected \[redacted\], verifier \[redacted\], client \[redacted\]/,
-      );
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Rejected [redacted], verifier [redacted], client [redacted]"),
-      );
+      await expect(f.complete(sessionId)).rejects.toThrow(/^Could not complete MCP OAuth$/);
+      expect(warn.mock.calls).toEqual([["MCP OAuth token exchange failed"]]);
       expect(f.pending.size).toBe(0);
     } finally {
       warn.mockRestore();
