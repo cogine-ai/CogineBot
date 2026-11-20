@@ -19,10 +19,11 @@ HTTP/SSE MCP server definitions. Imported servers start disabled with no allowed
 approve them separately through the existing MCP controls; installation never
 connects a server, runs repository code or grants tool permissions.
 
-Only public github.com sources are supported. The importer limits acquisition to
-30 seconds, 200 files, 4,000,000 total bytes, 100,000 bytes per file and 200 supported
-components. Symlinks, submodules and paths outside the selected plugin directory
-are rejected. Local processes, hooks and variable templates are skipped.
+Only public github.com sources are supported. A preview has a 30-second deadline
+and accepts up to 200 files, 4,000,000 bytes of plugin content, 100,000 bytes per
+file and 200 supported components. File requests run up to eight at a time.
+Symlinks, submodules and paths outside the selected plugin directory are rejected.
+Local processes, hooks and variable templates are skipped.
 
 Expand **Reference files** in a Skill preview to check the paths and sizes that
 will be installed. Each Skill can include up to 40 Markdown, MDX, plain text,
