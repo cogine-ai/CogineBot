@@ -124,6 +124,65 @@ describe("skill tools", () => {
     });
   });
 
+  it("preserves typed quoted metadata and arrays through tool imports, edits and reads", async () => {
+    const metadata = {
+      detail: String.raw`C:\fixtures, "quoted"`,
+      carriage: "first\rsecond",
+      crlf: "first\r\nsecond\n",
+      separators: "first\u2028middle\u2029tail",
+      version: "1.10",
+      enabled: "false",
+      values: ["a,b", "", 2, true],
+      metadata: {
+        values: ["1.10", false, 3],
+        owner: "reviewers",
+        detail: "First: keep this\n\n  second\n",
+      },
+    };
+    const raw = [
+      "---",
+      "name: Fidelity recipe",
+      "description: Original description",
+      `detail: ${JSON.stringify(metadata.detail)}`,
+      String.raw`carriage: "first\rsecond"`,
+      String.raw`crlf: "first\r\nsecond\n"`,
+      String.raw`separators: "first\u2028middle\u2029tail"`,
+      'version: "1.10"',
+      'enabled: "false"',
+      `values: ${JSON.stringify(metadata.values)}`,
+      "metadata:",
+      `  values: ${JSON.stringify(metadata.metadata.values)}`,
+      `  detail: ${JSON.stringify(metadata.metadata.detail)}`,
+      "  owner: reviewers",
+      "---",
+      "",
+      "# Original body",
+      "",
+    ].join("\n");
+    const created = await skillCreateFromTool(prisma as never, owner, { content: raw });
+    expect(created).toMatchObject({ ok: true });
+    const skillId = String(created.id);
+    const assertSaved = async (description: string, body: string) => {
+      const read = await skillReadFromTool(prisma as never, owner, { skillId });
+      const parsed = parseSkillMd(String(read.content));
+      if ("error" in parsed) throw new Error(parsed.error);
+      expect(parsed.frontmatter).toEqual({ ...metadata, name: "Fidelity recipe", description });
+      expect(parsed.body).toBe(body);
+    };
+    await assertSaved("Original description", "# Original body\n");
+    expect(
+      await skillUpdateFromTool(prisma as never, owner, {
+        skillId,
+        description: "Updated description",
+      }),
+    ).toMatchObject({ ok: true });
+    await assertSaved("Updated description", "# Original body\n");
+    expect(
+      await skillUpdateFromTool(prisma as never, owner, { skillId, body: "# Edited body\n" }),
+    ).toMatchObject({ ok: true });
+    await assertSaved("Updated description", "# Edited body\n");
+  });
+
   it("preserves extra frontmatter keys on update", async () => {
     const content = buildSkillMd({
       name: "Review PR",

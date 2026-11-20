@@ -39,7 +39,7 @@ function setup(rows: ReturnType<typeof savedSkill>[] = []) {
     OR?: Where[];
     install?: unknown;
   };
-  const matches = (row: ReturnType<typeof savedSkill>, where: Where) =>
+  const matches = (row: ReturnType<typeof savedSkill>, where: Where): boolean =>
     Object.entries(where).every(([key, value]) => {
       if (key === "OR") return where.OR?.some((branch) => matches(row, branch));
       if (key === "install") return false; // These fixtures are unattached user or legacy rows.
@@ -149,6 +149,62 @@ describe("built-in skill precedence in the API", () => {
 });
 
 describe("skill save preservation", () => {
+  it("preserves typed quoted metadata and arrays from import through field edits and reload", async () => {
+    const metadata = {
+      detail: String.raw`C:\fixtures, "quoted"`,
+      single: "it's here",
+      carriage: "first\rsecond",
+      crlf: "first\r\nsecond\n",
+      separators: "first\u2028middle\u2029tail",
+      version: "1.10",
+      enabled: "true",
+      values: ["a,b", "", 2, true],
+      metadata: {
+        values: ["1.10", false, 3],
+        owner: "reviewers",
+        detail: "First: keep this\n\n  second\n",
+      },
+    };
+    const raw = [
+      "---",
+      "name: Fidelity recipe",
+      "description: Original description",
+      `detail: ${JSON.stringify(metadata.detail)}`,
+      "single: 'it''s here'",
+      String.raw`carriage: "first\rsecond"`,
+      String.raw`crlf: "first\r\nsecond\n"`,
+      String.raw`separators: "first\u2028middle\u2029tail"`,
+      'version: "1.10"',
+      'enabled: "true"',
+      `values: ${JSON.stringify(metadata.values)}`,
+      "metadata:",
+      `  values: ${JSON.stringify(metadata.metadata.values)}`,
+      `  detail: ${JSON.stringify(metadata.metadata.detail)}`,
+      "  owner: reviewers",
+      "---",
+      "",
+      "# Original body",
+      "",
+    ].join("\n");
+    const assertSaved = (content: string, description: string, body: string) => {
+      const parsed = parseSkillMd(content);
+      if ("error" in parsed) throw new Error(parsed.error);
+      expect(parsed.frontmatter).toEqual({ ...metadata, name: "Fidelity recipe", description });
+      expect(parsed.body).toBe(body);
+    };
+    const { service } = setup();
+    const saved = await service.create(actor, { content: raw });
+    assertSaved(saved.content, "Original description", "# Original body\n");
+    const edited = await service.update(actor, {
+      skillId: saved.id,
+      description: "Updated description",
+    });
+    assertSaved(edited.content, "Updated description", "# Original body\n");
+    await service.update(actor, { skillId: saved.id, body: "# Edited body\n" });
+    const reloaded = await service.get(actor, { skillId: saved.id });
+    assertSaved(reloaded.content, "Updated description", "# Edited body\n");
+  });
+
   it.each([0, 1, 2, 3])(
     "preserves raw imported metadata with %i trailing newlines through field edits",
     async (trailingNewlines) => {

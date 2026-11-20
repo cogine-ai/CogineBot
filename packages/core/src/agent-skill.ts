@@ -457,7 +457,8 @@ function parseSimpleYamlObject(text: string): Record<string, unknown> {
         const nestedKey = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(nestedLine);
         if (nestedKey) {
           mode = "map";
-          nested[nestedKey[1]!] = parseYamlScalar(nestedKey[2] ?? "");
+          const value = nestedKey[2] ?? "";
+          nested[nestedKey[1]!] = parseJsonScalarArray(value) ?? parseYamlScalar(value);
           i += 1;
           continue;
         }
@@ -467,11 +468,13 @@ function parseSimpleYamlObject(text: string): Record<string, unknown> {
       continue;
     }
     if (raw.startsWith("[") && raw.endsWith("]")) {
-      result[key] = raw
-        .slice(1, -1)
-        .split(",")
-        .map((part) => parseYamlScalar(part.trim()))
-        .filter((part) => part !== "");
+      result[key] =
+        parseJsonScalarArray(raw) ??
+        raw
+          .slice(1, -1)
+          .split(",")
+          .map((part) => parseYamlScalar(part.trim()))
+          .filter((part) => part !== "");
       i += 1;
       continue;
     }
@@ -481,18 +484,50 @@ function parseSimpleYamlObject(text: string): Record<string, unknown> {
   return result;
 }
 
+function isSupportedJsonScalar(value: unknown): value is string | number | boolean {
+  return (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function parseJsonScalarArray(raw: string): Array<string | number | boolean> | undefined {
+  if (!raw.startsWith("[") || !raw.endsWith("]")) return undefined;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (Array.isArray(value) && value.every(isSupportedJsonScalar)) return value;
+  } catch {
+    // Hand-written non-JSON arrays keep the existing scoped fallback.
+  }
+  return undefined;
+}
+
 function parseYamlScalar(raw: string): string | number | boolean {
   const value = raw.trim();
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    // Saves write double-quoted values with JSON.stringify. Decode them so the next save
+    // does not add another escape layer. Non-JSON escapes such as "C:\path" keep the slice.
+    try {
+      const decoded: unknown = JSON.parse(value);
+      if (typeof decoded === "string") return decoded;
+    } catch {
+      // Fall through to the slice below.
+    }
     return value.slice(1, -1);
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
   }
   if (value === "true") return true;
   if (value === "false") return false;
   if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
   return value;
+}
+
+function stringifyYamlScalar(value: string | number | boolean): string {
+  // Keep JSON string values on one physical line for the frontmatter reader.
+  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
 function formatYamlBlockScalar(key: string, value: string): string {
@@ -525,18 +560,37 @@ function formatYamlBlockScalar(key: string, value: string): string {
 function formatYamlLine(key: string, value: unknown): string {
   if (value === null || value === undefined) return `${key}:`;
   if (typeof value === "string") {
+    if (/[\r\u2028\u2029]/.test(value)) {
+      return `${key}: ${stringifyYamlScalar(value)}`;
+    }
     if (value.includes("\n") || value.includes(": ")) {
       return formatYamlBlockScalar(key, value);
     }
-    if (value === "" || /[#{}[\],&*?|>!%@`]/.test(value) || value !== value.trim()) {
-      return `${key}: ${JSON.stringify(value)}`;
+    if (
+      value === "" ||
+      /[#{}[\],&*?|>!%@`]/.test(value) ||
+      value !== value.trim() ||
+      value.startsWith('"') ||
+      value.startsWith("'") ||
+      typeof parseYamlScalar(value) !== "string"
+    ) {
+      return `${key}: ${stringifyYamlScalar(value)}`;
     }
     return `${key}: ${value}`;
   }
   if (typeof value === "number" || typeof value === "boolean") return `${key}: ${value}`;
   if (Array.isArray(value)) {
-    if (value.every((item) => typeof item === "string" || typeof item === "number")) {
-      return `${key}: [${value.map((item) => JSON.stringify(String(item))).join(", ")}]`;
+    if (
+      value.every(isSupportedJsonScalar) ||
+      value.every((item) => typeof item === "string" || typeof item === "number")
+    ) {
+      // Keep legacy non-finite number text; JSON would otherwise replace it with null.
+      const items = value.map((item) =>
+        stringifyYamlScalar(
+          typeof item === "number" && !Number.isFinite(item) ? String(item) : item,
+        ),
+      );
+      return `${key}: [${items.join(", ")}]`;
     }
     const items = value
       .map((item) => `  - ${typeof item === "string" ? item : JSON.stringify(item)}`)
@@ -546,8 +600,15 @@ function formatYamlLine(key: string, value: unknown): string {
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) return `${key}:`;
+    // The map reader consumes one-line values, not nested block scalars.
     const nested = entries
-      .map(([nestedKey, nestedValue]) => `  ${formatYamlLine(nestedKey, nestedValue)}`)
+      .map(([nestedKey, nestedValue]) => {
+        const line =
+          typeof nestedValue === "string"
+            ? `${nestedKey}: ${stringifyYamlScalar(nestedValue)}`
+            : formatYamlLine(nestedKey, nestedValue);
+        return `  ${line}`;
+      })
       .join("\n");
     return `${key}:\n${nested}`;
   }
