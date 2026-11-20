@@ -55,6 +55,7 @@ import {
   inferAttachmentMimeType,
   isActive,
   isApprovalAskBlock,
+  isOneShotRoutineCrons,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
   isServerUnreachable,
@@ -67,6 +68,7 @@ import {
   nestRosterByParent,
   observeMemoryCleanup,
   parseModelOptionKey,
+  parseRoutineDateTime,
   plainTextFromMarkdown,
   projectMessageReactions,
   reconcileWebsiteLoginAnswer,
@@ -74,6 +76,7 @@ import {
   replyAttachment,
   resolveComposerSendPlan,
   resolveMentionPickerKey,
+  routineCronPresets,
   runThreadSubscription,
   SLASH_ACTIONS,
   type SlashActionId,
@@ -1102,6 +1105,13 @@ export function ShellPage() {
       return result.secret;
     });
   const routineSaveRequest = useRef(0);
+  const resetRoutineEditor = useCallback((routine: Routine | null, draft?: RoutineDraftState) => {
+    routineSaveRequest.current += 1;
+    setEditingRoutine(routine);
+    setRoutineDraft(draft ?? (routine ? draftFromRoutine(routine) : emptyRoutineDraft()));
+    setRoutineWebhookSecret(null);
+    setRoutineError(null);
+  }, []);
   const routineRunPending = useRef(false);
   const bootstrappedThread = useRef<ThreadSnapshot | null>(null);
   const expandedHistoryThread = useRef<string | null>(null);
@@ -1137,6 +1147,10 @@ export function ShellPage() {
 
   const inGroup = Boolean(groupId);
   const active = inGroup || inNewChat ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
+  const liveEditingRoutine =
+    editingRoutine && active?.id === routinesBotId
+      ? routines.find((routine) => routine.id === editingRoutine.id)
+      : undefined;
   const computerBot =
     (computerBotId ? bots.find((bot) => bot.id === computerBotId) : undefined) ?? active;
   computerOpenRef.current = computerOpen;
@@ -2513,6 +2527,9 @@ export function ShellPage() {
           isRunTerminalEvent(event) ||
           event.type === "run.waiting_input" ||
           event.type === "thread.message.updated" ||
+          event.type === "routine.created" ||
+          event.type === "routine.fired" ||
+          event.type === "routine.updated" ||
           event.type === "skill.teaching.stopped"
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
@@ -3277,10 +3294,10 @@ export function ShellPage() {
   // rather than deriving it from `active`, so it goes stale across a bot switch —
   // without this, Save on bot B could silently update bot A's routine.
   useEffect(() => {
-    setEditingRoutine(null);
+    resetRoutineEditor(null);
     setDeleteRoutineTarget(null);
     setPanelState((current) => (current === "routine" ? null : current));
-  }, [active?.id]);
+  }, [active?.id, resetRoutineEditor]);
 
   const routineDeepLink = searchParams.get("routine");
   const messageDeepLink = searchParams.get("m");
@@ -3290,9 +3307,7 @@ export function ShellPage() {
     if (inGroup || !active || !routineDeepLink || routinesBotId !== active.id) return;
     const routine = routines.find((item) => item.id === routineDeepLink);
     if (routine) {
-      setRoutineDraft(draftFromRoutine(routine));
-      setRoutineWebhookSecret(null);
-      setEditingRoutine(routine);
+      resetRoutineEditor(routine);
       setPanel("routine");
     } else {
       setPanel("computer");
@@ -3300,7 +3315,7 @@ export function ShellPage() {
     const next = new URLSearchParams(searchParamsRef.current);
     next.delete("routine");
     panelSearch.current.setSearchParams(next, { replace: true });
-  }, [active?.id, inGroup, routines, routinesBotId, routineDeepLink]);
+  }, [active?.id, inGroup, resetRoutineEditor, routines, routinesBotId, routineDeepLink]);
 
   // Routine metadata refreshes must not restart a pending message-page read.
   useEffect(() => {
@@ -4390,12 +4405,13 @@ export function ShellPage() {
     setTaughtSkills(skills);
     setTaughtSkillsBotId(id);
   }, []);
-  const addSkillRoutine = useCallback((name: string, prompt: string) => {
-    setRoutineDraft({ ...emptyRoutineDraft(), name, prompt });
-    setRoutineWebhookSecret(null);
-    setEditingRoutine(null);
-    setPanel("routine");
-  }, []);
+  const addSkillRoutine = useCallback(
+    (name: string, prompt: string) => {
+      resetRoutineEditor(null, { ...emptyRoutineDraft(), name, prompt });
+      setPanel("routine");
+    },
+    [resetRoutineEditor, setPanel],
+  );
   const speakingMessageIdRef = useRef(speakingMessageId);
   speakingMessageIdRef.current = speakingMessageId;
   const speakMessage = useCallback((message: ThreadMessage) => {
@@ -4794,14 +4810,21 @@ export function ShellPage() {
         ? routines.find((item) => item.id === saved.routineId)
         : undefined;
       if (saved.routineId && !routine) next = "computer";
-      setEditingRoutine(routine ?? null);
-      setRoutineDraft(routine ? draftFromRoutine(routine) : emptyRoutineDraft());
-      setRoutineWebhookSecret(null);
+      resetRoutineEditor(routine ?? null);
     }
     pendingPanelRestore.current = null;
     setPanelState(next);
     setRestoredPanelKey(panelStorageKey);
-  }, [panelStorageKey, active?.id, inGroup, panel, routinesBotId, routines, searchParams]);
+  }, [
+    panelStorageKey,
+    active?.id,
+    inGroup,
+    panel,
+    resetRoutineEditor,
+    routinesBotId,
+    routines,
+    searchParams,
+  ]);
 
   useEffect(() => {
     // Do not gate writes on ?routine= staying in the URL — a stuck/failed routine
@@ -6906,10 +6929,7 @@ export function ShellPage() {
                 ) : null}
                 <RoutineListHeader
                   onCreate={() => {
-                    setRoutineDraft(emptyRoutineDraft());
-                    setRoutineWebhookSecret(null);
-                    setEditingRoutine(null);
-                    setRoutineError(null);
+                    resetRoutineEditor(null);
                     setPanel("routine");
                   }}
                 />
@@ -6922,10 +6942,7 @@ export function ShellPage() {
                       routine={routine}
                       running={routineRunning}
                       onOpen={() => {
-                        setRoutineDraft(draftFromRoutine(routine));
-                        setRoutineWebhookSecret(null);
-                        setEditingRoutine(routine);
-                        setRoutineError(null);
+                        resetRoutineEditor(routine);
                         setPanel("routine");
                       }}
                       onStop={() => void stopRun()}
@@ -7041,9 +7058,17 @@ export function ShellPage() {
             {panel === "routine" && active ? (
               <RoutineEditor
                 draft={routineDraft}
-                onChange={setRoutineDraft}
+                onChange={(draft) => {
+                  if (!routineSavePending.current) setRoutineDraft(draft);
+                }}
                 editing={editingRoutine}
-                timezone={editingRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone()}
+                liveTiming={liveEditingRoutine}
+                timezone={
+                  liveEditingRoutine?.timezone ??
+                  editingRoutine?.timezone ??
+                  bootstrapMe?.timezone ??
+                  localTimezone()
+                }
                 webhook={{
                   path:
                     typeof window !== "undefined"
@@ -7073,7 +7098,7 @@ export function ShellPage() {
                 onBack={() => setPanel("computer")}
                 onClose={() => setPanel(null)}
                 onEnsureWebhook={async () => {
-                  await ensureWebhookSecret(active.id);
+                  if (!routineSavePending.current) await ensureWebhookSecret(active.id);
                 }}
                 onSave={async () => {
                   if (routineSavePending.current) return;
@@ -7112,6 +7137,18 @@ export function ShellPage() {
                       await ensureWebhookSecret(targetBotId);
                     }
                     const crons = routineDraft.schedules.map(cronFromPreset);
+                    const intervalBased =
+                      crons.length === 1 && routineDraft.schedules[0]?.freq === "Interval";
+                    const timezone =
+                      targetRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone();
+                    const firstRun = routineDraft.startAt;
+                    let startAt: string | null | undefined;
+                    if (firstRun && crons.length > 0 && !isOneShotRoutineCrons(crons)) {
+                      startAt = firstRun.value
+                        ? (parseRoutineDateTime(firstRun.value, firstRun.timezone)?.toISOString() ??
+                          firstRun.value)
+                        : null;
+                    }
                     const chosenModel = routineDraft.modelKey
                       ? parseModelOptionKey(routineDraft.modelKey)
                       : null;
@@ -7128,15 +7165,31 @@ export function ShellPage() {
                         : {};
                     let saved: Routine;
                     if (targetRoutine) {
-                      const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
+                      const latestRoutine = liveEditingRoutine ?? targetRoutine;
+                      const armOneShot =
+                        routineNeedsOneShotArm(latestRoutine, crons) &&
+                        (routineDraft.activeDirty ? routineDraft.active : routineDraft.runAtDirty);
+                      const previousSchedules = routineCronPresets(
+                        targetRoutine.crons,
+                        targetRoutine.intervalBased,
+                      );
+                      const scheduleChanged =
+                        crons.length !== previousSchedules.length ||
+                        previousSchedules.some(
+                          (preset, index) => cronFromPreset(preset) !== crons[index],
+                        );
+                      const intervalChanged =
+                        targetRoutine.intervalBased !== undefined &&
+                        targetRoutine.intervalBased !== intervalBased;
                       let runAt: string | undefined;
                       if (armOneShot) {
-                        if (!routineDraft.runAtLocal) {
+                        const runTime = routineDraft.runAt;
+                        if (!runTime?.value) {
                           setRoutineError(t`Add a run time for this one-shot.`);
                           return;
                         }
-                        const parsed = new Date(routineDraft.runAtLocal);
-                        if (!Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+                        const parsed = parseRoutineDateTime(runTime.value, runTime.timezone);
+                        if (!parsed || parsed.getTime() <= Date.now()) {
                           setRoutineError(t`Run time must be in the future.`);
                           return;
                         }
@@ -7146,13 +7199,35 @@ export function ShellPage() {
                         routineId: targetRoutine.id,
                         ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
-                        name: routineDraft.name || t`Routine`,
-                        prompt: routineDraft.prompt || t`Check in.`,
-                        crons,
-                        active: armOneShot ? true : routineDraft.active,
-                        webhookEnabled: routineDraft.webhookEnabled,
-                        githubEnabled: routineDraft.githubEnabled,
-                        messageProvider: routineDraft.messageProvider,
+                        name:
+                          routineDraft.name === targetRoutine.name
+                            ? undefined
+                            : routineDraft.name || t`Routine`,
+                        prompt:
+                          routineDraft.prompt === targetRoutine.prompt
+                            ? undefined
+                            : routineDraft.prompt || t`Check in.`,
+                        crons: scheduleChanged ? crons : undefined,
+                        intervalBased:
+                          scheduleChanged || intervalChanged ? intervalBased : undefined,
+                        active: armOneShot
+                          ? true
+                          : routineDraft.activeDirty && routineDraft.active !== latestRoutine.active
+                            ? routineDraft.active
+                            : undefined,
+                        webhookEnabled:
+                          routineDraft.webhookEnabled === targetRoutine.webhookEnabled
+                            ? undefined
+                            : routineDraft.webhookEnabled,
+                        githubEnabled:
+                          routineDraft.githubEnabled === targetRoutine.githubEnabled
+                            ? undefined
+                            : routineDraft.githubEnabled,
+                        messageProvider:
+                          routineDraft.messageProvider === targetRoutine.messageProvider
+                            ? undefined
+                            : routineDraft.messageProvider,
+                        startAt,
                         ...(runAt ? { runAt } : {}),
                       });
                     } else {
@@ -7163,7 +7238,9 @@ export function ShellPage() {
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
-                        timezone: bootstrapMe?.timezone ?? localTimezone(),
+                        intervalBased,
+                        timezone,
+                        startAt: startAt ?? undefined,
                         active: routineDraft.active,
                         notify: true,
                         webhookEnabled: routineDraft.webhookEnabled,
@@ -7177,6 +7254,9 @@ export function ShellPage() {
                     ) {
                       setEditingRoutine(saved);
                       setRoutineDraft(draftFromRoutine(saved));
+                      setRoutines((items) =>
+                        items.map((routine) => (routine.id === saved.id ? saved : routine)),
+                      );
                     }
                   } catch (error) {
                     if (

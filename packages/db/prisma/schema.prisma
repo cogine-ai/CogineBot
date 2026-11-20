@@ -1024,6 +1024,14 @@ model Routine {
   thinkingLevel  String?
   lastRunAt      DateTime?
   nextRunAt      DateTime?
+  /// Optional earliest occurrence of a repeat, including while paused.
+  startAt        DateTime?
+  /// True only for a single recurring interval explicitly selected by its author.
+  intervalBased  Boolean   @default(false)
+  /// The pending interval cadence, retained while paused.
+  intervalAnchorAt DateTime?
+  /// Keep group-created timing scoped when its thread foreign key is cleared.
+  groupScoped    Boolean   @default(false)
   /// Written under the Routine row lock by each Run producer.
   latestRunId    String?
   /// Exact timer Run that automatically switched this one-shot off.

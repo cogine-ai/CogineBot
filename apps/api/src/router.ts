@@ -16,7 +16,6 @@ import {
   MEMORY_REVISION_CONFLICT_ERROR,
   messagingDeliverJob,
   routineJobKey,
-  routineWakeupJob,
   runContinueJob,
   runJobKey,
   SecretStoreUnavailableError,
@@ -117,6 +116,7 @@ import {
   PluginMarketplaceCursorError,
   PushSessionEndedError,
   parseModelSecret,
+  patchRoutineTiming,
   persistPreparedSecret,
   planLiveConnectionSync,
   powerProvider,
@@ -129,8 +129,10 @@ import {
   provisionComputer,
   publishComputerPowerStatus,
   queueComputerUpdate,
+  RoutineTimingError,
   readChatGPTPlanModels,
   releaseComputerExecutionLease,
+  repeatStartAt,
   replaceComputer,
   replaceNativeRoutineTriggersTx,
   requestClaimedComputerStop,
@@ -141,6 +143,9 @@ import {
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
   revokeScreenControl,
+  routineAdmissionError,
+  routineIntervalMode,
+  routineNextRepeat,
   routineRunModelPin,
   SUBSCRIPTION_SIGN_IN_PROVIDERS,
   sanitizeComposioError,
@@ -154,6 +159,7 @@ import {
   stopCancelledGroupComputer,
   stoppedComputerControl,
   storeBotSecret,
+  syncRoutineWakeup,
   takeoverLeaseMs,
   toComputerRef,
   touchInteractiveComputer,
@@ -222,9 +228,9 @@ import {
   containsSecret,
   expandSkillReferencesInPrompt,
   hasMixedOneShotSchedule,
+  intervalUsesAnchor,
   isOneShotRoutineCrons,
   modelSettingsDefaults,
-  nextCronDateAcrossStrict,
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
 } from "@rakazo/core";
@@ -277,6 +283,7 @@ import {
   listSpaceBackupModels,
   listTicketComments,
   loadDelegatedApprovals,
+  lockActiveRoutineGroup,
   lockBotCreationIntro,
   lockDefaultVoiceCredential,
   lockOwnedGroup,
@@ -1345,16 +1352,21 @@ export function createRouter(deps: RouterDeps) {
     if (!routine) throw new IsolationError();
     const bot = await repos.getBot(actor, routine.botId);
     if (!bot.thread) throw new IsolationError();
-    return { routineId: routine.id, botId: bot.id, threadId: bot.thread.id };
+    const threadId = routine.groupScoped ? routine.threadId : bot.thread.id;
+    if (!threadId) throw new IsolationError("The original conversation is no longer available.");
+    return { routineId: routine.id, botId: bot.id, threadId, groupScoped: routine.groupScoped };
   }
 
   async function createRoutineTestRun(
     tx: Prisma.TransactionClient,
     actor: Actor,
-    { routineId, botId, threadId }: Awaited<ReturnType<typeof routineTestTarget>>,
+    { routineId, botId, threadId, groupScoped }: Awaited<ReturnType<typeof routineTestTarget>>,
     skillRecords: Awaited<ReturnType<typeof agentSkills.listWithContent>>,
     nonce?: string,
   ) {
+    if (groupScoped && !(await lockActiveRoutineGroup(tx, { ...actor, botId, threadId }))) {
+      throw new IsolationError("The original conversation is no longer available.");
+    }
     const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM routines
       WHERE id=${routineId} AND "userId"=${actor.userId}
         AND "spaceId"=${actor.spaceId} AND "botId"=${botId} FOR UPDATE`;
@@ -4804,12 +4816,30 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         const bot = await repos.getBot(context.actor, input.botId);
-        // Validate every recurring cron even when inactive; @once and webhook-only have no next date.
-        let nextRunAt: Date | null = null;
-        if (input.crons.length > 0 && !isOneShotRoutineCrons(input.crons)) {
-          const computedNextRunAt = nextRoutineDate(input.crons, input.timezone);
-          nextRunAt = input.active ? computedNextRunAt : null;
+        const now = new Date();
+        const repeating = input.crons.length > 0 && !isOneShotRoutineCrons(input.crons);
+        if (input.startAt && !repeating) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Start time is only for repeating schedules.",
+          });
         }
+        const { startAt, nextRunAt, intervalBased, intervalAnchorAt } = validateRoutineTiming(
+          () => {
+            const startAt = input.startAt
+              ? repeatStartAt(input.startAt, input.timezone, now)
+              : null;
+            const next = repeating
+              ? routineNextRepeat(input.crons, input.timezone, now, startAt)
+              : null;
+            const intervalBased = routineIntervalMode(input.crons, input.intervalBased);
+            return {
+              startAt,
+              nextRunAt: input.active ? next : null,
+              intervalBased,
+              intervalAnchorAt: intervalUsesAnchor(input.crons, intervalBased) ? next : null,
+            };
+          },
+        );
         const preparedNative = await prepareNativeRoutineInputs(
           deps,
           context.actor,
@@ -4835,6 +4865,16 @@ export function createRouter(deps: RouterDeps) {
               );
               assertPreparedModelAuth(checked, preparedAuth);
               assertBoundThinkingLevel(checked, input.thinkingLevel);
+              if (input.active) {
+                const error = await routineAdmissionError(tx, {
+                  ...context.actor,
+                  botId: input.botId,
+                  threadId: null,
+                  directThreadId: bot.thread?.id,
+                  name: input.name,
+                });
+                if (error) throw new ORPCError("CONFLICT", { message: error });
+              }
               const row = await tx.routine.create({
                 data: {
                   spaceId: context.actor.spaceId,
@@ -4855,6 +4895,9 @@ export function createRouter(deps: RouterDeps) {
                   modelCredentialId: input.modelCredentialId ?? null,
                   thinkingLevel: input.thinkingLevel ?? null,
                   nextRunAt,
+                  startAt,
+                  intervalBased,
+                  intervalAnchorAt,
                 },
               });
               const nativeTriggers = await replaceNativeRoutineTriggersTx(
@@ -4869,17 +4912,17 @@ export function createRouter(deps: RouterDeps) {
           ),
         ).catch(rethrowNativeRoutineError);
         if (bot.thread) {
-          await deps.events.append({
-            spaceId: context.actor.spaceId,
-            threadId: bot.thread.id,
-            botId: bot.id,
-            type: "routine.created",
-            payload: { name: row.name },
-          });
+          await deps.events
+            .append({
+              spaceId: context.actor.spaceId,
+              threadId: bot.thread.id,
+              botId: bot.id,
+              type: "routine.created",
+              payload: { name: row.name },
+            })
+            .catch(() => undefined);
         }
-        if (row.active && row.nextRunAt) {
-          await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
-        }
+        if (row.active && row.nextRunAt) await syncRoutineWakeup(deps.jobs, row);
         if (row.active)
           for (const trigger of nativeTriggers)
             await deps.jobs
@@ -4964,56 +5007,71 @@ export function createRouter(deps: RouterDeps) {
               });
               if (!current) throw new ORPCError("NOT_FOUND");
               const active = input.active ?? current.active;
+              if (active && current.groupScoped && !(await lockActiveRoutineGroup(tx, current))) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "The original conversation is no longer available.",
+                });
+              }
+              if (
+                current.groupScoped &&
+                ((input.webhookEnabled === true && !current.webhookEnabled) ||
+                  (input.githubEnabled === true && !current.githubEnabled) ||
+                  (input.messageProvider != null &&
+                    input.messageProvider !== current.messageProvider))
+              ) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "This trigger requires a routine in the Bot's direct conversation.",
+                });
+              }
               if (deps.billing && active && !needsBillingAdmission) {
                 throw new ORPCError("CONFLICT", {
                   message: "Routine changed. Reload and try again.",
                 });
               }
-              const crons = input.crons ?? current.crons;
-              const timezone = input.timezone ?? current.timezone;
-              const oneShot = isOneShotRoutineCrons(crons);
-              if (active && oneShot) {
-                if (!isOneShotRoutineCrons(current.crons)) {
-                  throw new ORPCError("BAD_REQUEST", {
-                    message: "One-shot schedules must be created from chat.",
-                  });
-                }
-                if (!current.nextRunAt && current.lastRunAt) {
-                  throw new ORPCError("BAD_REQUEST", { message: "This one-shot already ran." });
-                }
+              const oneShot = isOneShotRoutineCrons(input.crons ?? current.crons);
+              const armingOneShot = active && oneShot && !current.nextRunAt && !current.lastRunAt;
+              if (active && oneShot && !isOneShotRoutineCrons(current.crons)) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "One-shot schedules must be created from chat.",
+                });
               }
-              const scheduleChanged =
-                (!current.active && active) ||
-                (input.crons !== undefined &&
-                  JSON.stringify(input.crons) !== JSON.stringify(current.crons)) ||
-                timezone !== current.timezone;
-              const recalculatedNextRunAt =
-                crons.length > 0 && !oneShot && (scheduleChanged || (active && !current.nextRunAt))
-                  ? nextRoutineDate(crons, timezone)
-                  : null;
-              let armedOneShotAt: Date | null = null;
-              if (active && oneShot && !current.nextRunAt && !current.lastRunAt) {
-                if (!input.runAt) {
-                  throw new ORPCError("BAD_REQUEST", {
-                    message: "Add a run time for this one-shot.",
-                  });
-                }
-                const parsed = new Date(input.runAt);
-                if (!Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) {
-                  throw new ORPCError("BAD_REQUEST", {
-                    message: "Run time must be in the future.",
-                  });
-                }
-                armedOneShotAt = parsed;
-              } else if (input.runAt !== undefined) {
+              if (active && oneShot && !current.nextRunAt && current.lastRunAt) {
+                throw new ORPCError("BAD_REQUEST", { message: "This one-shot already ran." });
+              }
+              if (input.runAt !== undefined && !armingOneShot) {
                 throw new ORPCError("BAD_REQUEST", {
                   message: "A run time is only for one-shots that have not run yet.",
                 });
               }
-              const nextRunAt =
-                active && crons.length > 0
-                  ? (armedOneShotAt ?? recalculatedNextRunAt ?? current.nextRunAt)
-                  : null;
+              const timing = validateRoutineTiming(() =>
+                patchRoutineTiming(
+                  current,
+                  {
+                    crons: input.crons,
+                    timezone: input.timezone,
+                    active: input.active,
+                    startAt: input.startAt,
+                    intervalBased: input.intervalBased,
+                    runAt: input.runAt ? new Date(input.runAt) : undefined,
+                  },
+                  new Date(),
+                ),
+              );
+              if (active && (input.active !== undefined || input.name !== undefined)) {
+                const error = await routineAdmissionError(
+                  tx,
+                  {
+                    spaceId: current.spaceId,
+                    userId: current.userId,
+                    botId: current.botId,
+                    threadId: current.threadId,
+                    directThreadId: bot.thread?.id,
+                    name: input.name ?? current.name,
+                  },
+                  current,
+                );
+                if (error) throw new ORPCError("CONFLICT", { message: error });
+              }
               if (checkModel) {
                 const binding = settingModel
                   ? input
@@ -5064,9 +5122,7 @@ export function createRouter(deps: RouterDeps) {
                     ...(promptChanged
                       ? { authorizedInstructions: input.prompt, authorizedSites: [] }
                       : {}),
-                    crons: input.crons,
-                    timezone: input.timezone,
-                    active: input.active,
+                    ...(timing.changed ? timing.data : {}),
                     notify: input.notify,
                     webhookEnabled: input.webhookEnabled,
                     githubEnabled: input.githubEnabled,
@@ -5081,10 +5137,9 @@ export function createRouter(deps: RouterDeps) {
                     ...(input.thinkingLevel !== undefined
                       ? { thinkingLevel: input.thinkingLevel }
                       : {}),
-                    ...(input.active === false || scheduleChanged || authorizationChanged
+                    ...(input.active === false || timing.changed || authorizationChanged
                       ? { latestRunId: null, autoCompletedRunId: null }
                       : {}),
-                    nextRunAt,
                   },
                 })
                 .catch((error: unknown) => {
@@ -5094,7 +5149,7 @@ export function createRouter(deps: RouterDeps) {
               if (preparedNative !== undefined)
                 await replaceNativeRoutineTriggersTx(tx, context.actor, row.id, preparedNative);
               else await requireRoutineTrigger(tx, context.actor, row.id);
-              return { row, previous: current, scheduleChanged };
+              return { row, previous: current, scheduleChanged: timing.changed };
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
@@ -5105,25 +5160,17 @@ export function createRouter(deps: RouterDeps) {
           row.id,
         ).catch(rethrowNativeRoutineError);
         if (bot.thread) {
-          await deps.events.append({
-            spaceId: context.actor.spaceId,
-            threadId: bot.thread.id,
-            botId: bot.id,
-            type: "routine.updated",
-            payload: { routineId: row.id, active: row.active },
-          });
+          await deps.events
+            .append({
+              spaceId: context.actor.spaceId,
+              threadId: bot.thread.id,
+              botId: bot.id,
+              type: "routine.updated",
+              payload: { routineId: row.id, active: row.active },
+            })
+            .catch(() => undefined);
         }
-        const scheduleNeedsSync =
-          previous.active !== row.active ||
-          scheduleChanged ||
-          (!previous.nextRunAt && !!row.nextRunAt);
-        if (scheduleNeedsSync) {
-          if (row.active && row.nextRunAt) {
-            await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
-          } else {
-            await deps.jobs.cancel(routineJobKey(row.id));
-          }
-        }
+        if (scheduleChanged) await syncRoutineWakeup(deps.jobs, row);
         if (row.active && (preparedNative !== undefined || !previous.active))
           for (const trigger of savedNative)
             await deps.jobs
@@ -9517,15 +9564,15 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw signal.reason ?? new Error("Request cancelled");
 }
 
-function nextRoutineDate(crons: string[], timezone: string): Date {
-  let next: Date | null;
+function validateRoutineTiming<T>(compute: () => T): T {
   try {
-    next = nextCronDateAcrossStrict(crons, new Date(), timezone);
-  } catch {
-    throw new ORPCError("BAD_REQUEST", { message: "Enter a valid cron expression." });
+    return compute();
+  } catch (error) {
+    if (error instanceof RoutineTimingError) {
+      throw new ORPCError("BAD_REQUEST", { message: error.message });
+    }
+    throw error;
   }
-  if (!next) throw new ORPCError("BAD_REQUEST", { message: "Enter a valid cron expression." });
-  return next;
 }
 
 function mapRoutine(
@@ -9547,6 +9594,9 @@ function mapRoutine(
     thinkingLevel: string | null;
     lastRunAt: Date | null;
     nextRunAt: Date | null;
+    startAt?: Date | null;
+    intervalBased?: boolean;
+    groupScoped?: boolean;
     createdAt: Date;
   },
   nativeTriggers: NativeRoutineTrigger[] = [],
@@ -9570,6 +9620,9 @@ function mapRoutine(
     thinkingLevel: (row.thinkingLevel as Routine["thinkingLevel"]) ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
+    startAt: row.startAt?.toISOString() ?? null,
+    intervalBased: row.intervalBased ?? false,
+    groupScoped: row.groupScoped ?? false,
     createdAt: row.createdAt.toISOString(),
   };
 }

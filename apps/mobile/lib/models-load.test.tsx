@@ -66,6 +66,27 @@ vi.mock("expo-router", () => ({
     }, [effect]),
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => undefined) }));
+vi.mock("@expo/ui/community/datetime-picker", () => ({
+  default: ({
+    mode,
+    value,
+    onValueChange,
+  }: {
+    mode: string;
+    value: Date;
+    onValueChange: (event: unknown, date: Date) => void;
+  }) => (
+    <button
+      type="button"
+      data-value={value.toISOString()}
+      onClick={() =>
+        onValueChange({}, new Date(value.getTime() + (mode === "time" ? 17 * 60_000 : 86_400_000)))
+      }
+    >
+      {mode === "time" ? "Select time of day" : "Select first date"}
+    </button>
+  ),
+}));
 vi.mock("./message-action-sheet", () => ({ presentMessageActionSheet: vi.fn() }));
 vi.mock("./native", () => ({
   native: {},
@@ -163,6 +184,7 @@ vi.mock("react-native", () => {
   );
   return {
     View,
+    Platform: { OS: "ios" },
     ScrollView: View,
     Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
     ActivityIndicator: () => <span data-testid="loading" />,
@@ -528,6 +550,7 @@ it("shows a historical Routine without loading model credentials or exposing wri
   await act(async () => root.render(<RoutineDetail />));
   expect(container.textContent).toContain("Review");
   expect(container.textContent).not.toContain("Open conversation");
+  expect(container.textContent).not.toContain("Pause");
   expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
   expect(
     state.rpc.mock.calls.some(
@@ -537,6 +560,102 @@ it("shows a historical Routine without loading model credentials or exposing wri
         procedure === "routines/update",
     ),
   ).toBe(false);
+});
+
+it("saves a repeat's first run through the mobile Routine editor, then pauses without reposting it", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const nextRunAt = new Date(Date.now() + 6 * 86_400_000).toISOString();
+  const routine = { ...original, crons: ["0 9 * * *"], timezone: "Asia/Taipei", nextRunAt };
+  state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+    if (procedure === "routines/list") return [routine];
+    if (procedure === "routines/update") {
+      return { ...routine, ...input, nextRunAt: input.active === false ? null : nextRunAt };
+    }
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  expect(container.textContent).toContain("Next run:");
+  await act(async () => button("Edit schedule").click());
+  await act(async () => button("Set first run").click());
+  await act(async () => button("Select first date").click());
+  await act(async () => button("Save").click());
+  const updates = () =>
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "routines/update");
+  expect(updates()[0]?.[1]).toEqual({
+    routineId: "routine-1",
+    startAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/),
+  });
+  await act(async () => button("Edit schedule").click());
+  await act(async () => button("Select time of day").click());
+  await act(async () => button("Save").click());
+  expect(updates()[1]?.[1]).toEqual({
+    routineId: "routine-1",
+    crons: ["17 9 * * *"],
+    intervalBased: false,
+  });
+  await act(async () => button("Pause").click());
+  expect(updates()[2]?.[1]).toEqual({ routineId: "routine-1", active: false });
+  expect(container.textContent).not.toContain("Next run:");
+  expect(button("Resume")).toBeTruthy();
+});
+
+it("keeps the submitted timing draft while a save is waiting for its receipt", async () => {
+  const pending = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const routine = { ...original, crons: ["0 9 * * *"], timezone: "UTC" };
+  const writes: unknown[] = [];
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "routines/list") return [routine];
+    if (procedure !== "routines/update") return normal(procedure, input);
+    writes.push(input);
+    return writes.length === 1 ? pending.promise : { ...routine, ...(input as object) };
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit schedule").click());
+  await act(async () => button("Set first run").click());
+  await act(async () => button("Save").click());
+  expect(button("Use next occurrence").disabled).toBe(true);
+  await act(async () => button("Select first date").click());
+  await act(async () => pending.reject(new Error("Fixture save failed")));
+  await act(async () => button("Save").click());
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual(writes[0]);
+});
+
+it("preserves the selected first run after concurrent timezone and cadence changes", async () => {
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const routine = {
+    ...original,
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+    startAt: "2027-11-06T06:30:00.000Z",
+  };
+  state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
+    if (procedure === "routines/list") return [routine];
+    if (procedure === "routines/update")
+      return { ...routine, ...input, timezone: "America/New_York", crons: ["0 10 * * *"] };
+    return normal(procedure, input);
+  });
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2027-11-06T00:00:00Z"));
+  try {
+    await act(async () => root.render(<RoutineDetail />));
+    await act(async () => button("Edit schedule").click());
+    await act(async () => button("Select first date").click());
+    const selected = "2027-11-07T06:30:00.000Z";
+    expect(button("Select first date").getAttribute("data-value")).toBe(selected);
+    await chooseRoutineModel("model-b");
+    await act(async () => button("Save model").click());
+    expect(button("Select first date").getAttribute("data-value")).toBe(selected);
+    await act(async () => button("Save").click());
+    const updates = state.rpc.mock.calls.filter(([procedure]) => procedure === "routines/update");
+    expect(updates[1]?.[1]).toEqual({ routineId: "routine-1", startAt: selected });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("keeps the verified Routine Space when the server default changes before Save", async () => {

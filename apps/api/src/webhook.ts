@@ -69,6 +69,7 @@ export function mountWebhookHttpRoutes(app: Hono, deps: WebhookDeps) {
         spaceId: target.bot.spaceId,
         userId: target.bot.userId,
         active: true,
+        groupScoped: false,
         webhookEnabled: true,
       },
       select: {

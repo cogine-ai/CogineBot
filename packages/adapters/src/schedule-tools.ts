@@ -1,19 +1,41 @@
 import type { JobPublisher } from "@rakazo/adapter-kit";
-import { routineJobKey, routineWakeupJob } from "@rakazo/adapter-kit";
+import { routineJobKey } from "@rakazo/adapter-kit";
+import { TimeZoneSchema } from "@rakazo/contracts";
 import {
   cronFromPreset,
+  intervalUsesAnchor,
   isOneShotRoutineCron,
   isOneShotRoutineCrons,
-  nextCronDate,
   ONCE_ROUTINE_CRON,
+  parseRoutineDateTime,
 } from "@rakazo/core";
 import { sitesInText } from "@rakazo/core/egress";
-import type { PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { PrismaClient, Routine, ThreadEvents } from "@rakazo/db";
+import { lockActiveRoutineGroup, Prisma, withTransactionRetry } from "@rakazo/db";
 import { listNativeRoutineTriggersBatch } from "./native-connectors/events/store.js";
+import { nativeSourceJob } from "./native-connectors/events/worker.js";
+import {
+  patchRoutineTiming,
+  publishRoutineTiming,
+  RoutineTimingError,
+  repeatStartAt,
+  routineAdmissionError,
+  routineNextRepeat,
+  syncRoutineWakeup,
+} from "./routine-timing.js";
 
 export { isOneShotRoutineCron, ONCE_ROUTINE_CRON };
 
-export const SCHEDULE_TOOL_NAMES = new Set(["schedule_create", "schedule_list", "schedule_cancel"]);
+export const SCHEDULE_TOOL_NAMES = new Set([
+  "schedule_create",
+  "schedule_list",
+  "schedule_update",
+  "schedule_cancel",
+]);
+
+export function isRoutinePromptTool(name: string): boolean {
+  return name === "schedule_create" || name === "schedule_update";
+}
 
 const ROUTINE_SITE_APPROVAL_TAG = "routine-site-approval-v1";
 
@@ -48,7 +70,7 @@ export function filterBuiltinToolsForRun<T extends { name: string }>(
   tools: T[],
   runTrigger: string,
 ): T[] {
-  return runTrigger === "routine" ? tools.filter((tool) => tool.name !== "schedule_create") : tools;
+  return runTrigger === "routine" ? tools.filter((tool) => !isRoutinePromptTool(tool.name)) : tools;
 }
 
 /** Keep cross-bot messaging thread-specific while exposing schedules in DMs and groups. */
@@ -68,7 +90,7 @@ export function filterBuiltinToolsForThread<T extends { name: string }>(
 type ScheduleUnit = "minutes" | "hours" | "days" | "seconds";
 
 export type ResolvedSchedule =
-  | { ok: true; cron: string; nextRunAt: Date; oneShot: boolean }
+  | { ok: true; cron: string; nextRunAt: Date; oneShot: boolean; startAt?: Date }
   | { ok: false; error: string };
 
 /**
@@ -88,6 +110,14 @@ export function compactScheduleInput(input: Record<string, unknown>): Record<str
   );
 }
 
+const TIMING_KEYS = ["cron", "every", "unit", "runAt", "delayMinutes", "delaySeconds"] as const;
+
+export function scheduleTimingArguments(args: Record<string, unknown>): Record<string, unknown> {
+  return compactScheduleInput(
+    Object.fromEntries([...TIMING_KEYS, "startAt"].map((name) => [name, args[name]])),
+  );
+}
+
 export function resolveScheduleTiming(
   input: {
     cron?: unknown;
@@ -96,9 +126,12 @@ export function resolveScheduleTiming(
     runAt?: unknown;
     delayMinutes?: unknown;
     delaySeconds?: unknown;
+    startAt?: unknown;
   },
   timezone = "UTC",
+  now = new Date(),
 ): ResolvedSchedule {
+  if (!TimeZoneSchema.safeParse(timezone).success) return { ok: false, error: "Unknown timezone." };
   const hasRepeat =
     isScheduleValueProvided(input.cron) ||
     isScheduleValueProvided(input.every) ||
@@ -130,6 +163,9 @@ export function resolveScheduleTiming(
   }
 
   if (hasOneShot) {
+    if (isScheduleValueProvided(input.startAt)) {
+      return { ok: false, error: "Start time is only for repeating schedules." };
+    }
     const oneShotFields = [input.runAt, input.delayMinutes, input.delaySeconds].filter(
       isScheduleValueProvided,
     );
@@ -146,25 +182,36 @@ export function resolveScheduleTiming(
       if (!Number.isFinite(delaySeconds) || delaySeconds < 0) {
         return { ok: false, error: "delaySeconds must be a non-negative number." };
       }
-      nextRunAt = new Date(Date.now() + delaySeconds * 1_000);
+      nextRunAt = new Date(now.getTime() + delaySeconds * 1_000);
     } else if (isScheduleValueProvided(input.delayMinutes)) {
       const delayMinutes = Number(input.delayMinutes);
       if (!Number.isFinite(delayMinutes) || delayMinutes < 0) {
         return { ok: false, error: "delayMinutes must be a non-negative number." };
       }
-      nextRunAt = new Date(Date.now() + delayMinutes * 60_000);
+      nextRunAt = new Date(now.getTime() + delayMinutes * 60_000);
     } else {
-      const parsed = new Date(String(input.runAt ?? ""));
-      if (!Number.isFinite(parsed.getTime())) {
+      const parsed = parseRoutineDateTime(String(input.runAt ?? ""), timezone);
+      if (!parsed) {
         return { ok: false, error: "runAt must be a valid ISO datetime." };
       }
       nextRunAt = parsed;
     }
-    if (nextRunAt.getTime() <= Date.now()) {
+    if (!Number.isFinite(nextRunAt.getTime()) || nextRunAt <= now) {
       return { ok: false, error: "One-shot schedules must run in the future." };
     }
     return { ok: true, cron: ONCE_ROUTINE_CRON, nextRunAt, oneShot: true };
   }
+
+  let startAt: Date | undefined;
+  if (isScheduleValueProvided(input.startAt)) {
+    try {
+      startAt = repeatStartAt(String(input.startAt), timezone, now);
+    } catch (error) {
+      if (!(error instanceof RoutineTimingError)) throw error;
+      return { ok: false, error: error.message };
+    }
+  }
+  const first = startAt ? { startAt } : {};
 
   if (hasCron) {
     const cron = String(input.cron).trim();
@@ -178,8 +225,8 @@ export function resolveScheduleTiming(
     const intervalError = validateRepeatingCron(cron);
     if (intervalError) return { ok: false, error: intervalError };
     try {
-      const nextRunAt = nextCronDate(cron, new Date(), timezone);
-      return { ok: true, cron, nextRunAt, oneShot: false };
+      const nextRunAt = routineNextRepeat([cron], timezone, now, startAt);
+      return { ok: true, cron, nextRunAt, oneShot: false, ...first };
     } catch {
       return { ok: false, error: "cron must be a valid 5-field cron expression." };
     }
@@ -203,8 +250,8 @@ export function resolveScheduleTiming(
   const intervalError = validateRepeatingCron(cron);
   if (intervalError) return { ok: false, error: intervalError };
   try {
-    const nextRunAt = nextCronDate(cron, new Date(), timezone);
-    return { ok: true, cron, nextRunAt, oneShot: false };
+    const nextRunAt = routineNextRepeat([cron], timezone, now, startAt);
+    return { ok: true, cron, nextRunAt, oneShot: false, ...first };
   } catch {
     return { ok: false, error: "every/unit produced an invalid cron expression." };
   }
@@ -226,8 +273,19 @@ function validateRepeatingCron(cron: string): string | null {
 
 export interface ScheduleToolDeps {
   prisma: PrismaClient;
-  events: ThreadEvents;
+  events: Pick<ThreadEvents, "append">;
   jobs: JobPublisher;
+}
+
+async function publishGroupRoutineTiming(deps: ScheduleToolDeps, row: Routine): Promise<void> {
+  if (!row.groupScoped) return;
+  const direct = await deps.prisma.thread
+    .findUnique({
+      where: { botId: row.botId },
+      select: { id: true, userId: true, spaceId: true },
+    })
+    .catch(() => null);
+  if (direct) await publishRoutineTiming(deps.events, row, direct, row.active);
 }
 
 /** Persist and enqueue a bot routine that wakes in the originating thread. */
@@ -238,6 +296,8 @@ export async function createScheduleFromTool(
     botId: string;
     userId: string;
     threadId: string;
+    directThreadId?: string;
+    groupScoped?: boolean;
     name: string;
     prompt: string;
     authorizedSites?: string[];
@@ -249,42 +309,59 @@ export async function createScheduleFromTool(
   const prompt = input.prompt.trim();
   if (!name) return { error: "name is required." };
   if (!prompt) return { error: "prompt is required." };
+  if (name.length > 80) return { error: "name must be 80 characters or fewer." };
 
   const timezone = String(input.timezone ?? "UTC");
   const resolved = resolveScheduleTiming(input.schedule, timezone);
   if (!resolved.ok) return { error: resolved.error };
+  const intervalBased = isScheduleValueProvided(input.schedule.every);
 
-  const row = await deps.prisma.routine.create({
-    data: {
-      spaceId: input.spaceId,
-      botId: input.botId,
-      userId: input.userId,
-      threadId: input.threadId,
-      name,
-      prompt,
-      ...(input.authorizedSites?.length ? { authorizedSites: input.authorizedSites } : {}),
-      crons: [resolved.cron],
-      timezone,
-      notify: true,
-      active: true,
-      nextRunAt: resolved.nextRunAt,
-    },
-  });
-
-  try {
-    await deps.jobs.enqueue(routineWakeupJob(row.id, resolved.nextRunAt));
-  } catch {
-    try {
-      await deps.prisma.routine.delete({ where: { id: row.id } });
-    } catch {
-      // Do not soft-return while the row may still be active.
-      await deps.prisma.routine.update({
-        where: { id: row.id },
-        data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
-      });
-    }
-    return { error: "Could not schedule the reminder. Try again." };
-  }
+  const scope = {
+    spaceId: input.spaceId,
+    botId: input.botId,
+    userId: input.userId,
+    threadId: input.threadId,
+  };
+  const result = await withTransactionRetry(() =>
+    deps.prisma.$transaction(
+      async (tx) => {
+        if (input.groupScoped && !(await lockActiveRoutineGroup(tx, scope))) {
+          return { error: "The original conversation is no longer available." };
+        }
+        const error = await routineAdmissionError(tx, {
+          ...scope,
+          name,
+          directThreadId: input.directThreadId,
+        });
+        if (error) return { error };
+        return {
+          row: await tx.routine.create({
+            data: {
+              ...scope,
+              name,
+              prompt,
+              ...(input.authorizedSites?.length ? { authorizedSites: input.authorizedSites } : {}),
+              crons: [resolved.cron],
+              timezone,
+              notify: true,
+              active: true,
+              nextRunAt: resolved.nextRunAt,
+              startAt: resolved.startAt,
+              intervalBased,
+              intervalAnchorAt: intervalUsesAnchor([resolved.cron], intervalBased)
+                ? resolved.nextRunAt
+                : null,
+              groupScoped: input.groupScoped,
+            },
+          }),
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ),
+  );
+  if (!result.row) return { error: result.error };
+  const { row } = result;
+  await syncRoutineWakeup(deps.jobs, row);
 
   try {
     await deps.events.append({
@@ -297,6 +374,7 @@ export async function createScheduleFromTool(
   } catch {
     // Match routines.create: the reminder is live even if the thread signal fails.
   }
+  await publishGroupRoutineTiming(deps, row);
 
   return {
     ok: true as const,
@@ -304,14 +382,233 @@ export async function createScheduleFromTool(
     name: row.name,
     cron: row.crons[0],
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
+    timezone: row.timezone,
     oneShot: resolved.oneShot,
+  };
+}
+
+/** Edit a schedule in its owner and conversation scope. Web-created plans belong to the DM. */
+export async function updateScheduleFromTool(
+  deps: ScheduleToolDeps,
+  input: {
+    spaceId: string;
+    botId: string;
+    userId: string;
+    threadId: string;
+    directThread?: boolean;
+    routineId: string;
+    name?: string;
+    prompt?: string;
+    authorizedSites?: string[];
+    timezone?: string;
+    active?: boolean;
+    schedule: Record<string, unknown>;
+  },
+) {
+  if (!input.routineId) return { error: "id is required. Use schedule_list to find the schedule." };
+  const name = input.name?.trim();
+  const prompt = input.prompt?.trim();
+  if (name === "" || (name && name.length > 80))
+    return { error: "Enter a name of 1 to 80 characters." };
+  if (prompt === "") return { error: "prompt cannot be empty." };
+  if (input.timezone !== undefined && !TimeZoneSchema.safeParse(input.timezone).success) {
+    return { error: "Unknown timezone." };
+  }
+  const scope = {
+    id: input.routineId,
+    spaceId: input.spaceId,
+    botId: input.botId,
+    userId: input.userId,
+    bot: { archivedAt: null },
+    ...(input.directThread
+      ? { OR: [{ threadId: input.threadId }, { threadId: null, groupScoped: false }] }
+      : { threadId: input.threadId }),
+  };
+  const current = await deps.prisma.routine.findFirst({ where: scope });
+  if (!current) return { error: "Schedule not found in this conversation." };
+
+  const now = new Date();
+  const timezone = input.timezone ?? current.timezone;
+  const hasTiming = TIMING_KEYS.some((key) => isScheduleValueProvided(input.schedule[key]));
+  const startAt =
+    input.schedule.startAt === "next"
+      ? null
+      : isScheduleValueProvided(input.schedule.startAt)
+        ? String(input.schedule.startAt)
+        : undefined;
+  if ((hasTiming || startAt !== undefined) && current.crons.length === 0) {
+    return { error: "A routine that runs on events has no schedule to retime." };
+  }
+  if (
+    !hasTiming &&
+    input.timezone !== undefined &&
+    timezone !== current.timezone &&
+    isOneShotRoutineCrons(current.crons)
+  ) {
+    return { error: "Provide a new runAt to move this one-time schedule." };
+  }
+  const timing = hasTiming
+    ? resolveScheduleTiming({ ...input.schedule, startAt }, timezone, now)
+    : undefined;
+  if (timing && !timing.ok) return { error: timing.error };
+  if (
+    !hasTiming &&
+    startAt === undefined &&
+    name === undefined &&
+    prompt === undefined &&
+    input.active === undefined &&
+    input.timezone === undefined
+  )
+    return { error: "Nothing to update." };
+
+  let patch: ReturnType<typeof patchRoutineTiming>;
+  try {
+    patch = patchRoutineTiming(
+      current,
+      {
+        crons: timing ? [timing.cron] : undefined,
+        timezone: input.timezone,
+        startAt,
+        active: input.active,
+        runAt: timing?.oneShot ? timing.nextRunAt : undefined,
+        intervalBased: timing ? isScheduleValueProvided(input.schedule.every) : undefined,
+      },
+      now,
+    );
+  } catch (error) {
+    if (!(error instanceof RoutineTimingError)) throw error;
+    return { error: error.message };
+  }
+  const promptChanged = prompt !== undefined && prompt !== current.prompt;
+  const timingTouched = patch.changed || input.active !== undefined;
+  const result = await withTransactionRetry(() =>
+    deps.prisma.$transaction(
+      async (tx) => {
+        if (
+          patch.data.active &&
+          current.groupScoped &&
+          !(await lockActiveRoutineGroup(tx, current))
+        ) {
+          return { error: "The original conversation is no longer available." };
+        }
+        if (
+          patch.data.active &&
+          current.groupScoped &&
+          patch.data.crons.length === 0 &&
+          !(await tx.nativeRoutineTrigger.count({ where: { routineId: current.id } }))
+        ) {
+          return { error: "Add a schedule or application event before resuming." };
+        }
+        if (
+          timing?.oneShot &&
+          !isOneShotRoutineCrons(current.crons) &&
+          (current.webhookEnabled ||
+            current.githubEnabled ||
+            current.messageProvider ||
+            (await tx.nativeRoutineTrigger.count({ where: { routineId: current.id } })) > 0)
+        ) {
+          return { error: "A one-time schedule cannot be combined with event triggers." };
+        }
+        if (patch.data.active && (input.active !== undefined || name !== undefined)) {
+          const error = await routineAdmissionError(
+            tx,
+            {
+              ...input,
+              threadId: current.threadId,
+              directThreadId: input.directThread ? input.threadId : undefined,
+              name: name ?? current.name,
+            },
+            current,
+          );
+          if (error) return { error };
+        }
+        const { count } = await tx.routine.updateMany({
+          where: {
+            ...scope,
+            ...(timingTouched
+              ? {
+                  updatedAt: current.updatedAt,
+                  active: current.active,
+                  nextRunAt: current.nextRunAt,
+                  startAt: current.startAt,
+                  crons: { equals: current.crons },
+                  timezone: current.timezone,
+                  intervalBased: current.intervalBased,
+                  intervalAnchorAt: current.intervalAnchorAt,
+                }
+              : {}),
+            ...(name !== undefined ? { name: current.name, active: current.active } : {}),
+            ...(promptChanged ? { prompt: current.prompt } : {}),
+          },
+          data: {
+            name,
+            ...(promptChanged
+              ? {
+                  prompt,
+                  authorizedInstructions: null,
+                  authorizedSites: input.authorizedSites ?? [],
+                  latestRunId: null,
+                  autoCompletedRunId: null,
+                }
+              : {}),
+            ...(patch.changed ? patch.data : {}),
+            ...(patch.changed || input.active === false
+              ? { latestRunId: null, autoCompletedRunId: null }
+              : {}),
+          },
+        });
+        if (!count)
+          return { error: "The schedule changed while saving. Call schedule_list and try again." };
+        const row = await tx.routine.findFirst({ where: scope });
+        if (!row) return { error: "Schedule not found in this conversation." };
+        const native =
+          row.active && !current.active
+            ? await tx.nativeRoutineTrigger.findMany({
+                where: { routineId: row.id },
+                select: { id: true, version: true },
+              })
+            : [];
+        return { row, native };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ),
+  );
+  if (!result.row) return { error: result.error };
+  const { row } = result;
+  if (patch.changed) await syncRoutineWakeup(deps.jobs, row);
+  for (const trigger of result.native)
+    await deps.jobs.enqueue(nativeSourceJob(trigger.id, trigger.version)).catch(() => undefined);
+  await deps.events
+    .append({
+      spaceId: input.spaceId,
+      threadId: input.threadId,
+      botId: input.botId,
+      type: "routine.updated",
+      payload: { routineId: row.id, active: row.active },
+    })
+    .catch(() => undefined);
+  await publishGroupRoutineTiming(deps, row);
+  return {
+    ok: true as const,
+    routineId: row.id,
+    name: row.name,
+    active: row.active,
+    nextRunAt: row.nextRunAt?.toISOString() ?? null,
+    timezone: row.timezone,
   };
 }
 
 /** List bot routines, optionally restricted to the current group thread. */
 export async function listSchedulesFromTool(
   deps: Pick<ScheduleToolDeps, "prisma">,
-  input: { spaceId: string; botId: string; userId: string; threadId?: string },
+  input: {
+    spaceId: string;
+    botId: string;
+    userId: string;
+    threadId?: string;
+    currentThreadId?: string;
+    directThread?: boolean;
+  },
 ) {
   const rows = await deps.prisma.routine.findMany({
     where: {
@@ -335,7 +632,15 @@ export async function listSchedulesFromTool(
       prompt: row.prompt,
       crons: row.crons,
       active: row.active,
+      ...(input.currentThreadId
+        ? {
+            editableInConversation:
+              row.threadId === input.currentThreadId ||
+              Boolean(input.directThread && !row.threadId && !row.groupScoped),
+          }
+        : {}),
       nextRunAt: row.nextRunAt?.toISOString() ?? null,
+      timezone: row.timezone,
       oneShot: isOneShotRoutineCrons(row.crons),
     })),
   };
@@ -349,6 +654,8 @@ export async function cancelScheduleFromTool(
     botId: string;
     userId: string;
     threadId?: string;
+    nameThreadId?: string;
+    directThread?: boolean;
     routineId?: string;
     name?: string;
   },
@@ -359,15 +666,35 @@ export async function cancelScheduleFromTool(
     return { error: "Provide routineId or the exact schedule name to cancel." };
   }
 
-  const existing = await deps.prisma.routine.findFirst({
-    where: {
-      spaceId: input.spaceId,
-      botId: input.botId,
-      userId: input.userId,
-      ...(input.threadId ? { threadId: input.threadId } : {}),
-      ...(routineId ? { id: routineId } : { name: name! }),
-    },
-  });
+  const scope = {
+    spaceId: input.spaceId,
+    botId: input.botId,
+    userId: input.userId,
+    ...(input.threadId ? { threadId: input.threadId } : {}),
+  };
+  let existing: Pick<Routine, "id" | "name"> | null | undefined;
+  const select = { id: true, name: true };
+  if (routineId) {
+    existing = await deps.prisma.routine.findFirst({ where: { ...scope, id: routineId }, select });
+  } else {
+    const named = input.nameThreadId;
+    const matches = await deps.prisma.routine.findMany({
+      where: {
+        ...scope,
+        name,
+        ...(named
+          ? input.directThread
+            ? { OR: [{ threadId: named }, { threadId: null, groupScoped: false }] }
+            : { threadId: named }
+          : {}),
+      },
+      select,
+      take: 2,
+    });
+    if (matches.length > 1)
+      return { error: "Several schedules match. Cancel using the schedule ID." };
+    existing = matches[0];
+  }
   if (!existing) return { error: "Schedule not found." };
 
   await deps.prisma.routine.delete({ where: { id: existing.id } });

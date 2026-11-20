@@ -805,7 +805,7 @@ export const appContract = {
             name: z.string().optional(),
             prompt: z.string().optional(),
             crons: z.array(z.string().min(1)).optional(),
-            timezone: z.string().optional(),
+            timezone: TimeZoneSchema.optional(),
             active: z.boolean().optional(),
             notify: z.boolean().optional(),
             webhookEnabled: z.boolean().optional(),
@@ -819,6 +819,8 @@ export const appContract = {
               .optional(),
             /** ISO datetime to arm a never-run one-shot. */
             runAt: IsoDate.optional(),
+            startAt: z.string().trim().min(1).max(64).nullable().optional(),
+            intervalBased: z.boolean().optional(),
           })
           .superRefine((value, ctx) => {
             validateModelPinInput(value, ctx);

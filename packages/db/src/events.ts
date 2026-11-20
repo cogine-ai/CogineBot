@@ -747,6 +747,7 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
       webhookEnabled: boolean;
       githubEnabled: boolean;
       messageProvider: string | null;
+      groupScoped: boolean;
       authorizedInstructions: string | null;
       authorizedSites: string[];
       modelProvider: string | null;
@@ -755,7 +756,7 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
       thinkingLevel: string | null;
     }>
   >(Prisma.sql`
-    SELECT id, prompt, name, active, "webhookEnabled", "githubEnabled", "messageProvider",
+    SELECT id, prompt, name, active, "webhookEnabled", "githubEnabled", "messageProvider", "groupScoped",
       "authorizedInstructions", "authorizedSites",
       "modelProvider", "modelId", "modelCredentialId", "thinkingLevel"
     FROM routines
@@ -763,6 +764,10 @@ async function lockInboundRoutines(tx: Prisma.TransactionClient, input: SendUser
       AND "spaceId"=${input.spaceId} AND "botId"=${input.botId}
     ORDER BY id FOR UPDATE`);
   const byId = new Map(routines.map((routine) => [routine.id, routine]));
+  if (sourceRoutines.some(({ id }) => byId.get(id)?.groupScoped)) {
+    if (input.teamChatClaim?.route === "routine") throw new MessageRoutineSelectionChanged();
+    throw new IsolationError("Routine source conversation changed.");
+  }
   if (
     pin?.routineIds.some((id) => {
       const routine = byId.get(id);
@@ -1371,6 +1376,8 @@ async function commitAnswerRunInput(
       },
     });
     if (!approvalEffect || (delegation && PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind)))
+      return null;
+    if (approvalEffect.kind === "schedule_update" && run.userId !== input.answeredByUserId)
       return null;
     const request = approvalEffect.request;
     const sharedPageRequest =

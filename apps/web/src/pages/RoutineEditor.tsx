@@ -8,11 +8,15 @@ import {
   credentialForModel,
   cronFromPreset,
   defaultCronPreset,
+  defaultRoutineDateTimeLocal,
   formatCron,
+  formatRoutineTime,
   isOneShotRoutineCrons,
   modelOptionKey,
   parseModelOptionKey,
-  presetFromCron,
+  parseRoutineDateTime,
+  routineCronPresets,
+  routineDateTimeLocal,
 } from "@rakazo/core";
 import {
   Button,
@@ -51,15 +55,6 @@ import {
   emptyNativeRoutineTriggerDraft,
 } from "./routine-native-events";
 
-function toDatetimeLocalValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function defaultArmRunAtLocal(): string {
-  return toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000));
-}
-
 export function routineNeedsOneShotArm(
   routine: Pick<Routine, "nextRunAt" | "lastRunAt">,
   crons: string[],
@@ -84,6 +79,8 @@ const COMING_SOON = [
   { id: "pagerduty", label: () => t`PagerDuty incident` },
 ] as const;
 
+type RoutineDateTimeDraft = { value: string; timezone: string };
+
 export type RoutineDraftState = {
   nativeTriggers: NativeRoutineTriggerDraft[];
   nativeTriggersDirty: boolean;
@@ -94,7 +91,10 @@ export type RoutineDraftState = {
   githubEnabled: boolean;
   messageProvider: string | null;
   active: boolean;
-  runAtLocal: string;
+  activeDirty: boolean;
+  runAt?: RoutineDateTimeDraft;
+  runAtDirty: boolean;
+  startAt?: RoutineDateTimeDraft;
   modelKey: string;
   modelRevision?: number;
   thinkingLevel: string;
@@ -112,7 +112,8 @@ export function emptyRoutineDraft(): RoutineDraftState {
     githubEnabled: false,
     messageProvider: null,
     active: true,
-    runAtLocal: "",
+    activeDirty: false,
+    runAtDirty: false,
     modelKey: "",
     thinkingLevel: "",
     modelDirty: false,
@@ -125,12 +126,19 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     nativeTriggersDirty: false,
     name: routine.name,
     prompt: routine.prompt,
-    schedules: routine.crons.map(presetFromCron),
+    schedules: routineCronPresets(routine.crons, routine.intervalBased),
     webhookEnabled: routine.webhookEnabled,
     githubEnabled: routine.githubEnabled,
     messageProvider: routine.messageProvider,
     active: routine.active,
-    runAtLocal: routineNeedsOneShotArm(routine, routine.crons) ? defaultArmRunAtLocal() : "",
+    activeDirty: false,
+    runAt: routineNeedsOneShotArm(routine, routine.crons)
+      ? {
+          value: defaultRoutineDateTimeLocal(new Date(), routine.timezone),
+          timezone: routine.timezone,
+        }
+      : undefined,
+    runAtDirty: false,
     modelKey:
       routine.modelProvider && routine.modelId
         ? modelOptionKey(routine.modelProvider, routine.modelId, routine.modelCredentialId)
@@ -138,6 +146,13 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     thinkingLevel: routine.thinkingLevel ?? "",
     modelDirty: false,
   };
+}
+
+function displayRoutineDateTime(field: RoutineDateTimeDraft | undefined, timezone: string): string {
+  if (!field) return "";
+  if (field.timezone === timezone || !field.value) return field.value;
+  const date = parseRoutineDateTime(field.value, field.timezone);
+  return date ? routineDateTimeLocal(date, timezone) : field.value;
 }
 
 export function nativeRoutineTriggerSummary(routine: Pick<Routine, "nativeTriggers">): string {
@@ -241,6 +256,7 @@ export function RoutineEditor({
   draft,
   onChange,
   editing,
+  liveTiming,
   timezone,
   webhook,
   githubPath,
@@ -264,6 +280,7 @@ export function RoutineEditor({
   draft: RoutineDraftState;
   onChange: (next: RoutineDraftState) => void;
   editing: Routine | null;
+  liveTiming?: Pick<Routine, "active" | "startAt" | "nextRunAt" | "lastRunAt" | "timezone">;
   timezone: string;
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
@@ -284,7 +301,7 @@ export function RoutineEditor({
   onDelete: () => void;
   onEnsureWebhook: () => Promise<void>;
 }) {
-  const { t } = useLingui();
+  const { t, i18n } = useLingui();
   const fieldId = useId();
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
@@ -333,8 +350,21 @@ export function RoutineEditor({
     Boolean(draft.messageProvider) ||
     draft.nativeTriggers.length > 0;
   const canTest = Boolean(editing) && !saving && !running;
+  const timing = liveTiming ?? editing;
+  const active = draft.activeDirty ? draft.active : (timing?.active ?? draft.active);
   const needsOneShotArm =
-    editing != null && routineNeedsOneShotArm(editing, draft.schedules.map(cronFromPreset));
+    timing != null && routineNeedsOneShotArm(timing, draft.schedules.map(cronFromPreset));
+  const repeats =
+    draft.schedules.length > 0 && !isOneShotRoutineCrons(draft.schedules.map(cronFromPreset));
+  const nextRun = timing?.nextRunAt
+    ? formatRoutineTime(timing.nextRunAt, timing.timezone, i18n?.locale)
+    : null;
+  const savedStart = timing?.startAt ? new Date(timing.startAt) : undefined;
+  const firstRun = draft.startAt
+    ? displayRoutineDateTime(draft.startAt, timezone)
+    : savedStart && savedStart.getTime() > Date.now()
+      ? routineDateTimeLocal(savedStart, timezone)
+      : "";
 
   function addSchedule(freq: CronFreq) {
     const base = defaultCronPreset();
@@ -392,15 +422,26 @@ export function RoutineEditor({
           <button
             type="button"
             role="switch"
-            aria-checked={draft.active}
-            onClick={() => onChange({ ...draft, active: !draft.active })}
+            aria-checked={active}
+            disabled={saving}
+            onClick={() =>
+              onChange({
+                ...draft,
+                active: !active,
+                activeDirty: true,
+                runAt:
+                  !active && needsOneShotArm && !draft.runAt?.value
+                    ? { value: defaultRoutineDateTimeLocal(new Date(), timezone), timezone }
+                    : draft.runAt,
+              })
+            }
             className={`relative h-[22px] w-[40px] rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-              draft.active ? "bg-primary" : "bg-input"
+              active ? "bg-primary" : "bg-input"
             }`}
           >
             <span
               className={`absolute top-[2px] left-0 h-[18px] w-[18px] rounded-full bg-background transition-transform ${
-                draft.active
+                active
                   ? "translate-x-[20px] dark:bg-primary-foreground"
                   : "translate-x-[2px] dark:bg-foreground"
               }`}
@@ -423,6 +464,7 @@ export function RoutineEditor({
         <Input
           id={`${fieldId}-name`}
           value={draft.name}
+          disabled={saving}
           placeholder={t`Name this routine`}
           onChange={(e) => onChange({ ...draft, name: e.target.value })}
           className="mt-2"
@@ -434,6 +476,7 @@ export function RoutineEditor({
         <Textarea
           id={`${fieldId}-prompt`}
           value={draft.prompt}
+          disabled={saving}
           placeholder={t`What should this routine do each time it runs?`}
           onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
           rows={4}
@@ -441,7 +484,7 @@ export function RoutineEditor({
         />
       </label>
 
-      <div className="mt-5 text-sm text-muted-foreground">
+      <fieldset disabled={saving} className="mt-5 min-w-0 text-sm text-muted-foreground">
         <div className="flex items-baseline gap-2">
           <Trans>When to run</Trans>
           <span className="text-xs text-muted-foreground/70">{timezone}</span>
@@ -525,17 +568,43 @@ export function RoutineEditor({
               <Input
                 id={`${fieldId}-run-at`}
                 type="datetime-local"
-                value={draft.runAtLocal}
-                onChange={(e) => onChange({ ...draft, runAtLocal: e.target.value })}
+                value={displayRoutineDateTime(draft.runAt, timezone)}
+                onChange={(e) =>
+                  onChange({
+                    ...draft,
+                    runAt: { value: e.target.value, timezone },
+                    runAtDirty: true,
+                  })
+                }
                 aria-label={t`Run at`}
                 className="mt-2"
               />
             </label>
           ) : null}
+          {repeats ? (
+            <label htmlFor={`${fieldId}-start-at`} className="block text-sm text-muted-foreground">
+              <Trans>First run</Trans>
+              <Input
+                id={`${fieldId}-start-at`}
+                type="datetime-local"
+                value={firstRun}
+                onChange={(e) =>
+                  onChange({ ...draft, startAt: { value: e.target.value, timezone } })
+                }
+                className="mt-2"
+              />
+            </label>
+          ) : null}
+          {nextRun ? (
+            <div>
+              <Trans>Next run: {nextRun}</Trans>
+            </div>
+          ) : null}
         </div>
 
         <DropdownMenu>
           <DropdownMenuTrigger
+            disabled={saving}
             render={<Button variant="outline" className="mt-2 h-auto w-full rounded-xl py-3" />}
           >
             <Plus />
@@ -569,47 +638,51 @@ export function RoutineEditor({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
-            <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
-              <DropdownMenuItem
-                disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
-                aria-describedby={slackAvailable ? undefined : slackStatusId}
-                onClick={retrySlack ?? (() => addMessageProvider("slack"))}
-              >
-                <MessageSquare />
-                {retrySlack ? (
-                  <Trans>Retry Slack connection check</Trans>
-                ) : (
-                  <Trans>Slack message</Trans>
-                )}
-              </DropdownMenuItem>
-            </span>
+            {editing?.groupScoped ? null : (
+              <>
+                <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
+                  <DropdownMenuItem
+                    disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
+                    aria-describedby={slackAvailable ? undefined : slackStatusId}
+                    onClick={retrySlack ?? (() => addMessageProvider("slack"))}
+                  >
+                    <MessageSquare />
+                    {retrySlack ? (
+                      <Trans>Retry Slack connection check</Trans>
+                    ) : (
+                      <Trans>Slack message</Trans>
+                    )}
+                  </DropdownMenuItem>
+                </span>
 
-            {COMING_SOON.map((item) => (
-              <span
-                key={item.id}
-                className="block"
-                title={item.id === "teams" ? t`Teams not enabled` : t`Coming soon`}
-              >
-                <DropdownMenuItem disabled>
+                {COMING_SOON.map((item) => (
                   <span
-                    aria-hidden
-                    className="inline-block size-3.5 rounded-[4px]"
-                    style={{ background: comingSoonColor(item.id), opacity: 0.55 }}
-                  />
-                  {item.label()}
+                    key={item.id}
+                    className="block"
+                    title={item.id === "teams" ? t`Teams not enabled` : t`Coming soon`}
+                  >
+                    <DropdownMenuItem disabled>
+                      <span
+                        aria-hidden
+                        className="inline-block size-3.5 rounded-[4px]"
+                        style={{ background: comingSoonColor(item.id), opacity: 0.55 }}
+                      />
+                      {item.label()}
+                    </DropdownMenuItem>
+                  </span>
+                ))}
+
+                <DropdownMenuItem disabled={draft.githubEnabled} onClick={() => void addGithub()}>
+                  <GitBranch />
+                  <Trans>Git event</Trans>
                 </DropdownMenuItem>
-              </span>
-            ))}
 
-            <DropdownMenuItem disabled={draft.githubEnabled} onClick={() => void addGithub()}>
-              <GitBranch />
-              <Trans>Git event</Trans>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem disabled={draft.webhookEnabled} onClick={() => void addWebhook()}>
-              <Globe />
-              <Trans>Webhook</Trans>
-            </DropdownMenuItem>
+                <DropdownMenuItem disabled={draft.webhookEnabled} onClick={() => void addWebhook()}>
+                  <Globe />
+                  <Trans>Webhook</Trans>
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Explicit aria-live keeps the region exposed while the menu is open. */}
@@ -625,7 +698,7 @@ export function RoutineEditor({
             </Trans>
           </p>
         ) : null}
-      </div>
+      </fieldset>
 
       <details className="mt-5 text-sm text-muted-foreground">
         <summary className="w-fit cursor-pointer">

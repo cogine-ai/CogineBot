@@ -698,7 +698,7 @@ describe("GitHub event HTTP route", () => {
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
     expect(deps.findRoutines).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ active: true, githubEnabled: true }),
+        where: expect.objectContaining({ active: true, groupScoped: false, githubEnabled: true }),
       }),
     );
   });

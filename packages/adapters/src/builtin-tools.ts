@@ -97,7 +97,7 @@ const scheduleCreateProperties = {
     description:
       "Concrete steps for when the schedule fires: name the connected plugin tools to call (e.g. GITHUB_LIST_RELEASES for owner/repo), what to extract, and how to report. Prefer plugin tools over computer browser or web search for app data. Each run starts without earlier chat messages. To refresh an existing Page, include its exact pageId and the save_page update steps. If the Page is gone, report the failure and end that run.",
   },
-  timezone: { type: "string", description: "IANA timezone (default UTC)." },
+  timezone: { type: "string", description: "IANA timezone (defaults to the user's saved zone)." },
 };
 
 const scheduleTimingNames = [
@@ -136,9 +136,19 @@ const scheduleTimingSpecs = {
   },
 };
 
+const startAtSpec = {
+  anyOf: [{ type: "string" }, { type: "null" }],
+  description:
+    "Earliest date or datetime for a repeat. The first matching occurrence runs on or after it.",
+};
+
 function scheduleCreateBranch(active: readonly (keyof typeof scheduleTimingSpecs)[]) {
   const activeNames = new Set<string>(active);
-  const properties: Record<string, unknown> = { ...scheduleCreateProperties };
+  const properties: Record<string, unknown> = {
+    ...scheduleCreateProperties,
+    startAt:
+      activeNames.has("cron") || activeNames.has("every") ? startAtSpec : blankScheduleTiming,
+  };
   for (const name of scheduleTimingNames) {
     properties[name] = activeNames.has(name) ? scheduleTimingSpecs[name] : blankScheduleTiming;
   }
@@ -1005,6 +1015,30 @@ export const builtinAgentTools: ConnectorTool[] = [
     name: "schedule_list",
     description: "List this bot's active and inactive schedules (routines).",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "schedule_update",
+    description:
+      "Edit, pause, or resume an existing schedule in this conversation. Call schedule_list for its ID, then pass only fields that should change. For a time change use one timing method. To set the first occurrence of a repeat without changing its cadence, send startAt by itself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...scheduleCreateProperties,
+        ...scheduleTimingSpecs,
+        timezone: {
+          type: "string",
+          description: "IANA timezone. Omit to keep the schedule's saved timezone.",
+        },
+        id: { type: "string", description: "The routineId returned by schedule_list." },
+        active: { type: "boolean", description: "Pause with false or resume with true." },
+        startAt: {
+          ...startAtSpec,
+          description: `${startAtSpec.description} Use "next" to clear a saved first-run date.`,
+        },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
   },
   {
     name: "schedule_cancel",

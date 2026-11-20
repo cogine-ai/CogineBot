@@ -520,6 +520,9 @@ export function createGroupRepos(prisma: PrismaClient) {
         const removedBotIds = current.members
           .map((member) => member.botId)
           .filter((botId) => !nextBotIds.has(botId));
+        if (removedBotIds.length) {
+          await pauseGroupRoutines(tx, actor, current.thread.id, removedBotIds);
+        }
         const activeRuns = removedBotIds.length
           ? await tx.run.findMany({
               where: {
@@ -588,6 +591,7 @@ export function createGroupRepos(prisma: PrismaClient) {
           if (pending.cancelledRunIds.length === 0) throw new IsolationError();
           return pending;
         }
+        await pauseGroupRoutines(tx, actor, current.thread.id);
 
         const activeRuns = await tx.run.findMany({
           where: {
@@ -659,6 +663,7 @@ export function createGroupRepos(prisma: PrismaClient) {
           let teardowns: GroupRunTeardownKey[] = [];
           if (group.thread) {
             const threadId = group.thread.id;
+            await pauseGroupRoutines(tx, actor, threadId);
             // Match the thread lock used by ordinary Run cancellation. Partition one snapshot
             // so a Run just cancelled by this delete is not also an earlier cleanup candidate.
             await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
@@ -712,6 +717,54 @@ export async function lockOwnedGroup(
     FOR UPDATE
   `;
   if (locked.length !== 1) throw new IsolationError();
+}
+
+/** Serialize group-origin Routine writes with member removal and archive. */
+export async function lockActiveRoutineGroup(
+  tx: Prisma.TransactionClient,
+  scope: Pick<Actor, "spaceId" | "userId"> & { threadId: string | null; botId: string },
+): Promise<boolean> {
+  if (!scope.threadId) return false;
+  const where = { id: scope.threadId, spaceId: scope.spaceId, userId: scope.userId };
+  const target = await tx.thread.findFirst({ where, select: { groupId: true } });
+  if (!target?.groupId) return false;
+  try {
+    await lockOwnedGroup(tx, scope, target.groupId);
+  } catch (error) {
+    if (!(error instanceof IsolationError)) throw error;
+    return false;
+  }
+  const active = await tx.thread.findFirst({
+    where: {
+      ...where,
+      groupId: target.groupId,
+      group: {
+        archivedAt: null,
+        members: { some: { botId: scope.botId, bot: { archivedAt: null } } },
+      },
+    },
+    select: { id: true },
+  });
+  return Boolean(active);
+}
+
+export async function pauseGroupRoutines(
+  tx: Prisma.TransactionClient,
+  actor: Pick<Actor, "spaceId" | "userId">,
+  threadId: string,
+  botIds?: string[],
+) {
+  await tx.routine.updateMany({
+    where: {
+      spaceId: actor.spaceId,
+      userId: actor.userId,
+      threadId,
+      groupScoped: true,
+      OR: [{ active: true }, { autoCompletedRunId: { not: null } }],
+      ...(botIds ? { botId: { in: botIds } } : {}),
+    },
+    data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
+  });
 }
 
 export async function touchGroupUpdatedAt(

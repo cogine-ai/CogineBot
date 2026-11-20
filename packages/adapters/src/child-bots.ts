@@ -26,6 +26,7 @@ import {
   deletePageShareSecrets,
   expireComputerExecutionLeases,
   lockBotCreationIntro,
+  pauseGroupRoutines,
   runAsSystemInTransaction,
   withTransactionRetry,
 } from "@rakazo/db";
@@ -779,6 +780,11 @@ async function detachBotFromGroups(tx: Prisma.TransactionClient, botId: string, 
     }
   }
   const dissolvedGroupIdSet = new Set(dissolvedGroupIds);
+  for (const group of affectedGroups) {
+    if (dissolvedGroupIdSet.has(group.id) && group.thread) {
+      await pauseGroupRoutines(tx, group, group.thread.id);
+    }
+  }
   const dissolvedThreadIds = affectedGroups
     .filter((group) => dissolvedGroupIdSet.has(group.id))
     .flatMap((group) => (group.thread ? [group.thread.id] : []));

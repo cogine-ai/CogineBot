@@ -4861,7 +4861,9 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create: createRoutine } });
+    Object.assign(f.prisma, {
+      routine: { create: createRoutine, findMany: vi.fn(async () => []) },
+    });
     const args = {
       name: "Read the report",
       prompt:
@@ -4917,6 +4919,59 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { state: "changed", saved: "America/New_York", expected: "America/New_York" },
+    { state: "unset", saved: null, expected: "UTC" },
+    { state: "temporarily unavailable", saved: undefined, expected: "Europe/Paris" },
+  ])("uses the actor's schedule timezone when the preference is $state", async (zone) => {
+    const f = fixture({ name: "schedule_create", builtin: true });
+    const lookupBot = f.prisma.bot.findUniqueOrThrow.getMockImplementation()!;
+    f.prisma.bot.findUniqueOrThrow.mockImplementation(async () => ({
+      ...(await lookupBot()),
+      userId: f.runRecord.userId,
+    }));
+    const findTimezone = vi
+      .fn(async () => {
+        if (zone.saved === undefined) throw new Error("Profile read unavailable");
+        return { timezone: zone.saved };
+      })
+      .mockResolvedValueOnce({ timezone: "Europe/Paris" });
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: data.name,
+    }));
+    Object.assign(f.prisma, {
+      user: { findUnique: findTimezone },
+      routine: { create, findMany: vi.fn(async () => []) },
+    });
+    f.setCalls([
+      {
+        args: { name: "Latest zone", prompt: "Check work", cron: "0 9 * * *" },
+        executionId: "schedule-latest-zone",
+      },
+      {
+        args: {
+          name: "Pinned zone",
+          prompt: "Check work",
+          cron: "0 9 * * *",
+          timezone: "Asia/Tokyo",
+        },
+        executionId: "schedule-explicit-zone",
+      },
+    ]);
+    await f.run();
+    expect(f.runtimeRun.mock.calls[0]?.[0].userTimezone).toBe("Europe/Paris");
+    expect(findTimezone).toHaveBeenCalledTimes(2);
+    expect(findTimezone).toHaveBeenNthCalledWith(2, {
+      where: { id: f.runRecord.userId },
+      select: { timezone: true },
+    });
+    expect(create.mock.calls.map(([{ data }]) => data.timezone)).toEqual([
+      zone.expected,
+      "Asia/Tokyo",
+    ]);
+  });
+
   it("saves a Routine using only sites named by its owner or covered by a site allowance", async () => {
     const f = fixture({
       name: "schedule_create",
@@ -4935,7 +4990,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     f.setCalls([
       {
         args: {
@@ -4957,6 +5012,148 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
   });
 
+  it("binds a schedule update's new sites to the approved plan and instructions", async () => {
+    const f = fixture({ name: "schedule_update", builtin: true, autoReview: true });
+    const current = {
+      id: "routine-fixture",
+      name: "Review report",
+      prompt: "Read the existing report",
+      active: true,
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: new Date("2027-02-15T09:00:00Z"),
+      authorizedInstructions: "Read the existing report",
+      authorizedSites: ["old.example"],
+    };
+    const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(current, data);
+      return { count: 1 };
+    });
+    Object.assign(f.prisma, {
+      routine: {
+        findFirst: vi.fn(async () => current),
+        updateMany,
+      },
+    });
+    const args = { id: current.id, prompt: "Read the report at https://docs.example.net/report" };
+    f.setCalls([{ args, executionId: "routine-edit" }]);
+    await f.run();
+    expect(updateMany).not.toHaveBeenCalled();
+    const effect = f.effects.find((row) => row.kind === "schedule_update")!;
+    expect(effect.request).toEqual(["routine-site-approval-v1", args, ["example.net"]]);
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(reviewMock).not.toHaveBeenCalled();
+
+    effect.status = "approved";
+    f.setCalls([
+      {
+        args: { id: "another-routine", prompt: "Read https://other.example.org" },
+        executionId: "routine-edit-approved",
+      },
+    ]);
+    await f.run();
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ id: args.id, prompt: "Read the existing report" }),
+      data: expect.objectContaining({
+        prompt: args.prompt,
+        authorizedInstructions: null,
+        authorizedSites: ["example.net"],
+      }),
+    });
+    expect(updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("nextRunAt");
+    expect(effect.status).toBe("completed");
+  });
+
+  it.each([
+    { source: "outside input", outsideSteering: true, origin: "human" },
+    { source: "a connected bot", origin: "bot_peer" },
+    { source: "an external agent", origin: "external_agent" },
+  ])("requires individual confirmation for Routine changes from $source", async (input) => {
+    const f = fixture({
+      name: "schedule_update",
+      builtin: true,
+      outsideSteering: input.outsideSteering,
+      startedAt: input.origin === "human" ? null : new Date(0),
+      autoReview: true,
+      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "schedule_update" }],
+    });
+    Object.assign(f.runRecord, { origin: input.origin });
+    const current = {
+      id: "routine-fixture",
+      name: "Review report",
+      prompt: "Read the existing report",
+      active: true,
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: new Date(Date.now() + 86_400_000),
+      authorizedInstructions: "Read the existing report",
+      authorizedSites: [],
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    Object.assign(f.prisma, {
+      routine: { findFirst: vi.fn(async () => current), updateMany },
+    });
+    const args = { id: current.id, cron: "0 10 * * *" };
+    f.setCalls([{ args, executionId: "routine-schedule-review" }]);
+    await f.run();
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(reviewMock).not.toHaveBeenCalled();
+    const effect = f.effects.find((row) => row.kind === "schedule_update")!;
+    expect(effect).toMatchObject({ request: args, status: "intended" });
+    expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        blocks: [
+          expect.objectContaining({
+            kind: "ask",
+            approvalEffectId: effect.id,
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ],
+          }),
+        ],
+      }),
+    );
+    if (input.origin !== "human") return;
+
+    effect.status = "approved";
+    f.setCalls([
+      { args: { ...args, cron: "0 11 * * *" }, executionId: "routine-schedule-approved" },
+    ]);
+    await f.run();
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ id: current.id, crons: { equals: current.crons } }),
+      data: expect.objectContaining({ crons: [args.cron] }),
+    });
+    expect(effect.status).toBe("completed");
+  });
+
+  it("uses explicit pause to withdraw a one-shot automatic retry", async () => {
+    const f = fixture({ name: "schedule_update", builtin: true });
+    const current = {
+      id: "once-fixture",
+      name: "Reminder",
+      active: false,
+      crons: ["@once"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: null,
+      latestRunId: "previous-run",
+      autoCompletedRunId: "previous-run",
+    };
+    const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(current, data);
+      return { count: 1 };
+    });
+    Object.assign(f.prisma, { routine: { findFirst: vi.fn(async () => current), updateMany } });
+    f.setCalls([{ args: { id: current.id, active: false }, executionId: "pause-once" }]);
+    await f.run();
+    expect(current).toMatchObject({ active: false, latestRunId: null, autoCompletedRunId: null });
+    expect(updateMany).toHaveBeenCalledOnce();
+  });
+
   it.each(["approved", "intended"] as const)(
     "does not upgrade a legacy %s Schedule request to a dedicated approval",
     async (status) => {
@@ -4965,7 +5162,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         ...data,
         id: "routine-fixture",
       }));
-      Object.assign(f.prisma, { routine: { create } });
+      Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
       const args = {
         name: "Read updates",
         prompt: "Read https://docs.example.net.",
@@ -5014,7 +5211,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       secrets: ["fixture-private-label"],
     });
     const create = vi.fn();
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     f.setCalls([
       {
         args: {
@@ -5041,7 +5238,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     const prompt = Array.from(
       { length: 85 },
       (_, index) => `https://site-${index}-${"a".repeat(45)}.net/`,

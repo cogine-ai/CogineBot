@@ -2,10 +2,17 @@ import { randomUUID } from "node:crypto";
 import type { BackgroundJob } from "@rakazo/adapter-kit";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { appendEvent, createDb, Prisma } from "@rakazo/db";
+import { appendEvent, createDb, createGroupRepos, Prisma, sendUserMessage } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "./executor.js";
+import { createJobReconciler } from "./job-reconciler.js";
+import { requireRoutineTrigger } from "./native-connectors/events/store.js";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
+import {
+  cancelScheduleFromTool,
+  createScheduleFromTool,
+  updateScheduleFromTool,
+} from "./schedule-tools.js";
 
 const url = process.env.DATABASE_URL;
 const describePostgres =
@@ -96,6 +103,472 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     }
     return { routine, config, create };
   }
+
+  it("recovers an edited first occurrence after a lost enqueue receipt without firing it twice", async () => {
+    const { routine } = await fixture();
+    const now = new Date("2027-02-14T23:59:00Z");
+    const first = new Date("2027-02-15T00:01:00Z");
+    const oldDue = new Date("2027-02-15T00:00:00Z");
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { nextRunAt: oldDue, timezone: "Asia/Taipei" },
+    });
+    const queued = new Map<string, BackgroundJob>();
+    const enqueue = vi.fn(async (job: BackgroundJob) => {
+      if (job.replaceKey) queued.set(job.replaceKey, job);
+    });
+    const cancel = vi.fn(async (key: string) => {
+      queued.delete(key);
+    });
+    const deps = {
+      prisma: system,
+      events: { append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event) },
+      jobs: { enqueue, cancel, close: async () => undefined },
+    } as Parameters<typeof updateScheduleFromTool>[0];
+    const target = { ...identity, directThread: true, routineId: routine.id };
+    vi.useFakeTimers({ toFake: ["Date"], now });
+    try {
+      enqueue.mockRejectedValueOnce(new Error("Lost enqueue reply"));
+      expect(
+        await updateScheduleFromTool(deps, {
+          ...target,
+          schedule: { startAt: "2027-02-15T08:01" },
+        }),
+      ).toMatchObject({
+        routineId: routine.id,
+        nextRunAt: first.toISOString(),
+        timezone: "Asia/Taipei",
+      });
+      expect(
+        await updateScheduleFromTool(deps, {
+          ...target,
+          schedule: {},
+          active: false,
+        }),
+      ).toMatchObject({ active: false, nextRunAt: null });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject({
+        startAt: first,
+        nextRunAt: null,
+      });
+
+      enqueue.mockImplementationOnce(async (job) => {
+        if (job.replaceKey) queued.set(job.replaceKey, job);
+        throw new Error("Lost resume enqueue reply");
+      });
+      expect(
+        await updateScheduleFromTool(deps, {
+          ...target,
+          schedule: {},
+          active: true,
+        }),
+      ).toMatchObject({ active: true, nextRunAt: first.toISOString() });
+      enqueue.mockClear();
+      vi.setSystemTime(new Date(first.getTime() - 30_000));
+      await createJobReconciler({ prisma: system, jobs: deps.jobs }).reconcileOnce();
+      expect(enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "routine.wakeup",
+          payload: { routineId: routine.id, scheduledFor: first.toISOString() },
+        }),
+      );
+      expect([...queued.values()]).toEqual([
+        expect.objectContaining({
+          payload: { routineId: routine.id, scheduledFor: first.toISOString() },
+        }),
+      ]);
+      const wakeups = createRunExecutor({
+        prisma: system,
+        jobs: deps.jobs,
+        events: {
+          append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event),
+        },
+      } as Parameters<typeof createRunExecutor>[0]);
+      vi.setSystemTime(first);
+      await wakeups.wakeRoutine(routine.id, oldDue.toISOString());
+      expect(await system.run.count({ where: { routineId: routine.id } })).toBe(0);
+      await wakeups.wakeRoutine(routine.id, first.toISOString());
+      await wakeups.wakeRoutine(routine.id, first.toISOString());
+      expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
+      const updated = await updateScheduleFromTool(deps, {
+        ...target,
+        prompt: "Revised fixture",
+        schedule: {},
+      });
+      expect(updated).toMatchObject({
+        nextRunAt: "2027-02-15T00:02:00.000Z",
+      });
+      expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject({
+        prompt: "Revised fixture",
+        authorizedInstructions: null,
+        authorizedSites: [],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("serializes duplicate admission and binds group edits to the original thread and owner", async () => {
+    async function groupThread(name: string) {
+      const group = await system.chatGroup.create({
+        data: { spaceId, userId, name, thread: { create: { spaceId, userId } } },
+        include: { thread: true },
+      });
+      if (!group.thread) throw new Error("fixture group thread missing");
+      return group.thread;
+    }
+    const origin = await groupThread("Original");
+    const other = await groupThread("Other");
+    const jobs = {
+      enqueue: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      close: async () => undefined,
+    };
+    const deps = {
+      prisma: system,
+      jobs,
+      events: { append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event) },
+    } as Parameters<typeof createScheduleFromTool>[0];
+    const input = {
+      ...identity,
+      threadId: origin.id,
+      name: "Concurrent check",
+      prompt: "Report status",
+      schedule: { cron: "0 9 * * *" },
+    };
+    const [first, second] = await Promise.all([
+      createScheduleFromTool(deps, input),
+      createScheduleFromTool(deps, { ...input, name: " concurrent CHECK " }),
+    ]);
+    expect([first, second].filter((result) => "ok" in result)).toHaveLength(1);
+    expect([first, second].find((result) => "error" in result)?.error).toContain("name");
+    const row = await system.routine.findFirstOrThrow({
+      where: { spaceId, botId: identity.botId, name: { equals: input.name, mode: "insensitive" } },
+    });
+    const target = {
+      ...identity,
+      threadId: origin.id,
+      directThread: false,
+      routineId: row.id,
+      schedule: {},
+      name: "Updated check",
+    };
+    for (const input of [
+      { ...target, threadId: other.id },
+      { ...target, userId: randomUUID() },
+      { ...target, threadId: other.id, directThread: true },
+    ]) {
+      expect(await updateScheduleFromTool(deps, input)).toEqual({
+        error: "Schedule not found in this conversation.",
+      });
+    }
+    expect(await updateScheduleFromTool(deps, target)).toMatchObject({
+      routineId: row.id,
+      name: "Updated check",
+    });
+    expect(
+      await cancelScheduleFromTool(deps, {
+        ...identity,
+        directThread: true,
+        nameThreadId: identity.threadId,
+        name: "Updated check",
+      }),
+    ).toEqual({ error: "Schedule not found." });
+    expect(await system.routine.count({ where: { id: row.id } })).toBe(1);
+    expect(jobs.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it.each(["schedule", "prompt"] as const)(
+    "keeps worker progress when the %s update follows a concurrent timer claim",
+    async (kind) => {
+      const { routine } = await fixture();
+      const due = new Date("2027-02-15T09:00:00Z");
+      await system.routine.update({ where: { id: routine.id }, data: { nextRunAt: due } });
+      const jobs = {
+        enqueue: vi.fn(async () => undefined),
+        cancel: vi.fn(async () => undefined),
+        close: async () => undefined,
+      };
+      const events = {
+        append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event),
+      };
+      const executor = createRunExecutor({ prisma: system, jobs, events } as unknown as Parameters<
+        typeof createRunExecutor
+      >[0]);
+      let signalRead!: () => void;
+      let signalClaim!: () => void;
+      const read = new Promise<void>((resolve) => {
+        signalRead = resolve;
+      });
+      const claimed = new Promise<void>((resolve) => {
+        signalClaim = resolve;
+      });
+      // Yield after the editor has read the old occurrence so the real worker can claim it.
+      const prisma = {
+        routine: {
+          findFirst: async (args: Prisma.RoutineFindFirstArgs) => {
+            const before = await system.routine.findFirst(args);
+            signalRead();
+            await claimed;
+            return before;
+          },
+        },
+        $transaction: system.$transaction.bind(system),
+      } as unknown as PrismaClient;
+      vi.useFakeTimers({ toFake: ["Date"], now: due });
+      try {
+        const update = updateScheduleFromTool(
+          { prisma, jobs, events },
+          {
+            ...identity,
+            routineId: routine.id,
+            ...(kind === "prompt"
+              ? { prompt: "Revised fixture", schedule: {} }
+              : { schedule: { cron: "0 10 * * *" } }),
+          },
+        );
+        await read;
+        try {
+          await executor.wakeRoutine(routine.id, due.toISOString());
+        } finally {
+          signalClaim();
+        }
+        const saved = await update;
+        if (kind === "schedule")
+          expect(saved).toMatchObject({ error: expect.stringContaining("changed") });
+        else expect(saved).toMatchObject({ ok: true, nextRunAt: "2027-02-15T09:01:00.000Z" });
+        expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
+        expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject(
+          { nextRunAt: new Date("2027-02-15T09:01:00Z") },
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["archive", "remove bot", "dissolve"] as const)(
+    "does not route an existing group schedule to the DM after %s",
+    async (change) => {
+      const group = await system.chatGroup.create({
+        data: {
+          spaceId,
+          userId,
+          name: "Source group",
+          thread: { create: { spaceId, userId } },
+          members: { create: { botId: identity.botId } },
+        },
+        include: { thread: true },
+      });
+      const { routine } = await fixture();
+      const due = new Date(Date.now() - 1_000);
+      await system.routine.update({
+        where: { id: routine.id },
+        data: { threadId: group.thread!.id, groupScoped: true, nextRunAt: due },
+      });
+      if (change === "archive")
+        await system.chatGroup.update({
+          where: { id: group.id },
+          data: { archivedAt: new Date() },
+        });
+      if (change === "remove bot")
+        await system.chatGroupMember.deleteMany({ where: { groupId: group.id } });
+      if (change === "dissolve") {
+        await createGroupRepos(system).removeGroup(
+          {
+            spaceId,
+            userId,
+            email: "actor@example.test",
+            isDeploymentOwner: false,
+          },
+          group.id,
+        );
+        expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject(
+          { threadId: null, groupScoped: true, active: false, nextRunAt: null },
+        );
+      }
+      const enqueue = vi.fn(async () => undefined);
+      const executor = createRunExecutor({
+        prisma: system,
+        jobs: { enqueue },
+      } as unknown as Parameters<typeof createRunExecutor>[0]);
+      await executor.wakeRoutine(routine.id, due.toISOString());
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await system.run.count({ where: { routineId: routine.id } })).toBe(0);
+      expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject({
+        active: false,
+        nextRunAt: null,
+      });
+    },
+  );
+
+  it("requires a runnable trigger before an old group Routine can become active", async () => {
+    const { routine } = await fixture();
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { groupScoped: true, crons: [], webhookEnabled: true },
+    });
+    await expect(requireRoutineTrigger(system, identity, routine.id)).rejects.toThrow(
+      "Add a schedule or application event before resuming.",
+    );
+    await system.routine.update({ where: { id: routine.id }, data: { active: false } });
+    await expect(requireRoutineTrigger(system, identity, routine.id)).resolves.toBeUndefined();
+  });
+
+  it("refreshes a group routine's editor without sending the group run to the direct thread", async () => {
+    const group = await system.chatGroup.create({
+      data: {
+        spaceId,
+        userId,
+        name: "Scheduled group",
+        thread: { create: { spaceId, userId } },
+        members: { create: { botId: identity.botId } },
+      },
+      include: { thread: true },
+    });
+    const threadId = group.thread!.id;
+    const due = new Date(Date.now() - 1_000);
+    const { routine } = await fixture();
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { threadId, groupScoped: true, nextRunAt: due },
+    });
+    const append = vi.fn((input: Parameters<typeof appendEvent>[1]) => appendEvent(system, input));
+    const jobs = {
+      enqueue: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+    };
+    const executor = createRunExecutor({
+      prisma: system,
+      jobs,
+      events: { append },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+    await executor.wakeRoutine(routine.id, due.toISOString());
+    const run = await system.run.findFirstOrThrow({ where: { routineId: routine.id } });
+    expect(run.threadId).toBe(threadId);
+    expect(append.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ threadId, type: "routine.fired", runId: run.id }),
+      {
+        spaceId,
+        botId: identity.botId,
+        threadId: identity.threadId,
+        type: "routine.updated",
+        payload: { routineId: routine.id, active: true },
+      },
+    ]);
+  });
+
+  it("serializes a group timer claim with archive and keeps the schedule paused after restore", async () => {
+    const group = await system.chatGroup.create({
+      data: {
+        spaceId,
+        userId,
+        name: "Scheduled group",
+        thread: { create: { spaceId, userId } },
+        members: { create: { botId: identity.botId } },
+      },
+      include: { thread: true },
+    });
+    const { routine } = await fixture();
+    const due = new Date(Date.now() - 1000);
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { threadId: group.thread!.id, groupScoped: true, webhookEnabled: true, nextRunAt: due },
+    });
+    await expect(
+      sendUserMessage(system, {
+        ...identity,
+        blocks: [{ kind: "text", text: "Inbound fixture" }],
+        prompt: routine.prompt,
+        trigger: "webhook",
+        routineSources: {
+          trigger: "webhook",
+          routines: [{ id: routine.id, prompt: routine.prompt }],
+        },
+      }),
+    ).rejects.toThrow("Routine source conversation changed.");
+    expect(
+      await system.run.count({ where: { threadId: identity.threadId, trigger: "webhook" } }),
+    ).toBe(0);
+    let signalTask!: () => void;
+    let releaseTask!: () => void;
+    const atTask = new Promise<void>((resolve) => {
+      signalTask = resolve;
+    });
+    const mayCreate = new Promise<void>((resolve) => {
+      releaseTask = resolve;
+    });
+    const prisma = new Proxy(system, {
+      get(target, key) {
+        if (key !== "$transaction") return Reflect.get(target, key, target);
+        return (work: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          target.$transaction((tx) =>
+            work(
+              new Proxy(tx, {
+                get(transaction, property) {
+                  if (property !== "task") return Reflect.get(transaction, property, transaction);
+                  return {
+                    create: async (args: Prisma.TaskCreateArgs) => {
+                      signalTask();
+                      await mayCreate;
+                      return tx.task.create(args);
+                    },
+                  };
+                },
+              }),
+            ),
+          );
+      },
+    });
+    const events = {
+      append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event),
+    };
+    const jobs = {
+      enqueue: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      close: async () => undefined,
+    };
+    const wake = createRunExecutor({ prisma, events, jobs } as unknown as Parameters<
+      typeof createRunExecutor
+    >[0]);
+    const firing = wake.wakeRoutine(routine.id, due.toISOString());
+    await atTask;
+    const repos = createGroupRepos(system);
+    const actor = { spaceId, userId, email: "actor@example.test", isDeploymentOwner: false };
+    let archiving: ReturnType<typeof repos.archiveGroup> | undefined;
+    try {
+      await expect(
+        system.$queryRaw`SELECT id FROM chat_groups WHERE id=${group.id} FOR UPDATE NOWAIT`,
+      ).rejects.toMatchObject({
+        code: "P2010",
+        meta: { driverAdapterError: { cause: { originalCode: "55P03" } } },
+      });
+      archiving = repos.archiveGroup(actor, group.id);
+    } finally {
+      releaseTask();
+      await firing;
+    }
+    await archiving;
+    const run = await system.run.findFirstOrThrow({ where: { routineId: routine.id } });
+    expect(run.status).toBe("cancelled");
+    const resume = {
+      ...identity,
+      threadId: group.thread!.id,
+      routineId: routine.id,
+      active: true,
+      schedule: {},
+    };
+    expect(await updateScheduleFromTool({ prisma: system, events, jobs }, resume)).toEqual({
+      error: "The original conversation is no longer available.",
+    });
+    await repos.restoreGroup(actor, group.id);
+    expect(await system.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject({
+      active: false,
+      nextRunAt: null,
+    });
+    await wake.wakeRoutine(routine.id, due.toISOString());
+    expect(await system.run.count({ where: { routineId: routine.id } })).toBe(1);
+  });
 
   it("serializes concurrent ticks into one pending catch-up", async () => {
     const { routine, config, create } = await fixture();

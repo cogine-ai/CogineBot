@@ -4681,6 +4681,7 @@ describe("routines.update", () => {
         ]),
       },
       routine: {
+        findMany: vi.fn(async () => []),
         findFirst: vi.fn(async (args: { where: { bot?: { archivedAt: null } } }) =>
           botArchived && args.where.bot?.archivedAt === null ? null : savedRoutine,
         ),
@@ -4794,6 +4795,13 @@ describe("routines.update", () => {
     modelId: "old-model",
     thinkingLevel: "high",
   };
+
+  it("keeps direct inbound triggers out of a group routine", async () => {
+    const { call, update } = fixture(false, false, { groupScoped: true });
+    const { response } = await call({ active: false, runAt: undefined, webhookEnabled: true });
+    expect(response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
 
   it("leaves model columns out of unrelated updates", async () => {
     const { call, update } = fixture(false, false, ownModel);
@@ -4981,6 +4989,7 @@ describe("groups.archive", () => {
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       attempt: { updateMany: vi.fn() },
       task: { updateMany: vi.fn() },
+      routine: { updateMany: vi.fn(async () => ({ count: 0 })) },
       computerExecutionLease: {
         findMany: vi
           .fn()

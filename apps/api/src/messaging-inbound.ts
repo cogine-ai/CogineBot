@@ -535,6 +535,7 @@ export async function wakeMessageRoutines(
         spaceId: target.spaceId,
         userId: target.userId,
         active: true,
+        groupScoped: false,
         messageProvider: event.provider,
       },
       select: {

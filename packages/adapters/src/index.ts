@@ -158,6 +158,7 @@ export * from "./private-endpoint.js";
 export * from "./realtime.js";
 export * from "./release-watch.js";
 export * from "./remote-mcp.js";
+export * from "./routine-timing.js";
 export * from "./run-execution.js";
 export * from "./run-secret.js";
 export * from "./run-wakeup.js";

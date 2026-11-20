@@ -23,6 +23,7 @@ const APPROVAL_EXEMPT_TOOLS = new Set([
   "spawn_bot",
   "schedule_create",
   "schedule_list",
+  "schedule_update",
   "schedule_cancel",
 ]);
 
@@ -158,6 +159,7 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "schedule_cancel",
   "schedule_create",
   "schedule_list",
+  "schedule_update",
   "scratchpad_add",
   "scratchpad_complete",
   "scratchpad_list",
