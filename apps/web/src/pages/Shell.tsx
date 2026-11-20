@@ -1140,6 +1140,10 @@ export function ShellPage() {
 
   const inGroup = Boolean(groupId);
   const active = inGroup || inNewChat ? undefined : (bots.find((b) => b.id === botId) ?? bots[0]);
+  const liveEditingRoutine =
+    editingRoutine && active?.id === routinesBotId
+      ? routines.find((routine) => routine.id === editingRoutine.id)
+      : undefined;
   const computerBot =
     (computerBotId ? bots.find((bot) => bot.id === computerBotId) : undefined) ?? active;
   computerOpenRef.current = computerOpen;
@@ -7049,12 +7053,13 @@ export function ShellPage() {
                 draft={routineDraft}
                 onChange={setRoutineDraft}
                 editing={editingRoutine}
-                liveTiming={
-                  routinesBotId === active.id
-                    ? routines.find((routine) => routine.id === editingRoutine?.id)
-                    : undefined
+                liveTiming={liveEditingRoutine}
+                timezone={
+                  liveEditingRoutine?.timezone ??
+                  editingRoutine?.timezone ??
+                  bootstrapMe?.timezone ??
+                  localTimezone()
                 }
-                timezone={editingRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone()}
                 webhook={{
                   path:
                     typeof window !== "undefined"
@@ -7127,11 +7132,14 @@ export function ShellPage() {
                       crons.length === 1 && routineDraft.schedules[0]?.freq === "Interval";
                     const timezone =
                       targetRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone();
-                    const editingRepeat = crons.length > 0 && !isOneShotRoutineCrons(crons);
-                    const startAt =
-                      editingRepeat && routineDraft.startAtDirty
-                        ? routineDraft.startAtLocal || null
-                        : undefined;
+                    const firstRun = routineDraft.startAt;
+                    let startAt: string | null | undefined;
+                    if (firstRun && crons.length > 0 && !isOneShotRoutineCrons(crons)) {
+                      startAt = firstRun.value
+                        ? (parseRoutineDateTime(firstRun.value, firstRun.timezone)?.toISOString() ??
+                          firstRun.value)
+                        : null;
+                    }
                     const chosenModel = routineDraft.modelKey
                       ? parseModelOptionKey(routineDraft.modelKey)
                       : null;
@@ -7148,10 +7156,7 @@ export function ShellPage() {
                         : {};
                     let saved: Routine;
                     if (targetRoutine) {
-                      const latestRoutine =
-                        (routinesBotId === targetBotId
-                          ? routines.find((routine) => routine.id === targetRoutine.id)
-                          : undefined) ?? targetRoutine;
+                      const latestRoutine = liveEditingRoutine ?? targetRoutine;
                       const armOneShot =
                         routineNeedsOneShotArm(latestRoutine, crons) &&
                         (routineDraft.activeDirty ? routineDraft.active : routineDraft.runAtDirty);
@@ -7169,11 +7174,12 @@ export function ShellPage() {
                         targetRoutine.intervalBased !== intervalBased;
                       let runAt: string | undefined;
                       if (armOneShot) {
-                        if (!routineDraft.runAtLocal) {
+                        const runTime = routineDraft.runAt;
+                        if (!runTime?.value) {
                           setRoutineError(t`Add a run time for this one-shot.`);
                           return;
                         }
-                        const parsed = parseRoutineDateTime(routineDraft.runAtLocal, timezone);
+                        const parsed = parseRoutineDateTime(runTime.value, runTime.timezone);
                         if (!parsed || parsed.getTime() <= Date.now()) {
                           setRoutineError(t`Run time must be in the future.`);
                           return;

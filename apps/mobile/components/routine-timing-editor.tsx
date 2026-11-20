@@ -96,10 +96,10 @@ function RepeatControl({
         <View style={{ paddingHorizontal: 16, paddingBottom: 12, gap: 4 }}>
           <Text style={{ color: native.secondaryLabel }}>{t("Time of day")}</Text>
           <LocalDateTimePicker
-            value={clockToLocalInput(value.time)}
+            value={clockToDate(value.time)}
             zone="UTC"
             timeOnly
-            onChange={(time) => change({ time: clockFromLocalInput(time) })}
+            onChange={(date) => change({ time: clockFromDate(date) })}
           />
         </View>
       ) : null}
@@ -107,14 +107,15 @@ function RepeatControl({
   );
 }
 
-function clockToLocalInput(clock: string): string {
+function clockToDate(clock: string): Date {
   const [time, period] = clock.split(" ");
   const [hour = 0, minute = 0] = (time ?? "").split(":").map(Number);
-  return `2000-01-01T${pad((hour % 12) + (period === "PM" ? 12 : 0))}:${pad(minute)}`;
+  return new Date(Date.UTC(2000, 0, 1, (hour % 12) + (period === "PM" ? 12 : 0), minute));
 }
 
-function clockFromLocalInput(value: string): string {
-  const [hour = 0, minute = 0] = value.slice(11).split(":").map(Number);
+function clockFromDate(value: Date): string {
+  const hour = value.getUTCHours();
+  const minute = value.getUTCMinutes();
   return `${hour % 12 || 12}:${pad(minute)} ${hour < 12 ? "AM" : "PM"}`;
 }
 
@@ -124,27 +125,25 @@ function LocalDateTimePicker({
   timeOnly = false,
   onChange,
 }: {
-  value: string;
+  value: Date;
   zone: string;
   timeOnly?: boolean;
-  onChange: (value: string) => void;
+  onChange: (value: Date) => void;
 }) {
   const { t } = useI18n();
   const [pick, setPick] = useState<"date" | "time" | null>(null);
-  const [day = "", time = ""] = value.split("T");
-  const actual = parseRoutineDateTime(value, zone);
-  if (!actual) return null;
   if (Platform.OS === "ios") {
     return (
       <DateTimePicker
         mode={timeOnly ? "time" : "datetime"}
         display="compact"
-        value={actual}
+        value={value}
         timeZoneName={zone}
-        onValueChange={(_, date) => onChange(routineDateTimeLocal(date, zone))}
+        onValueChange={(_, date) => onChange(date)}
       />
     );
   }
+  const [day = "", time = ""] = routineDateTimeLocal(value, zone).split("T");
   return (
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       {timeOnly ? null : (
@@ -168,7 +167,11 @@ function LocalDateTimePicker({
           onValueChange={(_, date) => {
             const nextDay = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
             const nextTime = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-            onChange(pick === "date" ? `${nextDay}T${time}` : `${day}T${nextTime}`);
+            const selected = parseRoutineDateTime(
+              pick === "date" ? `${nextDay}T${time}` : `${day}T${nextTime}`,
+              zone,
+            );
+            if (selected) onChange(selected);
             setPick(null);
           }}
         />
@@ -202,11 +205,9 @@ export function RoutineTimingEditor({
     : null;
   const canArm = oneShot && !routine.lastRunAt && !routine.nextRunAt;
   const localNow = () => defaultRoutineDateTimeLocal(new Date(), routine.timezone);
-  const currentStart =
-    routine.startAt && new Date(routine.startAt).getTime() > Date.now()
-      ? routineDateTimeLocal(new Date(routine.startAt), routine.timezone)
-      : null;
-  const shownStart = startAt === undefined ? currentStart : startAt;
+  const savedStart = routine.startAt ? new Date(routine.startAt) : null;
+  const currentStart = savedStart && savedStart.getTime() > Date.now() ? savedStart : null;
+  const shownStart = startAt === undefined ? currentStart : startAt && new Date(startAt);
   const crons = schedules.map(cronFromPreset);
   const intervalBased = crons.length === 1 && schedules[0]?.freq === "Interval";
   const initial = routineCronPresets(routine.crons, routine.intervalBased);
@@ -217,11 +218,15 @@ export function RoutineTimingEditor({
     routine.intervalBased !== undefined && intervalBased !== routine.intervalBased;
   const changed = startAt !== undefined || changedCrons || changedMode;
 
+  function chooseLocalStart(value: string) {
+    const date = parseRoutineDateTime(value, routine.timezone);
+    if (date) setStartAt(date.toISOString());
+  }
+
   async function save() {
-    const runAt = canArm && startAt ? parseRoutineDateTime(startAt, routine.timezone) : null;
     const saved = await onSave(
       canArm
-        ? { active: true, runAt: runAt?.toISOString() }
+        ? { active: true, runAt: startAt ?? undefined }
         : {
             ...(changedCrons ? { crons } : {}),
             ...(changedCrons || changedMode ? { intervalBased } : {}),
@@ -268,8 +273,8 @@ export function RoutineTimingEditor({
                 <LocalDateTimePicker
                   value={shownStart}
                   zone={routine.timezone}
-                  onChange={(value) => {
-                    if (!saving) setStartAt(value);
+                  onChange={(date) => {
+                    if (!saving) setStartAt(date.toISOString());
                   }}
                 />
                 {repeating ? (
@@ -284,7 +289,7 @@ export function RoutineTimingEditor({
               <NativeActionButton
                 label={t("Set first run")}
                 disabled={saving}
-                onPress={() => setStartAt(localNow())}
+                onPress={() => chooseLocalStart(localNow())}
               />
             )}
           </View>
@@ -307,7 +312,8 @@ export function RoutineTimingEditor({
               disabled={saving}
               onPress={() => {
                 setSchedules(routineCronPresets(routine.crons, routine.intervalBased));
-                setStartAt(canArm ? localNow() : undefined);
+                if (canArm) chooseLocalStart(localNow());
+                else setStartAt(undefined);
                 setEditing(true);
               }}
             />

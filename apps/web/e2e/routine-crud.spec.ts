@@ -198,6 +198,50 @@ test("a repeat can start on a saved future date and keep it through pause and re
   expect(resumed).toMatchObject({ id: created!.id, active: true, nextRunAt: retimed!.nextRunAt });
 });
 
+test("an open editor keeps the first-run instant through an external timezone change", async ({
+  page,
+}) => {
+  await signup(
+    page,
+    `routine-timezone-${Date.now()}@example.test`,
+    "password12",
+    "Schedule Fixture",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const initialDay = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+  const chosenDay = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+  const routine = await rpc<Routine>(page, "routines/create", {
+    botId,
+    name: "Timezone check",
+    prompt: "Check the project",
+    crons: ["0 9 * * *"],
+    timezone: "UTC",
+    active: true,
+    notify: true,
+    startAt: `${initialDay}T09:00`,
+  });
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: /Timezone check/ }).click();
+  const firstRun = page.getByLabel("First run");
+  await rpc(page, "routines/update", { routineId: routine.id, timezone: "America/Phoenix" });
+  await expect(page.getByText("America/Phoenix", { exact: true })).toBeVisible();
+  await expect(firstRun).toHaveValue(`${initialDay}T09:00`);
+  await firstRun.fill(`${chosenDay}T09:00`);
+  await rpc(page, "routines/update", { routineId: routine.id, timezone: "UTC" });
+  await expect(page.getByText("UTC", { exact: true })).toBeVisible();
+  await expect(firstRun).toHaveValue(`${chosenDay}T16:00`);
+  const patch = await saveAndReturn(page, "routines/update");
+  const startAt = `${chosenDay}T16:00:00.000Z`;
+  expect(patch).toMatchObject({ startAt });
+  expect(patch).not.toHaveProperty("timezone");
+  expect((await rpc<Routine[]>(page, "routines/list", { botId }))[0]).toMatchObject({
+    id: routine.id,
+    startAt,
+    timezone: "UTC",
+  });
+});
+
 test("an open editor preserves external one-shot arm and pause when saving a name", async ({
   page,
 }) => {

@@ -4919,6 +4919,59 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { state: "changed", saved: "America/New_York", expected: "America/New_York" },
+    { state: "unset", saved: null, expected: "UTC" },
+    { state: "temporarily unavailable", saved: undefined, expected: "Europe/Paris" },
+  ])("uses the actor's schedule timezone when the preference is $state", async (zone) => {
+    const f = fixture({ name: "schedule_create", builtin: true });
+    const lookupBot = f.prisma.bot.findUniqueOrThrow.getMockImplementation()!;
+    f.prisma.bot.findUniqueOrThrow.mockImplementation(async () => ({
+      ...(await lookupBot()),
+      userId: f.runRecord.userId,
+    }));
+    const findTimezone = vi
+      .fn(async () => {
+        if (zone.saved === undefined) throw new Error("Profile read unavailable");
+        return { timezone: zone.saved };
+      })
+      .mockResolvedValueOnce({ timezone: "Europe/Paris" });
+    const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: data.name,
+    }));
+    Object.assign(f.prisma, {
+      user: { findUnique: findTimezone },
+      routine: { create, findMany: vi.fn(async () => []) },
+    });
+    f.setCalls([
+      {
+        args: { name: "Latest zone", prompt: "Check work", cron: "0 9 * * *" },
+        executionId: "schedule-latest-zone",
+      },
+      {
+        args: {
+          name: "Pinned zone",
+          prompt: "Check work",
+          cron: "0 9 * * *",
+          timezone: "Asia/Tokyo",
+        },
+        executionId: "schedule-explicit-zone",
+      },
+    ]);
+    await f.run();
+    expect(f.runtimeRun.mock.calls[0]?.[0].userTimezone).toBe("Europe/Paris");
+    expect(findTimezone).toHaveBeenCalledTimes(2);
+    expect(findTimezone).toHaveBeenNthCalledWith(2, {
+      where: { id: f.runRecord.userId },
+      select: { timezone: true },
+    });
+    expect(create.mock.calls.map(([{ data }]) => data.timezone)).toEqual([
+      zone.expected,
+      "Asia/Tokyo",
+    ]);
+  });
+
   it("saves a Routine using only sites named by its owner or covered by a site allowance", async () => {
     const f = fixture({
       name: "schedule_create",

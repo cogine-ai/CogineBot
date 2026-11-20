@@ -9410,11 +9410,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "schedule_create") {
-            const scheduleTimezone = args.timezone
+            let scheduleTimezone = args.timezone
               ? String(args.timezone)
-              : run.userId === bot.userId
-                ? userTimezone
-                : await savedUserTimezone(deps.prisma, run.userId);
+              : await savedUserTimezone(deps.prisma, run.userId);
+            if (scheduleTimezone === undefined && run.userId === bot.userId) {
+              scheduleTimezone = userTimezone;
+            }
             const created = await createScheduleFromTool(deps, {
               spaceId: run.spaceId,
               botId: bot.id,

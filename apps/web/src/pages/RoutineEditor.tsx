@@ -14,6 +14,7 @@ import {
   isOneShotRoutineCrons,
   modelOptionKey,
   parseModelOptionKey,
+  parseRoutineDateTime,
   routineCronPresets,
   routineDateTimeLocal,
 } from "@rakazo/core";
@@ -78,6 +79,8 @@ const COMING_SOON = [
   { id: "pagerduty", label: () => t`PagerDuty incident` },
 ] as const;
 
+type RoutineDateTimeDraft = { value: string; timezone: string };
+
 export type RoutineDraftState = {
   nativeTriggers: NativeRoutineTriggerDraft[];
   nativeTriggersDirty: boolean;
@@ -89,10 +92,9 @@ export type RoutineDraftState = {
   messageProvider: string | null;
   active: boolean;
   activeDirty: boolean;
-  runAtLocal: string;
+  runAt?: RoutineDateTimeDraft;
   runAtDirty: boolean;
-  startAtLocal: string;
-  startAtDirty: boolean;
+  startAt?: RoutineDateTimeDraft;
   modelKey: string;
   modelRevision?: number;
   thinkingLevel: string;
@@ -111,10 +113,7 @@ export function emptyRoutineDraft(): RoutineDraftState {
     messageProvider: null,
     active: true,
     activeDirty: false,
-    runAtLocal: "",
     runAtDirty: false,
-    startAtLocal: "",
-    startAtDirty: false,
     modelKey: "",
     thinkingLevel: "",
     modelDirty: false,
@@ -133,15 +132,13 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     messageProvider: routine.messageProvider,
     active: routine.active,
     activeDirty: false,
-    runAtLocal: routineNeedsOneShotArm(routine, routine.crons)
-      ? defaultRoutineDateTimeLocal(new Date(), routine.timezone)
-      : "",
+    runAt: routineNeedsOneShotArm(routine, routine.crons)
+      ? {
+          value: defaultRoutineDateTimeLocal(new Date(), routine.timezone),
+          timezone: routine.timezone,
+        }
+      : undefined,
     runAtDirty: false,
-    startAtLocal:
-      routine.startAt && new Date(routine.startAt).getTime() > Date.now()
-        ? routineDateTimeLocal(new Date(routine.startAt), routine.timezone)
-        : "",
-    startAtDirty: false,
     modelKey:
       routine.modelProvider && routine.modelId
         ? modelOptionKey(routine.modelProvider, routine.modelId, routine.modelCredentialId)
@@ -149,6 +146,13 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     thinkingLevel: routine.thinkingLevel ?? "",
     modelDirty: false,
   };
+}
+
+function displayRoutineDateTime(field: RoutineDateTimeDraft | undefined, timezone: string): string {
+  if (!field) return "";
+  if (field.timezone === timezone || !field.value) return field.value;
+  const date = parseRoutineDateTime(field.value, field.timezone);
+  return date ? routineDateTimeLocal(date, timezone) : field.value;
 }
 
 export function nativeRoutineTriggerSummary(routine: Pick<Routine, "nativeTriggers">): string {
@@ -276,7 +280,7 @@ export function RoutineEditor({
   draft: RoutineDraftState;
   onChange: (next: RoutineDraftState) => void;
   editing: Routine | null;
-  liveTiming?: Pick<Routine, "active" | "nextRunAt" | "lastRunAt" | "timezone">;
+  liveTiming?: Pick<Routine, "active" | "startAt" | "nextRunAt" | "lastRunAt" | "timezone">;
   timezone: string;
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
@@ -355,6 +359,12 @@ export function RoutineEditor({
   const nextRun = timing?.nextRunAt
     ? formatRoutineTime(timing.nextRunAt, timing.timezone, i18n?.locale)
     : null;
+  const savedStart = timing?.startAt ? new Date(timing.startAt) : undefined;
+  const firstRun = draft.startAt
+    ? displayRoutineDateTime(draft.startAt, timezone)
+    : savedStart && savedStart.getTime() > Date.now()
+      ? routineDateTimeLocal(savedStart, timezone)
+      : "";
 
   function addSchedule(freq: CronFreq) {
     const base = defaultCronPreset();
@@ -418,10 +428,10 @@ export function RoutineEditor({
                 ...draft,
                 active: !active,
                 activeDirty: true,
-                runAtLocal:
-                  !active && needsOneShotArm && !draft.runAtLocal
-                    ? defaultRoutineDateTimeLocal(new Date(), timezone)
-                    : draft.runAtLocal,
+                runAt:
+                  !active && needsOneShotArm && !draft.runAt?.value
+                    ? { value: defaultRoutineDateTimeLocal(new Date(), timezone), timezone }
+                    : draft.runAt,
               })
             }
             className={`relative h-[22px] w-[40px] rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
@@ -555,9 +565,13 @@ export function RoutineEditor({
               <Input
                 id={`${fieldId}-run-at`}
                 type="datetime-local"
-                value={draft.runAtLocal}
+                value={displayRoutineDateTime(draft.runAt, timezone)}
                 onChange={(e) =>
-                  onChange({ ...draft, runAtLocal: e.target.value, runAtDirty: true })
+                  onChange({
+                    ...draft,
+                    runAt: { value: e.target.value, timezone },
+                    runAtDirty: true,
+                  })
                 }
                 aria-label={t`Run at`}
                 className="mt-2"
@@ -570,9 +584,9 @@ export function RoutineEditor({
               <Input
                 id={`${fieldId}-start-at`}
                 type="datetime-local"
-                value={draft.startAtLocal}
+                value={firstRun}
                 onChange={(e) =>
-                  onChange({ ...draft, startAtLocal: e.target.value, startAtDirty: true })
+                  onChange({ ...draft, startAt: { value: e.target.value, timezone } })
                 }
                 className="mt-2"
               />
