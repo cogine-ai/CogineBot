@@ -590,8 +590,15 @@ function formatYamlLine(key: string, value: unknown): string {
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
     if (entries.length === 0) return `${key}:`;
+    // The map reader consumes one-line values, not nested block scalars.
     const nested = entries
-      .map(([nestedKey, nestedValue]) => `  ${formatYamlLine(nestedKey, nestedValue)}`)
+      .map(([nestedKey, nestedValue]) => {
+        const line =
+          typeof nestedValue === "string"
+            ? `${nestedKey}: ${JSON.stringify(nestedValue)}`
+            : formatYamlLine(nestedKey, nestedValue);
+        return `  ${line}`;
+      })
       .join("\n");
     return `${key}:\n${nested}`;
   }

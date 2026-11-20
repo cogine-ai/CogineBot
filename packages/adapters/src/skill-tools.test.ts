@@ -130,7 +130,11 @@ describe("skill tools", () => {
       version: "1.10",
       enabled: "false",
       values: ["a,b", "", 2, true],
-      metadata: { values: ["1.10", false, 3], owner: "reviewers" },
+      metadata: {
+        values: ["1.10", false, 3],
+        owner: "reviewers",
+        detail: "First: keep this\n\n  second\n",
+      },
     };
     const raw = [
       "---",
@@ -142,6 +146,7 @@ describe("skill tools", () => {
       `values: ${JSON.stringify(metadata.values)}`,
       "metadata:",
       `  values: ${JSON.stringify(metadata.metadata.values)}`,
+      `  detail: ${JSON.stringify(metadata.metadata.detail)}`,
       "  owner: reviewers",
       "---",
       "",
