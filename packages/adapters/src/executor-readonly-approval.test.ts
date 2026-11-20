@@ -5065,6 +5065,71 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(effect.status).toBe("completed");
   });
 
+  it.each([
+    { source: "outside input", outsideSteering: true, origin: "human" },
+    { source: "a connected bot", origin: "bot_peer" },
+    { source: "an external agent", origin: "external_agent" },
+  ])("requires individual confirmation for Routine changes from $source", async (input) => {
+    const f = fixture({
+      name: "schedule_update",
+      builtin: true,
+      outsideSteering: input.outsideSteering,
+      startedAt: input.origin === "human" ? null : new Date(0),
+      autoReview: true,
+      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "schedule_update" }],
+    });
+    Object.assign(f.runRecord, { origin: input.origin });
+    const current = {
+      id: "routine-fixture",
+      name: "Review report",
+      prompt: "Read the existing report",
+      active: true,
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: new Date(Date.now() + 86_400_000),
+      authorizedInstructions: "Read the existing report",
+      authorizedSites: [],
+    };
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    Object.assign(f.prisma, {
+      routine: { findFirst: vi.fn(async () => current), updateMany },
+    });
+    const args = { id: current.id, cron: "0 10 * * *" };
+    f.setCalls([{ args, executionId: "routine-schedule-review" }]);
+    await f.run();
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(reviewMock).not.toHaveBeenCalled();
+    const effect = f.effects.find((row) => row.kind === "schedule_update")!;
+    expect(effect).toMatchObject({ request: args, status: "intended" });
+    expect(f.pauseRunForInput).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        blocks: [
+          expect.objectContaining({
+            kind: "ask",
+            approvalEffectId: effect.id,
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ],
+          }),
+        ],
+      }),
+    );
+    if (input.origin !== "human") return;
+
+    effect.status = "approved";
+    f.setCalls([
+      { args: { ...args, cron: "0 11 * * *" }, executionId: "routine-schedule-approved" },
+    ]);
+    await f.run();
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ id: current.id, crons: { equals: current.crons } }),
+      data: expect.objectContaining({ crons: [args.cron] }),
+    });
+    expect(effect.status).toBe("completed");
+  });
+
   it("uses explicit pause to withdraw a one-shot automatic retry", async () => {
     const f = fixture({ name: "schedule_update", builtin: true });
     const current = {

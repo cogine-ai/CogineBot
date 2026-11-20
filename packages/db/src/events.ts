@@ -1377,6 +1377,8 @@ async function commitAnswerRunInput(
     });
     if (!approvalEffect || (delegation && PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind)))
       return null;
+    if (approvalEffect.kind === "schedule_update" && run.userId !== input.answeredByUserId)
+      return null;
     const request = approvalEffect.request;
     const sharedPageRequest =
       approvalEffect.kind === "save_page" &&

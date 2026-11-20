@@ -7169,12 +7169,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           const memoryWriteGated =
             !viaConnector && (await memoryWriteNeedsApproval(name, () => trust.isTainted()));
+          const routineUpdateGated =
+            name === "schedule_update" &&
+            (BOT_COLLABORATION_ORIGINS.some((origin) => origin === run.origin) ||
+              messagingChannelRun ||
+              Boolean(thread.externalConversationId) ||
+              (await trust.isTainted()));
           if (SEMANTIC_MEMORY_MUTATION_TOOLS.has(name) && semanticMemoryTarget) {
             effectRequest = { memoryWrite: 1, args, target: semanticMemoryTarget };
           }
           const requiresApprovalByDefault =
             requiresUnattendedApproval ||
             memoryWriteGated ||
+            routineUpdateGated ||
             siteGate === "new" ||
             (genericBatch && toolRequiresApproval(wireToolName, viaConnector, declaredReadOnly)) ||
             approvalTools.some((tool) =>
@@ -7199,6 +7206,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             requiresUnattendedApproval ||
             generationNeedsApproval ||
             Boolean(ownSettings) ||
+            routineUpdateGated ||
             (batch !== undefined && !batch.complete) ||
             routineSitesToReview.length > 0 ||
             historyActionNeedsApproval ||
@@ -8189,6 +8197,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ),
                 allowToolAlways:
                   !historyActionNeedsApproval &&
+                  !routineUpdateGated &&
                   !(
                     generation?.success &&
                     (loginApproval ||

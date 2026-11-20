@@ -228,6 +228,63 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     expect(rules).toEqual(actions.map((matchValue) => ({ matchKind: "tool", matchValue })));
   });
 
+  it("accepts a pending Routine change only from the Run owner", async () => {
+    const f = await seed();
+    const effect = await prisma.externalEffect.create({
+      data: {
+        spaceId,
+        runId: f.run.id,
+        kind: "schedule_update",
+        status: "intended",
+        idempotencyKey: `${f.run.id}:schedule`,
+        request: { id: "routine-fixture", cron: "0 10 * * *" },
+      },
+    });
+    await expect(
+      pauseRunForInput(prisma, {
+        ...finishInput(f),
+        blocks: [
+          {
+            kind: "ask",
+            text: "Review before schedule_update",
+            status: "pending",
+            approvalEffectId: effect.id,
+            actions: [
+              { id: "allow", label: "Allow once" },
+              { id: "deny", label: "Deny" },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toBe(true);
+    const card = await prisma.message.findFirstOrThrow({
+      where: { runId: f.run.id, role: "bot" },
+    });
+    const answer = {
+      spaceId,
+      threadId: f.thread.id,
+      runId: f.run.id,
+      messageId: card.id,
+      answeredByUserId: userId,
+      answer: "allow",
+    };
+    await expect(
+      answerRunInput(prisma, { ...answer, answeredByUserId: otherUserId }),
+    ).resolves.toBe(false);
+    expect(
+      await prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+    ).toMatchObject({
+      status: "intended",
+    });
+    await expect(answerRunInput(prisma, answer)).resolves.toBe(true);
+    expect(
+      await prisma.externalEffect.findUniqueOrThrow({ where: { id: effect.id } }),
+    ).toMatchObject({
+      status: "approved",
+      request: effect.request,
+    });
+  });
+
   describe("durable provider quota waits", () => {
     const target: RunQuotaTarget = {
       provider: "openai",
