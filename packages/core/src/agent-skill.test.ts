@@ -415,6 +415,19 @@ describe("skill prompt helpers", () => {
     ).toContain("Use skill: ς\n\nSecond");
   });
 
+  it("keeps the exact skill when a stored expansion is processed again", () => {
+    const skills = ["İ", "i\u0307"].map((name, index) => ({
+      name,
+      description: name,
+      content: `Instruction ${index}.`,
+      source: "user" as const,
+      readOnly: false,
+    }));
+    const prepared = expandSkillReferencesInPrompt("@i\u0307", skills);
+    expect(prepared).toBe("Use skill: i\u0307\n\nInstruction 1.");
+    expect(expandSkillReferencesInPrompt(prepared, skills)).toBe(prepared);
+  });
+
   it("removes adjacent repeats without changing unrelated formatting", () => {
     const prompt =
       "\t@日报 @日报  Keep  this indent\r\n\r\n    code   sample\r\nRun @日报 and @日报 模板.";

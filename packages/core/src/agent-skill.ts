@@ -110,13 +110,14 @@ const ROUTINE_SKILL_STOP = new Set([
   "an",
 ]);
 const CJK_SKILL_PUNCTUATION = "，。、；：！？（）【】「」『』《》〈〉“”‘’";
+const ROUTINE_SKILL_ASCII_LEADING = "\\s(,";
 const ROUTINE_SKILL_TRAILING = `,.)${CJK_SKILL_PUNCTUATION}`;
-const ROUTINE_SKILL_START = `(?:^|[\\s(,${CJK_SKILL_PUNCTUATION}])@`;
+const ROUTINE_SKILL_START = `(?:^|[${ROUTINE_SKILL_ASCII_LEADING}${CJK_SKILL_PUNCTUATION}])@`;
 const ROUTINE_SKILL_END = `[\\s${ROUTINE_SKILL_TRAILING}]`;
 const ROUTINE_SKILL_STARTS = new RegExp(ROUTINE_SKILL_START, "g");
 const ROUTINE_SKILL_SEPARATOR = new RegExp(ROUTINE_SKILL_END);
 const ROUTINE_SKILL_REFERENCE = new RegExp(
-  `${ROUTINE_SKILL_START}[${ROUTINE_SKILL_TRAILING}]*[^\\s${ROUTINE_SKILL_TRAILING}]`,
+  `(?:^|[${ROUTINE_SKILL_ASCII_LEADING}])@[,.)]*[^\\s,.)]|[${CJK_SKILL_PUNCTUATION}]@\\S`,
 );
 const ROUTINE_LINE_BREAK = /[\r\n\u2028\u2029]/;
 /** Fallback when no catalog is available: @Token with optional Title-case words. */
@@ -442,7 +443,9 @@ export function expandSkillReferencesInPrompt(
 ): string {
   const forced = extractForcedSkillName(prompt);
   if (forced) {
-    const skill = findSkillByName(skills, forced.name);
+    const skill =
+      skills.find((entry) => entry.name.trim() === forced.name) ??
+      findSkillByName(skills, forced.name);
     if (skill) {
       // Routines expand at fire time into `Use skill: …`; run time expands again — stay idempotent.
       if (restAlreadyIncludesSkillContent(forced.rest, skill.content)) {
