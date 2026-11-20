@@ -1,6 +1,6 @@
 import { createRouterClient } from "@orpc/server";
 import { McpOAuthBroker } from "@rakazo/adapters";
-import type { Actor } from "@rakazo/contracts";
+import type { Actor, McpStdioOAuthClient } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
@@ -224,9 +224,10 @@ describe("deployment-managed MCP stdio registration", () => {
       f.server.secretId!,
       JSON.stringify({ env, files, oauthClient, oauth: f.material.oauth }),
     );
-    const save = (patch: Partial<typeof config> & { oauthClient?: typeof oauthClient }) =>
+    const save = (patch: Partial<typeof config> & { oauthClient?: McpStdioOAuthClient }) =>
       f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } });
     await save({ name: "Renamed" });
+    expect(f.secrets.put).toHaveBeenCalledTimes(1);
     expect(f.server.args).toEqual(["--serve"]);
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
       env,
@@ -234,6 +235,13 @@ describe("deployment-managed MCP stdio registration", () => {
       oauthClient,
       oauth: f.material.oauth,
     });
+    await save({
+      oauthClient: {
+        clientId: oauthClient.clientId,
+        authorizationServer: oauthClient.authorizationServer,
+      },
+    });
+    expect(f.secrets.put).toHaveBeenCalledTimes(1);
     const rotated = { ...oauthClient, clientSecret: "fixture-next-secret" };
     await save({ oauthClient: rotated });
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
@@ -241,8 +249,67 @@ describe("deployment-managed MCP stdio registration", () => {
       files,
       oauthClient: rotated,
     });
+    f.server.allowAllTools = true;
+    f.server.allowedTools.push("old-tool");
     await save({ command: "/opt/example-mcp-v2" });
-    expect(f.server).toMatchObject({ args: [], env: {}, secretId: null });
+    expect(f.server).toMatchObject({
+      args: [],
+      env: {},
+      secretId: null,
+      allowAllTools: false,
+      allowedTools: [],
+    });
+  });
+
+  it("does not copy an omitted secret to a new issuer for the same client ID", async () => {
+    const f = fixture({ stdio: true });
+    await f.client.mcp.servers.create({ ...config, oauthClient });
+    const rebound = {
+      clientId: oauthClient.clientId,
+      authorizationServer: "https://other.example.test",
+    };
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, oauthClient: rebound },
+    });
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({ oauthClient: rebound });
+  });
+
+  it("clears the remote server's credentials and approval when switching it to stdio", async () => {
+    const f = fixture();
+    f.server.installId = null;
+    f.server.allowAllTools = true;
+    f.server.allowedTools.push("old-tool");
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, enabled: true },
+    });
+    expect(f.server).toMatchObject({
+      transport: "stdio",
+      secretId: null,
+      allowAllTools: false,
+      allowedTools: [],
+    });
+    expect(f.rows.has("old")).toBe(false);
+    expect(f.prisma.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          blocks: { array_contains: [{ kind: "mcp_approval", serverId: f.server.id }] },
+        }),
+      }),
+    );
+  });
+
+  it("can disable a legacy server after the deployment withdraws stdio", async () => {
+    const f = fixture({ stdio: true, stdioEnabled: false });
+    f.server.enabled = true;
+    f.values.set(
+      "old-ref",
+      JSON.stringify({ env: { KEEP: "fixture" }, headers: { Host: "legacy" } }),
+    );
+    const result = await f.client.mcp.servers.update({ id: f.server.id, config });
+    expect(result).toMatchObject({ enabled: false, envKeys: ["KEEP"], hasSecret: true });
+    expect(f.secrets.put).not.toHaveBeenCalled();
   });
 
   it("requires removal of references when the registered client is removed", async () => {
@@ -288,6 +355,8 @@ describe("deployment-managed MCP stdio registration", () => {
     { files: { "../CONFIG_FILE": "fixture" } },
     { env: { CONFIG_FILE: "fixture" }, files, oauthClient },
     { args: ["{{oauth.client_secret}}"], oauthClient },
+    { args: ["fixture\0argument"] },
+    { env: { KEY: "fixture\0value" } },
   ])("rejects an unsafe declaration before saving it (%j)", async (patch) => {
     const f = fixture({ stdio: true });
     await expect(f.client.mcp.servers.create({ ...config, ...patch })).rejects.toMatchObject({

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { McpServerConfigInput, McpStdioOAuthClient } from "@rakazo/contracts";
 import {
   McpConnectionHeadersSchema,
@@ -32,11 +33,17 @@ const ConnectionMaterialSchema = z
   })
   .passthrough();
 
+const StdioMaterialSchema = ConnectionMaterialSchema.omit({ headers: true }).strip();
+
 /** Connection patches must never replace unreadable credential material. */
 export function parseMcpConnectionMaterial(value: string): McpSecretMaterial {
   const parsed = ConnectionMaterialSchema.safeParse(JSON.parse(value));
   if (!parsed.success) throw new Error("Stored MCP credentials are unavailable");
   return parsed.data;
+}
+
+export function parseMcpStdioMaterial(value: string): McpSecretMaterial {
+  return StdioMaterialSchema.parse(JSON.parse(value));
 }
 
 /** Omitted/empty patches keep the exact stored credential, including OAuth. */
@@ -63,36 +70,19 @@ export function buildMcpConnectionMaterial(
  *   cleared entirely — the caller should delete the secret row and null the
  *   server's secretId instead of storing an empty object.
  *
- * env/headers use full-replace semantics (the update payload is the complete
- * set), matching the create handler. OAuth state is preserved unless the
- * endpoint changed, since tokens issued for one endpoint must never be sent to
- * another server. */
+ * Remote headers replace the full set and a new endpoint drops its OAuth grant.
+ * Stdio keeps omitted env/files on the same launch target. A change to the
+ * registered OAuth client drops its grant. */
 export function buildMcpUpdateMaterial(
   existing: McpSecretMaterial,
   config: McpServerConfigInput,
   options: { clearOAuth?: boolean; replaceCredentials?: boolean } = {},
 ): McpMaterialUpdate {
   if (config.transport === "stdio") {
-    const previous = options.replaceCredentials ? {} : existing;
-    const oauthClient =
-      config.oauthClient === undefined ? previous.oauthClient : config.oauthClient;
-    const oauth =
-      oauthClient && sameStdioClient(previous.oauthClient, oauthClient)
-        ? previous.oauth
-        : undefined;
-    const secret = config.secret || previous.secret;
-    const env = config.env ?? previous.env;
-    const files = config.files ?? previous.files;
-    return {
-      action: "store",
-      material: {
-        ...(oauthClient ? { oauthClient } : {}),
-        ...(oauth ? { oauth } : {}),
-        ...(!config.clearCredential && secret ? { secret } : {}),
-        ...(!config.clearCredential && env && Object.keys(env).length ? { env } : {}),
-        ...(!config.clearCredential && files && Object.keys(files).length ? { files } : {}),
-      },
-    };
+    const material = buildMcpStdioMaterial(options.replaceCredentials ? {} : existing, config);
+    return !options.replaceCredentials && isDeepStrictEqual(existing, material)
+      ? { action: "keep" }
+      : { action: "store", material };
   }
   if (options.replaceCredentials) {
     return {
@@ -134,14 +124,31 @@ export function buildMcpUpdateMaterial(
   };
 }
 
-function sameStdioClient(
-  previous: McpStdioOAuthClient | undefined,
-  next: McpStdioOAuthClient | null | undefined,
-): boolean {
-  return (
-    previous?.authorizationServer === next?.authorizationServer &&
-    previous?.clientId === next?.clientId &&
-    previous?.clientSecret === next?.clientSecret &&
-    previous?.scope === next?.scope
-  );
+export function buildMcpStdioMaterial(
+  previous: McpSecretMaterial,
+  config: Extract<McpServerConfigInput, { transport: "stdio" }>,
+): McpSecretMaterial {
+  const registered = previous.oauthClient;
+  let oauthClient = config.oauthClient === undefined ? registered : config.oauthClient;
+  if (
+    registered?.clientSecret &&
+    oauthClient &&
+    oauthClient.clientId === registered.clientId &&
+    oauthClient.authorizationServer === registered.authorizationServer &&
+    oauthClient.clientSecret === undefined
+  ) {
+    oauthClient = { ...oauthClient, clientSecret: registered.clientSecret };
+  }
+  const oauth =
+    oauthClient && isDeepStrictEqual(registered, oauthClient) ? previous.oauth : undefined;
+  const secret = config.secret || previous.secret;
+  const env = config.env ?? previous.env;
+  const files = config.files ?? previous.files;
+  return {
+    ...(oauthClient ? { oauthClient } : {}),
+    ...(oauth ? { oauth } : {}),
+    ...(!config.clearCredential && secret ? { secret } : {}),
+    ...(!config.clearCredential && env && Object.keys(env).length ? { env } : {}),
+    ...(!config.clearCredential && files && Object.keys(files).length ? { files } : {}),
+  };
 }

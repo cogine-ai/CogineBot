@@ -71,11 +71,17 @@ export function validateMcpStdioCredentials(config: {
   files?: Record<string, string>;
   oauthClient?: McpStdioOAuthClient | null;
 }): string | undefined {
+  if (config.args?.some((arg) => arg.includes("\0"))) {
+    return "MCP stdio arguments cannot contain NUL characters";
+  }
   if (config.args?.some((arg) => MCP_STDIO_OAUTH_REFERENCE_START.test(arg))) {
     return "Use environment variables or files for MCP OAuth credentials";
   }
   const env = config.env ?? {};
   const files = config.files ?? {};
+  if (Object.values(env).some((value) => value.includes("\0"))) {
+    return "MCP stdio environment values cannot contain NUL characters";
+  }
   if (Object.keys(files).some((name) => Object.hasOwn(env, name))) {
     return "MCP credential files and environment variables must use different names";
   }

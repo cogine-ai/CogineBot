@@ -1,7 +1,6 @@
 /** Shared logic for the agent-facing add_mcp_server tool. Pure and unit-tested;
  * the executor wires the parsed result into Prisma + the secret store. */
 
-import type { McpStdioOAuthClient } from "@rakazo/contracts";
 import { McpRemoteEndpointSchema } from "@rakazo/contracts";
 import { deriveMcpSlug } from "@rakazo/core";
 import { toStringRecord } from "./memory-provider-factory.js";
@@ -53,28 +52,13 @@ export function buildMcpCredentialBlob(parsed: {
   secret?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
-  files?: Record<string, string>;
-  oauthClient?: McpStdioOAuthClient | null;
 }): string | null {
   const env = parsed.env ?? {};
   const headers = parsed.headers ?? {};
-  const files = parsed.files && Object.keys(parsed.files).length ? parsed.files : undefined;
-  if (
-    !parsed.secret &&
-    !parsed.oauthClient &&
-    !files &&
-    !Object.keys(env).length &&
-    !Object.keys(headers).length
-  ) {
+  if (!parsed.secret && Object.keys(env).length === 0 && Object.keys(headers).length === 0) {
     return null;
   }
-  return JSON.stringify({
-    secret: parsed.secret,
-    env,
-    headers,
-    files,
-    oauthClient: parsed.oauthClient ?? undefined,
-  });
+  return JSON.stringify({ secret: parsed.secret, env, headers });
 }
 
 /** Heuristic for whether the approval card should lead with OAuth: remote

@@ -367,8 +367,10 @@ import {
 import type { McpMaterialUpdate, McpSecretMaterial } from "./mcp-material.js";
 import {
   buildMcpConnectionMaterial,
+  buildMcpStdioMaterial,
   buildMcpUpdateMaterial,
   parseMcpConnectionMaterial,
+  parseMcpStdioMaterial,
 } from "./mcp-material.js";
 import {
   disconnectMemoryProvider,
@@ -5899,14 +5901,17 @@ export function createRouter(deps: RouterDeps) {
           return health;
         }),
         create: authed.mcp.servers.create.handler(async ({ context, input }) => {
+          let secretPayload: string | null;
           if (input.transport === "stdio") {
             assertMcpStdioOwner(context.actor);
             assertMcpStdioCommand(input.command, deps.env);
             await assertMcpStdioMaterial(input, deps);
+            const material = buildMcpStdioMaterial({}, { ...input, clearCredential: false });
+            secretPayload = Object.keys(material).length ? JSON.stringify(material) : null;
           } else {
             await assertMcpRemoteEndpoint(input.endpoint, context.actor, deps);
+            secretPayload = buildMcpCredentialBlob(input);
           }
-          const secretPayload = buildMcpCredentialBlob(input);
           const stored = secretPayload
             ? await deps.secrets.put(
                 secretPayload,
@@ -6019,10 +6024,7 @@ export function createRouter(deps: RouterDeps) {
           const connection = "connection" in input ? input.connection : undefined;
           const stdio =
             "config" in input && input.config.transport === "stdio" ? input.config : undefined;
-          if (stdio) {
-            assertMcpStdioOwner(context.actor);
-            assertMcpStdioCommand(stdio.command, deps.env);
-          }
+          if (stdio) assertMcpStdioOwner(context.actor);
           const credentialActor = {
             userId: context.actor.userId,
             spaceId: context.actor.spaceId,
@@ -6051,6 +6053,14 @@ export function createRouter(deps: RouterDeps) {
                 throw new ORPCError("BAD_REQUEST", {
                   message: "Plugin MCP servers require a remote endpoint",
                 });
+              if (
+                stdio &&
+                (stdio.enabled ||
+                  existing.transport !== "stdio" ||
+                  existing.command?.trim() !== stdio.command.trim())
+              ) {
+                assertMcpStdioCommand(stdio.command, deps.env);
+              }
               await lockActivePluginChild(tx, existing, context.actor);
               if (connection && existing.revision !== connection.revision)
                 throw new ORPCError("CONFLICT", {
@@ -6083,8 +6093,9 @@ export function createRouter(deps: RouterDeps) {
                   existingSecret.ciphertext,
                   existingSecret.id,
                 );
-                if (connection || existing.transport === "stdio")
-                  existingMaterial = parseMcpConnectionMaterial(plaintext);
+                if (connection) existingMaterial = parseMcpConnectionMaterial(plaintext);
+                else if (existing.transport === "stdio")
+                  existingMaterial = parseMcpStdioMaterial(plaintext);
                 else {
                   const value = JSON.parse(plaintext);
                   if (value && typeof value === "object" && !Array.isArray(value))
@@ -6145,9 +6156,10 @@ export function createRouter(deps: RouterDeps) {
                 replaceCredentials,
               });
             }
-            if (stdio && update.action === "store")
+            const nextMaterial = update.action === "store" ? update.material : existingMaterial;
+            if (stdio)
               await assertMcpStdioMaterial(
-                { ...update.material, args: nextArgs, enabled: stdio.enabled },
+                { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
                 deps,
                 replaceCredentials ? undefined : existingMaterial.oauthClient,
               );
@@ -6259,12 +6271,9 @@ export function createRouter(deps: RouterDeps) {
                               endpoint: nextEndpoint,
                               command: "command" in config ? config.command : null,
                               args: nextArgs as Prisma.InputJsonValue,
-                              env: (stdio && update.action === "store"
+                              env: (stdio
                                 ? Object.fromEntries(
-                                    Object.keys(update.material.env ?? {}).map((key) => [
-                                      key,
-                                      true,
-                                    ]),
+                                    Object.keys(nextMaterial.env ?? {}).map((key) => [key, true]),
                                   )
                                 : {}) as Prisma.InputJsonValue,
                               headers: ("headers" in config
@@ -6274,6 +6283,7 @@ export function createRouter(deps: RouterDeps) {
                                 : {}) as Prisma.InputJsonValue,
                             }),
                         enabled: config.enabled,
+                        ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
                         ...(config.verbatimResults === undefined
                           ? {}
                           : { verbatimResults: config.verbatimResults }),
@@ -6302,8 +6312,14 @@ export function createRouter(deps: RouterDeps) {
                           userId: context.actor.userId,
                         },
                       });
-                    const seqs =
-                      current.enabled === updated.enabled
+                    const seqs = replaceCredentials
+                      ? await dismissMcpServerApprovals(
+                          onboardingDeps,
+                          context.actor,
+                          updated.id,
+                          tx,
+                        )
+                      : current.enabled === updated.enabled
                         ? []
                         : updated.enabled && hasMcpTools(updated)
                           ? await connectPendingMcpApprovals(tx, context.actor, {
