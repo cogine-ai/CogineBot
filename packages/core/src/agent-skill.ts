@@ -525,6 +525,11 @@ function parseYamlScalar(raw: string): string | number | boolean {
   return value;
 }
 
+function stringifyYamlScalar(value: string | number | boolean): string {
+  // Keep JSON string values on one physical line for the frontmatter reader.
+  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+}
+
 function formatYamlBlockScalar(key: string, value: string): string {
   // Choose chomp so decodeYamlBlockScalar round-trips trailing newlines:
   // strip (0), clip (1), keep (2+). Folded (`>`) style is not preserved — only the string value.
@@ -555,6 +560,9 @@ function formatYamlBlockScalar(key: string, value: string): string {
 function formatYamlLine(key: string, value: unknown): string {
   if (value === null || value === undefined) return `${key}:`;
   if (typeof value === "string") {
+    if (/[\r\u2028\u2029]/.test(value)) {
+      return `${key}: ${stringifyYamlScalar(value)}`;
+    }
     if (value.includes("\n") || value.includes(": ")) {
       return formatYamlBlockScalar(key, value);
     }
@@ -566,7 +574,7 @@ function formatYamlLine(key: string, value: unknown): string {
       value.startsWith("'") ||
       typeof parseYamlScalar(value) !== "string"
     ) {
-      return `${key}: ${JSON.stringify(value)}`;
+      return `${key}: ${stringifyYamlScalar(value)}`;
     }
     return `${key}: ${value}`;
   }
@@ -578,7 +586,9 @@ function formatYamlLine(key: string, value: unknown): string {
     ) {
       // Keep legacy non-finite number text; JSON would otherwise replace it with null.
       const items = value.map((item) =>
-        JSON.stringify(typeof item === "number" && !Number.isFinite(item) ? String(item) : item),
+        stringifyYamlScalar(
+          typeof item === "number" && !Number.isFinite(item) ? String(item) : item,
+        ),
       );
       return `${key}: [${items.join(", ")}]`;
     }
@@ -595,7 +605,7 @@ function formatYamlLine(key: string, value: unknown): string {
       .map(([nestedKey, nestedValue]) => {
         const line =
           typeof nestedValue === "string"
-            ? `${nestedKey}: ${JSON.stringify(nestedValue)}`
+            ? `${nestedKey}: ${stringifyYamlScalar(nestedValue)}`
             : formatYamlLine(nestedKey, nestedValue);
         return `  ${line}`;
       })

@@ -582,6 +582,51 @@ describe("saved skill scalar and array fidelity", () => {
     }
   });
 
+  const jsonControls = [
+    { label: "CR", char: "\r" },
+    { label: "CRLF", char: "\r\n" },
+    { label: "LF", char: "\n" },
+    { label: "tab", char: "\t" },
+    { label: "backspace", char: "\b" },
+    { label: "form feed", char: "\f" },
+    { label: "NUL", char: "\0" },
+    { label: "vertical tab", char: "\v" },
+    { label: "unit separator", char: "\x1f" },
+    { label: "next line", char: "\u0085" },
+    { label: "line separator", char: "\u2028" },
+    { label: "paragraph separator", char: "\u2029" },
+  ];
+  const controlCases = jsonControls.flatMap(({ label, char }) =>
+    ["middle", "with newline"].flatMap((position) =>
+      ["top", "nested", "array"].map((location) => ({ label, char, position, location })),
+    ),
+  );
+  it.each(controlCases)(
+    "keeps decoded JSON controls: $label $position in $location metadata",
+    ({ char, position, location }) => {
+      const value = position === "middle" ? `first${char}second` : `first${char}second\nthird`;
+      const metadata =
+        location === "top"
+          ? { detail: value }
+          : location === "nested"
+            ? { metadata: { detail: value } }
+            : { values: [value] };
+      const expected = {
+        name: "Control recipe",
+        description: "Preserve decoded values",
+        ...metadata,
+      };
+      let content = buildSkillMd({ ...expected, body: "body", frontmatter: metadata });
+      for (let edit = 0; edit < 3; edit += 1) {
+        expect(standardFrontmatter(content)).toEqual(expected);
+        const parsed = parseSkillMd(content);
+        if ("error" in parsed) throw new Error(parsed.error);
+        expect(parsed.frontmatter).toEqual(expected);
+        content = buildSkillMd(parsed);
+      }
+    },
+  );
+
   it.each(["Deploy the app", "don't panic"])(
     "keeps plain description %j unquoted",
     (description) => {

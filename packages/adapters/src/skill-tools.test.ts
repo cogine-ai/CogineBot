@@ -127,6 +127,9 @@ describe("skill tools", () => {
   it("preserves typed quoted metadata and arrays through tool imports, edits and reads", async () => {
     const metadata = {
       detail: String.raw`C:\fixtures, "quoted"`,
+      carriage: "first\rsecond",
+      crlf: "first\r\nsecond\n",
+      separators: "first\u2028middle\u2029tail",
       version: "1.10",
       enabled: "false",
       values: ["a,b", "", 2, true],
@@ -141,6 +144,9 @@ describe("skill tools", () => {
       "name: Fidelity recipe",
       "description: Original description",
       `detail: ${JSON.stringify(metadata.detail)}`,
+      String.raw`carriage: "first\rsecond"`,
+      String.raw`crlf: "first\r\nsecond\n"`,
+      String.raw`separators: "first\u2028middle\u2029tail"`,
       'version: "1.10"',
       'enabled: "false"',
       `values: ${JSON.stringify(metadata.values)}`,
