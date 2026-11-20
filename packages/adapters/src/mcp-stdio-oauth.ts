@@ -8,6 +8,7 @@ import type {
   OAuthClientInformationMixed,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { McpStdioOAuthClient } from "@rakazo/contracts";
+import { parseMcpStdioAuthorizationParams } from "@rakazo/contracts";
 import { validateUrl } from "./mcp-transport.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { assertSafeRemoteUrl } from "./remote-mcp.js";
@@ -67,6 +68,13 @@ export async function beginMcpStdioAuthorization(input: {
     scope: input.client.scope,
     state: input.state,
   });
+  if (input.client.authorizationParams) {
+    for (const [name, value] of parseMcpStdioAuthorizationParams(
+      input.client.authorizationParams,
+    )) {
+      start.authorizationUrl.searchParams.set(name, value);
+    }
+  }
   return {
     metadata,
     codeVerifier: start.codeVerifier,

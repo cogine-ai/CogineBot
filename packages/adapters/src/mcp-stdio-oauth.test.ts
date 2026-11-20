@@ -8,6 +8,7 @@ const client = {
   clientId: "fixture-client",
   clientSecret: "fixture-client-secret",
   scope: "offline_access read",
+  authorizationParams: "access_type=offline&prompt=consent",
 };
 const redirectUri = "https://app.example.test/mcp/oauth/callback";
 
@@ -23,6 +24,7 @@ async function fixture(metadataIssuer = client.authorizationServer) {
     ...scope,
     id: "fixture-server",
     transport: "stdio",
+    command: "fixture-mcp",
     endpoint: null,
     enabled: true,
     secretId: stored.id,
@@ -94,7 +96,7 @@ async function fixture(metadataIssuer = client.authorizationServer) {
   const exchange = vi.fn(async (request: Request) => {
     const body = new URLSearchParams(await request.text());
     expect(body.get("code")).toBe("fixture-code");
-    expect(body.get("code_verifier")).toMatch(/^[\w-]{43,128}$/);
+    expect(/^[A-Za-z0-9._~-]{43,128}$/.test(body.get("code_verifier") ?? "")).toBe(true);
     expect(body.get("redirect_uri")).toBe(redirectUri);
     expect(body.get("client_secret")).toBe(client.clientSecret);
     expect(body.has("resource")).toBe(false);
@@ -120,11 +122,17 @@ async function fixture(metadataIssuer = client.authorizationServer) {
     if (path === "/token") return exchange(request);
     throw new Error("Unexpected request in the stdio OAuth fixture");
   };
-  const newBroker = () =>
-    new McpOAuthBroker(prisma as never, store, {
-      fetch: fetcher,
-      resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
-    });
+  const newBroker = (enabled = true) =>
+    new McpOAuthBroker(
+      prisma as never,
+      store,
+      {
+        fetch: fetcher,
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+      },
+      false,
+      { enabled, allowedCommands: ["fixture-mcp"] },
+    );
   const broker = newBroker();
   const begin = async () => {
     const result = await broker.begin({ ...scope, serverId: server.id, redirectUri });
@@ -157,12 +165,21 @@ describe("deployment-managed stdio OAuth", () => {
     expect(url.searchParams.get("state")).toBe(started.sessionId);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("scope")).toBe(client.scope);
+    expect(url.searchParams.get("access_type")).toBe("offline");
+    expect(url.searchParams.getAll("prompt")).toEqual(["consent"]);
     expect(started.authorizationUrl).not.toContain(client.clientSecret);
     const results = await Promise.allSettled([
       f.complete(started.sessionId),
       f.complete(started.sessionId),
     ]);
-    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(
+      results.map((result) => (result.status === "fulfilled" ? "granted" : String(result.reason))),
+    ).toEqual(
+      expect.arrayContaining([
+        "granted",
+        expect.stringMatching(/MCP OAuth session is invalid or expired/),
+      ]),
+    );
     expect(f.exchange).toHaveBeenCalledOnce();
     expect(f.pending.size).toBe(0);
     expect(f.server.revision).toBe(2);
@@ -180,6 +197,7 @@ describe("deployment-managed stdio OAuth", () => {
     await expect(
       f.complete(sessionId, f.newBroker(), { ...scope, spaceId: "foreign-space" }),
     ).rejects.toThrow(/invalid or expired/);
+    await expect(f.complete(sessionId, f.newBroker(false))).rejects.toThrow(/stdio is disabled/);
     f.server.revision++;
     await expect(f.complete(sessionId)).rejects.toThrow(/invalid or expired/);
     f.changeDeploymentOwner();

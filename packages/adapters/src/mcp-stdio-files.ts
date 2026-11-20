@@ -68,7 +68,7 @@ export function mcpCredentialFileSecrets(content: string): string[] {
     const pending: unknown[] = [JSON.parse(content)];
     while (pending.length) {
       const value = pending.pop();
-      if (typeof value === "string") secrets.add(value);
+      if (typeof value === "string" || typeof value === "number") secrets.add(String(value));
       else if (value && typeof value === "object") {
         for (const child of Object.values(value)) pending.push(child);
       }
@@ -92,7 +92,9 @@ export async function writeMcpStdioCredentialFiles(
   if (!McpStdioFilesSchema.safeParse(files).success)
     throw new Error("Invalid MCP credential files");
   signal.throwIfAborted();
-  const directory = await mkdtemp(join(root, "mcp-credentials-"));
+  const directory = await mkdtemp(join(root, "mcp-credentials-")).catch((error: unknown) => {
+    throw new Error("Could not write MCP credential files", { cause: error });
+  });
   let removing: Promise<void> | undefined;
   const remove = () => {
     removing ??= rm(directory, { recursive: true, force: true, maxRetries: 2 }).catch(() => {

@@ -383,6 +383,7 @@ async function buildApp(
     secrets,
     remoteConnectors,
     env.mcpAllowPrivateEndpoint,
+    { enabled: env.mcpStdioEnabled, allowedCommands: env.mcpStdioAllowedCommands },
   );
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const oauthLogins = new ModelOAuth(new ModelOAuthSessions(prisma), secrets);

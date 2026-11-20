@@ -405,7 +405,8 @@ export function McpServersOverlay({
                         ) : null}
                         <McpToolAccess server={server} onSaved={refresh} />
                         <div className="mt-3 flex flex-wrap gap-2">
-                          {server.transport !== "stdio" ? (
+                          {server.transport !== "stdio" ||
+                          (server.enabled && server.stdioOAuthConfigured) ? (
                             <>
                               <Button
                                 type="button"

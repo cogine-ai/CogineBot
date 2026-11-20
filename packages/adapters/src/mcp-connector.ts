@@ -13,6 +13,7 @@ import {
   MCP_STDIO_OAUTH_REFERENCE_START,
   validateMcpStdioCredentials,
 } from "@rakazo/contracts";
+import { containsSecret } from "@rakazo/core";
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   assertManagedPluginActive,
@@ -354,6 +355,13 @@ export class McpConnector implements ConnectorProvider {
     try {
       entry = await this.acquire(server, context, signal);
       listed = await withAbort(entry.session.listTools({ signal }), signal);
+      if (entry.launchSecrets.length) {
+        const secrets = [...oauthMaterialSecrets(entry.material), ...entry.launchSecrets];
+        listed = {
+          ...listed,
+          tools: listed.tools.filter((tool) => !containsSecret(tool, secrets)),
+        };
+      }
       health = { status: "ok", message: null, code: null, toolCount: listed.tools.length };
     } catch (error) {
       context.signal.throwIfAborted();
@@ -552,7 +560,8 @@ export class McpConnector implements ConnectorProvider {
     const sessionKey = this.sessionKey(server, context);
     try {
       entry = await this.acquire(server, context, context.signal);
-      const { session, stdio } = entry;
+      const acquired = entry;
+      const { session, stdio } = acquired;
       material = entry.material;
       const guard = call.beforeDispatch as ConnectorDispatchCheck | undefined;
       const checkDispatch = guard
@@ -568,8 +577,8 @@ export class McpConnector implements ConnectorProvider {
       let dispatched: ReturnType<McpSession["callTool"]> | undefined;
       const dispatch = () => {
         context.signal.throwIfAborted();
-        if (entry!.expiresAt !== undefined && Date.now() >= entry!.expiresAt)
-          throw new McpReauthorizationRequiredError(server.id);
+        if (stdio && (acquired.retired || this.stdioNeedsReplacement(acquired)))
+          throw new Error("MCP stdio session changed; retry");
         dispatched = session.callTool(call.route!.toolName, call.args, {
           signal: context.signal,
           beforeDispatch: stdio ? undefined : checkDispatch,
@@ -618,7 +627,24 @@ export class McpConnector implements ConnectorProvider {
           }
         }
       } else {
-        if (stdio) await checkDispatch?.();
+        if (stdio) {
+          await checkDispatch?.();
+          const current = await withAbort(
+            this.prisma.mcpServer.findFirst({
+              where: {
+                id: server.id,
+                spaceId: context.spaceId,
+                userId: context.userId,
+                revision: server.revision,
+                enabled: true,
+                transport: "stdio",
+              },
+              select: { id: true },
+            }),
+            context.signal,
+          );
+          if (!current) throw new Error("MCP server permissions or credentials changed; retry");
+        }
         dispatch();
       }
       const result = await dispatched!;
@@ -940,6 +966,7 @@ export class McpConnector implements ConnectorProvider {
             this.options.credentialTempRoot,
           );
           removeCredentialFiles = written.remove;
+          launchSecrets.push(...Object.values(written.env));
           Object.assign(env, written.env);
         }
         let exited = false;

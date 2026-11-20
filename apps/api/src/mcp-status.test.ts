@@ -93,6 +93,17 @@ describe("MCP list preserves unknown credential status", () => {
         context,
         { recordId: "oauth" },
       );
+      const managedRecord = await store.put(
+        JSON.stringify({
+          oauthClient: {
+            authorizationServer: "https://login.example.test",
+            clientId: "fixture-registered-id",
+            clientSecret: "fixture-registered-secret",
+          },
+        }),
+        context,
+        { recordId: "managed" },
+      );
       const faultyRecord = await store.put(
         fault === "json" ? "not json" : fault === "structure" ? '{"oauth":false}' : "{}",
         context,
@@ -108,17 +119,18 @@ describe("MCP list preserves unknown credential status", () => {
         { id: "bad", ciphertext: badRef },
         { id: "static", ciphertext: staticRecord.ref },
         { id: "oauth", ciphertext: oauthRecord.ref },
+        { id: "managed", ciphertext: managedRecord.ref },
       ];
-      const rows = ["bad", "static", "oauth", "no-credential"].map((id) => ({
+      const rows = ["bad", "static", "oauth", "managed", "no-credential"].map((id) => ({
         id,
         spaceId: actor.spaceId,
         userId: actor.userId,
         slug: id,
         name: id,
         description: "",
-        transport: "streamable_http",
-        endpoint: `https://tools.example.test/${id}`,
-        command: null,
+        transport: id === "managed" ? "stdio" : "streamable_http",
+        endpoint: id === "managed" ? null : `https://tools.example.test/${id}`,
+        command: id === "managed" ? "fixture-mcp" : null,
         args: [],
         env: {},
         headers: id === "static" ? { "X-Key": true } : {},
@@ -159,11 +171,16 @@ describe("MCP list preserves unknown credential status", () => {
         { id: "bad", oauthStatus: "unknown" },
         { id: "static", oauthStatus: "none" },
         { id: "oauth", oauthStatus: "connected" },
+        { id: "managed", oauthStatus: "none" },
         { id: "no-credential", oauthStatus: "none" },
       ]);
       expect(result[0]).toMatchObject({ revision: 1, enabled: true });
       expect(JSON.stringify(result)).not.toContain("fixture-key");
       expect(JSON.stringify(result)).not.toContain("fixture-token");
+      expect(result.find(({ id }) => id === "managed")).toMatchObject({
+        stdioOAuthConfigured: true,
+      });
+      expect(JSON.stringify(result)).not.toMatch(/login\.example\.test|fixture-registered/);
       expect(secrets.put).not.toHaveBeenCalled();
     },
   );

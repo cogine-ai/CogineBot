@@ -527,7 +527,7 @@ describe("MCP discovery lifecycle", () => {
     );
     try {
       const [tool] = await connector.discoverTools(context);
-      const invoke = (content: string) =>
+      const invoke = (content: string, beforeDispatch?: () => Promise<void>) =>
         connector
           .execute(
             {
@@ -535,6 +535,7 @@ describe("MCP discovery lifecycle", () => {
               route: tool!.route,
               args: { content },
               executionId: content,
+              beforeDispatch,
             },
             context,
           )
@@ -544,7 +545,11 @@ describe("MCP discovery lifecycle", () => {
         value: { type: "result", data: { content: [{ text: "[redacted] [redacted]" }] } },
       });
       const firstPath = connect.mock.calls[0]![0].env!.CONFIG_FILE!;
-      now.mockReturnValue(start + 3_600_000);
+      await expect(
+        invoke("approval-outlived-credential", async () => {
+          now.mockReturnValue(start + 3_600_000);
+        }),
+      ).resolves.toMatchObject({ value: { type: "error" } });
       await expect(invoke("second-invocation")).resolves.toMatchObject({
         value: { type: "result" },
       });
@@ -624,6 +629,81 @@ describe("MCP discovery lifecycle", () => {
       }
     },
   );
+
+  it("passes a private credential file to a real offline stdio child and removes it on close", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-child-fixture-"));
+    const script = `
+      const { readFileSync, statSync } = require('node:fs');
+      const { createInterface } = require('node:readline');
+      const lines = createInterface({ input: process.stdin });
+      lines.on('line', (line) => {
+        const message = JSON.parse(line);
+        if (message.id === undefined) return;
+        let result;
+        if (message.method === 'initialize') {
+          result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } };
+        } else if (message.method === 'tools/list') {
+          result = { tools: [
+            { name: 'read_fixture', inputSchema: { type: 'object' } },
+            { name: 'bad_fixture', description: process.env.CONFIG_FILE, inputSchema: { type: 'object' } },
+          ] };
+        } else if (message.method === 'tools/call') {
+          const path = process.env.CONFIG_FILE;
+          const content = readFileSync(path, 'utf8');
+          result = { content: [{ type: 'text', text: (statSync(path).mode & 0o777).toString(8) + ':' + content }] };
+        } else {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Unknown fixture method' } }) + '\\n');
+          return;
+        }
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');
+      });
+    `;
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: process.execPath,
+      args: ["-e", script],
+      secretId: "material",
+    };
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      {
+        load: async () => JSON.stringify({ files: { CONFIG_FILE: "private-child-fixture" } }),
+      } as never,
+      { stdioEnabled: true, allowedCommands: [process.execPath], credentialTempRoot: root },
+    );
+    try {
+      const [tool, ...hidden] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__read_fixture");
+      expect(hidden).toEqual([]);
+      const result = await connector
+        .execute(
+          { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
+          context,
+        )
+        [Symbol.asyncIterator]()
+        .next();
+      expect(result.value).toMatchObject({
+        type: "result",
+        data: { content: [{ type: "text", text: "600:[redacted]" }] },
+      });
+      expect(await readdir(root)).toHaveLength(1);
+    } finally {
+      try {
+        await connector.close();
+        expect(await readdir(root)).toEqual([]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
 
   it("keeps an active stdio session and closes it after the idle limit", async () => {
     const server = { ...SHARED_SERVER, transport: "stdio", command: "fixture" };

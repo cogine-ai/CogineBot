@@ -36,7 +36,7 @@ import {
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
-import { sanitizeConnectorError } from "./connector-safety.js";
+import { combineSignals, sanitizeConnectorError } from "./connector-safety.js";
 import {
   McpOAuthClientRequiredError,
   mcpHealthError,
@@ -256,6 +256,7 @@ type ServerRef = {
   installId?: string | null;
   revision?: number;
   transport?: string;
+  command?: string | null;
 };
 type ActorRef = { spaceId: string; userId: string };
 
@@ -553,6 +554,7 @@ type Pending = {
 const PENDING_TTL_MS = 10 * 60_000;
 const MAX_PENDING_SESSIONS = 100;
 const STDIO_OAUTH_STATE_PREFIX = "stdio-";
+const STDIO_OAUTH_TIMEOUT_MS = 15_000;
 
 const StdioAuthorizationSessionSchema = z.object({
   revision: z.number().int().positive(),
@@ -577,6 +579,9 @@ function hasBoundStdioGrant(material: OAuthMaterial): boolean {
       oauth?.tokens?.issuer &&
       oauth.clientInformation?.issuer &&
       oauth.clientInformation.client_id === material.oauthClient?.clientId &&
+      ("client_secret" in oauth.clientInformation
+        ? oauth.clientInformation.client_secret
+        : undefined) === material.oauthClient?.clientSecret &&
       oauth.discoveryState?.authorizationServerUrl &&
       matchesMcpOAuthIssuer(oauth.tokens.issuer, issuer) &&
       matchesMcpOAuthIssuer(oauth.clientInformation.issuer, issuer) &&
@@ -592,6 +597,7 @@ function oauthFetch(
   network: RemoteTransportDependencies,
   material: OAuthMaterial = {},
   allowPrivateEndpoint = false,
+  deadline?: AbortSignal,
 ): {
   fetch: typeof fetch;
   close: () => Promise<void>;
@@ -630,7 +636,10 @@ function oauthFetch(
   let rejection: OAuthRejection | undefined;
   const recordingFetch: typeof fetch = async (input, init) => {
     try {
-      const response = await fallbackFetch(input, init);
+      const response = await fallbackFetch(
+        input,
+        deadline ? { ...init, signal: combineSignals(deadline, init?.signal ?? undefined) } : init,
+      );
       if (!response.ok) {
         const next = await readOAuthRejection(response);
         if (next) rejection = next;
@@ -726,6 +735,7 @@ export class McpOAuthBroker {
     private readonly secrets: SecretStore,
     private readonly network: RemoteTransportDependencies = {},
     private readonly allowPrivateEndpoint = false,
+    private readonly stdio?: { enabled: boolean; allowedCommands: readonly string[] },
   ) {}
 
   /** Parent lock precedes the existing OAuth material lock on every managed write. */
@@ -871,24 +881,48 @@ export class McpOAuthBroker {
     context: ActorRef,
   ): Promise<"none" | "connected" | "reconnect"> {
     const { material } = await this.loadMaterial(server, context);
-    if (material.oauth?.tokens) return "connected";
-    return material.oauth ? "reconnect" : "none";
+    return this.summarizeMaterial(material).oauthStatus;
   }
 
   /** Shared validation for list status and already-committed connection replies; no I/O. */
   statusForMaterial(value: unknown): "none" | "connected" | "reconnect" {
-    const material = StoredStatusMaterialSchema.parse(value);
-    if (material.oauth?.tokens) return "connected";
-    return material.oauth ? "reconnect" : "none";
+    return this.summarizeMaterial(StoredStatusMaterialSchema.parse(value) as OAuthMaterial)
+      .oauthStatus;
   }
 
   async statusForCiphertext(
     ciphertext: string | undefined,
     recordId: string | undefined,
   ): Promise<"none" | "connected" | "reconnect"> {
-    if (ciphertext === undefined && recordId === undefined) return "none";
+    return (await this.summaryForCiphertext(ciphertext, recordId)).oauthStatus;
+  }
+
+  async summaryForCiphertext(ciphertext: string | undefined, recordId: string | undefined) {
+    if (ciphertext === undefined && recordId === undefined) return this.summarizeMaterial({});
     if (!ciphertext || !recordId) throw new Error("MCP credential reference is incomplete");
-    return this.statusForMaterial(JSON.parse(await this.secrets.load(ciphertext, recordId)));
+    const material = StoredStatusMaterialSchema.parse(
+      JSON.parse(await this.secrets.load(ciphertext, recordId)),
+    );
+    return this.summarizeMaterial(material as OAuthMaterial);
+  }
+
+  private summarizeMaterial(material: OAuthMaterial): {
+    oauthStatus: "none" | "connected" | "reconnect";
+    stdioOAuthConfigured: boolean;
+  } {
+    const tokens = material.oauth?.tokens;
+    const stdioOAuthConfigured = material.oauthClient !== undefined;
+    let oauthStatus: "none" | "connected" | "reconnect" = material.oauth ? "reconnect" : "none";
+    if (tokens) {
+      const expired = (mcpOAuthAccessTokenExpiry(material) ?? Infinity) <= Date.now();
+      if (
+        !stdioOAuthConfigured ||
+        (hasBoundStdioGrant(material) && (!expired || tokens.refresh_token))
+      ) {
+        oauthStatus = "connected";
+      }
+    }
+    return { oauthStatus, stdioOAuthConfigured };
   }
 
   async providerFor(
@@ -1049,6 +1083,7 @@ export class McpOAuthBroker {
     | { status: "already_connected" }
   > {
     await this.assertStdioOwner(input.userId);
+    this.assertStdioCommand(server.command);
     const { material } = await this.loadMaterial(server, input);
     const parsed = McpStdioOAuthClientSchema.safeParse(material.oauthClient);
     if (!parsed.success) throw new McpOAuthClientRequiredError();
@@ -1058,16 +1093,26 @@ export class McpOAuthBroker {
       return { status: "already_connected" };
     }
     const sessionId = `${STDIO_OAUTH_STATE_PREFIX}${randomUUID()}`;
-    const network = oauthFetch(client.authorizationServer, this.network, { oauthClient: client });
+    const deadline = AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS);
+    const network = oauthFetch(
+      client.authorizationServer,
+      this.network,
+      { oauthClient: client },
+      false,
+      deadline,
+    );
     let started: Awaited<ReturnType<typeof beginMcpStdioAuthorization>>;
     try {
-      started = await beginMcpStdioAuthorization({
-        client,
-        redirectUri: input.redirectUri,
-        state: sessionId,
-        fetch: network.fetch,
-        resolveHostname: this.network.resolveHostname,
-      });
+      started = await withAbort(
+        beginMcpStdioAuthorization({
+          client,
+          redirectUri: input.redirectUri,
+          state: sessionId,
+          fetch: network.fetch,
+          resolveHostname: this.network.resolveHostname,
+        }),
+        deadline,
+      );
     } catch (error) {
       throw network.publicError(error, "Could not start MCP OAuth");
     } finally {
@@ -1240,21 +1285,30 @@ export class McpOAuthBroker {
         }),
     );
     if (consumed.count !== 1) throw new Error("MCP OAuth session is invalid or expired");
-    const network = oauthFetch(session.endpoint, this.network, { oauthClient: pending.client });
+    const deadline = AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS);
+    const network = oauthFetch(
+      session.endpoint,
+      this.network,
+      { oauthClient: pending.client },
+      false,
+      deadline,
+    );
     let tokens: OAuthTokens;
     try {
-      tokens = await exchangeMcpStdioAuthorization({
-        ...pending,
-        code: input.code,
-        redirectUri: session.redirectUri,
-        fetch: network.fetch,
-      });
+      tokens = await withAbort(
+        exchangeMcpStdioAuthorization({
+          ...pending,
+          code: input.code,
+          redirectUri: session.redirectUri,
+          fetch: network.fetch,
+        }),
+        deadline,
+      );
     } catch (error) {
       throw network.publicError(error, "Could not complete MCP OAuth");
     } finally {
       await network.close().catch(() => undefined);
     }
-    await this.assertStdioOwner(input.userId);
     await this.replaceMaterial(
       session.serverId,
       {
@@ -1273,17 +1327,31 @@ export class McpOAuthBroker {
       true,
       null,
       undefined,
-      { oauth: pending.oauth as OAuthState | undefined, revision: pending.revision },
+      {
+        oauth: pending.oauth as OAuthState | undefined,
+        revision: pending.revision,
+        stdioClient: pending.client,
+      },
     );
   }
 
-  private async assertStdioOwner(userId: string): Promise<void> {
-    const deployment = await this.prisma.deploymentSettings.findUnique({
+  private async assertStdioOwner(
+    userId: string,
+    db: Pick<Prisma.TransactionClient, "deploymentSettings"> = this.prisma,
+  ): Promise<void> {
+    const deployment = await db.deploymentSettings.findUnique({
       where: { id: "default" },
       select: { ownerUserId: true },
     });
     if (deployment?.ownerUserId !== userId)
       throw new Error("MCP stdio authorization requires the deployment owner");
+  }
+
+  private assertStdioCommand(command?: string | null): void {
+    if (!this.stdio?.enabled) throw new Error("MCP stdio is disabled");
+    if (!command || !this.stdio.allowedCommands.includes(command.trim())) {
+      throw new Error("MCP stdio command is not allowed");
+    }
   }
 
   private async withStdioAuthorization<T>(
@@ -1294,6 +1362,7 @@ export class McpOAuthBroker {
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
+      await this.assertStdioOwner(actor.userId, tx);
       const server = await tx.mcpServer.findFirst({
         where: {
           id: serverId,
@@ -1303,9 +1372,10 @@ export class McpOAuthBroker {
           enabled: true,
           transport: "stdio",
         },
-        select: { id: true },
+        select: { command: true },
       });
       if (!server) throw new Error("MCP OAuth session is invalid or expired");
+      this.assertStdioCommand(server.command);
       return effect(tx);
     });
   }
@@ -1402,6 +1472,7 @@ export class McpOAuthBroker {
                       context.userId,
                       this.allowPrivateEndpoint,
                     )),
+                  stdio ? AbortSignal.timeout(STDIO_OAUTH_TIMEOUT_MS) : undefined,
                 ),
             }
           : {}),
@@ -1417,12 +1488,17 @@ export class McpOAuthBroker {
     incrementRevision: boolean,
     expectedEndpoint?: string | null,
     onPersisted?: ProviderOptions["onPersisted"],
-    expected?: { oauth: OAuthState | undefined; revision?: number },
+    expected?: {
+      oauth: OAuthState | undefined;
+      revision?: number;
+      stdioClient?: McpStdioOAuthClient;
+    },
   ): Promise<string | undefined> {
     // Take a DB-only snapshot, then do provider I/O with no transaction open.
     // Recheck both the pointer and ciphertext under the existing advisory lock.
     for (let attempt = 0; attempt < 5; attempt++) {
       const snapshot = await this.prisma.$transaction(async (tx) => {
+        if (expected?.stdioClient) await this.assertStdioOwner(context.userId, tx);
         const server = await tx.mcpServer.findFirst({
           where: {
             id: serverId,
@@ -1462,6 +1538,12 @@ export class McpOAuthBroker {
       const nextMaterial = snapshot.secret
         ? await this.read(snapshot.secret.ciphertext, snapshot.secret.id)
         : {};
+      if (
+        expected?.stdioClient &&
+        !isDeepStrictEqual(expected.stdioClient, nextMaterial.oauthClient)
+      ) {
+        throw new McpOAuthCredentialsChangedError(serverId);
+      }
       const oauthUnchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);
       // An acknowledgement may have been lost after this exact intent committed.
       // Confirm that no-op under the same commit fence before adopting its record.
@@ -1533,6 +1615,7 @@ export class McpOAuthBroker {
             ? await assertManagedPluginActive(tx, installId, context)
             : undefined;
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
+          if (expected?.stdioClient) await this.assertStdioOwner(context.userId, tx);
           const server = await tx.mcpServer.findFirst({
             where: {
               id: serverId,

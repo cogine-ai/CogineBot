@@ -581,6 +581,8 @@ describe("deployment-managed MCP stdio registration", () => {
     { oauthClient: { ...oauthClient, authorizationServer: "https://private.example.test" } },
     { oauthClient: { ...oauthClient, authorizationServer: "https://login.example.test?" } },
     { oauthClient: { ...oauthClient, authorizationServer: "http://login.example.test" } },
+    { oauthClient: { ...oauthClient, authorizationParams: "STATE=fixture" } },
+    { oauthClient: { ...oauthClient, authorizationParams: "client_secret=fixture" } },
     { files },
     { files: { CONFIG_FILE: "{{oauth.unknown}}" }, oauthClient },
     { files: { CONFIG_FILE: "{{oauth.access_token}" }, oauthClient },

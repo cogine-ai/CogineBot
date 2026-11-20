@@ -684,6 +684,7 @@ function mcpServerDto(
     updatedAt: Date;
   },
   oauthStatus: McpServer["oauthStatus"] = "none",
+  stdioOAuthConfigured?: boolean,
 ): McpServer {
   const args = Array.isArray(row.args)
     ? row.args.filter((item): item is string => typeof item === "string")
@@ -708,6 +709,7 @@ function mcpServerDto(
     headerKeys,
     hasSecret: row.secretId !== null,
     oauthStatus,
+    ...(stdioOAuthConfigured === undefined ? {} : { stdioOAuthConfigured }),
     health: mcpServerHealthDto(row),
     enabled: row.enabled,
     verbatimResults: row.verbatimResults ?? false,
@@ -1221,7 +1223,18 @@ export function createRouter(deps: RouterDeps) {
     return credential;
   }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
-  const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
+  const mcpOAuth =
+    deps.mcpOAuth ??
+    new McpOAuthBroker(
+      deps.prisma,
+      deps.secrets,
+      deps.remoteConnectors,
+      deps.env.mcpAllowPrivateEndpoint,
+      {
+        enabled: deps.env.mcpStdioEnabled === true,
+        allowedCommands: deps.env.mcpStdioAllowedCommands ?? [],
+      },
+    );
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const saveSubscription =
     (actor: Actor): SaveSubscription =>
@@ -5851,18 +5864,26 @@ export function createRouter(deps: RouterDeps) {
           return Promise.all(
             rows.map(async (row) => {
               let oauthStatus: McpServer["oauthStatus"] = "none";
+              let stdioOAuthConfigured: boolean | undefined;
               if (row.secretId) {
                 const ciphertext = ciphertextById.get(row.secretId);
                 if (!ciphertext) oauthStatus = "unknown";
                 else {
                   try {
-                    oauthStatus = await mcpOAuth.statusForCiphertext(ciphertext, row.secretId);
+                    if (row.transport === "stdio") {
+                      ({ oauthStatus, stdioOAuthConfigured } = await mcpOAuth.summaryForCiphertext(
+                        ciphertext,
+                        row.secretId,
+                      ));
+                    } else {
+                      oauthStatus = await mcpOAuth.statusForCiphertext(ciphertext, row.secretId);
+                    }
                   } catch {
                     oauthStatus = "unknown";
                   }
                 }
               }
-              return mcpServerDto(row, oauthStatus);
+              return mcpServerDto(row, oauthStatus, stdioOAuthConfigured);
             }),
           );
         }),
@@ -5958,7 +5979,11 @@ export function createRouter(deps: RouterDeps) {
                 });
               }),
           );
-          return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
+          return mcpServerDto(
+            row,
+            await mcpOAuth.statusFor(row, context.actor),
+            input.transport === "stdio" ? Boolean(input.oauthClient) : undefined,
+          );
         }),
         setTools: authed.mcp.servers.setTools.handler(async ({ context, input }) => {
           const { row, seqs } = await withTransactionRetry(() =>
@@ -6474,7 +6499,13 @@ export function createRouter(deps: RouterDeps) {
                     }
                   }
                 }
-                return mcpServerDto(row.server, oauthStatus);
+                return mcpServerDto(
+                  row.server,
+                  oauthStatus,
+                  stdio && !disableOnly && !disableAndClear
+                    ? Boolean(nextMaterial.oauthClient)
+                    : undefined,
+                );
               }
             } finally {
               if (existing.installId) {
