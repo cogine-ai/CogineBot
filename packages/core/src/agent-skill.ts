@@ -334,7 +334,7 @@ function decodeYamlBlockScalar(rawLines: string[], header: YamlBlockScalarHeader
   if (indent == null) {
     indent = 0;
     for (const line of rawLines) {
-      if (line.trim() === "") continue;
+      if (/^ *$/.test(line)) continue;
       const spaces = leadingSpaces(line);
       if (indent === 0 || spaces < indent) indent = spaces;
     }

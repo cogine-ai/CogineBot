@@ -643,13 +643,33 @@ describe("saved skill scalar and array fidelity", () => {
     },
   );
 
-  const whitespaceBlockCases = ["|2-", "|2", "|2+", ">2-", ">2", ">2+"].flatMap((header) =>
+  const whitespaceBlockCases = [
+    "|2-",
+    "|2",
+    "|2+",
+    ">2-",
+    ">2",
+    ">2+",
+    "|-",
+    "|",
+    "|+",
+    ">-",
+    ">",
+    ">+",
+  ].flatMap((header) =>
     [
       ["  first", "    ", "  second"],
       ["  first", "  \t", "  second"],
-      ["    ", "  first", "    "],
+      [header.includes("2") ? "    " : "  ", "  first", "    "],
       ["  \t", "  first", "  \t"],
       ["  first", "  \tcode", "  second"],
+      ["  \t"],
+      ["", "  \t", ""],
+      ["  \t", "  \t"],
+      ["  \u00a0"],
+      ["  \u2003"],
+      ["  \ufeff"],
+      ["  \u3000"],
     ].map((lines, variant) => ({ header, lines, variant })),
   );
   it.each(whitespaceBlockCases)(
