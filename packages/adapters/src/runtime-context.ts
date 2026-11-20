@@ -458,6 +458,13 @@ export function createRuntimeContextPolicy(
       imageTokens: options.imageTokens,
       maxImages: request.model.maxImagesPerPrompt,
     };
+    const messageTokens = (message: Message) =>
+      estimateContextTokens(
+        providerContextPrefix("", [], [message]).messages[0],
+        options.imageTokens,
+      );
+    const requiredTokens = (indexes: ReadonlySet<number>) =>
+      [...indexes].reduce((total, index) => total + messageTokens(messages[index]!), fixed);
     const useSnapshots =
       strategy === "snapshots" || (strategy === "cache-aware" && predictedCache !== "likely-warm");
     const historical = messages.slice(0, currentIndex);
@@ -508,15 +515,8 @@ export function createRuntimeContextPolicy(
       if (catalog) {
         const catalogMessage = navigation(catalogIds)!;
         // Include the bounded catalog only if required content leaves room for it.
-        const required = protectedIndexes.map((index) => messages[index]!);
-        const fixed =
-          estimateContextTokens(budget.systemPrompt) + estimateContextTokens(budget.tools);
-        if (
-          fixed +
-            estimateContextTokens(required, options.imageTokens) +
-            estimateContextTokens(catalogMessage) <
-          contextWindow - budget.outputReserve
-        ) {
+        const required = protectedContextIndexes(messages, protectedIndexes);
+        if (requiredTokens(required) + messageTokens(catalogMessage) < contextWindow - reserve) {
           const insertIndex = messages[0]?.role === "system" ? 1 : 0;
           messages.splice(insertIndex, 0, catalogMessage);
           navigationMessage = catalogMessage;
@@ -540,21 +540,12 @@ export function createRuntimeContextPolicy(
         content === MEMORY_RECALL_UNAVAILABLE_NOTICE
       );
     });
-    const messageTokens = (message: Message) =>
-      estimateContextTokens(
-        providerContextPrefix("", [], [message]).messages[0],
-        options.imageTokens,
-      );
     for (const entry of historicalContext) {
       // Optional history must fit beside the same atomic groups the selector requires.
       const required = protectedContextIndexes(messages, protectedIndexes);
       const entryIndex = messages.indexOf(entry);
       if (required.has(entryIndex)) continue;
-      const requiredTokens = [...required].reduce(
-        (total, index) => total + messageTokens(messages[index]!),
-        fixed,
-      );
-      if (requiredTokens + messageTokens(entry) >= contextWindow - reserve) continue;
+      if (requiredTokens(required) + messageTokens(entry) >= contextWindow - reserve) continue;
       if (entryIndex === -1) {
         const insertIndex = messages[0]?.role === "system" ? 1 : 0;
         messages.splice(insertIndex, 0, entry);

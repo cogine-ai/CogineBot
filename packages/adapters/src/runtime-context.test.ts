@@ -1152,45 +1152,54 @@ describe("runtime context policy", () => {
     },
   );
 
-  it("keeps the unread tool group when a recall notice cannot also fit", () => {
-    const { request, context } = fixture(0);
-    request.contextStrategy = "retrieval";
-    request.instructions = "Fixture";
-    request.prompt = "Read data";
-    context.systemPrompt = request.instructions;
-    context.messages[0] = { role: "user", content: request.prompt, timestamp: 1 };
+  it.each([
+    { contextStrategy: "retrieval", historyCount: 0, argumentBytes: 11389, retainNotice: false },
+    { contextStrategy: "snapshots", historyCount: 100, argumentBytes: 11150, retainNotice: true },
+    { contextStrategy: "cache-aware", historyCount: 100, argumentBytes: 11150, retainNotice: true },
+  ] as const)(
+    "fits recall after reserving the unread tool group under $contextStrategy",
+    ({ contextStrategy, historyCount, argumentBytes, retainNotice }) => {
+      const { request, context } = fixture(historyCount);
+      request.contextStrategy = contextStrategy;
+      request.instructions = "Fixture";
+      request.prompt = "Read data";
+      context.systemPrompt = request.instructions;
+      const current = { role: "user", content: request.prompt, timestamp: 1 } as const;
+      context.messages[historyCount] = current;
 
-    const narrow = { ...model, contextWindow: 4096, maxTokens: 256 };
-    // The unread tool group fits this model window by itself.
-    const call = fauxAssistantMessage([
-      {
-        type: "toolCall",
-        id: "read-1",
-        name: "read_file",
-        arguments: { query: "a".repeat(11389) },
-      },
-    ]);
-    const result = {
-      role: "toolResult",
-      toolCallId: "read-1",
-      toolName: "read_file",
-      content: [{ type: "text", text: "result" }],
-      isError: false,
-      timestamp: 3,
-    } as const;
-    context.messages.push(call, { ...result, content: [...result.content] });
-    const expected = createRuntimeContextPolicy(request).prepareContext(context, narrow);
-    expect(expected.messages).toEqual(context.messages);
+      const narrow = { ...model, contextWindow: 4096, maxTokens: 256 };
+      // Leave either no room for the notice or room for it but not the navigation catalog.
+      const call = fauxAssistantMessage([
+        {
+          type: "toolCall",
+          id: "read-1",
+          name: "read_file",
+          arguments: { query: "a".repeat(argumentBytes) },
+        },
+      ]);
+      const result: Message = {
+        role: "toolResult",
+        toolCallId: "read-1",
+        toolName: "read_file",
+        content: [{ type: "text", text: "result" }],
+        isError: false,
+        timestamp: 3,
+      };
+      context.messages.push(call, result);
+      const expected = createRuntimeContextPolicy(request).prepareContext(context, narrow);
+      expect(expected.messages.slice(-3)).toEqual([current, call, result]);
 
-    const content = "Memory recall was unavailable.";
-    request.history.unshift({ role: "user", content });
-    const notice = { role: "user", content, timestamp: 0, rakazoHistory: true } as const;
-    const degraded = { ...context, messages: [notice, ...context.messages] };
+      const content = "Memory recall was unavailable.";
+      request.history.unshift({ role: "user", content });
+      const notice = { role: "user", content, timestamp: 0, rakazoHistory: true } as const;
+      const degraded = { ...context, messages: [notice, ...context.messages] };
+      const prepared = createRuntimeContextPolicy(request).prepareContext(degraded, narrow);
 
-    expect(createRuntimeContextPolicy(request).prepareContext(degraded, narrow).messages).toEqual(
-      expected.messages,
-    );
-  });
+      expect(prepared.messages.slice(-3)).toEqual([current, call, result]);
+      expect(prepared.messages.includes(notice)).toBe(retainNotice);
+      expect(JSON.stringify(prepared.messages)).not.toContain("Historical navigation snapshots");
+    },
+  );
 
   it("places a rolling summary after Pi's leading system message", () => {
     const { request, context } = fixture();
