@@ -6024,17 +6024,19 @@ export function createRouter(deps: RouterDeps) {
           const connection = "connection" in input ? input.connection : undefined;
           const stdio =
             "config" in input && input.config.transport === "stdio" ? input.config : undefined;
-          const configRevision = "config" in input ? input.revision : undefined;
-          const expectedRevision = connection?.revision ?? configRevision;
+          const expectedRevision =
+            connection?.revision ?? ("config" in input ? input.revision : undefined);
           const clearAllStdioCredentials =
             stdio?.clearCredential === true && stdio.oauthClient === null;
-          if (stdio) {
-            assertMcpStdioOwner(context.actor);
-            if (stdio.clearCredential && configRevision === undefined)
-              throw new ORPCError("BAD_REQUEST", {
-                message: "Reload the MCP server before clearing its credentials.",
-              });
-          }
+          const editsStdioCredentials = Boolean(
+            stdio &&
+              (stdio.clearCredential ||
+                stdio.oauthClient !== undefined ||
+                stdio.env !== undefined ||
+                stdio.files !== undefined ||
+                stdio.secret !== undefined),
+          );
+          if (stdio) assertMcpStdioOwner(context.actor);
           const credentialActor = {
             userId: context.actor.userId,
             spaceId: context.actor.spaceId,
@@ -6083,6 +6085,17 @@ export function createRouter(deps: RouterDeps) {
                   stdio &&
                     (!sameCommand || JSON.stringify(nextArgs) !== JSON.stringify(previousArgs)),
                 );
+              if (
+                "config" in input &&
+                expectedRevision === undefined &&
+                (replaceCredentials ||
+                  editsStdioCredentials ||
+                  (stdio?.enabled && !existing.enabled))
+              ) {
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "Reload the MCP server before changing its connection settings.",
+                });
+              }
               const deactivating = Boolean(
                 stdio &&
                   !stdio.enabled &&

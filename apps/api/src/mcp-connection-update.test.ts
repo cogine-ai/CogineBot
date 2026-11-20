@@ -229,8 +229,15 @@ describe("deployment-managed MCP stdio registration", () => {
       JSON.stringify({ env, files, oauthClient, oauth: f.material.oauth }),
     );
     const save = (patch: Partial<typeof config> & { oauthClient?: McpStdioOAuthClient }) =>
-      f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } });
-    await save({ name: "Renamed" });
+      f.client.mcp.servers.update({
+        id: f.server.id,
+        revision: f.server.revision,
+        config: { ...config, ...patch },
+      });
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, name: "Renamed" },
+    });
     expect(f.secrets.put).toHaveBeenCalledTimes(1);
     expect(f.server.args).toEqual(["--serve"]);
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
@@ -274,6 +281,7 @@ describe("deployment-managed MCP stdio registration", () => {
     };
     await f.client.mcp.servers.update({
       id: f.server.id,
+      revision: f.server.revision,
       config: { ...config, oauthClient: rebound },
     });
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({ oauthClient: rebound });
@@ -286,6 +294,7 @@ describe("deployment-managed MCP stdio registration", () => {
     f.server.allowedTools.push("old-tool");
     await f.client.mcp.servers.update({
       id: f.server.id,
+      revision: f.server.revision,
       config: { ...config, enabled: true },
     });
     expect(f.server).toMatchObject({
@@ -375,6 +384,7 @@ describe("deployment-managed MCP stdio registration", () => {
     });
     const saved = await f.client.mcp.servers.update({
       id: f.server.id,
+      revision: f.server.revision,
       config: { ...config, env: { API_KEY: "fixture-new-credential" } },
     });
     await expect(f.client.mcp.servers.update(original)).rejects.toMatchObject({ code: "CONFLICT" });
@@ -382,6 +392,27 @@ describe("deployment-managed MCP stdio registration", () => {
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toMatchObject({
       env: { API_KEY: "fixture-new-credential" },
     });
+  });
+
+  it.each([
+    { oauthClient: null },
+    { env: {} },
+    { files: {} },
+    { secret: "fixture-credential" },
+    { args: ["--different-target"] },
+    { command: "/opt/example-mcp-v2" },
+    { enabled: true },
+  ])("requires a revision for stdio material or launch changes (%j)", async (patch) => {
+    const f = fixture({ stdio: true });
+    await expect(
+      f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Reload the MCP server before changing its connection settings.",
+    });
+    expect(f.secrets.load).not.toHaveBeenCalled();
+    expect(f.secrets.put).not.toHaveBeenCalled();
+    expect(f.server.revision).toBe(1);
   });
 
   it("checks the requested revision in the final write when another action changes the row", async () => {
@@ -426,7 +457,11 @@ describe("deployment-managed MCP stdio registration", () => {
       "old-ref",
       JSON.stringify({ secret: "fixture", env: {}, headers: { Host: "legacy" } }),
     );
-    await f.client.mcp.servers.update({ id: f.server.id, config: { ...config, enabled: true } });
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      revision: f.server.revision,
+      config: { ...config, enabled: true },
+    });
     expect(f.server.secretId).toBe("old");
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
@@ -449,8 +484,12 @@ describe("deployment-managed MCP stdio registration", () => {
     async (patch) => {
       const f = fixture({ stdio: true, stdioEnabled: false });
       await expect(
-        f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+        f.client.mcp.servers.update({
+          id: f.server.id,
+          revision: f.server.revision,
+          config: { ...config, ...patch },
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "MCP stdio is disabled" });
       expect(f.secrets.load).not.toHaveBeenCalled();
       expect(f.secrets.put).not.toHaveBeenCalled();
     },
@@ -463,12 +502,14 @@ describe("deployment-managed MCP stdio registration", () => {
     await expect(
       f.client.mcp.servers.update({
         id: f.server.id,
+        revision: f.server.revision,
         config: { ...config, oauthClient: null },
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(f.secrets.put).not.toHaveBeenCalled();
     await f.client.mcp.servers.update({
       id: f.server.id,
+      revision: f.server.revision,
       config: { ...config, oauthClient: null, env: {}, files: {} },
     });
     expect(f.server.secretId).toBeNull();
