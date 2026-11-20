@@ -780,8 +780,9 @@ describe("MCP discovery lifecycle", () => {
           result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } };
         } else if (message.method === 'tools/list') {
           result = { tools: [
-            { name: 'read_fixture', inputSchema: { type: 'object' } },
+            { name: 'read_fixture', description: 'Read a result by name.', inputSchema: { type: 'object', properties: { name: { type: 'string' } } } },
             { name: 'bad_fixture', description: JSON.stringify(readFileSync(process.env.CONFIG_FILE, 'utf8')), inputSchema: { type: 'object' } },
+            { name: 'duplicate_fixture', description: 'prefixfixture-sharedsuffix', inputSchema: { type: 'object' } },
           ] };
         } else if (message.method === 'tools/call') {
           const path = process.env.CONFIG_FILE;
@@ -813,7 +814,14 @@ describe("MCP discovery lifecycle", () => {
       {
         load: async () =>
           JSON.stringify({
-            files: { CONFIG_FILE: JSON.stringify('private-child-"fixture\\value') },
+            env: { API_KEY: "fixture-shared" },
+            files: {
+              CONFIG_FILE: JSON.stringify({
+                secret: 'private-child-"fixture\\value',
+                Authorization: `Basic ${Buffer.from("a:fixture-basic-secret").toString("base64")}`,
+                Cookie: "session=fixture; api=fixture-shared",
+              }),
+            },
           }),
       } as never,
       { stdioEnabled: true, allowedCommands: [process.execPath], credentialTempRoot: root },
@@ -821,6 +829,7 @@ describe("MCP discovery lifecycle", () => {
     try {
       const [tool, ...hidden] = await connector.discoverTools(context);
       expect(tool?.name).toBe("mcp__demo__read_fixture");
+      expect(tool?.description).toContain("Read [redacted] result by name.");
       expect(hidden).toEqual([]);
       const result = await connector
         .execute(

@@ -91,7 +91,7 @@ export async function beginMcpStdioAuthorization(input: {
   // and require consent only when it contains the complete OIDC scope token.
   const scope = input.client.scope;
   if (scope) params.set("scope", scope);
-  const consent = scope?.split(/\s+/).includes("offline_access");
+  const consent = params.get("scope")?.split(/\s+/).includes("offline_access");
   if (consent) params.set("prompt", "consent");
   if (input.client.authorizationParams) {
     for (const [name, value] of parseMcpStdioAuthorizationParams(

@@ -125,12 +125,14 @@ const StoredStatusMaterialSchema = z.object({
 /** Values that must never appear in model-visible tool results or errors. */
 export function oauthMaterialSecrets(
   material: OAuthMaterial,
-  { stdio = false }: { stdio?: boolean } = {},
+  { stdio = false, basicComponents }: { stdio?: boolean; basicComponents?: string[] } = {},
 ): string[] {
   const values: string[] = [];
   const add = (value: string | undefined) => {
     if (!value) return;
-    values.push(...mcpCredentialValueVariants(value));
+    const variants = mcpCredentialValueVariants(value);
+    if (basicComponents) basicComponents.push(...variants.splice(2));
+    values.push(...variants);
   };
   add(material.secret);
   add(material.oauthClient?.clientSecret);
@@ -352,6 +354,15 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
         // A revoked refresh token cannot recover through a second SDK attempt.
         // Clear only the grant so the existing authorization path requests reconnect.
         await this.invalidateCredentials("tokens");
+      } else if (this.options.stdio) {
+        if (
+          error instanceof McpOAuthCredentialsChangedError ||
+          (error instanceof Error && error.name === "AbortError")
+        )
+          throw error;
+        const expiresAt = mcpOAuthAccessTokenExpiry(this.material);
+        if (expiresAt !== undefined && expiresAt <= Date.now())
+          throw new TemporarilyUnavailableError("MCP OAuth refresh is unavailable");
       }
       // Transient setup or transport failures must not discard a usable token.
       return;
@@ -1474,6 +1485,7 @@ export class McpOAuthBroker {
           this.replaceMaterial(server.id, material, context, false, endpoint, options.onPersisted, {
             oauth,
             revision,
+            stdioRefreshClient: stdioClient,
           });
         if (!recoverSave) {
           await save();
@@ -1534,6 +1546,7 @@ export class McpOAuthBroker {
       oauth: OAuthState | undefined;
       revision?: number;
       stdioClient?: McpStdioOAuthClient;
+      stdioRefreshClient?: McpStdioOAuthClient;
     },
   ): Promise<string | undefined> {
     // Take a DB-only snapshot, then do provider I/O with no transaction open.
@@ -1553,6 +1566,7 @@ export class McpOAuthBroker {
             installId: true,
             revision: true,
             enabled: true,
+            transport: true,
           },
         });
         if (!server) throw new Error("MCP server is unavailable");
@@ -1564,12 +1578,17 @@ export class McpOAuthBroker {
           throw new Error(
             "MCP server endpoint changed during authorization; reconnect this server",
           );
-        if (
+        if (expected?.stdioRefreshClient) {
+          // The issuer may have rotated the grant after dispatch. Keep it
+          // through deactivation and permission edits while its identity holds.
+          if (server.transport !== "stdio") throw new McpOAuthCredentialsChangedError(serverId);
+        } else if (
           expected &&
           (server.enabled === false ||
             (expected.revision !== undefined && server.revision !== expected.revision))
-        )
+        ) {
           throw new McpOAuthCredentialsChangedError(serverId);
+        }
         const secret = server.secretId
           ? await tx.secret.findFirst({
               where: { id: server.secretId, spaceId: context.spaceId, userId: context.userId },
@@ -1580,10 +1599,8 @@ export class McpOAuthBroker {
       const nextMaterial = snapshot.secret
         ? await this.read(snapshot.secret.ciphertext, snapshot.secret.id)
         : {};
-      if (
-        expected?.stdioClient &&
-        !isDeepStrictEqual(expected.stdioClient, nextMaterial.oauthClient)
-      ) {
+      const expectedClient = expected?.stdioClient ?? expected?.stdioRefreshClient;
+      if (expectedClient && !isDeepStrictEqual(expectedClient, nextMaterial.oauthClient)) {
         throw new McpOAuthCredentialsChangedError(serverId);
       }
       const oauthUnchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);

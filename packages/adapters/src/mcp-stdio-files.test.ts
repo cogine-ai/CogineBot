@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { redactConnectorPayload } from "./connector-safety.js";
 import {
   mcpCredentialFileSecrets,
   renderMcpStdioFile,
@@ -102,6 +103,44 @@ describe("managed stdio credential files", () => {
     }
     expect(() => mcpCredentialFileSecrets('VALUE="open\nOTHER=fixture-two')).toThrow(
       /Unsupported MCP credential file format/,
+    );
+  });
+
+  it("masks separate cookie values echoed from named credential fields", () => {
+    const file = JSON.stringify({
+      headers: {
+        Cookie: ['session="fixture%2Fprivate"; auxiliary=fixture-second; session=fixture-third'],
+        "Set-Cookie": ["login=fixture-login; Path=/public; HttpOnly"],
+      },
+      documentation: "key=fixture-example",
+    });
+    const secrets = mcpCredentialFileSecrets(file);
+    expect(secrets).toEqual(
+      expect.arrayContaining([
+        "fixture%2Fprivate",
+        "fixture/private",
+        "fixture-second",
+        "fixture-third",
+        "fixture-login",
+      ]),
+    );
+    expect(secrets).not.toContain("/public");
+    expect(secrets).not.toContain("fixture-example");
+    const result = {
+      content: [{ type: "text", text: "fixture/private fixture-second fixture-example" }],
+    };
+    expect(redactConnectorPayload(result, secrets, "mcp-result")).toEqual({
+      content: [{ type: "text", text: "[redacted] [redacted] fixture-example" }],
+    });
+    expect(mcpCredentialFileSecrets("headers:\n  Cookie: |\n    session=fixture-yaml\n")).toContain(
+      "fixture-yaml",
+    );
+    const longValue = "z".repeat(4_200);
+    expect(mcpCredentialFileSecrets(JSON.stringify({ Cookie: `session=${longValue}` }))).toContain(
+      longValue,
+    );
+    expect(mcpCredentialFileSecrets('[credentials]\nAPP_COOKIE="sid=fixture-env"')).toContain(
+      "fixture-env",
     );
   });
 

@@ -97,6 +97,8 @@ type ConnectedSession = {
   recordId?: string;
   launchSecrets: string[];
   fileSecrets: string[];
+  fileCredentialLiterals: string[];
+  fileCredentialComponents: string[];
   expiresAt?: number;
   processExited?: () => boolean;
   removeCredentialFiles?: () => Promise<void>;
@@ -115,8 +117,9 @@ function unchangedAfterRedaction(
   value: unknown,
   secrets: string[],
   format?: ConnectorPayloadFormat,
+  credentialComponents?: string[],
 ): boolean {
-  const redacted = tryRedactConnectorPayload(value, secrets, format);
+  const redacted = tryRedactConnectorPayload(value, secrets, format, credentialComponents);
   return redacted.ok && JSON.stringify(redacted.value) === JSON.stringify(value);
 }
 type PendingSession = {
@@ -371,32 +374,47 @@ export class McpConnector implements ConnectorProvider {
     try {
       entry = await this.acquire(server, context, signal);
       listed = await withAbort(entry.session.listTools({ signal }), signal);
-      const { fileSecrets, launchSecrets } = entry;
+      const { fileSecrets, launchSecrets, fileCredentialLiterals, fileCredentialComponents } =
+        entry;
+      const componentSecrets = [...fileCredentialComponents];
       const storedCredentials = entry.stdio
-        ? oauthMaterialSecrets(entry.material, { stdio: true })
+        ? oauthMaterialSecrets(entry.material, { stdio: true, basicComponents: componentSecrets })
         : [];
-      if (storedCredentials.length || launchSecrets.length || fileSecrets.length) {
+      if (
+        storedCredentials.length ||
+        launchSecrets.length ||
+        fileSecrets.length ||
+        componentSecrets.length
+      ) {
         const isLabel = (value: string) =>
           isCommonMcpConfigValue(value) || isMcpProtocolLabel(value);
+        componentSecrets.push(...fileCredentialLiterals.filter(isLabel));
         const knownCredentials = [
           ...storedCredentials,
           ...launchSecrets,
-          ...fileSecrets.filter((value) => !isLabel(value)),
+          ...fileCredentialLiterals.filter((value) => !isLabel(value)),
         ];
-        const labels = fileSecrets.filter(isLabel);
-        const secrets = [...knownCredentials, ...labels];
         listed = {
           ...listed,
           tools: listed.tools.flatMap((tool) => {
             if (
-              labels.includes(tool.name) ||
-              !unchangedAfterRedaction(tool.name, knownCredentials) ||
+              !unchangedAfterRedaction(tool.name, knownCredentials, undefined, componentSecrets) ||
               !unchangedAfterRedaction(tool.description, knownCredentials) ||
-              !unchangedAfterRedaction(tool.inputSchema, secrets, "mcp-schema")
+              !unchangedAfterRedaction(
+                tool.inputSchema,
+                knownCredentials,
+                "mcp-schema",
+                componentSecrets,
+              )
             )
               return [];
             if (!tool.description) return [tool];
-            const description = tryRedactConnectorPayload(tool.description, secrets);
+            const description = tryRedactConnectorPayload(
+              tool.description,
+              knownCredentials,
+              undefined,
+              componentSecrets,
+            );
             return description.ok && typeof description.value === "string"
               ? [{ ...tool, description: description.value }]
               : [];
@@ -958,6 +976,8 @@ export class McpConnector implements ConnectorProvider {
     let material: OAuthMaterial | undefined;
     const launchSecrets: string[] = [];
     const fileSecrets: string[] = [];
+    const fileCredentialLiterals: string[] = [];
+    const fileCredentialComponents: string[] = [];
     let removeCredentialFiles: (() => Promise<void>) | undefined;
     let expiresAt: number | undefined;
     let processExited: (() => boolean) | undefined;
@@ -1069,6 +1089,8 @@ export class McpConnector implements ConnectorProvider {
           );
           removeCredentialFiles = written.remove;
           fileSecrets.push(...written.secrets);
+          fileCredentialLiterals.push(...written.metadataLiterals);
+          fileCredentialComponents.push(...written.metadataComponents);
           launchSecrets.push(...Object.values(written.env));
           Object.assign(env, written.env);
         }
@@ -1145,6 +1167,8 @@ export class McpConnector implements ConnectorProvider {
         recordId,
         launchSecrets,
         fileSecrets,
+        fileCredentialLiterals,
+        fileCredentialComponents,
         expiresAt,
         processExited,
         removeCredentialFiles,

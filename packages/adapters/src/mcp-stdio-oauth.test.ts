@@ -258,6 +258,17 @@ describe("deployment-managed stdio OAuth", () => {
     },
   );
 
+  it("honors the issuer's offline scope when the declaration omits scope", async () => {
+    const f = await fixture({
+      configuration: { ...client, scope: undefined, authorizationParams: "prompt=login" },
+      authorizationEndpoint: `${client.authorizationServer}/authorize?scope=read+offline_access&prompt=select_account`,
+    });
+    const { authorizationUrl } = await f.begin();
+    const params = new URL(authorizationUrl).searchParams;
+    expect(params.get("scope")).toBe("read offline_access");
+    expect(params.getAll("prompt")).toEqual(["consent"]);
+  });
+
   it("form-encodes each Basic credential and preserves the public-client exchange", async () => {
     const basic = await fixture({
       configuration: { ...client, clientId: "team:agent+%☃", clientSecret: "fixture secret:é%+" },

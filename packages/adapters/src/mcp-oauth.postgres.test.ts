@@ -478,6 +478,56 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     }
   });
 
+  it.each([true, false])(
+    "preserves a rotated stdio grant across a revision change with enabled=%s",
+    async (enabled) => {
+      const f = await fixture({ stdio: true });
+      const allowAllTools = !f.server.allowAllTools;
+      const original = f.refresh.getMockImplementation()!;
+      f.refresh.mockImplementationOnce(async (input, init) => {
+        await f.prisma.mcpServer.update({
+          where: { id: f.server.id },
+          data: { enabled, allowAllTools, revision: { increment: 1 } },
+        });
+        return original(input, init);
+      });
+      const tokens = await runAsTenant(f.context, () => f.provider.tokens());
+      expect(tokens?.refresh_token).toBe("refresh-1");
+      expect((await f.read()).material.oauth?.tokens?.refresh_token).toBe("refresh-1");
+      expect(await f.prisma.mcpServer.findUnique({ where: { id: f.server.id } })).toMatchObject({
+        enabled,
+        allowAllTools,
+        revision: f.server.revision + 1,
+      });
+    },
+  );
+
+  it("does not restore a stdio grant disconnected after refresh dispatch", async () => {
+    const f = await fixture({ stdio: true });
+    const original = f.refresh.getMockImplementation()!;
+    f.refresh.mockImplementationOnce(async (input, init) => {
+      await runAsTenant(f.context, () =>
+        f.broker.disconnect({ ...f.context, serverId: f.server.id }),
+      );
+      return original(input, init);
+    });
+    await expect(runAsTenant(f.context, () => f.provider.tokens())).rejects.toThrow();
+    expect((await f.read()).material.oauth?.tokens).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    "handles an unavailable stdio issuer with expired=%s without losing the saved grant",
+    async (expired) => {
+      const f = await fixture({ stdio: true, expired, expiresIn: 30 });
+      f.refresh.mockRejectedValueOnce(new Error("Fixture issuer did not respond"));
+      const result = runAsTenant(f.context, () => f.provider.tokens());
+      if (expired) await expect(result).rejects.toThrow("MCP OAuth refresh is unavailable");
+      else await expect(result).resolves.toMatchObject({ access_token: "access-0" });
+      expect(f.refresh).toHaveBeenCalledOnce();
+      expect((await f.read()).material.oauth?.tokens?.refresh_token).toBe("refresh-0");
+    },
+  );
+
   it("cancels a pending token request while retaining a grant issued after dispatch", async () => {
     const f = await fixture({ stdio: true });
     const before = new AbortController();

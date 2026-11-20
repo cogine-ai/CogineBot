@@ -105,6 +105,35 @@ export function mcpCredentialValueVariants(value: string): string[] {
   return [value];
 }
 
+/** Cookie fields can contain several credentials, while Set-Cookie also has attributes. */
+export function mcpCookieCredentialValues(key: string, value: string): string[] {
+  const normalized = normalizedCredentialKey(key);
+  const responseHeader = /(?:^|_)set_cookie$/.test(normalized);
+  if (
+    !responseHeader &&
+    !/(?:^|_)(?:cookies?|cookie_header|session_header|x_session)$/.test(normalized)
+  )
+    return [];
+  const values: string[] = [];
+  const pairs = value.trim().split(";");
+  for (const pair of responseHeader ? pairs.slice(0, 1) : pairs) {
+    const separator = pair.indexOf("=");
+    if (separator < 1 || !pair.slice(0, separator).trim()) continue;
+    const literal = pair.slice(separator + 1).trim();
+    if (!literal) continue;
+    values.push(literal);
+    const unquoted = literal.match(/^"([\s\S]*)"$/)?.[1] ?? literal;
+    if (unquoted !== literal) values.push(unquoted);
+    try {
+      const decoded = decodeURIComponent(unquoted);
+      if (decoded !== unquoted) values.push(decoded);
+    } catch {
+      // The literal cookie value is still registered.
+    }
+  }
+  return values;
+}
+
 export function isMcpCredentialFieldValue(
   key: string,
   value: string,

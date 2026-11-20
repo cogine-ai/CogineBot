@@ -1,5 +1,3 @@
-import { redactSecrets } from "@rakazo/core";
-
 export function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal {
   return AbortSignal.any(signals.filter((signal): signal is AbortSignal => Boolean(signal)));
 }
@@ -137,12 +135,25 @@ export function tryRedactConnectorPayload(
   value: unknown,
   secrets: string[],
   format?: ConnectorPayloadFormat,
+  credentialComponents: string[] = [],
 ): { ok: true; value: unknown } | { ok: false; error: "redaction_error" } {
   if (value === undefined) return { ok: true, value: undefined };
   try {
     const source = JSON.stringify(value);
     if (source === undefined) throw new Error("redaction_error");
-    const known = knownJsonSecretRedactions(secrets, source.length);
+    const known = new Set(knownJsonSecretRedactions(secrets, source.length));
+    const components = knownJsonSecretRedactions(credentialComponents, source.length);
+    const patterns = [...new Set([...known, ...components])]
+      .filter((secret) => secret.length <= source.length)
+      .sort((a, b) => b.length - a.length)
+      .map((secret) => {
+        const literal = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return known.has(secret) ? literal : `(?<![\\p{L}\\p{N}_])${literal}(?![\\p{L}\\p{N}_])`;
+      });
+    // Apply matches to the original text once so a short secret cannot match
+    // inside a marker created by redacting a longer one.
+    const pattern = patterns.length ? new RegExp(patterns.join("|"), "gu") : undefined;
+    const redactText = (value: string) => (pattern ? value.replace(pattern, "[redacted]") : value);
     const sourceBytes = Buffer.byteLength(source, "utf8");
     // Work scales with the caller-bounded payload; large opaque images get no new size cap.
     const maxWorkBytes = Math.max(sourceBytes * 8, 1_048_576);
@@ -162,12 +173,12 @@ export function tryRedactConnectorPayload(
         if (workBytes > maxWorkBytes) throw new Error("redaction_error");
         // Scalar business strings stay strings; MCP text also supports scalar JSON documents.
         if (!jsonText && !["{", "[", '"'].includes(item.trimStart()[0] ?? ""))
-          return redactSecrets(item, known);
+          return redactText(item);
         let parsed: unknown;
         try {
           parsed = JSON.parse(item);
         } catch {
-          return redactSecrets(item, known);
+          return redactText(item);
         }
         const redacted = visit(parsed, depth + 1);
         // Preserve original formatting unless a JSON value changed; quote redacted numeric leaves.
@@ -219,8 +230,8 @@ export function tryRedactConnectorPayload(
                 // Scan the full value and the provider-supplied subtype. The
                 // major type is already present in the block's discriminator.
                 const mimeType =
-                  known.some((secret) => secret !== item.type && child.includes(secret)) ||
-                  redactSecrets(subtype, known) !== subtype
+                  [...known].some((secret) => secret !== item.type && child.includes(secret)) ||
+                  redactText(subtype) !== subtype
                     ? "application/octet-stream"
                     : child;
                 return [key, mimeType];
@@ -233,7 +244,7 @@ export function tryRedactConnectorPayload(
               (position === "embedded-resource" && mcpResourceFields.has(key)) ||
               (position === "mcp-schema" && childPosition !== undefined);
             return [
-              stableField ? key : redactSecrets(key, known),
+              stableField ? key : redactText(key),
               visit(
                 child,
                 depth + 1,
@@ -246,7 +257,7 @@ export function tryRedactConnectorPayload(
       if (item === null || typeof item === "number" || typeof item === "boolean") {
         if (position === "mcp-schema" && typeof item === "boolean") return item;
         const serialized = String(item);
-        return redactSecrets(serialized, known) === serialized ? item : "[redacted]";
+        return redactText(serialized) === serialized ? item : "[redacted]";
       }
       return item;
     };

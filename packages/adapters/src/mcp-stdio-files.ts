@@ -10,7 +10,10 @@ import {
 } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import { isMap, isSeq, parseAllDocuments, visit } from "yaml";
-import { mcpCredentialValueVariants } from "./mcp-credential-redaction.js";
+import {
+  mcpCookieCredentialValues,
+  mcpCredentialValueVariants,
+} from "./mcp-credential-redaction.js";
 
 export type McpStdioOAuthField = (typeof MCP_STDIO_OAUTH_FIELDS)[number];
 export type McpStdioOAuthValues = Partial<Record<McpStdioOAuthField, string>>;
@@ -68,7 +71,7 @@ export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues
 
 const opaqueCredential = /^[A-Za-z0-9_.~+/-]+=*$/;
 
-function credentialFileValues(content: string): unknown[] {
+function credentialFileValues(content: string, components: Set<string>): unknown[] {
   try {
     const numberSources: string[] = [];
     const value = JSON.parse(content, (_key, item, context?: { source?: string }) => {
@@ -108,21 +111,27 @@ function credentialFileValues(content: string): unknown[] {
     (authorization && opaqueCredential.test(authorization))
   )
     return [text];
-  const assignedValues = credentialAssignmentValues(text);
+  const assignedValues = credentialAssignmentValues(text, components);
   if (assignedValues) return assignedValues;
   throw new Error(
     "Unsupported MCP credential file format. Use JSON, YAML, assignment lines, or a single token.",
   );
 }
 
-function credentialAssignmentValues(text: string): string[] | undefined {
+function addCookieComponents(components: Set<string>, name: string, value: string) {
+  for (const component of mcpCookieCredentialValues(name, value)) components.add(component);
+}
+
+function credentialAssignmentValues(text: string, components: Set<string>): string[] | undefined {
   const lines = text.split(/\r?\n/);
   const values: string[] = [];
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!.trimStart();
     if (!line || /^[#;]/.test(line) || /^\[[\w. -]+\]\s*$/.test(line)) continue;
-    let assigned = line.match(/^(?:export\s+)?[\w.-]+\s*=\s*(.*)$/)?.[1];
-    if (assigned === undefined) return undefined;
+    const assignment = line.match(/^(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/);
+    if (!assignment) return undefined;
+    const name = assignment[1]!;
+    let assigned = assignment[2]!;
     const quote = assigned[0];
     if (quote === '"' || quote === "'" || quote === "`") {
       while (assigned.indexOf(quote, 1) === -1 && index + 1 < lines.length)
@@ -130,19 +139,31 @@ function credentialAssignmentValues(text: string): string[] | undefined {
       const quoted = assigned.match(/^(["'`])([\s\S]*?)\1\s*(?:[;#].*)?$/)?.[2];
       if (quoted === undefined) return undefined;
       values.push(quoted);
+      addCookieComponents(components, name, quoted);
       if (quote === '"') values.push(quoted.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
     } else {
-      values.push(assigned.replace(/(?<!\\)[;#].*$/, "").trimEnd());
+      const beforeComment = assigned.replace(/(?<!\\)[;#].*$/, "").trimEnd();
+      values.push(beforeComment);
+      addCookieComponents(components, name, beforeComment);
     }
     values.push(assigned);
   }
-  return [...values, ...Object.values(parseEnv(text)).filter((value) => value !== undefined)];
+  for (const [name, value] of Object.entries(parseEnv(text))) {
+    if (value === undefined) continue;
+    values.push(value);
+    addCookieComponents(components, name, value);
+  }
+  return values;
 }
 
 /** A server can echo part of a credential file instead of its whole contents. */
-export function mcpCredentialFileSecrets(content: string): string[] {
+export function mcpCredentialFileSecrets(
+  content: string,
+  metadata?: { literals: Set<string>; components: Set<string> },
+): string[] {
   const secrets = new Set<string>([content]);
-  const pending = credentialFileValues(content);
+  const components = new Set<string>();
+  const pending = credentialFileValues(content, components);
   // Credential field names are arbitrary. Collect every decoded scalar.
   const seen = new WeakSet<object>();
   while (pending.length) {
@@ -150,13 +171,29 @@ export function mcpCredentialFileSecrets(content: string): string[] {
     if (value && typeof value === "object") {
       if (seen.has(value)) continue;
       seen.add(value);
-      for (const child of Object.values(value)) pending.push(child);
+      for (const [key, child] of Object.entries(value)) {
+        pending.push(child);
+        for (const scalar of Array.isArray(child) ? child : [child]) {
+          if (typeof scalar === "string") addCookieComponents(components, key, scalar);
+        }
+      }
     } else if (value !== undefined) {
       secrets.add(String(value));
     }
   }
   for (const value of [...secrets]) {
-    for (const variant of mcpCredentialValueVariants(value)) secrets.add(variant);
+    const variants = mcpCredentialValueVariants(value);
+    for (const literal of variants.splice(0, 2)) {
+      secrets.add(literal);
+      if (literal) metadata?.literals.add(literal);
+    }
+    for (const component of variants) components.add(component);
+  }
+  for (const value of components) {
+    for (const variant of mcpCredentialValueVariants(value)) {
+      secrets.add(variant);
+      metadata?.components.add(variant);
+    }
   }
   secrets.delete("");
   return [...secrets];
@@ -166,11 +203,20 @@ export async function writeMcpStdioCredentialFiles(
   files: Record<string, string>,
   signal: AbortSignal,
   root = tmpdir(),
-): Promise<{ env: Record<string, string>; secrets: string[]; remove: () => Promise<void> }> {
+): Promise<{
+  env: Record<string, string>;
+  secrets: string[];
+  metadataLiterals: string[];
+  metadataComponents: string[];
+  remove: () => Promise<void>;
+}> {
   if (!McpStdioFilesSchema.safeParse(files).success)
     throw new Error("Invalid MCP credential files");
   signal.throwIfAborted();
-  const secrets = Object.values(files).flatMap(mcpCredentialFileSecrets);
+  const metadata = { literals: new Set<string>(), components: new Set<string>() };
+  const secrets = Object.values(files).flatMap((content) =>
+    mcpCredentialFileSecrets(content, metadata),
+  );
   const directory = await mkdtemp(join(root, "mcp-credentials-")).catch((error: unknown) => {
     throw new Error("Could not write MCP credential files", { cause: error });
   });
@@ -201,7 +247,13 @@ export async function writeMcpStdioCredentialFiles(
       env[name] = path;
     }
     signal.throwIfAborted();
-    return { env, secrets, remove };
+    return {
+      env,
+      secrets,
+      metadataLiterals: [...metadata.literals],
+      metadataComponents: [...metadata.components],
+      remove,
+    };
   } catch (error) {
     await remove();
     signal.throwIfAborted();
