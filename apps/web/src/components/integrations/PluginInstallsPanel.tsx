@@ -184,7 +184,8 @@ function PluginInstallsEditor({
                       <ul className="mt-2 space-y-1 text-xs">
                         {skill.files.map((file) => (
                           <li key={file.path} className="break-all">
-                            {file.path} · {formatFileSize(file.size)}
+                            {file.path}{" "}
+                            <span className="whitespace-nowrap">· {formatFileSize(file.size)}</span>
                           </li>
                         ))}
                       </ul>
