@@ -1096,9 +1096,13 @@ describe("thread stream authorization", () => {
 });
 
 describe("MCP server deletion", () => {
-  it("does not fail when a concurrent credential rotation already removed the old secret", async () => {
-    const deleteServer = vi.fn().mockResolvedValue({ id: "server-1" });
-    const deleteSecrets = vi.fn().mockResolvedValue({ count: 0 });
+  const attachedIds = ["rotated-secret", "old-secret", null];
+  it.each(attachedIds)("deletes the attached credential (%s)", async (secretId) => {
+    const deleteServer = vi.fn().mockResolvedValue({ secretId });
+    const deleteSecrets = vi
+      .fn()
+      .mockResolvedValue({ count: secretId === "rotated-secret" ? 1 : 0 });
+    const lockMaterial = vi.fn().mockResolvedValue(1);
     const prisma = {
       mcpServer: {
         findFirst: vi.fn().mockResolvedValue({ id: "server-1", secretId: "old-secret" }),
@@ -1106,6 +1110,7 @@ describe("MCP server deletion", () => {
       },
       secret: { deleteMany: deleteSecrets },
       message: { findMany: vi.fn().mockResolvedValue([]) },
+      $executeRaw: lockMaterial,
       $transaction: vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run(prisma)),
     } as unknown as PrismaClient;
     const deps = {
@@ -1117,12 +1122,12 @@ describe("MCP server deletion", () => {
         screenProxySecret: "fake-test-secret",
         sandboxProvider: "fake",
       },
-      dataDir: "/tmp/rakazo-router-test",
+      dataDir: "/tmp/mcp-router-test",
     } as unknown as RouterDeps;
     const actor = {
       spaceId: "workspace-1",
       userId: "user-1",
-      email: "user@rakazo.test",
+      email: "user@example.test",
       isDeploymentOwner: true,
     } satisfies Actor;
     const handler = new RPCHandler(createRouter(deps));
@@ -1139,14 +1144,20 @@ describe("MCP server deletion", () => {
     expect(matched).toBe(true);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ json: { ok: true } });
-    expect(deleteServer).toHaveBeenCalledWith({ where: { id: "server-1" } });
-    expect(deleteSecrets).toHaveBeenCalledWith({
-      where: {
-        id: "old-secret",
-        spaceId: "workspace-1",
-        userId: "user-1",
-      },
+    expect(lockMaterial).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.stringContaining("mcp-oauth-material")]),
+      "server-1",
+    );
+    expect(lockMaterial).toHaveBeenCalledBefore(deleteServer);
+    expect(deleteServer).toHaveBeenCalledWith({
+      where: { id: "server-1", spaceId: actor.spaceId, userId: actor.userId },
+      select: { secretId: true },
     });
+    if (secretId)
+      expect(deleteSecrets).toHaveBeenCalledWith({
+        where: { id: secretId, spaceId: actor.spaceId, userId: actor.userId },
+      });
+    else expect(deleteSecrets).not.toHaveBeenCalled();
   });
 });
 

@@ -6527,13 +6527,11 @@ export function createRouter(deps: RouterDeps) {
           throw new ORPCError("CONFLICT", { message: "MCP credentials changed; retry" });
         }),
         remove: authed.mcp.servers.remove.handler(async ({ context, input }) => {
+          const { spaceId, userId } = context.actor;
+          const where = { id: input.id, spaceId, userId };
           const server = await deps.prisma.mcpServer.findFirst({
-            where: {
-              id: input.id,
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-            },
-            select: { id: true, secretId: true, installId: true },
+            where,
+            select: { installId: true },
           });
           if (!server) throw new IsolationError();
           if (server.installId) {
@@ -6549,20 +6547,20 @@ export function createRouter(deps: RouterDeps) {
           // Assignments cascade; the encrypted credential must go with the server.
           // Cards are closed first, including ones that were never assigned.
           const seqs = await deps.prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
             const painted = await dismissMcpServerApprovals(
               onboardingDeps,
               context.actor,
-              server.id,
+              input.id,
               tx,
             );
-            await tx.mcpServer.delete({ where: { id: server.id } });
-            if (server.secretId) {
+            const { secretId } = await tx.mcpServer.delete({
+              where,
+              select: { secretId: true },
+            });
+            if (secretId) {
               await tx.secret.deleteMany({
-                where: {
-                  id: server.secretId,
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                },
+                where: { id: secretId, spaceId, userId },
               });
             }
             return painted;
