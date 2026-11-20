@@ -375,7 +375,7 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
         .filter((text) => INLINE_SKILL_FILE.test(text))
         .map((target) => ({
           target,
-          base: target.startsWith("../") ? documentDir : ".",
+          base: target.startsWith("./") || target.startsWith("../") ? documentDir : ".",
         })),
     ];
     for (const { target, base } of references) {

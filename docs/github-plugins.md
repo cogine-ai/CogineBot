@@ -31,6 +31,11 @@ missing or unreadable reference, an unsupported file or an exceeded limit appear
 under **Skipped components**. A Bot can read the installed text by its listed
 relative path. Removing the plugin removes access to those files.
 
+When authoring a recipe, use a local Markdown link or an inline path beginning
+with `{baseDir}/` to declare a required file. Inline paths in the conventional
+`assets/`, `references/`, `scripts/` and `templates/` folders also declare
+references. The supported text extensions still apply in each folder.
+
 Repository reads are unauthenticated and share GitHub's rate limits across the
 deployment's egress address. A temporary limit can delay imports; this version does
 not configure GitHub credentials or cache repository responses.
