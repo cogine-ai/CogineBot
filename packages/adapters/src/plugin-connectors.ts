@@ -70,6 +70,7 @@ export type ParsedPlugin = {
 const MAX_FILES = 200;
 const MAX_BYTES = 4_000_000;
 const MAX_FILE_BYTES = PLUGIN_SKILL_FILE_LIMITS.bytes;
+const FETCH_CONCURRENCY = 8;
 const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
 const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
 const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
@@ -307,20 +308,21 @@ export async function fetchGitHubRepo(
     budget.fetchable &&= isSkillTextFile(relative) && (entry.size ?? 0) <= MAX_FILE_BYTES;
     companionBudgets.set(folder, budget);
   }
-  let total = 0;
   const files: PluginRepoFile[] = [];
+  const wanted: Array<{ file: PluginRepoFile; companion: boolean }> = [];
   for (const entry of entries) {
     const path = entry.path.slice(prefix.length);
     const companionFolder = SKILL_COMPANION.exec(path)?.[1];
     const companion = companionFolder ? companionBudgets.get(companionFolder) : undefined;
-    // Retain paths for reporting, including files that could not be reviewed.
+    const file = { path: entry.path, content: "" };
+    files.push(file);
     if (
       companion &&
       (!companion.fetchable ||
         companion.count > PLUGIN_SKILL_FILE_LIMITS.count ||
         companion.bytes > PLUGIN_SKILL_FILE_LIMITS.totalBytes)
     ) {
-      files.push({ path: entry.path, content: UNAVAILABLE_SKILL_FILE });
+      file.content = UNAVAILABLE_SKILL_FILE;
       continue;
     }
     const relevant =
@@ -328,29 +330,45 @@ export async function fetchGitHubRepo(
       ["mcp.json", ".mcp.json"].includes(path) ||
       SKILL_DOCUMENT.test(path) ||
       companion !== undefined;
-    if (!relevant) {
-      files.push({ path: entry.path, content: "" });
-      continue;
-    }
+    if (!relevant) continue;
     if ((entry.size ?? 0) > MAX_FILE_BYTES) throw new Error("Plugin file is too large");
-    let body: string;
-    try {
-      body = await boundedRead(
-        `https://raw.githubusercontent.com${repo}/${sha}/${entry.path.split("/").map(encodeURIComponent).join("/")}`,
-        MAX_FILE_BYTES,
-        deadline,
-      );
-    } catch (error) {
-      deadline.throwIfAborted();
-      if (!companion) throw error;
-      files.push({ path: entry.path, content: UNAVAILABLE_SKILL_FILE });
-      continue;
-    }
-    total += Buffer.byteLength(body);
-    if (total > MAX_BYTES) throw new Error("Plugin content is too large");
-    files.push({ path: entry.path, content: body });
+    wanted.push({ file, companion: companion !== undefined });
   }
-  deadline.throwIfAborted();
+
+  // Abort sibling reads on fatal metadata errors or exhaustion of the shared byte budget.
+  const readAbort = new AbortController();
+  const readSignal = AbortSignal.any([deadline, readAbort.signal]);
+  let total = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(FETCH_CONCURRENCY, wanted.length) }, async () => {
+      try {
+        for (let work = wanted.shift(); work; work = wanted.shift()) {
+          readSignal.throwIfAborted();
+          const { file, companion } = work;
+          let body: string;
+          try {
+            body = await boundedRead(
+              `https://raw.githubusercontent.com${repo}/${sha}/${file.path.split("/").map(encodeURIComponent).join("/")}`,
+              MAX_FILE_BYTES,
+              readSignal,
+            );
+          } catch (error) {
+            readSignal.throwIfAborted();
+            if (!companion) throw error;
+            file.content = UNAVAILABLE_SKILL_FILE;
+            continue;
+          }
+          total += Buffer.byteLength(body);
+          if (total > MAX_BYTES) throw new Error("Plugin content is too large");
+          file.content = body;
+        }
+      } catch (error) {
+        readAbort.abort(error);
+        throw error;
+      }
+    }),
+  );
+  readSignal.throwIfAborted();
   return { files, sourceSha: sha };
 }
 

@@ -37,19 +37,19 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("bounded immutable GitHub acquisition", () => {
   const TREE = "b".repeat(40);
-  function reader(
-    entries: Array<Record<string, unknown>> = files.map((f) => ({
-      path: f.path,
+  const blobs = (list: PluginRepoFile[]) =>
+    list.map((file) => ({
+      path: file.path,
       type: "blob",
       mode: "100644",
-      size: Buffer.byteLength(f.content),
-    })),
-  ) {
+      size: Buffer.byteLength(file.content),
+    }));
+  function reader(entries: Array<Record<string, unknown>> = blobs(files), contents = files) {
     return vi.fn<PluginRead>(async (url) => {
       if (url.includes("/commits/"))
         return JSON.stringify({ sha: SHA, commit: { tree: { sha: TREE } } });
       if (url.includes("/git/trees/")) return JSON.stringify({ tree: entries, truncated: false });
-      const file = files.find((f) => url.endsWith(`/${f.path}`));
+      const file = contents.find((f) => url.endsWith(`/${f.path}`));
       if (!file) throw new Error("Unexpected fixture URL");
       return file.content;
     });
@@ -96,15 +96,9 @@ describe("bounded immutable GitHub acquisition", () => {
   });
 
   it("keeps a skill with an unreadable reference out of the usable preview", async () => {
-    const entries = [...files, { path: "skills/example/references/notes.md", content: "" }].map(
-      (file) => ({
-        path: file.path,
-        type: "blob",
-        mode: "100644",
-        size: Buffer.byteLength(file.content),
-      }),
+    const read = reader(
+      blobs([...files, { path: "skills/example/references/notes.md", content: "" }]),
     );
-    const read = reader(entries);
     const plugin = await fetchGitHubPlugin(SOURCE, { read });
     expect(plugin.skills).toEqual([]);
     expect(plugin.mcpServers).toHaveLength(1);
@@ -114,6 +108,92 @@ describe("bounded immutable GitHub acquisition", () => {
       reason: expect.stringContaining("unreadable"),
     });
     expect(read.mock.calls.some(([url]) => url.endsWith("/references/notes.md"))).toBe(true);
+  });
+
+  it.each([
+    ["count", Array<number>(41).fill(0)],
+    ["per-file size", [100_001]],
+    ["combined size", [100_000, 100_000, 100_000, 100_000, 1]],
+  ])("skips companion reads when tree metadata exceeds the %s limit", async (_, sizes) => {
+    const read = reader([
+      ...blobs(files),
+      ...sizes.map((size, index) => ({
+        path: `skills/example/references/${index}.txt`,
+        type: "blob",
+        mode: "100644",
+        size,
+      })),
+    ]);
+    const plugin = await fetchGitHubPlugin(SOURCE, { read });
+    expect(plugin.skills).toEqual([]);
+    expect(plugin.mcpServers).toHaveLength(1);
+    expect(plugin.skipped).toContainEqual(expect.objectContaining({ kind: "skill_invalid" }));
+    expect(read.mock.calls.some(([url]) => url.includes("/references/"))).toBe(false);
+  });
+
+  it.each(["complete", "cancel"])("bounds simultaneous raw reads when files %s", async (action) => {
+    const references = Array.from({ length: 12 }, (_, index) => ({
+      path: `skills/example/references/${index}.txt`,
+      content: `Reference ${index}`,
+    }));
+    const contents = [...files, ...references];
+    const read = reader(blobs(contents), contents);
+    const fixture = read.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new AbortController();
+    let active = 0;
+    let peak = 0;
+    read.mockImplementation(async (...args) => {
+      if (!args[0].startsWith("https://raw.githubusercontent.com/")) return fixture(...args);
+      active += 1;
+      peak = Math.max(peak, active);
+      await gate;
+      active -= 1;
+      return fixture(...args);
+    });
+    const pending = fetchGitHubPlugin(SOURCE, { read, signal: controller.signal });
+    try {
+      await vi.waitFor(() => expect(active).toBe(8));
+      if (action === "cancel") {
+        controller.abort();
+        await expect(pending).rejects.toMatchObject({ code: "aborted" });
+      }
+    } finally {
+      release();
+    }
+    if (action === "complete") {
+      const plugin = await pending;
+      expect(Object.values(plugin.skills[0]?.files ?? {})).toEqual(
+        references.map((f) => f.content),
+      );
+      expect(peak).toBe(8);
+    } else {
+      await new Promise<void>((done) => setImmediate(done));
+      expect(read).toHaveBeenCalledTimes(10);
+      expect(active).toBe(0);
+    }
+  });
+
+  it("stops raw reads when the combined actual plugin bytes exceed the shared limit", async () => {
+    const body = "x".repeat(100_000);
+    const contents = [
+      ...files,
+      ...Array.from({ length: 60 }, (_, index) => ({
+        path: `skills/extra-${index}/SKILL.md`,
+        content: body,
+      })),
+    ];
+    const read = reader(
+      blobs(contents).map((entry) => ({ ...entry, size: 0 })),
+      contents,
+    );
+    await expect(fetchGitHubPlugin(SOURCE, { read })).rejects.toBeInstanceOf(PluginImportError);
+    const attempts = read.mock.calls.slice(2);
+    expect(attempts.length).toBeLessThan(contents.length);
+    expect(attempts.every(([, , signal]) => signal?.aborted)).toBe(true);
   });
 
   it.each([
@@ -757,11 +837,15 @@ describe("portable format compatibility fixtures", () => {
         content: index < 4 ? `${"角".repeat(33_333)}x` : "",
       }));
       expect(parse([...files(), ...references]).skills).toHaveLength(1);
-      for (const changed of [
-        [...references, { path: "skills/example-skill/references/41.txt", content: "" }],
-        [{ ...references[0]!, content: `${references[0]!.content}x` }],
-        references.map((file, index) => (index === 4 ? { ...file, content: "x" } : file)),
-      ]) {
+      const tooMany = [
+        ...references,
+        { path: "skills/example-skill/references/41.txt", content: "" },
+      ];
+      const oversizedFile = [{ ...references[0]!, content: `${references[0]!.content}x` }];
+      const oversizedTotal = references.map((file, index) =>
+        index === 4 ? { ...file, content: "x" } : file,
+      );
+      for (const changed of [tooMany, oversizedFile, oversizedTotal]) {
         expect(parse([...files(), ...changed]).skills).toEqual([]);
       }
     });
