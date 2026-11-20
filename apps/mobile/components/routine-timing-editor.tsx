@@ -193,13 +193,15 @@ export function RoutineTimingEditor({
 }) {
   const { t, locale } = useI18n();
   const tokens = useMobileTokens();
-  const [editing, setEditing] = useState(false);
-  const [schedules, setSchedules] = useState(() =>
-    routineCronPresets(routine.crons, routine.intervalBased),
+  const [baseline, setBaseline] = useState<{ crons: string[]; intervalBased?: boolean } | null>(
+    null,
   );
+  const [schedules, setSchedules] = useState<CronPreset[]>([]);
   const [startAt, setStartAt] = useState<string | null | undefined>(undefined);
   const oneShot = isOneShotRoutineCrons(routine.crons);
-  const repeating = routine.crons.length > 0 && !oneShot;
+  const editorCrons = baseline?.crons ?? routine.crons;
+  const editingOneShot = isOneShotRoutineCrons(editorCrons);
+  const repeating = editorCrons.length > 0 && !editingOneShot;
   const next = routine.nextRunAt
     ? formatRoutineTime(routine.nextRunAt, routine.timezone, dateLocaleForUi(locale))
     : null;
@@ -210,12 +212,11 @@ export function RoutineTimingEditor({
   const shownStart = startAt === undefined ? currentStart : startAt && new Date(startAt);
   const crons = schedules.map(cronFromPreset);
   const intervalBased = crons.length === 1 && schedules[0]?.freq === "Interval";
-  const initial = routineCronPresets(routine.crons, routine.intervalBased);
   const changedCrons =
-    crons.length !== initial.length ||
-    initial.some((preset, i) => cronFromPreset(preset) !== crons[i]);
+    baseline !== null &&
+    (crons.length !== baseline.crons.length || baseline.crons.some((cron, i) => cron !== crons[i]));
   const changedMode =
-    routine.intervalBased !== undefined && intervalBased !== routine.intervalBased;
+    baseline?.intervalBased !== undefined && intervalBased !== baseline.intervalBased;
   const changed = startAt !== undefined || changedCrons || changedMode;
 
   function chooseLocalStart(value: string) {
@@ -225,7 +226,7 @@ export function RoutineTimingEditor({
 
   async function save() {
     const saved = await onSave(
-      canArm
+      editingOneShot
         ? { active: true, runAt: startAt ?? undefined }
         : {
             ...(changedCrons ? { crons } : {}),
@@ -233,7 +234,7 @@ export function RoutineTimingEditor({
             ...(startAt === undefined ? {} : { startAt }),
           },
     );
-    if (saved) setEditing(false);
+    if (saved) setBaseline(null);
   }
 
   return (
@@ -243,7 +244,7 @@ export function RoutineTimingEditor({
           {t("Next run: {time}", { time: next })}
         </Text>
       ) : null}
-      {readOnly ? null : editing ? (
+      {readOnly ? null : baseline ? (
         <>
           <View
             pointerEvents={saving ? "none" : "auto"}
@@ -268,7 +269,7 @@ export function RoutineTimingEditor({
             {shownStart ? (
               <>
                 <Text style={{ color: tokens.mutedForeground }}>
-                  {canArm ? t("Run at") : t("First run")}
+                  {editingOneShot ? t("Run at") : t("First run")}
                 </Text>
                 <LocalDateTimePicker
                   value={shownStart}
@@ -295,13 +296,13 @@ export function RoutineTimingEditor({
           </View>
           <NativeActionButton
             label={saving ? t("Saving…") : t("Save")}
-            disabled={saving || !changed}
+            disabled={saving || !changed || (editingOneShot && !canArm)}
             onPress={() => void save()}
           />
           <NativeActionButton
             label={t("Cancel")}
             disabled={saving}
-            onPress={() => setEditing(false)}
+            onPress={() => setBaseline(null)}
           />
         </>
       ) : (
@@ -311,10 +312,14 @@ export function RoutineTimingEditor({
               label={canArm ? t("Set run time") : t("Edit schedule")}
               disabled={saving}
               onPress={() => {
-                setSchedules(routineCronPresets(routine.crons, routine.intervalBased));
+                const presets = routineCronPresets(routine.crons, routine.intervalBased);
+                setSchedules(presets);
+                setBaseline({
+                  crons: presets.map(cronFromPreset),
+                  intervalBased: routine.intervalBased,
+                });
                 if (canArm) chooseLocalStart(localNow());
                 else setStartAt(undefined);
-                setEditing(true);
               }}
             />
           ) : null}

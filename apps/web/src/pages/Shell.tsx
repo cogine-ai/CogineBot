@@ -1105,6 +1105,13 @@ export function ShellPage() {
       return result.secret;
     });
   const routineSaveRequest = useRef(0);
+  const resetRoutineEditor = useCallback((routine: Routine | null, draft?: RoutineDraftState) => {
+    routineSaveRequest.current += 1;
+    setEditingRoutine(routine);
+    setRoutineDraft(draft ?? (routine ? draftFromRoutine(routine) : emptyRoutineDraft()));
+    setRoutineWebhookSecret(null);
+    setRoutineError(null);
+  }, []);
   const routineRunPending = useRef(false);
   const bootstrappedThread = useRef<ThreadSnapshot | null>(null);
   const expandedHistoryThread = useRef<string | null>(null);
@@ -3287,10 +3294,10 @@ export function ShellPage() {
   // rather than deriving it from `active`, so it goes stale across a bot switch —
   // without this, Save on bot B could silently update bot A's routine.
   useEffect(() => {
-    setEditingRoutine(null);
+    resetRoutineEditor(null);
     setDeleteRoutineTarget(null);
     setPanelState((current) => (current === "routine" ? null : current));
-  }, [active?.id]);
+  }, [active?.id, resetRoutineEditor]);
 
   const routineDeepLink = searchParams.get("routine");
   const messageDeepLink = searchParams.get("m");
@@ -3300,9 +3307,7 @@ export function ShellPage() {
     if (inGroup || !active || !routineDeepLink || routinesBotId !== active.id) return;
     const routine = routines.find((item) => item.id === routineDeepLink);
     if (routine) {
-      setRoutineDraft(draftFromRoutine(routine));
-      setRoutineWebhookSecret(null);
-      setEditingRoutine(routine);
+      resetRoutineEditor(routine);
       setPanel("routine");
     } else {
       setPanel("computer");
@@ -3310,7 +3315,7 @@ export function ShellPage() {
     const next = new URLSearchParams(searchParamsRef.current);
     next.delete("routine");
     panelSearch.current.setSearchParams(next, { replace: true });
-  }, [active?.id, inGroup, routines, routinesBotId, routineDeepLink]);
+  }, [active?.id, inGroup, resetRoutineEditor, routines, routinesBotId, routineDeepLink]);
 
   // Routine metadata refreshes must not restart a pending message-page read.
   useEffect(() => {
@@ -4400,12 +4405,13 @@ export function ShellPage() {
     setTaughtSkills(skills);
     setTaughtSkillsBotId(id);
   }, []);
-  const addSkillRoutine = useCallback((name: string, prompt: string) => {
-    setRoutineDraft({ ...emptyRoutineDraft(), name, prompt });
-    setRoutineWebhookSecret(null);
-    setEditingRoutine(null);
-    setPanel("routine");
-  }, []);
+  const addSkillRoutine = useCallback(
+    (name: string, prompt: string) => {
+      resetRoutineEditor(null, { ...emptyRoutineDraft(), name, prompt });
+      setPanel("routine");
+    },
+    [resetRoutineEditor, setPanel],
+  );
   const speakingMessageIdRef = useRef(speakingMessageId);
   speakingMessageIdRef.current = speakingMessageId;
   const speakMessage = useCallback((message: ThreadMessage) => {
@@ -4804,14 +4810,21 @@ export function ShellPage() {
         ? routines.find((item) => item.id === saved.routineId)
         : undefined;
       if (saved.routineId && !routine) next = "computer";
-      setEditingRoutine(routine ?? null);
-      setRoutineDraft(routine ? draftFromRoutine(routine) : emptyRoutineDraft());
-      setRoutineWebhookSecret(null);
+      resetRoutineEditor(routine ?? null);
     }
     pendingPanelRestore.current = null;
     setPanelState(next);
     setRestoredPanelKey(panelStorageKey);
-  }, [panelStorageKey, active?.id, inGroup, panel, routinesBotId, routines, searchParams]);
+  }, [
+    panelStorageKey,
+    active?.id,
+    inGroup,
+    panel,
+    resetRoutineEditor,
+    routinesBotId,
+    routines,
+    searchParams,
+  ]);
 
   useEffect(() => {
     // Do not gate writes on ?routine= staying in the URL — a stuck/failed routine
@@ -6916,10 +6929,7 @@ export function ShellPage() {
                 ) : null}
                 <RoutineListHeader
                   onCreate={() => {
-                    setRoutineDraft(emptyRoutineDraft());
-                    setRoutineWebhookSecret(null);
-                    setEditingRoutine(null);
-                    setRoutineError(null);
+                    resetRoutineEditor(null);
                     setPanel("routine");
                   }}
                 />
@@ -6932,10 +6942,7 @@ export function ShellPage() {
                       routine={routine}
                       running={routineRunning}
                       onOpen={() => {
-                        setRoutineDraft(draftFromRoutine(routine));
-                        setRoutineWebhookSecret(null);
-                        setEditingRoutine(routine);
-                        setRoutineError(null);
+                        resetRoutineEditor(routine);
                         setPanel("routine");
                       }}
                       onStop={() => void stopRun()}
@@ -7051,7 +7058,9 @@ export function ShellPage() {
             {panel === "routine" && active ? (
               <RoutineEditor
                 draft={routineDraft}
-                onChange={setRoutineDraft}
+                onChange={(draft) => {
+                  if (!routineSavePending.current) setRoutineDraft(draft);
+                }}
                 editing={editingRoutine}
                 liveTiming={liveEditingRoutine}
                 timezone={
@@ -7089,7 +7098,7 @@ export function ShellPage() {
                 onBack={() => setPanel("computer")}
                 onClose={() => setPanel(null)}
                 onEnsureWebhook={async () => {
-                  await ensureWebhookSecret(active.id);
+                  if (!routineSavePending.current) await ensureWebhookSecret(active.id);
                 }}
                 onSave={async () => {
                   if (routineSavePending.current) return;

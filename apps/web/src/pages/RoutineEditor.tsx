@@ -423,6 +423,7 @@ export function RoutineEditor({
             type="button"
             role="switch"
             aria-checked={active}
+            disabled={saving}
             onClick={() =>
               onChange({
                 ...draft,
@@ -463,6 +464,7 @@ export function RoutineEditor({
         <Input
           id={`${fieldId}-name`}
           value={draft.name}
+          disabled={saving}
           placeholder={t`Name this routine`}
           onChange={(e) => onChange({ ...draft, name: e.target.value })}
           className="mt-2"
@@ -474,6 +476,7 @@ export function RoutineEditor({
         <Textarea
           id={`${fieldId}-prompt`}
           value={draft.prompt}
+          disabled={saving}
           placeholder={t`What should this routine do each time it runs?`}
           onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
           rows={4}
@@ -481,7 +484,7 @@ export function RoutineEditor({
         />
       </label>
 
-      <div className="mt-5 text-sm text-muted-foreground">
+      <fieldset disabled={saving} className="mt-5 min-w-0 text-sm text-muted-foreground">
         <div className="flex items-baseline gap-2">
           <Trans>When to run</Trans>
           <span className="text-xs text-muted-foreground/70">{timezone}</span>
@@ -601,6 +604,7 @@ export function RoutineEditor({
 
         <DropdownMenu>
           <DropdownMenuTrigger
+            disabled={saving}
             render={<Button variant="outline" className="mt-2 h-auto w-full rounded-xl py-3" />}
           >
             <Plus />
@@ -694,7 +698,7 @@ export function RoutineEditor({
             </Trans>
           </p>
         ) : null}
-      </div>
+      </fieldset>
 
       <details className="mt-5 text-sm text-muted-foreground">
         <summary className="w-fit cursor-pointer">

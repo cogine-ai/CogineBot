@@ -624,7 +624,7 @@ it("keeps the submitted timing draft while a save is waiting for its receipt", a
   expect(writes[1]).toEqual(writes[0]);
 });
 
-it("preserves the selected first-run instant in the repeated hour after a timezone change", async () => {
+it("preserves the selected first run after concurrent timezone and cadence changes", async () => {
   const normal = state.rpc.getMockImplementation()!;
   const original = (await normal("routines/list"))[0];
   const routine = {
@@ -636,7 +636,7 @@ it("preserves the selected first-run instant in the repeated hour after a timezo
   state.rpc.mockImplementation(async (procedure: string, input: Record<string, unknown>) => {
     if (procedure === "routines/list") return [routine];
     if (procedure === "routines/update")
-      return { ...routine, ...input, timezone: "America/New_York" };
+      return { ...routine, ...input, timezone: "America/New_York", crons: ["0 10 * * *"] };
     return normal(procedure, input);
   });
   vi.useFakeTimers({ toFake: ["Date"] });

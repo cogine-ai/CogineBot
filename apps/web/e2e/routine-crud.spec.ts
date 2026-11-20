@@ -171,7 +171,35 @@ test("a repeat can start on a saved future date and keep it through pause and re
   await expect(page.getByText(`Next run: ${nextRun}`, { exact: true })).toBeVisible();
   await expect(page.getByLabel("Instruction")).toHaveValue("Summarize the project status");
   await page.getByLabel("First run").fill(`${nextDay}T09:00`);
-  const timePatch = await saveAndReturn(page, "routines/update");
+  let releaseSave!: () => void;
+  let requestReceived!: () => void;
+  const saveReleased = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    requestReceived = resolve;
+  });
+  await page.route(
+    "**/rpc/routines/update",
+    async (route) => {
+      requestReceived();
+      await saveReleased;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  const saving = saveAndReturn(page, "routines/update");
+  try {
+    await requestStarted;
+    await expect(page.getByLabel("First run")).toBeDisabled();
+    await expect(page.getByLabel("How often")).toBeDisabled();
+    await expect(page.getByLabel("Instruction")).toBeDisabled();
+    await expect(page.getByRole("switch", { name: "Active" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Add trigger" })).toBeDisabled();
+  } finally {
+    releaseSave();
+  }
+  const timePatch = await saving;
   expect(timePatch).not.toHaveProperty("prompt");
   const [retimed] = await rpc<Routine[]>(page, "routines/list", { botId });
   expect(retimed).toMatchObject({
@@ -568,6 +596,71 @@ function localSchedule(iso: string, timezone: string) {
     minute: Number(value("minute")),
   };
 }
+
+test("a late save receipt does not replace another routine opened from search", async ({
+  page,
+}) => {
+  await signup(
+    page,
+    `routine-receipt-${Date.now()}@example.test`,
+    "password12",
+    "Schedule Fixture",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  for (const name of ["Pending review", "Separate routine"]) {
+    await rpc(page, "routines/create", {
+      botId,
+      name,
+      prompt: "Check the project",
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      active: true,
+      notify: true,
+    });
+  }
+  await page.reload();
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: /Pending review/ }).click();
+  await page.getByLabel("Name").fill("Saved pending review");
+
+  let releaseSave!: () => void;
+  let requestReceived!: () => void;
+  const saveReleased = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const requestStarted = new Promise<void>((resolve) => {
+    requestReceived = resolve;
+  });
+  await page.route(
+    "**/rpc/routines/update",
+    async (route) => {
+      requestReceived();
+      await saveReleased;
+      await route.continue();
+    },
+    { times: 1 },
+  );
+  const response = page.waitForResponse(
+    (res) => res.url().includes("/rpc/routines/update") && res.ok(),
+  );
+  try {
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await requestStarted;
+    const sidebar = page.locator("aside").first();
+    await sidebar.getByPlaceholder("Search", { exact: true }).fill("Separate routine");
+    await sidebar.getByRole("button", { name: /Separate routine/ }).click();
+    await expect(page.getByLabel("Name")).toHaveValue("Separate routine");
+  } finally {
+    releaseSave();
+  }
+  await response;
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(page.getByLabel("Name")).toHaveValue("Separate routine");
+  expect(
+    (await rpc<Routine[]>(page, "routines/list", { botId })).map(({ name }) => name),
+  ).toContain("Saved pending review");
+});
 
 test("interval schedule only offers amounts the unit can run", async ({ page }, testInfo) => {
   const stamp = Date.now();
