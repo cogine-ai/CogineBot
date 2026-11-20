@@ -711,12 +711,15 @@ describe("MCP discovery lifecycle", () => {
       transport: "stdio",
       command: "fixture",
       secretId: "material",
+      allowAllTools: false,
+      allowedTools: ["read_status", "fixture-private"],
     };
     const connect = vi.spyOn(McpSession.prototype, "connectStdio").mockResolvedValue(undefined);
     const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
     const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
       tools: [
         { name: "read_status", inputSchema: { type: "object" } },
+        { name: "fixture-private", inputSchema: { type: "object" } },
         { name: "hidden", description: "credential is default", inputSchema: { type: "object" } },
       ],
     });
@@ -752,10 +755,16 @@ describe("MCP discovery lifecycle", () => {
       } as never,
       { stdioEnabled: true, allowedCommands: ["fixture"] },
     );
+    const sink = createTestSink();
+    const previousLogger = getLogger();
+    installLogger(createLogger({ service: "test", sinks: [sink] }));
     try {
       const [tool, ...extra] = await connector.discoverTools(context);
       expect(tool?.name).toBe("mcp__demo__read_status");
       expect(extra).toEqual([]);
+      const log = JSON.stringify(sink.events);
+      expect(log).toContain("1/2 allowed tools are not offered");
+      expect(log).not.toContain("fixture-private");
       const execute = () =>
         connector
           .execute(
@@ -779,6 +788,7 @@ describe("MCP discovery lifecycle", () => {
       call.mockRejectedValueOnce(new Error("fixture-private"));
       expect((await execute()).value).toMatchObject({ type: "error", message: "[redacted]" });
     } finally {
+      installLogger(previousLogger);
       await connector.close();
       call.mockRestore();
       list.mockRestore();

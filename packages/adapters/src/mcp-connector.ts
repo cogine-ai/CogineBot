@@ -175,7 +175,7 @@ export function allowlistDrift(
 }
 
 function reportAllowlistDrift(
-  server: { allowAllTools: boolean; allowedTools: unknown; slug: string },
+  server: Pick<McpServer, "allowAllTools" | "allowedTools" | "slug" | "transport">,
   offered: Array<{ name: string }>,
   context: { spaceId: string; botId?: string },
 ): void {
@@ -187,8 +187,8 @@ function reportAllowlistDrift(
     {
       spaceId: context.spaceId,
       botId: context.botId,
-      // Cap the list: the point is to name the drift, not to print an allowlist.
-      missing: drift.missing.slice(0, 10),
+      // A stdio name can be missing because discovery screened a credential.
+      ...(server.transport === "stdio" ? {} : { missing: drift.missing.slice(0, 10) }),
     },
   );
 }
