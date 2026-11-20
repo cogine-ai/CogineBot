@@ -460,11 +460,13 @@ describe("run tool selection", () => {
 
   it("withholds schedule creation only from routine-triggered runs", () => {
     expect(toolNames("routine")).not.toContain("schedule_create");
+    expect(toolNames("routine")).not.toContain("schedule_update");
     expect(toolNames("routine")).toContain("task_catalog");
     expect(toolNames("routine")).toEqual(
       expect.arrayContaining(["schedule_list", "schedule_cancel"]),
     );
     expect(toolNames("user")).toContain("schedule_create");
+    expect(toolNames("user")).toContain("schedule_update");
     expect(toolNames("user")).toContain("task_catalog");
   });
 
@@ -509,7 +511,12 @@ describe("run tool selection", () => {
 
   it("keeps schedule tools in group chats and still blocks create on routines", () => {
     expect(toolNames("user", "group-1")).toEqual(
-      expect.arrayContaining(["schedule_create", "schedule_list", "schedule_cancel"]),
+      expect.arrayContaining([
+        "schedule_create",
+        "schedule_list",
+        "schedule_update",
+        "schedule_cancel",
+      ]),
     );
     expect(toolNames("routine", "group-1")).not.toContain("schedule_create");
     expect(toolNames("routine", "group-1")).toEqual(

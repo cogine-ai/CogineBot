@@ -4861,7 +4861,9 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create: createRoutine } });
+    Object.assign(f.prisma, {
+      routine: { create: createRoutine, findMany: vi.fn(async () => []) },
+    });
     const args = {
       name: "Read the report",
       prompt:
@@ -4935,7 +4937,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     f.setCalls([
       {
         args: {
@@ -4957,6 +4959,83 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
   });
 
+  it("binds a schedule update's new sites to the approved plan and instructions", async () => {
+    const f = fixture({ name: "schedule_update", builtin: true, autoReview: true });
+    const current = {
+      id: "routine-fixture",
+      name: "Review report",
+      prompt: "Read the existing report",
+      active: true,
+      crons: ["0 9 * * *"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: new Date("2027-02-15T09:00:00Z"),
+      authorizedInstructions: "Read the existing report",
+      authorizedSites: ["old.example"],
+    };
+    const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(current, data);
+      return { count: 1 };
+    });
+    Object.assign(f.prisma, {
+      routine: {
+        findFirst: vi.fn(async () => current),
+        updateMany,
+      },
+    });
+    const args = { id: current.id, prompt: "Read the report at https://docs.example.net/report" };
+    f.setCalls([{ args, executionId: "routine-edit" }]);
+    await f.run();
+    expect(updateMany).not.toHaveBeenCalled();
+    const effect = f.effects.find((row) => row.kind === "schedule_update")!;
+    expect(effect.request).toEqual(["routine-site-approval-v1", args, ["example.net"]]);
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(reviewMock).not.toHaveBeenCalled();
+
+    effect.status = "approved";
+    f.setCalls([
+      {
+        args: { id: "another-routine", prompt: "Read https://other.example.org" },
+        executionId: "routine-edit-approved",
+      },
+    ]);
+    await f.run();
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ id: args.id, prompt: "Read the existing report" }),
+      data: expect.objectContaining({
+        prompt: args.prompt,
+        authorizedInstructions: null,
+        authorizedSites: ["example.net"],
+      }),
+    });
+    expect(updateMany.mock.calls[0]?.[0].data).not.toHaveProperty("nextRunAt");
+    expect(effect.status).toBe("completed");
+  });
+
+  it("uses explicit pause to withdraw a one-shot automatic retry", async () => {
+    const f = fixture({ name: "schedule_update", builtin: true });
+    const current = {
+      id: "once-fixture",
+      name: "Reminder",
+      active: false,
+      crons: ["@once"],
+      timezone: "UTC",
+      startAt: null,
+      nextRunAt: null,
+      latestRunId: "previous-run",
+      autoCompletedRunId: "previous-run",
+    };
+    const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      Object.assign(current, data);
+      return { count: 1 };
+    });
+    Object.assign(f.prisma, { routine: { findFirst: vi.fn(async () => current), updateMany } });
+    f.setCalls([{ args: { id: current.id, active: false }, executionId: "pause-once" }]);
+    await f.run();
+    expect(current).toMatchObject({ active: false, latestRunId: null, autoCompletedRunId: null });
+    expect(updateMany).toHaveBeenCalledOnce();
+  });
+
   it.each(["approved", "intended"] as const)(
     "does not upgrade a legacy %s Schedule request to a dedicated approval",
     async (status) => {
@@ -4965,7 +5044,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         ...data,
         id: "routine-fixture",
       }));
-      Object.assign(f.prisma, { routine: { create } });
+      Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
       const args = {
         name: "Read updates",
         prompt: "Read https://docs.example.net.",
@@ -5014,7 +5093,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       secrets: ["fixture-private-label"],
     });
     const create = vi.fn();
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     f.setCalls([
       {
         args: {
@@ -5041,7 +5120,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       ...data,
       id: "routine-fixture",
     }));
-    Object.assign(f.prisma, { routine: { create } });
+    Object.assign(f.prisma, { routine: { create, findMany: vi.fn(async () => []) } });
     const prompt = Array.from(
       { length: 85 },
       (_, index) => `https://site-${index}-${"a".repeat(45)}.net/`,

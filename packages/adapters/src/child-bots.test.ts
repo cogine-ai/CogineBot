@@ -490,6 +490,7 @@ describe("destroyBot", () => {
 
   it("dissolves groups with fewer than two active members after deleting the bot", async () => {
     const deleteGroups = vi.fn().mockResolvedValue({ count: 1 });
+    const pauseRoutines = vi.fn().mockResolvedValue({ count: 1 });
     const deleteMemberships = vi.fn().mockResolvedValue({ count: 1 });
     const cancel = vi.fn().mockResolvedValue(undefined);
     const releaseScreen = vi.fn().mockResolvedValue(undefined);
@@ -521,6 +522,8 @@ describe("destroyBot", () => {
             findMany: vi.fn().mockResolvedValue([
               {
                 id: "group-1",
+                spaceId: "workspace-1",
+                userId: "user-1",
                 thread: { id: "thread-1" },
                 members: [
                   { botId: "bot-1", bot: { archivedAt: null } },
@@ -538,6 +541,8 @@ describe("destroyBot", () => {
               },
               {
                 id: "group-3",
+                spaceId: "workspace-1",
+                userId: "user-1",
                 thread: { id: "thread-3" },
                 members: [
                   { botId: "bot-1", bot: { archivedAt: null } },
@@ -548,6 +553,7 @@ describe("destroyBot", () => {
             ]),
             deleteMany: deleteGroups,
           },
+          routine: { updateMany: pauseRoutines },
           run: {
             findMany: findRuns,
             updateManyAndReturn: cancelRuns,
@@ -596,6 +602,13 @@ describe("destroyBot", () => {
     );
 
     expect(deleteGroups).toHaveBeenCalledWith({ where: { id: { in: ["group-1", "group-3"] } } });
+    expect(pauseRoutines.mock.calls.map(([query]) => query.where.threadId)).toEqual([
+      "thread-1",
+      "thread-3",
+    ]);
+    expect(pauseRoutines.mock.invocationCallOrder[1]!).toBeLessThan(
+      deleteGroups.mock.invocationCallOrder[0]!,
+    );
     expect(deleteMemberships).toHaveBeenCalledWith({
       where: { botId: "bot-1", group: { spaceId: "workspace-1" } },
     });

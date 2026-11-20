@@ -12,7 +12,7 @@ import { BUILTIN_AGENT_TOOL_NAMES } from "./builtin-tools.js";
 import { COMPOSIO_MULTI_EXECUTE_TOOL, connectorBatchActionNames } from "./composio-batch.js";
 import { sharedPageUpdateRequest } from "./page-share-update.js";
 import { preparePageToolRequest, SAVE_PAGE_TOOL } from "./page-tool-request.js";
-import { routineSiteApprovalDetails } from "./schedule-tools.js";
+import { isRoutinePromptTool, routineSiteApprovalDetails } from "./schedule-tools.js";
 
 // These tools already bind decisions to a specific destination, credential, or takeover.
 const TARGET_SCOPED_TOOLS = new Set([
@@ -65,7 +65,7 @@ export async function loadDeniedActionTargets(
         ({ kind, request, result }) =>
           result == null &&
           !TARGET_SCOPED_TOOLS.has(kind) &&
-          !(kind === "schedule_create" && routineSiteApprovalDetails(request)),
+          !(isRoutinePromptTool(kind) && routineSiteApprovalDetails(request)),
       )
       .map(async (effect) => {
         const direct = boundDirectApprovalDetails(effect.request, CATALOG_APPROVAL_TOOL);

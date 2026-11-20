@@ -12,10 +12,81 @@ import {
   nextCronDate,
   nextCronDateAcross,
   nextCronDateAcrossStrict,
+  nextRoutineDateFrom,
+  nextRoutineOccurrence,
   ONCE_ROUTINE_CRON,
   presetFromCron,
   resolveRoutineNextRunAt,
+  retimeRoutineTimezone,
+  routineCronPresets,
 } from "./cron.js";
+import { parseRoutineDateTime } from "./routine-time.js";
+
+describe("Routine scheduling clocks", () => {
+  it("uses the saved timezone and includes the first exact local occurrence", () => {
+    const zone = "Asia/Taipei";
+    const start = parseRoutineDateTime("2027-02-15T09:00", zone);
+    expect(start?.toISOString()).toBe("2027-02-15T01:00:00.000Z");
+    const now = new Date("2027-02-14T09:00:00Z");
+    expect(nextRoutineDateFrom(["0 9 * * *"], now, zone, start)).toEqual(start);
+    expect(nextRoutineDateFrom(["0 9 * * *"], now, zone, new Date(start!.getTime() + 1))).toEqual(
+      new Date("2027-02-16T01:00:00Z"),
+    );
+    expect(parseRoutineDateTime("2027-02-30T09:00", zone)).toBeNull();
+    expect(parseRoutineDateTime("2027-02-15T09:00+05", zone)?.toISOString()).toBe(
+      "2027-02-15T04:00:00.000Z",
+    );
+  });
+
+  it("runs a cron in the spring gap once and does not replay the repeated fall hour", () => {
+    const zone = "America/New_York";
+    const spring = nextCronDate("30 2 * * *", new Date("2027-03-14T05:00:00Z"), zone);
+    expect(spring.toISOString()).toBe("2027-03-14T07:00:00.000Z");
+    expect(parseRoutineDateTime("2027-03-14T02:30", zone)?.toISOString()).toBe(
+      "2027-03-14T07:30:00.000Z",
+    );
+    const fall = nextCronDate("30 1 * * *", new Date("2027-11-07T04:00:00Z"), zone);
+    expect(fall.toISOString()).toBe("2027-11-07T05:30:00.000Z");
+    expect(nextCronDate("30 1 * * *", fall, zone).toISOString()).toBe("2027-11-08T06:30:00.000Z");
+    expect(nextCronDate("30 1 * * *", new Date("2027-11-07T06:15:00Z"), zone).toISOString()).toBe(
+      "2027-11-08T06:30:00.000Z",
+    );
+  });
+
+  it("keeps a delayed repeat on the same local day when its zone moves", () => {
+    const now = new Date("2027-03-01T00:00:00Z");
+    const due = new Date("2027-03-04T14:00:00Z");
+    expect(
+      retimeRoutineTimezone(["0 9 * * *"], due, now, "America/New_York", "America/Chicago"),
+    ).toEqual(new Date("2027-03-04T15:00:00Z"));
+    expect(
+      retimeRoutineTimezone(["0 9 * * *"], due, now, "America/New_York", "Asia/Tokyo"),
+    ).toEqual(new Date("2027-03-04T00:00:00Z"));
+  });
+
+  it("anchors uneven minute intervals to the previous occurrence and day intervals to the local date", () => {
+    const due = new Date("2027-02-15T01:56:00Z");
+    expect(
+      nextRoutineOccurrence(["*/7 * * * *"], due, new Date("2027-02-15T02:04:00Z"), "UTC", true),
+    ).toEqual(new Date("2027-02-15T02:10:00Z"));
+    const midnight = new Date("2027-03-13T05:00:00Z");
+    expect(
+      nextRoutineOccurrence(["0 0 */2 * *"], midnight, midnight, "America/New_York", true),
+    ).toEqual(new Date("2027-03-15T04:00:00Z"));
+  });
+  it("keeps a literal uneven cron aligned to its calendar fields", () => {
+    const due = new Date("2027-02-15T01:56:00Z");
+    expect(nextRoutineOccurrence(["*/7 * * * *"], due, due, "UTC")).toEqual(
+      new Date("2027-02-15T02:00:00Z"),
+    );
+  });
+  it("retains a literal cron in a multi-schedule editor", () => {
+    expect(routineCronPresets(["*/7 * * * *", "0 9 * * *"], false)[0]).toMatchObject({
+      freq: "Advanced",
+      cron: "*/7 * * * *",
+    });
+  });
+});
 
 function preset(partial: Partial<CronPreset> & Pick<CronPreset, "freq">): CronPreset {
   return {

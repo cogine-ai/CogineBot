@@ -1,5 +1,6 @@
 import { runReadsThreadHistory } from "@rakazo/core";
 import type { RunLease } from "@rakazo/db";
+import { lockActiveRoutineGroup } from "@rakazo/db";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
 import {
   computerRetryDelay,
@@ -143,8 +144,8 @@ import {
   messagingChannelPrivacyBlock,
   messagingDmSurfaceNote,
   newSiteOutcome,
-  nextCronDateAcross,
   nextFence,
+  nextRoutineOccurrence,
   normalizeRunError,
   OUTBOUND_HTTP_TOOLS,
   outboundSiteGate,
@@ -576,13 +577,16 @@ import {
 import { withRuntimeCleanup } from "./runtime-stream.js";
 import {
   cancelScheduleFromTool,
-  compactScheduleInput,
   createScheduleFromTool,
   filterBuiltinToolsForRun,
   filterBuiltinToolsForThread,
+  isRoutinePromptTool,
   listSchedulesFromTool,
   routineSiteApprovalDetails,
   routineSiteApprovalRequest,
+  SCHEDULE_TOOL_NAMES,
+  scheduleTimingArguments,
+  updateScheduleFromTool,
 } from "./schedule-tools.js";
 import { loadAgentScratchpadContext } from "./scratchpad-context.js";
 import {
@@ -3493,7 +3497,7 @@ export function buildApprovalContinuation(
         return `${uniquified ?? effect.kind}: ${formatRequest(bound.args)}`;
       }
       const routine =
-        effect.kind === "schedule_create" && routineSiteApprovalDetails(effect.request);
+        isRoutinePromptTool(effect.kind) && routineSiteApprovalDetails(effect.request);
       const authenticated =
         effect.kind === "secret_request" && readBotSecretHttpEffect(effect.request);
       return `${effect.kind}: ${formatRequest(routine ? routine.args : authenticated ? authenticated.args : effect.request)}`;
@@ -3731,24 +3735,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
         return;
       }
       if (!bot?.thread) return;
+      const groupOrigin = {
+        spaceId: routine.spaceId,
+        group: { archivedAt: null, members: { some: { botId: bot.id } } },
+      };
       const targetThread = routine.threadId
         ? await deps.prisma.thread.findFirst({
             where: {
               id: routine.threadId,
-              spaceId: routine.spaceId,
-              OR: [
-                { botId: bot.id },
-                {
-                  group: {
-                    archivedAt: null,
-                    members: { some: { botId: bot.id } },
-                  },
-                },
-              ],
+              ...(routine.groupScoped
+                ? groupOrigin
+                : {
+                    spaceId: routine.spaceId,
+                    OR: [{ botId: bot.id }, { group: groupOrigin.group }],
+                  }),
             },
             select: { id: true },
           })
         : null;
+      if (routine.groupScoped && !targetThread) {
+        // Access to the originating group can end while this routine is waiting.
+        await deps.prisma.routine.updateMany({
+          where: {
+            id: routine.id,
+            active: true,
+            nextRunAt: scheduledAt,
+            threadId: routine.threadId,
+            ...(routine.threadId ? { thread: { isNot: groupOrigin } } : {}),
+          },
+          data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
+        });
+        return;
+      }
       const thread = targetThread ?? bot.thread;
       // A schedule with no valid parseable cron among its crons (e.g. a
       // legacy row accepted before cron validation was added) fires the
@@ -3757,16 +3775,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const oneShot = isOneShotRoutineCrons(routine.crons);
       const nextRunAt = oneShot
         ? null
-        : nextCronDateAcross(
+        : nextRoutineOccurrence(
             routine.crons,
-            new Date(Math.max(Date.now(), scheduledAt.getTime())),
+            scheduledAt,
+            new Date(),
             routine.timezone,
+            routine.intervalBased,
           );
       const skillRecords = await listAgentSkillRecords(deps.prisma, {
         spaceId: routine.spaceId,
         userId: routine.userId,
       });
       const claimed = await deps.prisma.$transaction(async (tx) => {
+        if (routine.groupScoped && !(await lockActiveRoutineGroup(tx, routine))) return null;
         const updated = await tx.routine.updateMany({
           where: {
             id: routine.id,
@@ -3774,6 +3795,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             nextRunAt: scheduledAt,
             crons: { equals: routine.crons },
             timezone: routine.timezone,
+            intervalBased: routine.intervalBased,
+            ...(routine.groupScoped
+              ? { threadId: routine.threadId, thread: { is: groupOrigin } }
+              : {}),
             bot: { archivedAt: null },
           },
           data: {
@@ -6738,7 +6763,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               // Catalog wrappers keep resolveCall's parsed args so Zod stripping/coercion
               // still matches the first-approval effect key and execute payload.
               const routine =
-                name === "schedule_create" && routineSiteApprovalDetails(approvedRequest);
+                isRoutinePromptTool(name) && routineSiteApprovalDetails(approvedRequest);
               const authenticated =
                 name === "secret_request" && readBotSecretHttpEffect(approvedRequest);
               args = routine
@@ -7092,10 +7117,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   .loadTrustedConnectors()
                   .then((trusted) => connectorTrusts.every((key) => trusted.has(key)))),
             });
-          const routineSitePolicy =
-            name === "schedule_create"
-              ? await trust.routineSitePolicy(String(args.prompt ?? ""), rules)
-              : undefined;
+          const routineSitePolicy = isRoutinePromptTool(name)
+            ? await trust.routineSitePolicy(String(args.prompt ?? ""), rules)
+            : undefined;
           const routineSitesToReview = routineSitePolicy?.sitesToReview ?? [];
           const routineApproval =
             routineSitesToReview.length && !nextApprovedTool
@@ -7103,7 +7127,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : undefined;
           if (routineApproval && "error" in routineApproval) return routineApproval;
           const routineSiteDetail = routineApproval?.detail;
-          if (name === "schedule_create") {
+          if (isRoutinePromptTool(name)) {
             effectRequest = routineSiteDetail
               ? routineSiteApprovalRequest(args, routineSitesToReview)
               : { ...args };
@@ -8060,7 +8084,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const storedRoute = connectorApproval?.route;
             const matchesStoredRoute = !storedRoute || approvalRoutesMatch(storedRoute, liveRoute);
             const action = connectorApproval?.toolName ?? name;
-            const routine = name === "schedule_create" && routineSiteApprovalDetails(request);
+            const routine = isRoutinePromptTool(name) && routineSiteApprovalDetails(request);
             const ordinary =
               !authenticatedRequest &&
               !sharedPageUpdate &&
@@ -8257,7 +8281,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               } else if (name !== "request_takeover" && !ownSettings) {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
-                if (name === "schedule_create" && claimedEffect) {
+                if (isRoutinePromptTool(name) && claimedEffect) {
                   approvedRoutineSites =
                     routineSiteApprovalDetails(applied.effect.request)?.sites ?? [];
                 }
@@ -9373,6 +9397,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               userId: run.userId,
               threadId: thread.id,
+              directThreadId: thread.botId === bot.id ? thread.id : undefined,
+              groupScoped: Boolean(thread.groupId),
               name: String(args.name ?? ""),
               prompt: String(args.prompt ?? ""),
               authorizedSites: [
@@ -9381,17 +9407,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ...approvedRoutineSites,
                 ]),
               ],
-              timezone: args.timezone ? String(args.timezone) : undefined,
-              schedule: compactScheduleInput({
-                cron: args.cron,
-                every: args.every,
-                unit: args.unit,
-                runAt: args.runAt,
-                delayMinutes: args.delayMinutes,
-                delaySeconds: args.delaySeconds,
-              }),
+              timezone: args.timezone ? String(args.timezone) : (userTimezone ?? undefined),
+              schedule: scheduleTimingArguments(args),
             });
             return finish(created);
+          }
+          if (name === "schedule_update") {
+            return finish(
+              await updateScheduleFromTool(deps, {
+                spaceId: run.spaceId,
+                botId: bot.id,
+                userId: run.userId,
+                threadId: thread.id,
+                directThread: thread.botId === bot.id,
+                routineId: String(args.id ?? "").trim(),
+                name: typeof args.name === "string" ? args.name : undefined,
+                prompt: typeof args.prompt === "string" ? args.prompt : undefined,
+                active: typeof args.active === "boolean" ? args.active : undefined,
+                timezone:
+                  typeof args.timezone === "string" && args.timezone.trim()
+                    ? args.timezone.trim()
+                    : undefined,
+                authorizedSites: [
+                  ...new Set([
+                    ...(routineSitePolicy?.authorizedSites ?? []),
+                    ...approvedRoutineSites,
+                  ]),
+                ],
+                schedule: scheduleTimingArguments(args),
+              }),
+            );
           }
           if (name === "schedule_list") {
             return finish(
@@ -9409,6 +9454,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               userId: run.userId,
               ...(thread.groupId ? { threadId: thread.id } : {}),
+              nameThreadId: thread.id,
+              directThread: thread.botId === bot.id,
               routineId: args.routineId ? String(args.routineId) : undefined,
               name: args.name ? String(args.name) : undefined,
             });
@@ -11009,7 +11056,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         try {
           userTimezone = (
             await deps.prisma.user.findUnique({
-              where: { id: bot.userId },
+              where: { id: run.userId },
               select: { timezone: true },
             })
           )?.timezone;
@@ -12935,9 +12982,7 @@ function scratchpadClause(disabled?: ReadonlySet<string>): string | undefined {
     builtinOffered(disabled, name),
   );
   if (pads.length === 0) return undefined;
-  const schedules = ["schedule_create", "schedule_list", "schedule_cancel"].some((name) =>
-    builtinOffered(disabled, name),
-  );
+  const schedules = [...SCHEDULE_TOOL_NAMES].some((name) => builtinOffered(disabled, name));
   if (pads.length === 3 && schedules) {
     return "Use scratchpad_add / scratchpad_update / scratchpad_complete for open work that should outlive this turn (not reminders — those are schedule_*).";
   }

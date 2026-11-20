@@ -866,6 +866,7 @@ export async function claimNativeRoutineEvent(
             select: { id: true },
           })
         : null;
+      if (routine.groupScoped && !selected) return undefined;
       const threadId = selected?.id ?? routine.bot.thread.id;
       nonce = nativeEventRunNonce(row, event);
       const existing = await tx.run.findFirst({

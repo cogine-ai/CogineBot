@@ -55,6 +55,7 @@ import {
   inferAttachmentMimeType,
   isActive,
   isApprovalAskBlock,
+  isOneShotRoutineCrons,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
   isServerUnreachable,
@@ -67,6 +68,7 @@ import {
   nestRosterByParent,
   observeMemoryCleanup,
   parseModelOptionKey,
+  parseRoutineDateTime,
   plainTextFromMarkdown,
   projectMessageReactions,
   reconcileWebsiteLoginAnswer,
@@ -74,6 +76,7 @@ import {
   replyAttachment,
   resolveComposerSendPlan,
   resolveMentionPickerKey,
+  routineCronPresets,
   runThreadSubscription,
   SLASH_ACTIONS,
   type SlashActionId,
@@ -7112,6 +7115,15 @@ export function ShellPage() {
                       await ensureWebhookSecret(targetBotId);
                     }
                     const crons = routineDraft.schedules.map(cronFromPreset);
+                    const intervalBased =
+                      crons.length === 1 && routineDraft.schedules[0]?.freq === "Interval";
+                    const timezone =
+                      targetRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone();
+                    const editingRepeat = crons.length > 0 && !isOneShotRoutineCrons(crons);
+                    const startAt =
+                      editingRepeat && routineDraft.startAtDirty
+                        ? routineDraft.startAtLocal || null
+                        : undefined;
                     const chosenModel = routineDraft.modelKey
                       ? parseModelOptionKey(routineDraft.modelKey)
                       : null;
@@ -7129,14 +7141,26 @@ export function ShellPage() {
                     let saved: Routine;
                     if (targetRoutine) {
                       const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
+                      const previousSchedules = routineCronPresets(
+                        targetRoutine.crons,
+                        targetRoutine.intervalBased,
+                      );
+                      const scheduleChanged =
+                        crons.length !== previousSchedules.length ||
+                        previousSchedules.some(
+                          (preset, index) => cronFromPreset(preset) !== crons[index],
+                        );
+                      const intervalChanged =
+                        targetRoutine.intervalBased !== undefined &&
+                        targetRoutine.intervalBased !== intervalBased;
                       let runAt: string | undefined;
                       if (armOneShot) {
                         if (!routineDraft.runAtLocal) {
                           setRoutineError(t`Add a run time for this one-shot.`);
                           return;
                         }
-                        const parsed = new Date(routineDraft.runAtLocal);
-                        if (!Number.isFinite(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+                        const parsed = parseRoutineDateTime(routineDraft.runAtLocal, timezone);
+                        if (!parsed || parsed.getTime() <= Date.now()) {
                           setRoutineError(t`Run time must be in the future.`);
                           return;
                         }
@@ -7146,13 +7170,35 @@ export function ShellPage() {
                         routineId: targetRoutine.id,
                         ...modelPatch,
                         ...(nativeResult?.success ? { nativeTriggers: nativeResult.data } : {}),
-                        name: routineDraft.name || t`Routine`,
-                        prompt: routineDraft.prompt || t`Check in.`,
-                        crons,
-                        active: armOneShot ? true : routineDraft.active,
-                        webhookEnabled: routineDraft.webhookEnabled,
-                        githubEnabled: routineDraft.githubEnabled,
-                        messageProvider: routineDraft.messageProvider,
+                        name:
+                          routineDraft.name === targetRoutine.name
+                            ? undefined
+                            : routineDraft.name || t`Routine`,
+                        prompt:
+                          routineDraft.prompt === targetRoutine.prompt
+                            ? undefined
+                            : routineDraft.prompt || t`Check in.`,
+                        crons: scheduleChanged ? crons : undefined,
+                        intervalBased:
+                          scheduleChanged || intervalChanged ? intervalBased : undefined,
+                        active: armOneShot
+                          ? true
+                          : routineDraft.active === targetRoutine.active
+                            ? undefined
+                            : routineDraft.active,
+                        webhookEnabled:
+                          routineDraft.webhookEnabled === targetRoutine.webhookEnabled
+                            ? undefined
+                            : routineDraft.webhookEnabled,
+                        githubEnabled:
+                          routineDraft.githubEnabled === targetRoutine.githubEnabled
+                            ? undefined
+                            : routineDraft.githubEnabled,
+                        messageProvider:
+                          routineDraft.messageProvider === targetRoutine.messageProvider
+                            ? undefined
+                            : routineDraft.messageProvider,
+                        startAt,
                         ...(runAt ? { runAt } : {}),
                       });
                     } else {
@@ -7163,7 +7209,9 @@ export function ShellPage() {
                         name: routineDraft.name || t`Routine`,
                         prompt: routineDraft.prompt || t`Check in.`,
                         crons,
-                        timezone: bootstrapMe?.timezone ?? localTimezone(),
+                        intervalBased,
+                        timezone,
+                        startAt: startAt ?? undefined,
                         active: routineDraft.active,
                         notify: true,
                         webhookEnabled: routineDraft.webhookEnabled,

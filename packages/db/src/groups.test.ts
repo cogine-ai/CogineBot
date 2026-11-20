@@ -337,6 +337,7 @@ describe("archiveGroup", () => {
     const tx = {
       $queryRaw: queryRaw,
       chatGroup: { findFirst, update: groupUpdate },
+      routine: { updateMany: vi.fn(async () => ({ count: 0 })) },
       run: { findMany: findManyRuns, updateManyAndReturn: runUpdateMany },
       externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
@@ -730,6 +731,7 @@ describe("removeGroup", () => {
       externalEffect: { deleteMany: vi.fn() },
       secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
       task: { updateMany: vi.fn() },
+      routine: { updateMany: vi.fn(async () => ({ count: 0 })) },
       computerExecutionLease: { findMany: vi.fn(async () => [lease]) },
       computer: { findMany: vi.fn(async () => [computer]) },
       page: { updateManyAndReturn: vi.fn(async () => []) },

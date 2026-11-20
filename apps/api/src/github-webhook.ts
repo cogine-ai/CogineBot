@@ -202,6 +202,7 @@ export function mountGithubWebhookRoute(
         spaceId: target.bot.spaceId,
         userId: target.bot.userId,
         active: true,
+        groupScoped: false,
         githubEnabled: true,
       },
       select: {

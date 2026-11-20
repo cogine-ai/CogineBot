@@ -12,6 +12,8 @@ import { glassHeaderOptions } from "../components/glass-title";
 import { MenuPicker } from "../components/menu-picker";
 import { NativeActionButton } from "../components/native-action-button";
 import { RoutineRunHistory } from "../components/routine-run-history";
+import type { RoutineTimingPatch } from "../components/routine-timing-editor";
+import { RoutineTimingEditor } from "../components/routine-timing-editor";
 import type { ApiRequestContext } from "../lib/api";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
@@ -73,7 +75,7 @@ export default function RoutineDetail() {
   const [modelKey, setModelKey] = useState("");
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
-  const [savingModel, setSavingModel] = useState(false);
+  const [saving, setSaving] = useState(false);
   const modelOptions = connectedModelChoices(credentials, catalog);
   const selectedModel = modelKey ? parseModelOptionKey(modelKey) : null;
   const selectedCredential = credentialForModel(
@@ -178,45 +180,44 @@ export default function RoutineDetail() {
   }, [botId, routineId, readOnly, scopeKey]);
 
   const shownScope = scopeRef.current;
-  async function saveModel() {
+  async function saveRoutine(
+    patch:
+      | RoutineTimingPatch
+      | {
+          modelProvider: string | null;
+          modelId: string | null;
+          modelCredentialId: string | null;
+          thinkingLevel: ThinkingLevel | null;
+          expectedRevision?: number;
+        },
+  ): Promise<boolean> {
     const scope = shownScope;
-    if (
-      !scope ||
-      !current(scope) ||
-      !routine ||
-      readOnly ||
-      saveInFlight.current ||
-      !modelsReady ||
-      modelsLoading ||
-      modelsError
-    )
-      return;
+    if (!scope || !current(scope) || !routine || readOnly || saveInFlight.current) return false;
     const request = ++saveRequest.current;
     const eligible = () => current(scope) && request === saveRequest.current;
     saveInFlight.current = true;
-    setSavingModel(true);
+    setSaving(true);
     setError(null);
     try {
       const requestContext = await spaceRequestContext(scope, eligible, scope.verifiedSpaceId);
-      if (!eligible()) return;
+      if (!eligible()) return false;
       const saved = await rpc<Routine>(
         "routines/update",
         {
           routineId: routine.id,
-          modelProvider: selectedModel?.provider ?? null,
-          modelId: selectedModel?.modelId ?? null,
-          modelCredentialId: selectedModel?.modelCredentialId ?? null,
-          thinkingLevel: (thinkingLevel || null) as ThinkingLevel | null,
-          expectedRevision: selectedModel ? modelRevision : undefined,
+          ...patch,
         },
         { requestContext },
       );
-      if (eligible()) setRoutine(saved);
+      if (!eligible()) return false;
+      setRoutine(saved);
+      return true;
     } catch (err) {
       if (eligible()) setError(errorText(err, t("Could not save")));
+      return false;
     } finally {
       saveInFlight.current = false;
-      if (scopeRef.current) setSavingModel(false);
+      if (scopeRef.current) setSaving(false);
     }
   }
 
@@ -242,6 +243,13 @@ export default function RoutineDetail() {
               {routineStatusLine(routine)}
             </Text>
           </View>
+          <RoutineTimingEditor
+            key={routeKey}
+            routine={routine}
+            readOnly={readOnly}
+            saving={saving}
+            onSave={saveRoutine}
+          />
           <View style={{ gap: 8 }}>
             <Text
               style={{ color: tokens.mutedForeground, fontSize: 13, textTransform: "uppercase" }}
@@ -289,7 +297,7 @@ export default function RoutineDetail() {
                     ...modelOptions.map((entry) => ({ key: entry.key, label: entry.label })),
                   ]}
                   onChange={(key) => {
-                    if (!shownScope || !current(shownScope) || savingModel) return;
+                    if (!shownScope || !current(shownScope) || saving) return;
                     setModelKey(key);
                     setModelRevision(
                       modelOptions.find((entry) => entry.key === key)?.connectionRevision,
@@ -309,7 +317,7 @@ export default function RoutineDetail() {
                       })),
                     ]}
                     onChange={(level) => {
-                      if (!shownScope || !current(shownScope) || savingModel) return;
+                      if (!shownScope || !current(shownScope) || saving) return;
                       setThinkingLevel(level);
                       setModelRevision(modelRevision ?? selectedCredential?.connectionRevision);
                     }}
@@ -318,16 +326,25 @@ export default function RoutineDetail() {
                 ) : null}
               </View>
               <NativeActionButton
-                label={savingModel ? t("Saving…") : t("Save model")}
+                label={saving ? t("Saving…") : t("Save model")}
                 disabled={
-                  savingModel ||
+                  saving ||
                   ((selectedModel?.provider ?? null) === routine.modelProvider &&
                     (selectedModel?.modelId ?? null) === routine.modelId &&
                     (selectedModel?.modelCredentialId ?? null) ===
                       (routine.modelCredentialId ?? null) &&
                     (thinkingLevel || null) === routine.thinkingLevel)
                 }
-                onPress={() => void saveModel()}
+                onPress={() => {
+                  if (!modelsReady || modelsLoading || modelsError) return;
+                  void saveRoutine({
+                    modelProvider: selectedModel?.provider ?? null,
+                    modelId: selectedModel?.modelId ?? null,
+                    modelCredentialId: selectedModel?.modelCredentialId ?? null,
+                    thinkingLevel: (thinkingLevel || null) as ThinkingLevel | null,
+                    expectedRevision: selectedModel ? modelRevision : undefined,
+                  });
+                }}
               />
             </>
           ) : null}

@@ -9,10 +9,12 @@ import {
   cronFromPreset,
   defaultCronPreset,
   formatCron,
+  formatRoutineTime,
   isOneShotRoutineCrons,
   modelOptionKey,
   parseModelOptionKey,
-  presetFromCron,
+  routineCronPresets,
+  routineDateTimeLocal,
 } from "@rakazo/core";
 import {
   Button,
@@ -51,13 +53,8 @@ import {
   emptyNativeRoutineTriggerDraft,
 } from "./routine-native-events";
 
-function toDatetimeLocalValue(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function defaultArmRunAtLocal(): string {
-  return toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000));
+function defaultArmRunAtLocal(timezone: string): string {
+  return routineDateTimeLocal(new Date(Date.now() + 60 * 60 * 1000), timezone);
 }
 
 export function routineNeedsOneShotArm(
@@ -95,6 +92,8 @@ export type RoutineDraftState = {
   messageProvider: string | null;
   active: boolean;
   runAtLocal: string;
+  startAtLocal: string;
+  startAtDirty: boolean;
   modelKey: string;
   modelRevision?: number;
   thinkingLevel: string;
@@ -113,6 +112,8 @@ export function emptyRoutineDraft(): RoutineDraftState {
     messageProvider: null,
     active: true,
     runAtLocal: "",
+    startAtLocal: "",
+    startAtDirty: false,
     modelKey: "",
     thinkingLevel: "",
     modelDirty: false,
@@ -125,12 +126,19 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     nativeTriggersDirty: false,
     name: routine.name,
     prompt: routine.prompt,
-    schedules: routine.crons.map(presetFromCron),
+    schedules: routineCronPresets(routine.crons, routine.intervalBased),
     webhookEnabled: routine.webhookEnabled,
     githubEnabled: routine.githubEnabled,
     messageProvider: routine.messageProvider,
     active: routine.active,
-    runAtLocal: routineNeedsOneShotArm(routine, routine.crons) ? defaultArmRunAtLocal() : "",
+    runAtLocal: routineNeedsOneShotArm(routine, routine.crons)
+      ? defaultArmRunAtLocal(routine.timezone)
+      : "",
+    startAtLocal:
+      routine.startAt && new Date(routine.startAt).getTime() > Date.now()
+        ? routineDateTimeLocal(new Date(routine.startAt), routine.timezone)
+        : "",
+    startAtDirty: false,
     modelKey:
       routine.modelProvider && routine.modelId
         ? modelOptionKey(routine.modelProvider, routine.modelId, routine.modelCredentialId)
@@ -284,7 +292,7 @@ export function RoutineEditor({
   onDelete: () => void;
   onEnsureWebhook: () => Promise<void>;
 }) {
-  const { t } = useLingui();
+  const { t, i18n } = useLingui();
   const fieldId = useId();
   const [credentials, setCredentials] = useState<ModelCredential[]>([]);
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
@@ -335,6 +343,11 @@ export function RoutineEditor({
   const canTest = Boolean(editing) && !saving && !running;
   const needsOneShotArm =
     editing != null && routineNeedsOneShotArm(editing, draft.schedules.map(cronFromPreset));
+  const repeats =
+    draft.schedules.length > 0 && !isOneShotRoutineCrons(draft.schedules.map(cronFromPreset));
+  const nextRun = editing?.nextRunAt
+    ? formatRoutineTime(editing.nextRunAt, editing.timezone, i18n?.locale)
+    : null;
 
   function addSchedule(freq: CronFreq) {
     const base = defaultCronPreset();
@@ -532,6 +545,25 @@ export function RoutineEditor({
               />
             </label>
           ) : null}
+          {repeats ? (
+            <label htmlFor={`${fieldId}-start-at`} className="block text-sm text-muted-foreground">
+              <Trans>First run</Trans>
+              <Input
+                id={`${fieldId}-start-at`}
+                type="datetime-local"
+                value={draft.startAtLocal}
+                onChange={(e) =>
+                  onChange({ ...draft, startAtLocal: e.target.value, startAtDirty: true })
+                }
+                className="mt-2"
+              />
+            </label>
+          ) : null}
+          {nextRun ? (
+            <div>
+              <Trans>Next run: {nextRun}</Trans>
+            </div>
+          ) : null}
         </div>
 
         <DropdownMenu>
@@ -569,47 +601,51 @@ export function RoutineEditor({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
 
-            <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
-              <DropdownMenuItem
-                disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
-                aria-describedby={slackAvailable ? undefined : slackStatusId}
-                onClick={retrySlack ?? (() => addMessageProvider("slack"))}
-              >
-                <MessageSquare />
-                {retrySlack ? (
-                  <Trans>Retry Slack connection check</Trans>
-                ) : (
-                  <Trans>Slack message</Trans>
-                )}
-              </DropdownMenuItem>
-            </span>
+            {editing?.groupScoped ? null : (
+              <>
+                <span className="block" title={slackAvailable ? undefined : slackUnavailableReason}>
+                  <DropdownMenuItem
+                    disabled={!retrySlack && (draft.messageProvider === "slack" || !slackAvailable)}
+                    aria-describedby={slackAvailable ? undefined : slackStatusId}
+                    onClick={retrySlack ?? (() => addMessageProvider("slack"))}
+                  >
+                    <MessageSquare />
+                    {retrySlack ? (
+                      <Trans>Retry Slack connection check</Trans>
+                    ) : (
+                      <Trans>Slack message</Trans>
+                    )}
+                  </DropdownMenuItem>
+                </span>
 
-            {COMING_SOON.map((item) => (
-              <span
-                key={item.id}
-                className="block"
-                title={item.id === "teams" ? t`Teams not enabled` : t`Coming soon`}
-              >
-                <DropdownMenuItem disabled>
+                {COMING_SOON.map((item) => (
                   <span
-                    aria-hidden
-                    className="inline-block size-3.5 rounded-[4px]"
-                    style={{ background: comingSoonColor(item.id), opacity: 0.55 }}
-                  />
-                  {item.label()}
+                    key={item.id}
+                    className="block"
+                    title={item.id === "teams" ? t`Teams not enabled` : t`Coming soon`}
+                  >
+                    <DropdownMenuItem disabled>
+                      <span
+                        aria-hidden
+                        className="inline-block size-3.5 rounded-[4px]"
+                        style={{ background: comingSoonColor(item.id), opacity: 0.55 }}
+                      />
+                      {item.label()}
+                    </DropdownMenuItem>
+                  </span>
+                ))}
+
+                <DropdownMenuItem disabled={draft.githubEnabled} onClick={() => void addGithub()}>
+                  <GitBranch />
+                  <Trans>Git event</Trans>
                 </DropdownMenuItem>
-              </span>
-            ))}
 
-            <DropdownMenuItem disabled={draft.githubEnabled} onClick={() => void addGithub()}>
-              <GitBranch />
-              <Trans>Git event</Trans>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem disabled={draft.webhookEnabled} onClick={() => void addWebhook()}>
-              <Globe />
-              <Trans>Webhook</Trans>
-            </DropdownMenuItem>
+                <DropdownMenuItem disabled={draft.webhookEnabled} onClick={() => void addWebhook()}>
+                  <Globe />
+                  <Trans>Webhook</Trans>
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Explicit aria-live keeps the region exposed while the menu is open. */}

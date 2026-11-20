@@ -7734,3 +7734,11 @@ msgstr "消息已清除，但无法确认外部记忆已清理。"
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "无法确认外部记忆已清理。"
+
+#: src/pages/RoutineEditor.tsx
+msgid "First run"
+msgstr "首次执行"
+
+#: src/pages/RoutineEditor.tsx
+msgid "Next run: {nextRun}"
+msgstr "下次执行：{nextRun}"

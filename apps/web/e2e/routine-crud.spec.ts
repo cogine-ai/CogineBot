@@ -132,6 +132,101 @@ test("routine editing updates in place, preserves timezone, and deletion persist
   await expect(updatedButton).toHaveCount(0);
 });
 
+test("a repeat can start on a saved future date and keep it through pause and resume", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `first-run-${Date.now()}@example.test`, "password12", "Schedule Fixture");
+  await completeOnboarding(page);
+  await rpc(page, "preferences/update", { timezone: "Asia/Tokyo" });
+  await page.reload();
+  const botId = activeBotId(page);
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByLabel("Name").fill("Delayed review");
+  await page.getByLabel("Instruction").fill("Summarize the project status");
+  await addScheduleTrigger(page, "Every day");
+  const day = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+  const first = `${day}T09:00`;
+  await page.getByLabel("First run").fill(first);
+  await saveAndReturn(page, "routines/create");
+  const [created] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(created).toMatchObject({
+    name: "Delayed review",
+    timezone: "Asia/Tokyo",
+    nextRunAt: `${day}T00:00:00.000Z`,
+  });
+  const item = page.getByRole("button", { name: /Delayed review/ });
+  await item.click();
+  await expect(page.getByLabel("First run")).toHaveValue(first);
+  await expect(page.getByText(/Next run: .*GMT\+9/)).toBeVisible();
+  const nextDay = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10);
+  await rpc(page, "routines/update", {
+    routineId: created!.id,
+    prompt: "Use the latest project status",
+  });
+  await page.getByLabel("First run").fill(`${nextDay}T09:00`);
+  const timePatch = await saveAndReturn(page, "routines/update");
+  expect(timePatch).not.toHaveProperty("prompt");
+  const [retimed] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(retimed).toMatchObject({
+    id: created!.id,
+    prompt: "Use the latest project status",
+    nextRunAt: `${nextDay}T00:00:00.000Z`,
+  });
+  await item.click();
+  await expect(page.getByLabel("First run")).toHaveValue(`${nextDay}T09:00`);
+  await captureScreenshot(page, testInfo, "routine-first-run");
+
+  await page.getByRole("switch", { name: "Active" }).click();
+  await saveAndReturn(page, "routines/update");
+  expect((await rpc<Routine[]>(page, "routines/list", { botId }))[0]).toMatchObject({
+    id: created!.id,
+    active: false,
+    nextRunAt: null,
+    startAt: retimed!.nextRunAt,
+  });
+  await item.click();
+  await page.getByRole("switch", { name: "Active" }).click();
+  await saveAndReturn(page, "routines/update");
+  const [resumed] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(resumed).toMatchObject({ id: created!.id, active: true, nextRunAt: retimed!.nextRunAt });
+});
+
+test("keeps the distinction between a literal cron and an interval with the same expression", async ({
+  page,
+}) => {
+  await signup(page, `cadence-fixture-${Date.now()}@example.test`, "password12", "Cadence Fixture");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const routine = await rpc<Routine>(page, "routines/create", {
+    botId,
+    name: "Calendar check",
+    prompt: "Summarize the report",
+    crons: ["*/7 * * * *"],
+    timezone: "UTC",
+    active: false,
+  });
+  await page.reload();
+  await page.getByTitle("Agent computer").click();
+  const item = page.getByRole("button", { name: /Calendar check/ });
+  await item.click();
+  const cadence = page.getByLabel("How often");
+  await expect(cadence).toHaveValue("Advanced");
+  await cadence.selectOption("Interval");
+  expect(await saveAndReturn(page, "routines/update")).toMatchObject({ intervalBased: true });
+  const [interval] = await rpc<Routine[]>(page, "routines/list", { botId });
+  expect(interval).toMatchObject({ id: routine.id, intervalBased: true, crons: routine.crons });
+  await item.click();
+  await expect(cadence).toHaveValue("Interval");
+  await cadence.selectOption("Advanced");
+  expect(await saveAndReturn(page, "routines/update")).toMatchObject({ intervalBased: false });
+  expect((await rpc<Routine[]>(page, "routines/list", { botId }))[0]).toMatchObject({
+    id: routine.id,
+    intervalBased: false,
+    crons: routine.crons,
+  });
+});
+
 test("routine editing inherits the bot model through unrelated edits", async ({
   page,
 }, testInfo) => {

@@ -1,4 +1,11 @@
 import { Cron } from "croner";
+import {
+  DAY_MS,
+  moveRoutineWallTime,
+  routineWallInstant,
+  routineWallTime,
+  validRoutineTimezone,
+} from "./routine-time.js";
 
 const WEEKDAYS = "1-5";
 const WEEKDAY_NAMES = [
@@ -213,13 +220,133 @@ export function nextCronDate(cron: string, from: Date, timezone = "UTC"): Date {
   if (cron.trim().split(/\s+/).length !== 5) {
     throw new RangeError("Cron expressions must contain five fields");
   }
-  const schedule = new Cron(cron, {
-    paused: true,
-    timezone: validTimezoneOrUtc(timezone),
+  const zone = validRoutineTimezone(timezone);
+  // Cron matches calendar fields. Resolve those matches in the Routine zone so the
+  // repeated hour never sends a job back into the past or runs an occurrence twice.
+  const schedule = new Cron(cron, { paused: true, utcOffset: 0 });
+  let wall = routineWallTime(from.getTime(), zone);
+  for (;;) {
+    const match = schedule.nextRun(new Date(wall));
+    if (!match) throw new RangeError(`Cron expression has no future run: ${cron}`);
+    wall = match.getTime();
+    const next = routineWallInstant(wall, zone);
+    if (next > from.getTime()) return new Date(next);
+  }
+}
+
+export function nextRoutineDateFrom(
+  crons: string[],
+  now: Date,
+  zone: string,
+  startAt?: Date | null,
+) {
+  // The cron search is exclusive. Include an exact match when the floor is in the future.
+  const from = startAt && startAt >= now ? new Date(startAt.getTime() - 1) : now;
+  return nextCronDateAcrossStrict(crons, from, zone);
+}
+
+function intervalPreset(cron: string): CronPreset | undefined {
+  const preset = presetFromCron(cron);
+  return preset.freq === "Interval" && cronFromPreset(preset) === cron.trim() ? preset : undefined;
+}
+
+export function isIntervalCron(cron: string): boolean {
+  return intervalPreset(cron) !== undefined;
+}
+
+/** Keep the author's cadence selection when its text also represents raw cron. */
+export function routineCronPresets(crons: string[], intervalBased?: boolean): CronPreset[] {
+  return crons.map((cron) => {
+    const preset = presetFromCron(cron);
+    return intervalBased === false && preset.freq === "Interval"
+      ? { ...preset, freq: "Advanced", cron }
+      : preset;
   });
-  const next = schedule.nextRun(from);
-  if (!next) throw new RangeError(`Cron expression has no future run: ${cron}`);
-  return next;
+}
+
+function unevenInterval(crons: string[], intervalBased: boolean): CronPreset | undefined {
+  const cron = crons[0];
+  if (!intervalBased || crons.length !== 1 || !cron) return undefined;
+  const preset = intervalPreset(cron);
+  if (!preset) return undefined;
+  const span = { minutes: 60, hours: 24, days: 1 }[preset.unit];
+  if (preset.n > CRON_INTERVAL_MAX[preset.unit] || span % preset.n === 0) return undefined;
+  return preset;
+}
+
+export function intervalUsesAnchor(crons: string[], intervalBased: boolean): boolean {
+  return Boolean(unevenInterval(crons, intervalBased));
+}
+
+/** A future start follows the local calendar, except for elapsed-time intervals. */
+export function retimeRoutineStart(
+  crons: string[],
+  first: Date,
+  fromZone: string,
+  toZone: string,
+  intervalBased: boolean,
+): Date {
+  const interval = unevenInterval(crons, intervalBased);
+  return interval && interval.unit !== "days"
+    ? first
+    : moveRoutineWallTime(first, fromZone, toZone, true);
+}
+
+/** Keep the authored midnight when an original day anchor landed in a DST gap. */
+export function retimeIntervalAnchor(
+  cron: string,
+  first: Date,
+  fromZone: string,
+  toZone: string,
+): Date {
+  const preset = intervalPreset(cron);
+  if (preset?.unit === "days") {
+    const wall = routineWallTime(first.getTime(), validRoutineTimezone(fromZone));
+    const midnight = Math.floor(wall / DAY_MS) * DAY_MS;
+    return new Date(routineWallInstant(midnight, validRoutineTimezone(toZone)));
+  }
+  if (unevenInterval([cron], true)) return first;
+  return moveRoutineWallTime(first, fromZone, toZone);
+}
+
+/** Keep an occurrence's local time when moving a repeat to a new zone, including a delayed start. */
+export function retimeRoutineTimezone(
+  crons: string[],
+  due: Date,
+  now: Date,
+  fromZone: string,
+  toZone: string,
+) {
+  const local = moveRoutineWallTime(due, fromZone, toZone);
+  if (local <= due && local > now) return local;
+  return nextRoutineDateFrom(crons, now, toZone, local > now ? due : null);
+}
+
+/** Continue an uneven interval from its due occurrence. Multi-cron plans keep calendar matching. */
+export function nextRoutineOccurrence(
+  crons: string[],
+  due: Date,
+  now: Date,
+  zone: string,
+  intervalBased = false,
+): Date | null {
+  const from = new Date(Math.max(due.getTime(), now.getTime()));
+  const interval = unevenInterval(crons, intervalBased);
+  if (!interval || crons[0] === undefined) return nextCronDateAcross(crons, from, zone);
+  if (interval.unit !== "days") {
+    const gap = interval.n * (interval.unit === "hours" ? 3_600_000 : 60_000);
+    return new Date(due.getTime() + (Math.floor((from.getTime() - due.getTime()) / gap) + 1) * gap);
+  }
+  const validZone = validRoutineTimezone(zone);
+  const dueWall = routineWallTime(due.getTime(), validZone);
+  const midnight = Math.floor(dueWall / DAY_MS) * DAY_MS;
+  const anchor = routineWallInstant(midnight, validZone) === due.getTime() ? midnight : dueWall;
+  const gap = interval.n * DAY_MS;
+  const fromWall = routineWallTime(from.getTime(), validZone);
+  for (let step = Math.max(1, Math.floor((fromWall - anchor) / gap)); ; step++) {
+    const next = routineWallInstant(anchor + step * gap, validZone);
+    if (next > from.getTime()) return new Date(next);
+  }
 }
 
 // Nearest next run across every recurring schedule on a routine. Ignores
@@ -260,15 +387,6 @@ export function nextCronDateAcrossStrict(
     if (!earliest || next < earliest) earliest = next;
   }
   return earliest;
-}
-
-function validTimezoneOrUtc(timezone: string): string {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
-    return timezone;
-  } catch {
-    return "UTC";
-  }
 }
 
 function parseClock(time: string): { hour: number; minute: number } {
