@@ -6037,86 +6037,105 @@ export function createRouter(deps: RouterDeps) {
           };
           if (connection) await assertAuthorized();
           for (let attempt = 0; attempt < (connection ? 1 : 5); attempt++) {
-            const { existing, existingSecret, nextArgs, replaceCredentials, disableOnly } =
-              await deps.prisma.$transaction(async (tx) => {
-                if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
-                const existing = await tx.mcpServer.findFirst({
-                  where: {
-                    id: input.id,
-                    spaceId: context.actor.spaceId,
-                    userId: context.actor.userId,
-                  },
-                });
-                if (!existing) throw new IsolationError();
-                if (existing.transport === "stdio" && "config" in input)
-                  assertMcpStdioOwner(context.actor);
-                if (stdio && existing.installId)
-                  throw new ORPCError("BAD_REQUEST", {
-                    message: "Plugin MCP servers require a remote endpoint",
-                  });
-                const previousArgs = Array.isArray(existing.args) ? existing.args.map(String) : [];
-                const sameCommand = Boolean(
-                  stdio &&
-                    existing.transport === "stdio" &&
-                    existing.command?.trim() === stdio.command.trim(),
-                );
-                const nextArgs = stdio?.args ?? (sameCommand ? previousArgs : []);
-                const replaceCredentials =
-                  (existing.transport === "stdio") !== Boolean(stdio) ||
-                  Boolean(
-                    stdio &&
-                      (!sameCommand || JSON.stringify(nextArgs) !== JSON.stringify(previousArgs)),
-                  );
-                const disableOnly = Boolean(
-                  stdio &&
-                    !stdio.enabled &&
-                    !replaceCredentials &&
-                    !stdio.clearCredential &&
-                    stdio.oauthClient === undefined &&
-                    stdio.files === undefined &&
-                    stdio.env === undefined &&
-                    stdio.secret === undefined,
-                );
-                if (
-                  stdio &&
-                  (stdio.enabled ||
-                    replaceCredentials ||
-                    stdio.oauthClient ||
-                    Object.keys(stdio.env ?? {}).length ||
-                    Object.keys(stdio.files ?? {}).length ||
-                    stdio.secret)
-                ) {
-                  assertMcpStdioCommand(stdio.command, deps.env);
-                }
-                await lockActivePluginChild(tx, existing, context.actor);
-                if (connection && existing.revision !== connection.revision)
-                  throw new ORPCError("CONFLICT", {
-                    message: "MCP server changed; reload its connection settings",
-                  });
-                if (connection && existing.transport === "stdio")
-                  throw new ORPCError("BAD_REQUEST", {
-                    message: "A remote MCP server is required",
-                  });
-                const existingSecret =
-                  existing.secretId && (!connection || patchHeaders)
-                    ? await tx.secret.findFirst({
-                        where: {
-                          id: existing.secretId,
-                          spaceId: context.actor.spaceId,
-                          userId: context.actor.userId,
-                        },
-                      })
-                    : null;
-                return { existing, existingSecret, nextArgs, replaceCredentials, disableOnly };
+            const {
+              existing,
+              existingSecret,
+              nextArgs,
+              replaceCredentials,
+              disableOnly,
+              disableAndClear,
+            } = await deps.prisma.$transaction(async (tx) => {
+              if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
+              const existing = await tx.mcpServer.findFirst({
+                where: {
+                  id: input.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                },
               });
+              if (!existing) throw new IsolationError();
+              if (existing.transport === "stdio" && "config" in input)
+                assertMcpStdioOwner(context.actor);
+              if (stdio && existing.installId)
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "Plugin MCP servers require a remote endpoint",
+                });
+              const previousArgs = Array.isArray(existing.args) ? existing.args.map(String) : [];
+              const sameCommand = Boolean(
+                stdio &&
+                  existing.transport === "stdio" &&
+                  existing.command?.trim() === stdio.command.trim(),
+              );
+              const nextArgs = stdio?.args ?? (sameCommand ? previousArgs : []);
+              const replaceCredentials =
+                (existing.transport === "stdio") !== Boolean(stdio) ||
+                Boolean(
+                  stdio &&
+                    (!sameCommand || JSON.stringify(nextArgs) !== JSON.stringify(previousArgs)),
+                );
+              const deactivating = Boolean(
+                stdio &&
+                  !stdio.enabled &&
+                  !replaceCredentials &&
+                  stdio.oauthClient === undefined &&
+                  stdio.files === undefined &&
+                  stdio.env === undefined &&
+                  stdio.secret === undefined,
+              );
+              const disableOnly = deactivating && !stdio?.clearCredential;
+              const disableAndClear = deactivating && stdio?.clearCredential === true;
+              if (
+                stdio &&
+                (stdio.enabled ||
+                  replaceCredentials ||
+                  stdio.oauthClient ||
+                  Object.keys(stdio.env ?? {}).length ||
+                  Object.keys(stdio.files ?? {}).length ||
+                  stdio.secret)
+              ) {
+                assertMcpStdioCommand(stdio.command, deps.env);
+              }
+              await lockActivePluginChild(tx, existing, context.actor);
+              if (connection && existing.revision !== connection.revision)
+                throw new ORPCError("CONFLICT", {
+                  message: "MCP server changed; reload its connection settings",
+                });
+              if (connection && existing.transport === "stdio")
+                throw new ORPCError("BAD_REQUEST", {
+                  message: "A remote MCP server is required",
+                });
+              const existingSecret =
+                existing.secretId && (!connection || patchHeaders)
+                  ? await tx.secret.findFirst({
+                      where: {
+                        id: existing.secretId,
+                        spaceId: context.actor.spaceId,
+                        userId: context.actor.userId,
+                      },
+                    })
+                  : null;
+              return {
+                existing,
+                existingSecret,
+                nextArgs,
+                replaceCredentials,
+                disableOnly,
+                disableAndClear,
+              };
+            });
             let existingMaterial: McpSecretMaterial = {};
+            let clearFailed = false;
             const requireStoredMaterial =
               (connection && patchHeaders) ||
               (existing.transport === "stdio" && !disableOnly && !replaceCredentials);
-            if (requireStoredMaterial && existing.secretId && !existingSecret)
-              throw new ORPCError("SERVICE_UNAVAILABLE", {
-                message: "Stored MCP credentials are unavailable. Retry this setting.",
-              });
+            const credentialReadFailed = () => {
+              if (disableAndClear) clearFailed = true;
+              else if (requireStoredMaterial)
+                throw new ORPCError("SERVICE_UNAVAILABLE", {
+                  message: "Stored MCP credentials are unavailable. Retry this setting.",
+                });
+            };
+            if (existing.secretId && !existingSecret) credentialReadFailed();
             if (existingSecret && !disableOnly && !replaceCredentials) {
               try {
                 const plaintext = await deps.secrets.load(
@@ -6132,10 +6151,7 @@ export function createRouter(deps: RouterDeps) {
                     existingMaterial = value as McpSecretMaterial;
                 }
               } catch {
-                if (requireStoredMaterial)
-                  throw new ORPCError("SERVICE_UNAVAILABLE", {
-                    message: "Stored MCP credentials are unavailable. Retry this setting.",
-                  });
+                credentialReadFailed();
                 /* Existing malformed secrets are replaced only when new credentials are supplied. */
               }
             }
@@ -6161,7 +6177,7 @@ export function createRouter(deps: RouterDeps) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
             let update: McpMaterialUpdate;
-            if (disableOnly) {
+            if (disableOnly || clearFailed) {
               update = { action: "keep" };
             } else if (connection) {
               try {
@@ -6176,7 +6192,7 @@ export function createRouter(deps: RouterDeps) {
               });
             }
             const nextMaterial = update.action === "store" ? update.material : existingMaterial;
-            if (stdio && !disableOnly)
+            if (stdio && !disableOnly && !disableAndClear)
               await assertMcpStdioMaterial(
                 { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
                 deps,
@@ -6193,16 +6209,24 @@ export function createRouter(deps: RouterDeps) {
             try {
               const stored =
                 update.action === "store" && Object.keys(update.material).length > 0
-                  ? await deps.secrets.put(
-                      JSON.stringify(update.material),
-                      computerContext(context.actor, "mcp", "mcp.update"),
-                      reservation
-                        ? { recordId: reservation.id, recoveryRef: reservation.recoveryRef }
-                        : undefined,
-                    )
+                  ? await deps.secrets
+                      .put(
+                        JSON.stringify(update.material),
+                        computerContext(context.actor, "mcp", "mcp.update"),
+                        reservation
+                          ? { recordId: reservation.id, recoveryRef: reservation.recoveryRef }
+                          : undefined,
+                      )
+                      .catch((error: unknown) => {
+                        if (!disableAndClear) throw error;
+                        clearFailed = true;
+                        return null;
+                      })
                   : null;
               const clearing =
-                update.action === "store" && Object.keys(update.material).length === 0;
+                !clearFailed &&
+                update.action === "store" &&
+                Object.keys(update.material).length === 0;
               const row = await persistPreparedSecret(
                 deps.prisma,
                 deps.secrets,
@@ -6269,40 +6293,45 @@ export function createRouter(deps: RouterDeps) {
                     const updated = await tx.mcpServer.update({
                       where: { id: existing.id },
                       data: {
-                        ...(connection
-                          ? {
-                              ...(patchHeaders && update.action === "store"
-                                ? {
-                                    headers: Object.fromEntries(
-                                      Object.keys(update.material.headers ?? {}).map((key) => [
-                                        key,
-                                        true,
-                                      ]),
-                                    ) as Prisma.InputJsonValue,
-                                  }
-                                : {}),
-                            }
-                          : {
-                              slug: config.slug,
-                              name: config.name,
-                              description: config.description,
-                              transport: config.transport,
-                              endpoint: nextEndpoint,
-                              command: "command" in config ? config.command : null,
-                              args: nextArgs as Prisma.InputJsonValue,
-                              env: (disableOnly
-                                ? current.env
-                                : stdio
+                        ...(clearFailed
+                          ? {}
+                          : connection
+                            ? {
+                                ...(patchHeaders && update.action === "store"
+                                  ? {
+                                      headers: Object.fromEntries(
+                                        Object.keys(update.material.headers ?? {}).map((key) => [
+                                          key,
+                                          true,
+                                        ]),
+                                      ) as Prisma.InputJsonValue,
+                                    }
+                                  : {}),
+                              }
+                            : {
+                                slug: config.slug,
+                                name: config.name,
+                                description: config.description,
+                                transport: config.transport,
+                                endpoint: nextEndpoint,
+                                command: "command" in config ? config.command : null,
+                                args: nextArgs as Prisma.InputJsonValue,
+                                env: (disableOnly
+                                  ? current.env
+                                  : stdio
+                                    ? Object.fromEntries(
+                                        Object.keys(nextMaterial.env ?? {}).map((key) => [
+                                          key,
+                                          true,
+                                        ]),
+                                      )
+                                    : {}) as Prisma.InputJsonValue,
+                                headers: ("headers" in config
                                   ? Object.fromEntries(
-                                      Object.keys(nextMaterial.env ?? {}).map((key) => [key, true]),
+                                      Object.keys(config.headers).map((key) => [key, true]),
                                     )
                                   : {}) as Prisma.InputJsonValue,
-                              headers: ("headers" in config
-                                ? Object.fromEntries(
-                                    Object.keys(config.headers).map((key) => [key, true]),
-                                  )
-                                : {}) as Prisma.InputJsonValue,
-                            }),
+                              }),
                         enabled: config.enabled,
                         ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
                         ...(config.verbatimResults === undefined
@@ -6358,8 +6387,14 @@ export function createRouter(deps: RouterDeps) {
               );
               if (row) {
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
+                if (clearFailed)
+                  throw new ORPCError("SERVICE_UNAVAILABLE", {
+                    message:
+                      "MCP server was disabled. Its credentials could not be cleared. Retry this setting.",
+                  });
                 let oauthStatus: McpServer["oauthStatus"];
-                if (disableOnly) oauthStatus = row.server.secretId ? "unknown" : "none";
+                if (disableOnly || disableAndClear)
+                  oauthStatus = row.server.secretId ? "unknown" : "none";
                 else if (!connection)
                   oauthStatus = await mcpOAuth.statusFor(row.server, context.actor);
                 else {

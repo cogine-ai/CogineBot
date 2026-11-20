@@ -1764,7 +1764,14 @@ describe("Run progress delivery", () => {
         };
       });
       try {
-        const f = fixture({ builtin: true, startedAt: new Date() });
+        const f = fixture({
+          builtin: true,
+          startedAt: new Date(),
+          secretHttp: {
+            fetch: vi.fn(),
+            resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+          },
+        });
         const create = vi.fn(async () => {
           if (!succeeds) {
             throw new DbModule.Prisma.PrismaClientKnownRequestError("Duplicate", {
@@ -1777,8 +1784,8 @@ describe("Run progress delivery", () => {
         Object.assign(f.prisma, { mcpServer: { create } });
         const args = {
           name: "Example tools",
-          transport: "stdio",
-          command: "example-tools",
+          transport: "streamable_http",
+          endpoint: "https://mcp.example.test/mcp",
           assign_to_self: assign,
         };
         f.runtimeRun.mockImplementation(async function* (request) {
@@ -1820,7 +1827,11 @@ describe("Run progress delivery", () => {
         startedAt: new Date(Date.now() - 60_000),
         rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "add_mcp_server" }],
       });
-      const args = { name: "Example tools", transport: "stdio", command: "example-tools" };
+      const args = {
+        name: "Example tools",
+        transport: "streamable_http",
+        endpoint: "https://mcp.example.test/mcp",
+      };
       f.runtimeRun.mockImplementation(async function* (request) {
         yield { type: "text", text: "The next tool may need approval." };
         yield { type: "tool", name: "add_mcp_server", args, executionId: "ask-first" };

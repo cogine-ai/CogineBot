@@ -321,6 +321,34 @@ describe("deployment-managed MCP stdio registration", () => {
     expect(f.secrets.put).not.toHaveBeenCalled();
   });
 
+  it.each(["missing record", "unreadable blob", "store read failure", "store write failure"])(
+    "disables the server and reports incomplete clearing after %s",
+    async (failure) => {
+      const f = fixture({ stdio: true });
+      f.server.enabled = true;
+      f.values.set("old-ref", JSON.stringify({ env, files, oauthClient, oauth: f.material.oauth }));
+      if (failure === "missing record") f.rows.delete("old");
+      if (failure === "unreadable blob") f.values.set("old-ref", "broken");
+      if (failure === "store read failure")
+        f.secrets.load.mockRejectedValue(new Error("Read failed"));
+      if (failure === "store write failure")
+        f.secrets.put.mockRejectedValue(new Error("Write failed"));
+      await expect(
+        f.client.mcp.servers.update({
+          id: f.server.id,
+          config: { ...config, clearCredential: true },
+        }),
+      ).rejects.toMatchObject({
+        code: "SERVICE_UNAVAILABLE",
+        message:
+          "MCP server was disabled. Its credentials could not be cleared. Retry this setting.",
+      });
+      expect(f.server).toMatchObject({ enabled: false, secretId: "old", revision: 2 });
+      expect(f.prisma.secret.deleteMany).not.toHaveBeenCalled();
+      expect(f.mcpOAuth.statusFor).not.toHaveBeenCalled();
+    },
+  );
+
   it("edits valid legacy stdio material without rotating a token or validating unused headers", async () => {
     const f = fixture({ stdio: true });
     f.values.set(

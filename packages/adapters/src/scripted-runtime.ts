@@ -580,9 +580,10 @@ export function inferScript(
             name: "add_mcp_server",
             args: {
               name: "Fixture MCP",
-              transport: "stdio",
-              command: "echo",
-              assignToSelf: true,
+              transport: "streamable_http",
+              endpoint: "https://mcp.example.test/mcp",
+              headers: { "X-Fixture": "approval" },
+              assign_to_self: true,
             },
           },
         ],
