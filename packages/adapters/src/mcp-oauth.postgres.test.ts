@@ -36,7 +36,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     }
   });
 
-  async function fixture({ withStaticCredential = true, expired = true } = {}) {
+  async function fixture({ withStaticCredential = true, expired = true, stdio = false } = {}) {
     const db = openDb();
     const entries = new Map<string, string>();
     const listeners = new Set<(ref: string) => void>();
@@ -77,6 +77,12 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     const context = { userId: id, spaceId: id };
     const material: OAuthMaterial = {
       ...(withStaticCredential ? { secret: "synthetic-static-credential" } : {}),
+      ...(stdio
+        ? {
+            oauthClient: { authorizationServer: issuer, clientId: "synthetic-client" },
+            files: { CONFIG_FILE: "{{oauth.access_token}}" },
+          }
+        : {}),
       oauth: {
         redirectUri: "https://app.example.test/callback",
         tokens: {
@@ -111,8 +117,9 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
         ...context,
         slug: "oauth",
         name: "OAuth",
-        transport: "streamable_http",
-        endpoint: "https://mcp.example.test/mcp",
+        transport: stdio ? "stdio" : "streamable_http",
+        endpoint: stdio ? null : "https://mcp.example.test/mcp",
+        ...(stdio ? { command: "fixture-mcp" } : {}),
         secretId: stored.id,
       },
     });
@@ -159,6 +166,19 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       broker,
     };
   }
+
+  it("renews a stdio grant without dropping the registered client or file declarations", async () => {
+    const f = await fixture({ stdio: true, withStaticCredential: false });
+    const tokens = await runAsTenant(f.context, () => f.provider.tokens());
+    expect(tokens).toMatchObject({ access_token: "access-1", refresh_token: "refresh-1", issuer });
+    expect(f.refresh).toHaveBeenCalledOnce();
+    const { material } = await f.read();
+    expect(material).toMatchObject({
+      oauthClient: { authorizationServer: issuer, clientId: "synthetic-client" },
+      files: { CONFIG_FILE: "{{oauth.access_token}}" },
+      oauth: { tokens },
+    });
+  });
 
   /** Execute the physical outcome, then lose the database acknowledgement. */
   function failSecretCommit(

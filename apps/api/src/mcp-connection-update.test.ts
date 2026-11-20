@@ -207,8 +207,14 @@ describe("deployment-managed MCP stdio registration", () => {
 
   it("stores the declaration in the scoped secret without returning its values", async () => {
     const f = fixture({ stdio: true });
-    const saved = await f.client.mcp.servers.create({ ...config, env, files, oauthClient });
-    expect(saved).toMatchObject({ enabled: false, envKeys: ["MCP_TOKEN"], hasSecret: true });
+    const saved = await f.client.mcp.servers.create({
+      ...config,
+      enabled: true,
+      env,
+      files,
+      oauthClient,
+    });
+    expect(saved).toMatchObject({ enabled: true, envKeys: ["MCP_TOKEN"], hasSecret: true });
     expect(JSON.stringify(saved)).not.toMatch(/fixture-client|fixture-private|oauth\.access_token/);
     expect(f.rows.get(f.server.secretId!)).toMatchObject({
       userId: actor.userId,
@@ -571,7 +577,6 @@ describe("deployment-managed MCP stdio registration", () => {
   });
 
   it.each([
-    { enabled: true, files, oauthClient },
     { command: "/opt/disallowed-mcp", files },
     { oauthClient: { ...oauthClient, authorizationServer: "https://private.example.test" } },
     { oauthClient: { ...oauthClient, authorizationServer: "https://login.example.test?" } },

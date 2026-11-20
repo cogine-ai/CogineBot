@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchTransaction } from "./connector-dispatch.js";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
 import { allowlistDrift, McpConnector } from "./mcp-connector.js";
-import { type McpOAuthBroker, StoredMcpOAuthProvider } from "./mcp-oauth.js";
+import type { McpOAuthBroker, OAuthMaterial } from "./mcp-oauth.js";
+import { StoredMcpOAuthProvider } from "./mcp-oauth.js";
 import { McpSession } from "./mcp-transport.js";
 import { InMemoryRealtimeFanout } from "./realtime.js";
 import { migrateSecrets } from "./secret-migration.js";
@@ -410,10 +411,12 @@ describe("MCP discovery lifecycle", () => {
   });
 
   it.each([
-    { files: { CONFIG_FILE: "fixture-config" } },
-    { oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" } },
-    { env: { MCP_TOKEN: "{{oauth.access_token}}" } },
-  ])("does not spawn with unhandled stdio credential material", async (material) => {
+    { files: { CONFIG_FILE: "{{oauth.access_token}}" } },
+    {
+      oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" },
+      env: { MCP_TOKEN: "{{oauth.access_token}}" },
+    },
+  ])("does not spawn when the declared OAuth credential is unavailable", async (material) => {
     const server = {
       ...SHARED_SERVER,
       transport: "stdio",
@@ -442,6 +445,185 @@ describe("MCP discovery lifecycle", () => {
       connect.mockRestore();
     }
   });
+
+  it("launches with declared credentials, retires an expired child, and never replays its call", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-rebuild-fixture-"));
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: "fixture",
+      secretId: "material",
+    };
+    const registered = {
+      authorizationServer: "https://auth.example.test",
+      clientId: "fixture-client",
+      clientSecret: "fixture-client-secret",
+    };
+    const start = Date.now();
+    let launchNumber = 0;
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    const material = {
+      oauthClient: registered,
+      env: { MCP_TOKEN: "Bearer {{oauth.access_token}}" },
+      files: { CONFIG_FILE: '{"access":"{{oauth.access_token}}","local":"private-fixture"}' },
+    };
+    const calls: string[] = [];
+    const connect = vi
+      .spyOn(McpSession.prototype, "connectStdio")
+      .mockImplementation(async (options) => {
+        launchNumber++;
+        const env = options.env!;
+        expect(Object.keys(env).sort()).toEqual(["CONFIG_FILE", "MCP_TOKEN"]);
+        expect(env.MCP_TOKEN).toBe(`Bearer fixture-grant-${launchNumber}`);
+        expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
+          access: `fixture-grant-${launchNumber}`,
+          local: "private-fixture",
+        });
+        expect((await stat(env.CONFIG_FILE!)).mode & 0o777).toBe(0o600);
+      });
+    const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "echo", inputSchema: { type: "object" } }],
+    });
+    const call = vi
+      .spyOn(McpSession.prototype, "callTool")
+      .mockImplementation(async (_name, args) => {
+        calls.push(String(args?.content));
+        return {
+          content: [{ type: "text", text: `fixture-grant-${launchNumber} private-fixture` }],
+        };
+      });
+    const oauth = {
+      providerFor: async (
+        _server: unknown,
+        _context: AdapterContext,
+        loaded: { material: OAuthMaterial },
+      ) => ({
+        tokens: async () => {
+          const tokens = {
+            access_token: `fixture-grant-${launchNumber + 1}`,
+            refresh_token: "unused-fixture-refresh",
+            token_type: "bearer",
+            expires_in: 3600,
+            issuer: registered.authorizationServer,
+          };
+          loaded.material.oauth = { tokens, obtainedAt: Date.now() };
+          return tokens;
+        },
+      }),
+    };
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      { load: async () => JSON.stringify(material) } as never,
+      { stdioEnabled: true, allowedCommands: ["fixture"], credentialTempRoot: root },
+      oauth as never,
+    );
+    try {
+      const [tool] = await connector.discoverTools(context);
+      const invoke = (content: string) =>
+        connector
+          .execute(
+            {
+              tool: tool!.name,
+              route: tool!.route,
+              args: { content },
+              executionId: content,
+            },
+            context,
+          )
+          [Symbol.asyncIterator]()
+          .next();
+      await expect(invoke("first-invocation")).resolves.toMatchObject({
+        value: { type: "result", data: { content: [{ text: "[redacted] [redacted]" }] } },
+      });
+      const firstPath = connect.mock.calls[0]![0].env!.CONFIG_FILE!;
+      now.mockReturnValue(start + 3_600_000);
+      await expect(invoke("second-invocation")).resolves.toMatchObject({
+        value: { type: "result" },
+      });
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(calls).toEqual(["first-invocation", "second-invocation"]);
+      await expect
+        .poll(async () =>
+          stat(firstPath).then(
+            () => true,
+            () => false,
+          ),
+        )
+        .toBe(false);
+    } finally {
+      await connector.close();
+      expect(await readdir(root)).toEqual([]);
+      await rm(root, { recursive: true, force: true });
+      now.mockRestore();
+      call.mockRestore();
+      list.mockRestore();
+      close.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
+  it.each(["startup failure", "process exit"])(
+    "removes the credential directory after %s",
+    async (cause) => {
+      const root = await mkdtemp(join(tmpdir(), "mcp-close-fixture-"));
+      const server = {
+        ...SHARED_SERVER,
+        transport: "stdio",
+        command: "fixture",
+        secretId: "material",
+      };
+      let child: McpSession | undefined;
+      const connect = vi
+        .spyOn(McpSession.prototype, "connectStdio")
+        .mockImplementation(async function (this: McpSession) {
+          child = this;
+          if (cause === "startup failure")
+            throw new Error("fixture process error with confidential-value");
+        });
+      const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+      const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+        tools: [{ name: "echo", inputSchema: { type: "object" } }],
+      });
+      const connector = new McpConnector(
+        {
+          mcpServer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+          secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+        } as never,
+        {
+          load: async () => JSON.stringify({ files: { CONFIG_FILE: "confidential-value" } }),
+        } as never,
+        { stdioEnabled: true, allowedCommands: ["fixture"], credentialTempRoot: root },
+      );
+      try {
+        const health = await connector.check(server as never, context);
+        if (cause === "process exit") {
+          expect(health.status).toBe("ok");
+          expect(await readdir(root)).toHaveLength(1);
+          child!.client.onclose?.();
+        } else {
+          expect(health).toMatchObject({
+            status: "error",
+            message: "fixture process error with [redacted]",
+          });
+        }
+        await expect.poll(() => readdir(root)).toEqual([]);
+      } finally {
+        await connector.close();
+        await rm(root, { recursive: true, force: true });
+        list.mockRestore();
+        close.mockRestore();
+        connect.mockRestore();
+      }
+    },
+  );
 
   it("keeps an active stdio session and closes it after the idle limit", async () => {
     const server = { ...SHARED_SERVER, transport: "stdio", command: "fixture" };
@@ -2125,3 +2307,8 @@ describe("plugin MCP dispatch settlement", () => {
     }
   });
 });
+
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AdapterContext } from "@rakazo/adapter-kit";

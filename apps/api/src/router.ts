@@ -769,15 +769,12 @@ function assertMcpStdioCommand(command: string, env: RouterDeps["env"]): void {
 }
 
 async function assertMcpStdioMaterial(
-  material: Parameters<typeof validateMcpStdioCredentials>[0] & { enabled: boolean },
+  material: Parameters<typeof validateMcpStdioCredentials>[0],
   deps: Pick<RouterDeps, "remoteConnectors">,
   previousClient?: McpStdioOAuthClient,
 ): Promise<void> {
   const message = validateMcpStdioCredentials(material);
   if (message) throw new ORPCError("BAD_REQUEST", { message });
-  if (material.enabled && (material.oauthClient || Object.keys(material.files ?? {}).length)) {
-    throw new ORPCError("BAD_REQUEST", { message: "Save this MCP credential setup disabled" });
-  }
   const issuer = material.oauthClient?.authorizationServer;
   if (!issuer || issuer === previousClient?.authorizationServer) return;
   try {
@@ -6241,7 +6238,7 @@ export function createRouter(deps: RouterDeps) {
             const writeRevision = expectedRevision ?? (stdio ? existing.revision : undefined);
             if (stdio && !disableOnly && !disableAndClear)
               await assertMcpStdioMaterial(
-                { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
+                { ...nextMaterial, args: nextArgs },
                 deps,
                 replaceCredentials ? undefined : existingMaterial.oauthClient,
               );

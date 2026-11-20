@@ -8,7 +8,11 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { McpServerHealth } from "@rakazo/contracts";
-import { isLocalMcpHost, MCP_STDIO_OAUTH_REFERENCE_START } from "@rakazo/contracts";
+import {
+  isLocalMcpHost,
+  MCP_STDIO_OAUTH_REFERENCE_START,
+  validateMcpStdioCredentials,
+} from "@rakazo/contracts";
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   assertManagedPluginActive,
@@ -37,13 +41,25 @@ import {
   resolveCatalogCall,
 } from "./lazy-tool-catalog.js";
 import type { McpOAuthBroker, OAuthMaterial } from "./mcp-oauth.js";
-import { oauthDiagnosticSecrets, oauthMaterialSecrets } from "./mcp-oauth.js";
+import {
+  McpReauthorizationRequiredError,
+  mcpOAuthAccessTokenExpiry,
+  oauthDiagnosticSecrets,
+  oauthMaterialSecrets,
+} from "./mcp-oauth.js";
 import type { McpHealthUpdate } from "./mcp-server-health.js";
 import {
   McpOAuthClientRequiredError,
   mcpHealthError,
   recordMcpServerHealth,
 } from "./mcp-server-health.js";
+import type { McpStdioOAuthValues } from "./mcp-stdio-files.js";
+import {
+  mcpCredentialFileSecrets,
+  renderMcpStdioFile,
+  renderMcpStdioTemplate,
+  writeMcpStdioCredentialFiles,
+} from "./mcp-stdio-files.js";
 import { McpSession } from "./mcp-transport.js";
 import { actorMayUsePrivateEndpoint } from "./private-endpoint.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -68,13 +84,19 @@ type DiscoveryState = {
   failure?: DiscoveryFailure;
 };
 
-type SessionEntry = {
+type ConnectedSession = {
   session: McpSession;
-  revision: number;
   material: OAuthMaterial;
   digest?: string;
   ref?: string;
   recordId?: string;
+  launchSecrets: string[];
+  expiresAt?: number;
+  processExited?: () => boolean;
+  removeCredentialFiles?: () => Promise<void>;
+};
+type SessionEntry = ConnectedSession & {
+  revision: number;
   active: number;
   lastUsed: number;
   stdio: boolean;
@@ -180,6 +202,7 @@ export class McpConnector implements ConnectorProvider {
       events?: Pick<ThreadEvents, "append">;
       allowPrivateEndpoint?: boolean;
       discoveryTimeoutMs?: number;
+      credentialTempRoot?: string;
     } = {},
     private readonly oauth?: McpOAuthBroker,
   ) {
@@ -336,7 +359,9 @@ export class McpConnector implements ConnectorProvider {
       context.signal.throwIfAborted();
       this.shutdown.signal.throwIfAborted();
       const reason = signal.aborted ? new Error("MCP tool discovery timed out") : error;
-      const secrets = entry ? oauthDiagnosticSecrets(entry.material) : [];
+      const secrets = entry
+        ? [...oauthDiagnosticSecrets(entry.material), ...entry.launchSecrets]
+        : [];
       health = mcpHealthError(reason, secrets);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
       await withAbort(
@@ -543,6 +568,8 @@ export class McpConnector implements ConnectorProvider {
       let dispatched: ReturnType<McpSession["callTool"]> | undefined;
       const dispatch = () => {
         context.signal.throwIfAborted();
+        if (entry!.expiresAt !== undefined && Date.now() >= entry!.expiresAt)
+          throw new McpReauthorizationRequiredError(server.id);
         dispatched = session.callTool(call.route!.toolName, call.args, {
           signal: context.signal,
           beforeDispatch: stdio ? undefined : checkDispatch,
@@ -595,11 +622,17 @@ export class McpConnector implements ConnectorProvider {
         dispatch();
       }
       const result = await dispatched!;
-      const secrets = material ? oauthMaterialSecrets(material) : [];
+      const secrets = [
+        ...(material ? oauthMaterialSecrets(material) : []),
+        ...(entry?.launchSecrets ?? []),
+      ];
       response = { type: "result", data: redactConnectorPayload(result, secrets) };
     } catch (error) {
       // A thrown call means the transport or auth broke; drop the session so the next call reconnects.
-      const secrets = material ? oauthMaterialSecrets(material) : [];
+      const secrets = [
+        ...(material ? oauthMaterialSecrets(material) : []),
+        ...(entry?.launchSecrets ?? []),
+      ];
       // Rejecting queued work must not close a session another already-dispatched
       // call is using. Permission changes are enforced by DB checks on every call.
       if (!admissionRejected && !context.signal.aborted && entry) this.retire(sessionKey, entry);
@@ -642,13 +675,23 @@ export class McpConnector implements ConnectorProvider {
 
   reapIdle(now = Date.now()): void {
     for (const [key, entry] of this.sessions) {
-      if (entry.stdio && entry.active === 0 && now - entry.lastUsed >= STDIO_IDLE_MS)
+      if (
+        entry.stdio &&
+        (this.stdioNeedsReplacement(entry, now) ||
+          (entry.active === 0 && now - entry.lastUsed >= STDIO_IDLE_MS))
+      )
         this.retire(key, entry);
     }
     for (const [key, observation] of this.discoveries) {
       if (now - (observation.failure?.until ?? observation.checkedAt.getTime()) >= STDIO_IDLE_MS)
         this.discoveries.delete(key);
     }
+  }
+
+  private stdioNeedsReplacement(entry: SessionEntry, now = Date.now()): boolean {
+    return (
+      entry.processExited?.() === true || (entry.expiresAt !== undefined && now >= entry.expiresAt)
+    );
   }
 
   private retire(key: string, entry: SessionEntry): void {
@@ -667,6 +710,7 @@ export class McpConnector implements ConnectorProvider {
     entry.closing ??= entry.session
       .close()
       .catch(() => undefined)
+      .then(() => entry.removeCredentialFiles?.())
       .finally(() => {
         this.retired.delete(entry);
       });
@@ -690,6 +734,10 @@ export class McpConnector implements ConnectorProvider {
     signal.throwIfAborted();
     this.shutdown.signal.throwIfAborted();
     if (entry.retired) throw new Error("MCP session changed; retry");
+    if (this.stdioNeedsReplacement(entry)) {
+      this.retire(this.sessionKey(server, context), entry);
+      throw new Error("MCP stdio session changed; retry");
+    }
     entry.active++;
     return entry;
   }
@@ -699,7 +747,8 @@ export class McpConnector implements ConnectorProvider {
     this.shutdown.signal.throwIfAborted();
     const sessionKey = this.sessionKey(server, context);
     const existing = this.sessions.get(sessionKey);
-    if (existing && existing.revision === server.revision) {
+    if (existing && this.stdioNeedsReplacement(existing)) this.retire(sessionKey, existing);
+    if (existing && !existing.retired && existing.revision === server.revision) {
       if (existing.ref && server.secretId) {
         try {
           const plaintext = await this.secrets.load(existing.ref, {
@@ -719,7 +768,9 @@ export class McpConnector implements ConnectorProvider {
         }
       }
       // A fresh read can detect rotation and synchronously evict this entry.
-      if (this.sessions.get(sessionKey) === existing) return existing;
+      if (this.sessions.get(sessionKey) === existing && !this.stdioNeedsReplacement(existing))
+        return existing;
+      this.retire(sessionKey, existing);
       return this.sessionFor(server, context);
     }
     const pending = this.connecting.get(sessionKey);
@@ -750,19 +801,15 @@ export class McpConnector implements ConnectorProvider {
           live.digest = digest;
         }
       },
-    ).then(async ({ session, material, ref, digest, recordId }) => {
+    ).then(async (resources) => {
       if (connectSignal.aborted || this.connecting.get(sessionKey)?.invalidated) {
-        await session.close();
+        await resources.session.close().finally(() => resources.removeCredentialFiles?.());
         connectSignal.throwIfAborted();
         throw new Error("Secret changed during MCP connection; retry");
       }
       connected = {
-        session,
+        ...resources,
         revision: server.revision,
-        material,
-        ref,
-        digest,
-        recordId,
         active: 0,
         lastUsed: Date.now(),
         stdio: server.transport === "stdio",
@@ -783,16 +830,14 @@ export class McpConnector implements ConnectorProvider {
     server: McpServer,
     context: AdapterContext,
     onRef: (ref: string, recordId: string, digest?: string) => void,
-  ): Promise<{
-    session: McpSession;
-    material: OAuthMaterial;
-    ref?: string;
-    digest?: string;
-    recordId?: string;
-  }> {
+  ): Promise<ConnectedSession> {
     const session = new McpSession({ name: `rakazo-${server.slug}` });
     // Hoisted so a throw after the secret is decoded can still hand the material out.
     let material: OAuthMaterial | undefined;
+    const launchSecrets: string[] = [];
+    let removeCredentialFiles: (() => Promise<void>) | undefined;
+    let expiresAt: number | undefined;
+    let processExited: (() => boolean) | undefined;
     try {
       const secret = server.secretId
         ? await withAbort(
@@ -830,24 +875,89 @@ export class McpConnector implements ConnectorProvider {
         material = {};
       }
       const loaded = { material, ...(secret ? { secretId: secret.id } : {}) };
+      const onPersisted = (record: { ref: string; id: string; material: OAuthMaterial }) => {
+        ref = record.ref;
+        recordId = record.id;
+        digest = credentialDigest(JSON.stringify(record.material));
+        onRef(ref, recordId, digest);
+      };
       const args = Array.isArray(server.args) ? server.args.map(String) : [];
       const env = { ...(material.env ?? {}) };
       context.signal.throwIfAborted();
       if (server.transport === "stdio") {
         if (!this.options.stdioEnabled) throw new Error("MCP stdio is disabled");
+        const command = server.command?.trim() ?? "";
+        const allowedCommands = this.options.allowedCommands ?? [];
+        if (!allowedCommands.includes(command))
+          throw new Error("MCP stdio command is not in the configured allowlist");
+        const invalid = validateMcpStdioCredentials({ ...material, env, args });
+        if (invalid) throw new Error(invalid);
+        const files = material.files ?? {};
+        let values: McpStdioOAuthValues = {};
         if (
-          material.oauthClient ||
-          Object.keys(material.files ?? {}).length ||
-          Object.values(env).some((value) => MCP_STDIO_OAUTH_REFERENCE_START.test(value)) ||
-          args.some((arg) => MCP_STDIO_OAUTH_REFERENCE_START.test(arg))
+          [...Object.values(env), ...Object.values(files)].some((value) =>
+            MCP_STDIO_OAUTH_REFERENCE_START.test(value),
+          )
         ) {
-          throw new Error("MCP stdio credentials are not available to the launcher");
+          const provider = await withAbort(
+            this.oauth?.providerFor(server, context, loaded, onPersisted) ??
+              Promise.resolve(undefined),
+            context.signal,
+          );
+          const tokens = await withAbort(Promise.resolve(provider?.tokens()), context.signal);
+          expiresAt = mcpOAuthAccessTokenExpiry(material);
+          if (!tokens || (expiresAt !== undefined && expiresAt <= Date.now()))
+            throw new McpReauthorizationRequiredError(server.id);
+          values = {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            client_id: material.oauthClient?.clientId,
+            client_secret: material.oauthClient?.clientSecret,
+            expires_at: expiresAt === undefined ? undefined : String(expiresAt),
+            scope: tokens.scope ?? material.oauthClient?.scope,
+            token_type: tokens.token_type,
+          };
         }
+        for (const [name, template] of Object.entries(env)) {
+          if (!MCP_STDIO_OAUTH_REFERENCE_START.test(template)) continue;
+          const value = renderMcpStdioTemplate(template, values);
+          if (value.includes("\0"))
+            throw new Error("MCP stdio environment values cannot contain NUL characters");
+          launchSecrets.push(value);
+          env[name] = value;
+        }
+        const renderedFiles = Object.fromEntries(
+          Object.entries(files).map(([name, template]) => {
+            const content = renderMcpStdioFile(template, values);
+            launchSecrets.push(...mcpCredentialFileSecrets(content));
+            return [name, content];
+          }),
+        );
+        if (Object.keys(renderedFiles).length) {
+          const written = await writeMcpStdioCredentialFiles(
+            renderedFiles,
+            context.signal,
+            this.options.credentialTempRoot,
+          );
+          removeCredentialFiles = written.remove;
+          Object.assign(env, written.env);
+        }
+        let exited = false;
+        processExited = () => exited;
+        const previousClose = session.client.onclose;
+        session.client.onclose = () => {
+          exited = true;
+          try {
+            previousClose?.();
+          } finally {
+            void removeCredentialFiles?.();
+          }
+        };
         await session.connectStdio({
-          command: String(server.command ?? ""),
+          command,
           args,
           env,
-          allowedCommands: this.options.allowedCommands ?? [],
+          allowedCommands,
           timeoutMs: STDIO_STARTUP_MS,
           signal: context.signal,
         });
@@ -866,12 +976,7 @@ export class McpConnector implements ConnectorProvider {
         const authProvider =
           !localHttp && this.oauth
             ? await withAbort(
-                this.oauth.providerFor(server, context, loaded, (record) => {
-                  ref = record.ref;
-                  recordId = record.id;
-                  digest = credentialDigest(JSON.stringify(record.material));
-                  onRef(ref, recordId, digest);
-                }),
+                this.oauth.providerFor(server, context, loaded, onPersisted),
                 context.signal,
               )
             : undefined;
@@ -901,15 +1006,26 @@ export class McpConnector implements ConnectorProvider {
           signal: context.signal,
         });
       }
-      return { session, material, ref, digest, recordId };
+      return {
+        session,
+        material,
+        ref,
+        digest,
+        recordId,
+        launchSecrets,
+        expiresAt,
+        processExited,
+        removeCredentialFiles,
+      };
     } catch (error) {
       await session.close().catch(() => undefined);
+      await removeCredentialFiles?.();
       // Redact here, while the material is still in hand. This one rejection is handed
       // to every caller waiting on the same pending connect, and none of them can see
       // the secrets: the session never reached `sessions`. Sanitizing per caller would
       // cover only whoever looked first.
       if (!material) throw error;
-      const health = mcpHealthError(error, oauthDiagnosticSecrets(material));
+      const health = mcpHealthError(error, [...oauthDiagnosticSecrets(material), ...launchSecrets]);
       if (health.code) throw new McpOAuthClientRequiredError();
       throw new Error(health.message ?? "MCP connection failed");
     }
