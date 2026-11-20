@@ -27,7 +27,7 @@ are rejected. Local processes, hooks and variable templates are skipped.
 Expand **Reference files** in a Skill preview to check the paths and sizes that
 will be installed. Each Skill can include up to 40 Markdown, MDX, plain text,
 JSON, YAML or CSV files, with a combined limit of 400,000 bytes. A Skill with a
-missing required reference, an unsupported file or an exceeded limit appears
+missing or unreadable reference, an unsupported file or an exceeded limit appears
 under **Skipped components**. A Bot can read the installed text by its listed
 relative path. Removing the plugin removes access to those files.
 

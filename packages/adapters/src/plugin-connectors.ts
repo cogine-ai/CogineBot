@@ -74,7 +74,7 @@ const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
 const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
 const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
 const INLINE_SKILL_FILE =
-  /^(?:\{baseDir\}\/|\.\/|(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
+  /^(?:\{baseDir\}\/|(?:\.\/)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([

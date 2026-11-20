@@ -695,7 +695,7 @@ describe("portable format compatibility fixtures", () => {
         file.path.endsWith("/SKILL.md")
           ? {
               ...file,
-              content: `${file.content}\n[Notes][notes]\n\n[notes]: ./references/notes.md#intro\n\n[Web](https://example.test/)\n\n\x60[Example](not-a-file.md)\x60`,
+              content: `${file.content}\n[Notes][notes]\n\n[notes]: ./references/notes.md#intro\n\n[Web](https://example.test/)\n\n\x60[Example](not-a-file.md)\x60. Create \x60./output.md\x60.`,
             }
           : file,
       );
