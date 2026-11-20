@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type { Bot, Routine } from "@rakazo/contracts";
+import { formatRoutineTime, ONCE_ROUTINE_CRON } from "@rakazo/core";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
 
 async function addScheduleTrigger(page: Page, freq: string) {
@@ -159,11 +160,16 @@ test("a repeat can start on a saved future date and keep it through pause and re
   await item.click();
   await expect(page.getByLabel("First run")).toHaveValue(first);
   await expect(page.getByText(/Next run: .*GMT\+9/)).toBeVisible();
+  const externalDay = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
   const nextDay = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10);
   await rpc(page, "routines/update", {
     routineId: created!.id,
     prompt: "Use the latest project status",
+    startAt: `${externalDay}T09:00`,
   });
+  const nextRun = formatRoutineTime(`${externalDay}T00:00:00Z`, "Asia/Tokyo", "en-US");
+  await expect(page.getByText(`Next run: ${nextRun}`, { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Instruction")).toHaveValue("Summarize the project status");
   await page.getByLabel("First run").fill(`${nextDay}T09:00`);
   const timePatch = await saveAndReturn(page, "routines/update");
   expect(timePatch).not.toHaveProperty("prompt");
@@ -190,6 +196,62 @@ test("a repeat can start on a saved future date and keep it through pause and re
   await saveAndReturn(page, "routines/update");
   const [resumed] = await rpc<Routine[]>(page, "routines/list", { botId });
   expect(resumed).toMatchObject({ id: created!.id, active: true, nextRunAt: retimed!.nextRunAt });
+});
+
+test("an open editor preserves external one-shot arm and pause when saving a name", async ({
+  page,
+}) => {
+  await signup(page, `one-shot-${Date.now()}@example.test`, "password12", "Schedule Fixture");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const created = await rpc<Routine>(page, "routines/create", {
+    botId,
+    name: "One-shot check",
+    prompt: "Check the project",
+    crons: [ONCE_ROUTINE_CRON],
+    timezone: "UTC",
+    active: false,
+    notify: true,
+  });
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: /One-shot check/ }).click();
+  await expect(page.getByLabel("Run at")).toBeVisible();
+  await page.getByLabel("Name").fill("Renamed one-shot check");
+  const runAt = new Date(Date.now() + 86_400_000).toISOString();
+  await rpc(page, "routines/update", { routineId: created.id, active: true, runAt });
+  await expect(page.getByLabel("Run at")).toHaveCount(0);
+  const patch = await saveAndReturn(page, "routines/update");
+  expect(patch).not.toHaveProperty("runAt");
+  expect(patch).not.toHaveProperty("active");
+  expect((await rpc<Routine[]>(page, "routines/list", { botId }))[0]).toMatchObject({
+    id: created.id,
+    name: "Renamed one-shot check",
+    active: true,
+    nextRunAt: runAt,
+  });
+
+  await page.getByRole("button", { name: /Renamed one-shot check/ }).click();
+  await expect(page.getByLabel("Run at")).toHaveCount(0);
+  await page.getByLabel("Name").fill("Paused one-shot check");
+  await rpc(page, "routines/update", { routineId: created.id, active: false });
+  await expect(page.getByRole("switch", { name: "Active" })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  const rename = await saveAndReturn(page, "routines/update");
+  expect(rename).not.toHaveProperty("runAt");
+  expect(rename).not.toHaveProperty("active");
+  expect((await rpc<Routine[]>(page, "routines/list", { botId }))[0]).toMatchObject({
+    id: created.id,
+    name: "Paused one-shot check",
+    active: false,
+    nextRunAt: null,
+  });
+
+  await page.getByRole("button", { name: /Paused one-shot check/ }).click();
+  await page.getByRole("switch", { name: "Active" }).click();
+  const resumed = await saveAndReturn(page, "routines/update");
+  expect(resumed).toMatchObject({ active: true, runAt: expect.any(String) });
 });
 
 test("keeps the distinction between a literal cron and an interval with the same expression", async ({

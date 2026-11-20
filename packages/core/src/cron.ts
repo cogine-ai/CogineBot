@@ -317,8 +317,21 @@ export function retimeRoutineTimezone(
   fromZone: string,
   toZone: string,
 ) {
-  const local = moveRoutineWallTime(due, fromZone, toZone);
-  if (local <= due && local > now) return local;
+  const source = validRoutineTimezone(fromZone);
+  const wall = routineWallTime(due.getTime(), source);
+  const before = routineWallTime(due.getTime() - 1, source);
+  // At a clock jump, the persisted instant can stand for a skipped calendar slot.
+  const gapSlot =
+    wall - before > 1 ? nextCronDateAcrossStrict(crons, new Date(before), "UTC") : null;
+  const authoredWall = gapSlot && gapSlot.getTime() <= wall ? gapSlot.getTime() : wall;
+  const local = new Date(routineWallInstant(authoredWall, validRoutineTimezone(toZone)));
+  if (
+    local > now &&
+    (crons.length > 1 || local <= due || authoredWall !== wall) &&
+    nextRoutineDateFrom(crons, now, toZone, local)?.getTime() === local.getTime()
+  ) {
+    return local;
+  }
   return nextRoutineDateFrom(crons, now, toZone, local > now ? due : null);
 }
 

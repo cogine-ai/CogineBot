@@ -2516,6 +2516,9 @@ export function ShellPage() {
           isRunTerminalEvent(event) ||
           event.type === "run.waiting_input" ||
           event.type === "thread.message.updated" ||
+          event.type === "routine.created" ||
+          event.type === "routine.fired" ||
+          event.type === "routine.updated" ||
           event.type === "skill.teaching.stopped"
         ) {
           // waiting_input: reconcile ask cards if a stale post-send refresh raced SSE.
@@ -7046,6 +7049,11 @@ export function ShellPage() {
                 draft={routineDraft}
                 onChange={setRoutineDraft}
                 editing={editingRoutine}
+                liveTiming={
+                  routinesBotId === active.id
+                    ? routines.find((routine) => routine.id === editingRoutine?.id)
+                    : undefined
+                }
                 timezone={editingRoutine?.timezone ?? bootstrapMe?.timezone ?? localTimezone()}
                 webhook={{
                   path:
@@ -7140,7 +7148,13 @@ export function ShellPage() {
                         : {};
                     let saved: Routine;
                     if (targetRoutine) {
-                      const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
+                      const latestRoutine =
+                        (routinesBotId === targetBotId
+                          ? routines.find((routine) => routine.id === targetRoutine.id)
+                          : undefined) ?? targetRoutine;
+                      const armOneShot =
+                        routineNeedsOneShotArm(latestRoutine, crons) &&
+                        (routineDraft.activeDirty ? routineDraft.active : routineDraft.runAtDirty);
                       const previousSchedules = routineCronPresets(
                         targetRoutine.crons,
                         targetRoutine.intervalBased,
@@ -7183,9 +7197,9 @@ export function ShellPage() {
                           scheduleChanged || intervalChanged ? intervalBased : undefined,
                         active: armOneShot
                           ? true
-                          : routineDraft.active === targetRoutine.active
-                            ? undefined
-                            : routineDraft.active,
+                          : routineDraft.activeDirty && routineDraft.active !== latestRoutine.active
+                            ? routineDraft.active
+                            : undefined,
                         webhookEnabled:
                           routineDraft.webhookEnabled === targetRoutine.webhookEnabled
                             ? undefined
@@ -7225,6 +7239,9 @@ export function ShellPage() {
                     ) {
                       setEditingRoutine(saved);
                       setRoutineDraft(draftFromRoutine(saved));
+                      setRoutines((items) =>
+                        items.map((routine) => (routine.id === saved.id ? saved : routine)),
+                      );
                     }
                   } catch (error) {
                     if (

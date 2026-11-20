@@ -1025,6 +1025,10 @@ export const builtinAgentTools: ConnectorTool[] = [
       properties: {
         ...scheduleCreateProperties,
         ...scheduleTimingSpecs,
+        timezone: {
+          type: "string",
+          description: "IANA timezone. Omit to keep the schedule's saved timezone.",
+        },
         id: { type: "string", description: "The routineId returned by schedule_list." },
         active: { type: "boolean", description: "Pause with false or resume with true." },
         startAt: {

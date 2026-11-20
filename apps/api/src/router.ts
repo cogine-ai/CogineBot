@@ -1352,16 +1352,21 @@ export function createRouter(deps: RouterDeps) {
     if (!routine) throw new IsolationError();
     const bot = await repos.getBot(actor, routine.botId);
     if (!bot.thread) throw new IsolationError();
-    return { routineId: routine.id, botId: bot.id, threadId: bot.thread.id };
+    const threadId = routine.groupScoped ? routine.threadId : bot.thread.id;
+    if (!threadId) throw new IsolationError("The original conversation is no longer available.");
+    return { routineId: routine.id, botId: bot.id, threadId, groupScoped: routine.groupScoped };
   }
 
   async function createRoutineTestRun(
     tx: Prisma.TransactionClient,
     actor: Actor,
-    { routineId, botId, threadId }: Awaited<ReturnType<typeof routineTestTarget>>,
+    { routineId, botId, threadId, groupScoped }: Awaited<ReturnType<typeof routineTestTarget>>,
     skillRecords: Awaited<ReturnType<typeof agentSkills.listWithContent>>,
     nonce?: string,
   ) {
+    if (groupScoped && !(await lockActiveRoutineGroup(tx, { ...actor, botId, threadId }))) {
+      throw new IsolationError("The original conversation is no longer available.");
+    }
     const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM routines
       WHERE id=${routineId} AND "userId"=${actor.userId}
         AND "spaceId"=${actor.spaceId} AND "botId"=${botId} FOR UPDATE`;

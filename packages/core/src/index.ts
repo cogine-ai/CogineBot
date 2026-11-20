@@ -65,6 +65,7 @@ export * from "./remote-images.js";
 export * from "./reply-announcement.js";
 export * from "./response-bytes.js";
 export {
+  defaultRoutineDateTimeLocal,
   formatRoutineTime,
   parseRoutineDateTime,
   routineDateTimeLocal,

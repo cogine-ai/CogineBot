@@ -11,10 +11,13 @@ WHERE routine."threadId" = thread.id AND thread."groupId" IS NOT NULL;
 
 UPDATE "public"."routines" AS routine
 SET active = false, "nextRunAt" = NULL, "latestRunId" = NULL, "autoCompletedRunId" = NULL
-WHERE routine."groupScoped" AND NOT EXISTS (
+WHERE routine."groupScoped" AND (NOT EXISTS (
   SELECT 1 FROM "public"."threads" AS thread
   JOIN "public"."chat_groups" AS origin ON origin.id = thread."groupId"
   JOIN "public"."chat_group_members" AS member ON member."groupId" = origin.id
   WHERE thread.id = routine."threadId" AND origin."archivedAt" IS NULL
     AND member."botId" = routine."botId"
-);
+) OR (cardinality(routine.crons) = 0 AND NOT EXISTS (
+  SELECT 1 FROM "public"."native_routine_triggers" AS native
+  WHERE native."routineId" = routine.id
+)));

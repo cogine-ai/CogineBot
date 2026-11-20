@@ -20,7 +20,7 @@ import {
   retimeRoutineTimezone,
   routineCronPresets,
 } from "./cron.js";
-import { parseRoutineDateTime } from "./routine-time.js";
+import { defaultRoutineDateTimeLocal, parseRoutineDateTime } from "./routine-time.js";
 
 describe("Routine scheduling clocks", () => {
   it("uses the saved timezone and includes the first exact local occurrence", () => {
@@ -51,6 +51,53 @@ describe("Routine scheduling clocks", () => {
     expect(nextCronDate("30 1 * * *", new Date("2027-11-07T06:15:00Z"), zone).toISOString()).toBe(
       "2027-11-08T06:30:00.000Z",
     );
+  });
+
+  it("seeds a future picker value before clocks repeat an hour", () => {
+    const now = new Date("2026-11-01T05:30:00Z");
+    const zone = "America/New_York";
+    const initial = defaultRoutineDateTimeLocal(now, zone);
+    expect(parseRoutineDateTime(initial, zone)).toEqual(new Date("2026-11-01T07:30:00Z"));
+  });
+
+  it("keeps the pending late slot when a multi-cron plan moves west", () => {
+    const now = new Date("2027-03-04T12:00:00Z");
+    const due = new Date("2027-03-04T14:00:00Z");
+    expect(
+      retimeRoutineTimezone(
+        ["0 6 * * *", "0 9 * * *"],
+        due,
+        now,
+        "America/New_York",
+        "America/Los_Angeles",
+      ),
+    ).toEqual(new Date("2027-03-04T17:00:00Z"));
+  });
+
+  it("uses the destination cron when the pending local time was moved out of a DST gap", () => {
+    const now = new Date("2027-03-14T06:00:00Z");
+    const due = new Date("2027-03-14T07:00:00Z");
+    expect(
+      retimeRoutineTimezone(
+        ["30 2 * * *", "0 9 * * *"],
+        due,
+        now,
+        "America/New_York",
+        "America/Phoenix",
+      ),
+    ).toEqual(new Date("2027-03-14T09:30:00Z"));
+  });
+
+  it("does not replay a slot before the pending DST gap when moving west", () => {
+    expect(
+      retimeRoutineTimezone(
+        ["0 1 * * *", "30 2 * * *"],
+        new Date("2027-03-14T07:00:00Z"),
+        new Date("2027-03-14T06:30:00Z"),
+        "America/New_York",
+        "America/Phoenix",
+      ),
+    ).toEqual(new Date("2027-03-14T09:30:00Z"));
   });
 
   it("keeps a delayed repeat on the same local day when its zone moves", () => {

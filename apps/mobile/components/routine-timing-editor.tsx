@@ -6,6 +6,7 @@ import {
   clampIntervalAmount,
   cronFromPreset,
   cronIntervalAmounts,
+  defaultRoutineDateTimeLocal,
   formatRoutineTime,
   isOneShotRoutineCrons,
   parseRoutineDateTime,
@@ -200,7 +201,7 @@ export function RoutineTimingEditor({
     ? formatRoutineTime(routine.nextRunAt, routine.timezone, dateLocaleForUi(locale))
     : null;
   const canArm = oneShot && !routine.lastRunAt && !routine.nextRunAt;
-  const localNow = () => routineDateTimeLocal(new Date(Date.now() + 3_600_000), routine.timezone);
+  const localNow = () => defaultRoutineDateTimeLocal(new Date(), routine.timezone);
   const currentStart =
     routine.startAt && new Date(routine.startAt).getTime() > Date.now()
       ? routineDateTimeLocal(new Date(routine.startAt), routine.timezone)
@@ -239,37 +240,54 @@ export function RoutineTimingEditor({
       ) : null}
       {readOnly ? null : editing ? (
         <>
-          {repeating
-            ? schedules.map((preset, index) => (
-                <RepeatControl
-                  key={index}
-                  value={preset}
-                  onChange={(next) =>
-                    setSchedules((items) => items.map((item, i) => (i === index ? next : item)))
-                  }
+          <View
+            pointerEvents={saving ? "none" : "auto"}
+            accessibilityElementsHidden={saving}
+            importantForAccessibility={saving ? "no-hide-descendants" : "auto"}
+            style={{ gap: 8 }}
+          >
+            {repeating
+              ? schedules.map((preset, index) => (
+                  <RepeatControl
+                    key={index}
+                    value={preset}
+                    onChange={(next) => {
+                      if (!saving)
+                        setSchedules((items) =>
+                          items.map((item, i) => (i === index ? next : item)),
+                        );
+                    }}
+                  />
+                ))
+              : null}
+            {shownStart ? (
+              <>
+                <Text style={{ color: tokens.mutedForeground }}>
+                  {canArm ? t("Run at") : t("First run")}
+                </Text>
+                <LocalDateTimePicker
+                  value={shownStart}
+                  zone={routine.timezone}
+                  onChange={(value) => {
+                    if (!saving) setStartAt(value);
+                  }}
                 />
-              ))
-            : null}
-          {shownStart ? (
-            <>
-              <Text style={{ color: tokens.mutedForeground }}>
-                {canArm ? t("Run at") : t("First run")}
-              </Text>
-              <LocalDateTimePicker
-                value={shownStart}
-                zone={routine.timezone}
-                onChange={setStartAt}
+                {repeating ? (
+                  <NativeActionButton
+                    label={t("Use next occurrence")}
+                    disabled={saving}
+                    onPress={() => setStartAt(null)}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <NativeActionButton
+                label={t("Set first run")}
+                disabled={saving}
+                onPress={() => setStartAt(localNow())}
               />
-              {repeating ? (
-                <NativeActionButton
-                  label={t("Use next occurrence")}
-                  onPress={() => setStartAt(null)}
-                />
-              ) : null}
-            </>
-          ) : (
-            <NativeActionButton label={t("Set first run")} onPress={() => setStartAt(localNow())} />
-          )}
+            )}
+          </View>
           <NativeActionButton
             label={saving ? t("Saving…") : t("Save")}
             disabled={saving || !changed}

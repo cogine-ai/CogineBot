@@ -6,6 +6,7 @@ import { appendEvent, createDb, createGroupRepos, Prisma, sendUserMessage } from
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createRunExecutor } from "./executor.js";
 import { createJobReconciler } from "./job-reconciler.js";
+import { requireRoutineTrigger } from "./native-connectors/events/store.js";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
 import {
   cancelScheduleFromTool,
@@ -400,6 +401,62 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       });
     },
   );
+
+  it("requires a runnable trigger before an old group Routine can become active", async () => {
+    const { routine } = await fixture();
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { groupScoped: true, crons: [], webhookEnabled: true },
+    });
+    await expect(requireRoutineTrigger(system, identity, routine.id)).rejects.toThrow(
+      "Add a schedule or application event before resuming.",
+    );
+    await system.routine.update({ where: { id: routine.id }, data: { active: false } });
+    await expect(requireRoutineTrigger(system, identity, routine.id)).resolves.toBeUndefined();
+  });
+
+  it("refreshes a group routine's editor without sending the group run to the direct thread", async () => {
+    const group = await system.chatGroup.create({
+      data: {
+        spaceId,
+        userId,
+        name: "Scheduled group",
+        thread: { create: { spaceId, userId } },
+        members: { create: { botId: identity.botId } },
+      },
+      include: { thread: true },
+    });
+    const threadId = group.thread!.id;
+    const due = new Date(Date.now() - 1_000);
+    const { routine } = await fixture();
+    await system.routine.update({
+      where: { id: routine.id },
+      data: { threadId, groupScoped: true, nextRunAt: due },
+    });
+    const append = vi.fn((input: Parameters<typeof appendEvent>[1]) => appendEvent(system, input));
+    const jobs = {
+      enqueue: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+    };
+    const executor = createRunExecutor({
+      prisma: system,
+      jobs,
+      events: { append },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+    await executor.wakeRoutine(routine.id, due.toISOString());
+    const run = await system.run.findFirstOrThrow({ where: { routineId: routine.id } });
+    expect(run.threadId).toBe(threadId);
+    expect(append.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ threadId, type: "routine.fired", runId: run.id }),
+      {
+        spaceId,
+        botId: identity.botId,
+        threadId: identity.threadId,
+        type: "routine.updated",
+        payload: { routineId: routine.id, active: true },
+      },
+    ]);
+  });
 
   it("serializes a group timer claim with archive and keeps the schedule paused after restore", async () => {
     const group = await system.chatGroup.create({

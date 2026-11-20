@@ -12,6 +12,73 @@ const actor: Actor = {
 };
 
 describe("routine test run snapshot", () => {
+  it.each([true, false])(
+    "checks the original group before a manual run (available=%s)",
+    async (available) => {
+      const routine = {
+        id: "routine-1",
+        botId: "bot-1",
+        userId: actor.userId,
+        spaceId: actor.spaceId,
+        threadId: "group-thread",
+        groupScoped: true,
+        prompt: "Review the fixture",
+        authorizedInstructions: null,
+        authorizedSites: [],
+      };
+      const createTask = vi.fn(async () => ({ id: "test-task" }));
+      const createRun = vi.fn(async () => ({ id: "test-run" }));
+      const tx = {
+        $queryRaw: vi
+          .fn()
+          .mockResolvedValueOnce([{ id: "group-1" }])
+          .mockResolvedValueOnce([{ id: routine.id }])
+          .mockResolvedValue([]),
+        thread: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValueOnce({ groupId: "group-1" })
+            .mockResolvedValueOnce(available ? { id: routine.threadId } : null),
+        },
+        routine: {
+          findFirst: vi.fn(async () => ({ id: routine.id })),
+          findUnique: vi.fn(async () => routine),
+          updateMany: vi.fn(async () => ({ count: 1 })),
+        },
+        task: { create: createTask },
+        run: { create: createRun },
+        spaceMember: { findUnique: vi.fn(async () => ({ id: "membership" })) },
+      };
+      const prisma = {
+        routine: { findFirst: vi.fn(async () => routine) },
+        bot: {
+          findFirst: vi.fn(async () => ({ id: routine.botId, thread: { id: "private-thread" } })),
+        },
+        spaceMember: tx.spaceMember,
+        agentSkill: { findMany: vi.fn(async () => []) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      };
+      const enqueue = vi.fn(async () => undefined);
+      const client = createRouterClient(
+        createRouter({ prisma, jobs: { enqueue }, env: {} } as unknown as RouterDeps),
+        { context: { actor } },
+      );
+      const run = client.routines.testRun({ routineId: routine.id });
+      if (available) {
+        await expect(run).resolves.toEqual({ runId: "test-run" });
+        expect(createRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ threadId: routine.threadId }),
+          }),
+        );
+      } else {
+        await expect(run).rejects.toThrow("The original conversation is no longer available.");
+        expect(createTask).not.toHaveBeenCalled();
+        expect(enqueue).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each([
     {
       modelCredentialId: "connection-a",

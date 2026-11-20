@@ -16,6 +16,7 @@ import { listNativeRoutineTriggersBatch } from "./native-connectors/events/store
 import { nativeSourceJob } from "./native-connectors/events/worker.js";
 import {
   patchRoutineTiming,
+  publishRoutineTiming,
   RoutineTimingError,
   repeatStartAt,
   routineAdmissionError,
@@ -276,6 +277,17 @@ export interface ScheduleToolDeps {
   jobs: JobPublisher;
 }
 
+async function publishGroupRoutineTiming(deps: ScheduleToolDeps, row: Routine): Promise<void> {
+  if (!row.groupScoped) return;
+  const direct = await deps.prisma.thread
+    .findUnique({
+      where: { botId: row.botId },
+      select: { id: true, userId: true, spaceId: true },
+    })
+    .catch(() => null);
+  if (direct) await publishRoutineTiming(deps.events, row, direct, row.active);
+}
+
 /** Persist and enqueue a bot routine that wakes in the originating thread. */
 export async function createScheduleFromTool(
   deps: ScheduleToolDeps,
@@ -362,6 +374,7 @@ export async function createScheduleFromTool(
   } catch {
     // Match routines.create: the reminder is live even if the thread signal fails.
   }
+  await publishGroupRoutineTiming(deps, row);
 
   return {
     ok: true as const,
@@ -479,6 +492,14 @@ export async function updateScheduleFromTool(
           return { error: "The original conversation is no longer available." };
         }
         if (
+          patch.data.active &&
+          current.groupScoped &&
+          patch.data.crons.length === 0 &&
+          !(await tx.nativeRoutineTrigger.count({ where: { routineId: current.id } }))
+        ) {
+          return { error: "Add a schedule or application event before resuming." };
+        }
+        if (
           timing?.oneShot &&
           !isOneShotRoutineCrons(current.crons) &&
           (current.webhookEnabled ||
@@ -566,6 +587,7 @@ export async function updateScheduleFromTool(
       payload: { routineId: row.id, active: row.active },
     })
     .catch(() => undefined);
+  await publishGroupRoutineTiming(deps, row);
   return {
     ok: true as const,
     routineId: row.id,
@@ -579,7 +601,14 @@ export async function updateScheduleFromTool(
 /** List bot routines, optionally restricted to the current group thread. */
 export async function listSchedulesFromTool(
   deps: Pick<ScheduleToolDeps, "prisma">,
-  input: { spaceId: string; botId: string; userId: string; threadId?: string },
+  input: {
+    spaceId: string;
+    botId: string;
+    userId: string;
+    threadId?: string;
+    currentThreadId?: string;
+    directThread?: boolean;
+  },
 ) {
   const rows = await deps.prisma.routine.findMany({
     where: {
@@ -603,6 +632,13 @@ export async function listSchedulesFromTool(
       prompt: row.prompt,
       crons: row.crons,
       active: row.active,
+      ...(input.currentThreadId
+        ? {
+            editableInConversation:
+              row.threadId === input.currentThreadId ||
+              Boolean(input.directThread && !row.threadId && !row.groupScoped),
+          }
+        : {}),
       nextRunAt: row.nextRunAt?.toISOString() ?? null,
       timezone: row.timezone,
       oneShot: isOneShotRoutineCrons(row.crons),

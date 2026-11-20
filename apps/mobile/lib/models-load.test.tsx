@@ -599,6 +599,30 @@ it("saves a repeat's first run through the mobile Routine editor, then pauses wi
   expect(button("Resume")).toBeTruthy();
 });
 
+it("keeps the submitted timing draft while a save is waiting for its receipt", async () => {
+  const pending = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  const original = (await normal("routines/list"))[0];
+  const routine = { ...original, crons: ["0 9 * * *"], timezone: "UTC" };
+  const writes: unknown[] = [];
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "routines/list") return [routine];
+    if (procedure !== "routines/update") return normal(procedure, input);
+    writes.push(input);
+    return writes.length === 1 ? pending.promise : { ...routine, ...(input as object) };
+  });
+  await act(async () => root.render(<RoutineDetail />));
+  await act(async () => button("Edit schedule").click());
+  await act(async () => button("Set first run").click());
+  await act(async () => button("Save").click());
+  expect(button("Use next occurrence").disabled).toBe(true);
+  await act(async () => button("Select first date").click());
+  await act(async () => pending.reject(new Error("Fixture save failed")));
+  await act(async () => button("Save").click());
+  expect(writes).toHaveLength(2);
+  expect(writes[1]).toEqual(writes[0]);
+});
+
 it("keeps the verified Routine Space when the server default changes before Save", async () => {
   state.spaceId = null;
   const normal = state.rpc.getMockImplementation()!;

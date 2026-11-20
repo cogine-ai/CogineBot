@@ -8,6 +8,7 @@ import {
   credentialForModel,
   cronFromPreset,
   defaultCronPreset,
+  defaultRoutineDateTimeLocal,
   formatCron,
   formatRoutineTime,
   isOneShotRoutineCrons,
@@ -53,10 +54,6 @@ import {
   emptyNativeRoutineTriggerDraft,
 } from "./routine-native-events";
 
-function defaultArmRunAtLocal(timezone: string): string {
-  return routineDateTimeLocal(new Date(Date.now() + 60 * 60 * 1000), timezone);
-}
-
 export function routineNeedsOneShotArm(
   routine: Pick<Routine, "nextRunAt" | "lastRunAt">,
   crons: string[],
@@ -91,7 +88,9 @@ export type RoutineDraftState = {
   githubEnabled: boolean;
   messageProvider: string | null;
   active: boolean;
+  activeDirty: boolean;
   runAtLocal: string;
+  runAtDirty: boolean;
   startAtLocal: string;
   startAtDirty: boolean;
   modelKey: string;
@@ -111,7 +110,9 @@ export function emptyRoutineDraft(): RoutineDraftState {
     githubEnabled: false,
     messageProvider: null,
     active: true,
+    activeDirty: false,
     runAtLocal: "",
+    runAtDirty: false,
     startAtLocal: "",
     startAtDirty: false,
     modelKey: "",
@@ -131,9 +132,11 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
     githubEnabled: routine.githubEnabled,
     messageProvider: routine.messageProvider,
     active: routine.active,
+    activeDirty: false,
     runAtLocal: routineNeedsOneShotArm(routine, routine.crons)
-      ? defaultArmRunAtLocal(routine.timezone)
+      ? defaultRoutineDateTimeLocal(new Date(), routine.timezone)
       : "",
+    runAtDirty: false,
     startAtLocal:
       routine.startAt && new Date(routine.startAt).getTime() > Date.now()
         ? routineDateTimeLocal(new Date(routine.startAt), routine.timezone)
@@ -249,6 +252,7 @@ export function RoutineEditor({
   draft,
   onChange,
   editing,
+  liveTiming,
   timezone,
   webhook,
   githubPath,
@@ -272,6 +276,7 @@ export function RoutineEditor({
   draft: RoutineDraftState;
   onChange: (next: RoutineDraftState) => void;
   editing: Routine | null;
+  liveTiming?: Pick<Routine, "active" | "nextRunAt" | "lastRunAt" | "timezone">;
   timezone: string;
   webhook: { path: string; secret: string | null; configured: boolean };
   githubPath: string;
@@ -341,12 +346,14 @@ export function RoutineEditor({
     Boolean(draft.messageProvider) ||
     draft.nativeTriggers.length > 0;
   const canTest = Boolean(editing) && !saving && !running;
+  const timing = liveTiming ?? editing;
+  const active = draft.activeDirty ? draft.active : (timing?.active ?? draft.active);
   const needsOneShotArm =
-    editing != null && routineNeedsOneShotArm(editing, draft.schedules.map(cronFromPreset));
+    timing != null && routineNeedsOneShotArm(timing, draft.schedules.map(cronFromPreset));
   const repeats =
     draft.schedules.length > 0 && !isOneShotRoutineCrons(draft.schedules.map(cronFromPreset));
-  const nextRun = editing?.nextRunAt
-    ? formatRoutineTime(editing.nextRunAt, editing.timezone, i18n?.locale)
+  const nextRun = timing?.nextRunAt
+    ? formatRoutineTime(timing.nextRunAt, timing.timezone, i18n?.locale)
     : null;
 
   function addSchedule(freq: CronFreq) {
@@ -405,15 +412,25 @@ export function RoutineEditor({
           <button
             type="button"
             role="switch"
-            aria-checked={draft.active}
-            onClick={() => onChange({ ...draft, active: !draft.active })}
+            aria-checked={active}
+            onClick={() =>
+              onChange({
+                ...draft,
+                active: !active,
+                activeDirty: true,
+                runAtLocal:
+                  !active && needsOneShotArm && !draft.runAtLocal
+                    ? defaultRoutineDateTimeLocal(new Date(), timezone)
+                    : draft.runAtLocal,
+              })
+            }
             className={`relative h-[22px] w-[40px] rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-              draft.active ? "bg-primary" : "bg-input"
+              active ? "bg-primary" : "bg-input"
             }`}
           >
             <span
               className={`absolute top-[2px] left-0 h-[18px] w-[18px] rounded-full bg-background transition-transform ${
-                draft.active
+                active
                   ? "translate-x-[20px] dark:bg-primary-foreground"
                   : "translate-x-[2px] dark:bg-foreground"
               }`}
@@ -539,7 +556,9 @@ export function RoutineEditor({
                 id={`${fieldId}-run-at`}
                 type="datetime-local"
                 value={draft.runAtLocal}
-                onChange={(e) => onChange({ ...draft, runAtLocal: e.target.value })}
+                onChange={(e) =>
+                  onChange({ ...draft, runAtLocal: e.target.value, runAtDirty: true })
+                }
                 aria-label={t`Run at`}
                 className="mt-2"
               />

@@ -479,13 +479,22 @@ export async function requireRoutineTrigger(
   scope: NativeEventScope,
   routineId: string,
 ): Promise<void> {
-  const rows = await tx.$queryRaw<Array<{ allowed: boolean }>>(
-    Prisma.sql`/*native-event:has-any-trigger*/ SELECT (cardinality(r.crons)>0 OR r."webhookEnabled" OR r."githubEnabled" OR r."messageProvider" IS NOT NULL OR EXISTS(SELECT 1 FROM native_routine_triggers t WHERE t."routineId"=r.id)) AS allowed FROM routines r WHERE r.id=${routineId} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId}`,
+  const rows = await tx.$queryRaw<Array<{ allowed: boolean; groupScoped: boolean }>>(
+    Prisma.sql`/*native-event:has-any-trigger*/
+      SELECT (
+        cardinality(r.crons)>0
+        OR (NOT r."groupScoped" AND (r."webhookEnabled" OR r."githubEnabled" OR r."messageProvider" IS NOT NULL))
+        OR (r."groupScoped" AND NOT r.active)
+        OR EXISTS(SELECT 1 FROM native_routine_triggers t WHERE t."routineId"=r.id)
+      ) AS allowed, r."groupScoped" FROM routines r
+      WHERE r.id=${routineId} AND r."userId"=${scope.userId} AND r."spaceId"=${scope.spaceId}`,
   );
   if (rows[0]?.allowed !== true)
     throw new NativeRoutineEventError(
       "invalid_input",
-      "Add a schedule, webhook, GitHub, message, or native event trigger.",
+      rows[0]?.groupScoped
+        ? "Add a schedule or application event before resuming."
+        : "Add a schedule, webhook, GitHub, message, or native event trigger.",
     );
 }
 async function triggerRow(

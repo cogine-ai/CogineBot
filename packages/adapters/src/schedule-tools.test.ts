@@ -326,6 +326,35 @@ describe("schedule tool persistence", () => {
   });
 });
 
+it("keeps broad inventory but identifies plans editable in the Bot's direct conversation", async () => {
+  const rows = [
+    { id: "direct", threadId: "dm", groupScoped: false },
+    { id: "settings", threadId: null, groupScoped: false },
+    { id: "group", threadId: "other", groupScoped: true },
+    { id: "old-group", threadId: null, groupScoped: true },
+  ].map((row) => ({ ...row, name: row.id, prompt: "Fixture", crons: ["0 9 * * *"], active: true }));
+  const prisma = {
+    routine: { findMany: vi.fn(async () => rows) },
+    $queryRaw: vi.fn(async () => rows.map(({ id }) => ({ ownedRoutineId: id, id: null }))),
+  } as unknown as Parameters<typeof listSchedulesFromTool>[0]["prisma"];
+  const result = await listSchedulesFromTool(
+    { prisma },
+    {
+      spaceId: "space-1",
+      botId: "bot-1",
+      userId: "user-1",
+      currentThreadId: "dm",
+      directThread: true,
+    },
+  );
+  expect(result.routines.map((row) => [row.routineId, row.editableInConversation])).toEqual([
+    ["direct", true],
+    ["settings", true],
+    ["group", false],
+    ["old-group", false],
+  ]);
+});
+
 it("lists many AI schedules with one Native batch read", async () => {
   const rows = Array.from({ length: 20 }, (_, index) => ({
     id: `routine-${index}`,

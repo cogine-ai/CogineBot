@@ -12,7 +12,7 @@ import {
   retimeRoutineStart,
   retimeRoutineTimezone,
 } from "@rakazo/core";
-import type { PrismaClient, Routine } from "@rakazo/db";
+import type { PrismaClient, Routine, ThreadEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
 export class RoutineTimingError extends Error {}
@@ -212,4 +212,23 @@ export async function syncRoutineWakeup(
   } catch (error) {
     getLogger().warn("routine.wakeup_sync_failed", { routineId: row.id, error });
   }
+}
+
+/** Invalidate the owner's editor without forwarding group messages or run events. */
+export async function publishRoutineTiming(
+  events: Pick<ThreadEvents, "append">,
+  routine: Pick<Routine, "id" | "userId" | "spaceId" | "botId">,
+  direct: { id: string; userId: string; spaceId: string },
+  active: boolean,
+): Promise<void> {
+  if (direct.userId !== routine.userId || direct.spaceId !== routine.spaceId) return;
+  await events
+    .append({
+      spaceId: routine.spaceId,
+      threadId: direct.id,
+      botId: routine.botId,
+      type: "routine.updated",
+      payload: { routineId: routine.id, active },
+    })
+    .catch(() => undefined);
 }

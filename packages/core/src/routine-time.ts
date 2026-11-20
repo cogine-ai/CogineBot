@@ -88,6 +88,15 @@ export function routineDateTimeLocal(value: Date, zone: string): string {
     .slice(0, 16);
 }
 
+/** Seed a picker with a future value that round-trips through an offset-less input. */
+export function defaultRoutineDateTimeLocal(now: Date, zone: string): string {
+  for (let offset = 3_600_000; ; offset += 3_600_000) {
+    const local = routineDateTimeLocal(new Date(now.getTime() + offset), zone);
+    const parsed = parseRoutineDateTime(local, zone);
+    if (parsed && parsed > now) return local;
+  }
+}
+
 export function formatRoutineTime(value: string, zone: string, locale?: string): string {
   const date = new Date(value);
   const options: Intl.DateTimeFormatOptions = {

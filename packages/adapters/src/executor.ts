@@ -539,6 +539,7 @@ import {
   resolveReplyContext,
   scriptedSteeringText,
 } from "./reply-context.js";
+import { publishRoutineTiming } from "./routine-timing.js";
 import { lazyRunComputer } from "./run-computer.js";
 import {
   loadDeniedActionTargets,
@@ -3521,6 +3522,19 @@ class RunCompletionValidationError extends Error {
   }
 }
 
+async function savedUserTimezone(
+  prisma: PrismaClient,
+  userId: string,
+): Promise<string | null | undefined> {
+  try {
+    return (await prisma.user.findUnique({ where: { id: userId }, select: { timezone: true } }))
+      ?.timezone;
+  } catch {
+    // Optional clock context must not prevent a turn when its read fails.
+    return undefined;
+  }
+}
+
 export function createRunExecutor(deps: ExecutorDeps) {
   const baseDeps = deps;
   const remoteMcpSessions = new RemoteMcpSessionPool({
@@ -3878,6 +3892,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       if (!claimed) return;
       if (claimed === "fired") {
         if (nextRunAt) await deps.jobs.enqueue(routineWakeupJob(routine.id, nextRunAt));
+        await publishRoutineTiming(deps.events, routine, bot.thread, nextRunAt !== null);
         return;
       }
       if ("cancelledEvents" in claimed && claimed.cancelledEvents) {
@@ -3916,6 +3931,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           });
       } catch {
         // Best effort: the run is already queued.
+      }
+      if (thread.id !== bot.thread.id || claimed.coalesced) {
+        await publishRoutineTiming(deps.events, routine, bot.thread, nextRunAt !== null);
       }
       if (oneShot) {
         try {
@@ -9392,6 +9410,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "schedule_create") {
+            const scheduleTimezone = args.timezone
+              ? String(args.timezone)
+              : run.userId === bot.userId
+                ? userTimezone
+                : await savedUserTimezone(deps.prisma, run.userId);
             const created = await createScheduleFromTool(deps, {
               spaceId: run.spaceId,
               botId: bot.id,
@@ -9407,7 +9430,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   ...approvedRoutineSites,
                 ]),
               ],
-              timezone: args.timezone ? String(args.timezone) : (userTimezone ?? undefined),
+              timezone: scheduleTimezone ?? undefined,
               schedule: scheduleTimingArguments(args),
             });
             return finish(created);
@@ -9444,6 +9467,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 spaceId: run.spaceId,
                 botId: bot.id,
                 userId: run.userId,
+                currentThreadId: thread.id,
+                directThread: thread.botId === bot.id,
                 ...(thread.groupId ? { threadId: thread.id } : {}),
               }),
             );
@@ -11052,17 +11077,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 `${USE_TOOL}: ${JSON.stringify({ name: SAVE_PAGE_TOOL, arguments: markerOnlyPageEffect.pageUpdateArgs })}`,
               ].join("\n")
             : undefined;
-        let userTimezone: string | null | undefined;
-        try {
-          userTimezone = (
-            await deps.prisma.user.findUnique({
-              where: { id: run.userId },
-              select: { timezone: true },
-            })
-          )?.timezone;
-        } catch {
-          // Optional clock context must not prevent the run when its read fails.
-        }
+        const userTimezone = await savedUserTimezone(deps.prisma, bot.userId);
         const prompt = [
           pendingPageSource || (scripted && sourceReply?.includesPage)
             ? undefined
