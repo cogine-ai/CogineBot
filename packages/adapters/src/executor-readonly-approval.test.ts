@@ -824,6 +824,7 @@ describe("semantic memory recall availability", () => {
   );
 
   it.each([
+    { name: "complete facts", response: { ok: true, value: facts } },
     { name: "complete empty", response: { ok: true, value: emptyFacts } },
     { name: "partial facts", response: { ok: true, value: facts, partial: true } },
     { name: "partial empty", response: { ok: true, value: emptyFacts, partial: true } },

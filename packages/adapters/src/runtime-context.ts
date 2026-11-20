@@ -540,16 +540,22 @@ export function createRuntimeContextPolicy(
         content === MEMORY_RECALL_UNAVAILABLE_NOTICE
       );
     });
+    const messageTokens = (message: Message) =>
+      estimateContextTokens(
+        providerContextPrefix("", [], [message]).messages[0],
+        options.imageTokens,
+      );
     for (const entry of historicalContext) {
-      const required = protectedIndexes.map((index) => messages[index]!);
-      if (
-        fixed +
-          estimateContextTokens(required, options.imageTokens) +
-          estimateContextTokens(entry, options.imageTokens) >=
-        contextWindow - reserve
-      )
-        continue;
-      if (!messages.includes(entry)) {
+      // Optional history must fit beside the same atomic groups the selector requires.
+      const required = protectedContextIndexes(messages, protectedIndexes);
+      const entryIndex = messages.indexOf(entry);
+      if (required.has(entryIndex)) continue;
+      const requiredTokens = [...required].reduce(
+        (total, index) => total + messageTokens(messages[index]!),
+        fixed,
+      );
+      if (requiredTokens + messageTokens(entry) >= contextWindow - reserve) continue;
+      if (entryIndex === -1) {
         const insertIndex = messages[0]?.role === "system" ? 1 : 0;
         messages.splice(insertIndex, 0, entry);
         protectedIndexes = protectedIndexes.map((index) => index + Number(index >= insertIndex));
@@ -645,12 +651,7 @@ export function createRuntimeContextPolicy(
     const retained = shortenOlderResults(true);
     // Fall back before selection can discard older progress to make room for whole results.
     const retainedTokens = retained.reduce(
-      (total, message) =>
-        total +
-        estimateContextTokens(
-          providerContextPrefix("", [], [message]).messages[0],
-          options.imageTokens,
-        ),
+      (total, message) => total + messageTokens(message),
       fixed,
     );
     messages = retainedTokens <= contextWindow - reserve ? retained : shortenOlderResults(false);

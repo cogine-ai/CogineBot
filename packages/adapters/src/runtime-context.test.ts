@@ -6,6 +6,7 @@ import { PAGE_SOURCE_MAX_BYTES } from "@rakazo/contracts";
 import { PAGE_KIT_GUIDE } from "@rakazo/page-kit/validate";
 import { describe, expect, it, vi } from "vitest";
 import { catalogExecuteToolName } from "./approval-effect.js";
+import { builtinAgentTools } from "./builtin-tools.js";
 import {
   boundToolResultText,
   ContextBudgetError,
@@ -16,6 +17,7 @@ import {
 import { formatRecalledMemory } from "./history-compaction.js";
 import * as outputBudget from "./pi-output-budget.js";
 import { effectivePiOutputTokens } from "./pi-output-budget.js";
+import { parametersFor } from "./pi-runtime.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import { markMcpToolResultRoute, mcpToolResultRoute } from "./verbatim-mcp-result.js";
 
@@ -1114,7 +1116,15 @@ describe("runtime context policy", () => {
         },
       ])("preserves $scenario recall context when pruning old history", ({ content }) => {
         const { request, context } = fixture(100);
-        enableHistoryRetrieval(request);
+        request.tools = builtinAgentTools.filter(
+          (tool) => tool.name === "read_history" || tool.name === "search_history",
+        );
+        request.executeTool = async () => ({});
+        context.tools = request.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: parametersFor(tool),
+        }));
         // An ordinary stored message with the same text should still be pruned.
         request.history[0]!.content = content;
         const earlierMessage = context.messages[0]!;
@@ -1141,6 +1151,46 @@ describe("runtime context policy", () => {
       });
     },
   );
+
+  it("keeps the unread tool group when a recall notice cannot also fit", () => {
+    const { request, context } = fixture(0);
+    request.contextStrategy = "retrieval";
+    request.instructions = "Fixture";
+    request.prompt = "Read data";
+    context.systemPrompt = request.instructions;
+    context.messages[0] = { role: "user", content: request.prompt, timestamp: 1 };
+
+    const narrow = { ...model, contextWindow: 4096, maxTokens: 256 };
+    // The unread tool group fits this model window by itself.
+    const call = fauxAssistantMessage([
+      {
+        type: "toolCall",
+        id: "read-1",
+        name: "read_file",
+        arguments: { query: "a".repeat(11389) },
+      },
+    ]);
+    const result = {
+      role: "toolResult",
+      toolCallId: "read-1",
+      toolName: "read_file",
+      content: [{ type: "text", text: "result" }],
+      isError: false,
+      timestamp: 3,
+    } as const;
+    context.messages.push(call, { ...result, content: [...result.content] });
+    const expected = createRuntimeContextPolicy(request).prepareContext(context, narrow);
+    expect(expected.messages).toEqual(context.messages);
+
+    const content = "Memory recall was unavailable.";
+    request.history.unshift({ role: "user", content });
+    const notice = { role: "user", content, timestamp: 0, rakazoHistory: true } as const;
+    const degraded = { ...context, messages: [notice, ...context.messages] };
+
+    expect(createRuntimeContextPolicy(request).prepareContext(degraded, narrow).messages).toEqual(
+      expected.messages,
+    );
+  });
 
   it("places a rolling summary after Pi's leading system message", () => {
     const { request, context } = fixture();
