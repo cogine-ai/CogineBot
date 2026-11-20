@@ -727,18 +727,23 @@ describe("portable format compatibility fixtures", () => {
         parse([...body, template, { ...guide, content: "[Missing](policy.md)" }]).skills,
       ).toEqual([]);
       expect(
-        parse([...body, template, { ...guide, content: "[Outside](../../other/guide.md)" }]).skills,
-      ).toEqual([]);
-      expect(
         parse([
           ...body,
           template,
-          { ...guide, content: "[Template](../templates/input.txt) [Main](../SKILL.md)" },
-        ]).skills[0]?.files,
-      ).toEqual({
-        "references/guide.md": "[Template](../templates/input.txt) [Main](../SKILL.md)",
-        "templates/input.txt": "",
-      });
+          { ...guide, content: "Read `../templates/missing.txt` before running." },
+        ]).skills,
+      ).toEqual([]);
+      expect(
+        parse([...body, template, { ...guide, content: "[Outside](../../other/guide.md)" }]).skills,
+      ).toEqual([]);
+      const guideText =
+        "Read `templates/input.txt` or `../templates/input.txt`. [Main](../SKILL.md)";
+      expect(parse([...body, template, { ...guide, content: guideText }]).skills[0]?.files).toEqual(
+        {
+          "references/guide.md": guideText,
+          "templates/input.txt": "",
+        },
+      );
     });
     it("counts UTF-8 reference bytes and preserves exact count and size limits", () => {
       const references = Array.from({ length: 40 }, (_, index) => ({

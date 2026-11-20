@@ -74,7 +74,7 @@ const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
 const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
 const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
 const INLINE_SKILL_FILE =
-  /^(?:\{baseDir\}\/|(?:\.\/)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
+  /^(?:\{baseDir\}\/|(?:\.\/|(?:\.\.\/)+)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([
@@ -368,7 +368,17 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
   const pending = [{ path: "SKILL.md", body }];
   for (const document of pending) {
     const { links, inlineCode } = readSkillMarkdownReferences(document.body);
-    for (const target of [...links, ...inlineCode.filter((text) => INLINE_SKILL_FILE.test(text))]) {
+    const documentDir = posix.dirname(document.path);
+    const references = [
+      ...links.map((target) => ({ target, base: documentDir })),
+      ...inlineCode
+        .filter((text) => INLINE_SKILL_FILE.test(text))
+        .map((target) => ({
+          target,
+          base: target.startsWith("../") ? documentDir : ".",
+        })),
+    ];
+    for (const { target, base } of references) {
       try {
         const atSkillRoot = target.startsWith("{baseDir}/");
         const decoded = decodeURIComponent(target.replace(/^\{baseDir\}\//, "").split("#", 1)[0]!);
@@ -380,7 +390,7 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
           hasControlCharacters(decoded)
         )
           return true;
-        const path = posix.join(atSkillRoot ? "." : posix.dirname(document.path), decoded);
+        const path = posix.join(atSkillRoot ? "." : base, decoded);
         const directory = decoded.endsWith("/") || decoded === "." || decoded === "..";
         if (directory && (path === "." || path === "./")) continue;
         const relative = normalizeSkillFilePath(directory ? path.replace(/\/$/, "") : path);
