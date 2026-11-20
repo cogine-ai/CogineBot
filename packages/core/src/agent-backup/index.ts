@@ -23,10 +23,8 @@ import {
   botPackageUtf8Bytes,
   isAgentBackupPath,
 } from "@rakazo/contracts";
-import remarkParse from "remark-parse";
-import { unified } from "unified";
 import type { ParsedSkillMd } from "../agent-skill.js";
-import { parseSkillMd } from "../agent-skill.js";
+import { localSkillLinkTargets, parseSkillMd } from "../agent-skill.js";
 import {
   AGENT_IMPORT_ARCHIVE_LIMITS,
   AgentImportArchiveError,
@@ -150,33 +148,6 @@ export function isBackupTextFile(source: AgentBackupSource, path: string) {
 
 export { validateBackupRoutine } from "./routines.js";
 export { isBackupRoutine, isBackupRoutineOmission };
-
-type MarkdownNode = { type: string; children?: MarkdownNode[]; url?: string; identifier?: string };
-const backupSkillMarkdown = unified().use(remarkParse);
-
-function localSkillUrl(url: string | undefined): boolean {
-  const value = url?.trim();
-  return Boolean(value && (!/^(?:#|\/\/|[a-z][a-z\d+.-]*:)/i.test(value) || /^file:/i.test(value)));
-}
-
-function hasLocalSkillLink(body: string): boolean {
-  const nodes: MarkdownNode[] = [backupSkillMarkdown.parse(body)];
-  const references = new Set<string>();
-  const definitions = new Map<string, string>();
-  while (nodes.length) {
-    const node = nodes.pop()!;
-    if ((node.type === "link" || node.type === "image") && localSkillUrl(node.url)) return true;
-    if (node.identifier) {
-      if (node.type === "linkReference" || node.type === "imageReference")
-        references.add(node.identifier);
-      if (node.type === "definition" && !definitions.has(node.identifier))
-        definitions.set(node.identifier, node.url ?? "");
-    }
-    const children = node.children ?? [];
-    for (let index = children.length - 1; index >= 0; index--) nodes.push(children[index]!);
-  }
-  return [...references].some((id) => localSkillUrl(definitions.get(id)));
-}
 
 export function assessBackupSkill(
   content: string,
@@ -547,7 +518,7 @@ export async function encodeAgentBackupFolder(
     if (text.length > AGENT_BACKUP_MAX_FILE_LENGTH) throw new AgentImportArchiveError("too_large");
     if (isBackupSkill(name)) {
       const skill = parseSkillMd(text);
-      if (!("error" in skill) && hasLocalSkillLink(skill.body)) linkedSkills.add(name);
+      if (!("error" in skill) && localSkillLinkTargets(skill.body).length) linkedSkills.add(name);
     }
     content.set(path, text);
   }

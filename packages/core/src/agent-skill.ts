@@ -1,3 +1,6 @@
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
 /**
  * Claude Agent Skills: reusable SKILL.md recipes shared across assistants.
  * The Pi runtime already understands this format; we persist and inject them.
@@ -5,6 +8,57 @@
  */
 
 const FRONTMATTER_FENCE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const skillMarkdown = unified().use(remarkParse);
+
+type SkillMarkdownNode = {
+  type: string;
+  children?: SkillMarkdownNode[];
+  url?: string;
+  identifier?: string;
+};
+
+/** Markdown file references, including definitions used by a link or image. */
+export function localSkillLinkTargets(body: string): string[] {
+  const nodes: SkillMarkdownNode[] = [skillMarkdown.parse(body)];
+  const targets: string[] = [];
+  const references = new Set<string>();
+  const definitions = new Map<string, string>();
+  const addTarget = (url: string | undefined) => {
+    const value = url?.trim();
+    if (value && (!/^(?:#|\/\/|[a-z][a-z\d+.-]*:)/i.test(value) || /^file:/i.test(value)))
+      targets.push(value);
+  };
+  while (nodes.length) {
+    const node = nodes.pop()!;
+    if (node.type === "link" || node.type === "image") addTarget(node.url);
+    if (node.identifier) {
+      if (node.type === "linkReference" || node.type === "imageReference")
+        references.add(node.identifier);
+      if (node.type === "definition" && !definitions.has(node.identifier))
+        definitions.set(node.identifier, node.url ?? "");
+    }
+    const children = node.children ?? [];
+    for (let index = children.length - 1; index >= 0; index--) nodes.push(children[index]!);
+  }
+  for (const reference of references) addTarget(definitions.get(reference));
+  return targets;
+}
+
+/** Normalize only the optional leading ./ on a skill's stored reference path. */
+export function normalizeSkillFilePath(input: string): string | undefined {
+  const path = input.replace(/^\.\//, "");
+  if (
+    !path ||
+    path.length > 2048 ||
+    /^[a-z][a-z\d+.-]*:/i.test(path) ||
+    /[\\%#?]/.test(path) ||
+    path.split("/").some((part) => !part || part === "." || part === "..") ||
+    [...path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+  ) {
+    return undefined;
+  }
+  return path;
+}
 
 export type SkillSource = "user" | "builtin" | "plugin";
 

@@ -129,7 +129,12 @@ const preview: PluginPreview = {
   description: "Synthetic instructions",
   version: null,
   skills: [
-    { name: "research", description: "Research a topic", content: "Complete raw instructions" },
+    {
+      name: "research",
+      description: "Research a topic",
+      content: "Complete raw instructions",
+      files: [{ path: "templates/outline.md", size: 128 }],
+    },
   ],
   mcpServers: [
     {
@@ -213,6 +218,11 @@ it("projects the reviewed instructions, endpoints and unsupported components thr
   await openPreview();
   await click("View instructions");
   expect(node.textContent).toContain("Complete raw instructions");
+  expect(node.textContent).not.toContain("templates/outline.md");
+  await click("Reference files (1)");
+  expect(node.textContent).toContain("templates/outline.md · 128 B");
+  await click("Reference files (1)");
+  expect(node.textContent).not.toContain("templates/outline.md");
   expect(node.textContent).toContain("https://service.example.test/events");
   expect(node.textContent).toContain("Local commands are not imported");
   expect(api.rpc.mock.calls.filter((call) => call[0] === "plugins/install")).toHaveLength(0);

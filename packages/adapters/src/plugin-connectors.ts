@@ -2,8 +2,17 @@
  * No repository code is executed and no files are written to the host. */
 import { createHash } from "node:crypto";
 import type { PluginPreview } from "@rakazo/contracts";
-import { McpServerConfigInput, PluginPreviewSchema } from "@rakazo/contracts";
-import { containsSecret, parseSkillMd } from "@rakazo/core";
+import {
+  McpServerConfigInput,
+  PLUGIN_SKILL_FILE_LIMITS,
+  PluginPreviewSchema,
+} from "@rakazo/contracts";
+import {
+  containsSecret,
+  localSkillLinkTargets,
+  normalizeSkillFilePath,
+  parseSkillMd,
+} from "@rakazo/core";
 import { z } from "zod";
 import { assertNoSensitiveQuery, HeaderName } from "./connector-http.js";
 import { oauthMaterialSecrets } from "./mcp-oauth.js";
@@ -16,7 +25,12 @@ export type PluginRepoFetcher = (
   ref: PluginSourceRef,
   signal?: AbortSignal,
 ) => Promise<{ files: PluginRepoFile[]; sourceSha: string }>;
-export type PluginSkillEntry = { name: string; description: string; content: string };
+export type PluginSkillEntry = {
+  name: string;
+  description: string;
+  content: string;
+  files?: Record<string, string>;
+};
 export type PluginMcpServerEntry = {
   name: string;
   transport: "streamable_http" | "sse";
@@ -54,7 +68,11 @@ export type ParsedPlugin = {
 
 const MAX_FILES = 200;
 const MAX_BYTES = 4_000_000;
-const MAX_FILE_BYTES = 100_000;
+const MAX_FILE_BYTES = PLUGIN_SKILL_FILE_LIMITS.bytes;
+const SKILL_DOCUMENT = /^skills\/[^/]+\/SKILL\.md$/;
+const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
+const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
+const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([
   "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -269,25 +287,63 @@ export async function fetchGitHubRepo(
     return entry.type === "blob";
   });
   if (entries.length > MAX_FILES) throw new Error("Plugin directory has too many files");
+  const skillFolders = new Set(
+    entries
+      .map((entry) => entry.path.slice(prefix.length))
+      .filter((path) => SKILL_DOCUMENT.test(path))
+      .map((path) => path.slice(0, -"SKILL.md".length)),
+  );
+  const companionBudgets = new Map<string, { count: number; bytes: number; fetchable: boolean }>();
+  for (const entry of entries) {
+    const companion = SKILL_COMPANION.exec(entry.path.slice(prefix.length));
+    if (!companion || !skillFolders.has(companion[1]!)) continue;
+    const folder = companion[1]!;
+    const relative = companion[2]!;
+    const budget = companionBudgets.get(folder) ?? { count: 0, bytes: 0, fetchable: true };
+    budget.count += 1;
+    budget.bytes += entry.size ?? 0;
+    budget.fetchable &&= isSkillTextFile(relative) && (entry.size ?? 0) <= MAX_FILE_BYTES;
+    companionBudgets.set(folder, budget);
+  }
   let total = 0;
   const files: PluginRepoFile[] = [];
   for (const entry of entries) {
     const path = entry.path.slice(prefix.length);
-    // Fetch only component text. Other paths are retained for skipped-part reporting.
+    const companionFolder = SKILL_COMPANION.exec(path)?.[1];
+    const companion = companionFolder ? companionBudgets.get(companionFolder) : undefined;
+    // Retain paths for reporting, including files that could not be reviewed.
+    if (
+      companion &&
+      (!companion.fetchable ||
+        companion.count > PLUGIN_SKILL_FILE_LIMITS.count ||
+        companion.bytes > PLUGIN_SKILL_FILE_LIMITS.totalBytes)
+    ) {
+      files.push({ path: entry.path, content: UNAVAILABLE_SKILL_FILE });
+      continue;
+    }
     const relevant =
       MANIFESTS.includes(path) ||
       ["mcp.json", ".mcp.json"].includes(path) ||
-      /^skills\/[^/]+\/SKILL\.md$/.test(path);
+      SKILL_DOCUMENT.test(path) ||
+      companion !== undefined;
     if (!relevant) {
       files.push({ path: entry.path, content: "" });
       continue;
     }
     if ((entry.size ?? 0) > MAX_FILE_BYTES) throw new Error("Plugin file is too large");
-    const body = await boundedRead(
-      `https://raw.githubusercontent.com${repo}/${sha}/${entry.path.split("/").map(encodeURIComponent).join("/")}`,
-      MAX_FILE_BYTES,
-      deadline,
-    );
+    let body: string;
+    try {
+      body = await boundedRead(
+        `https://raw.githubusercontent.com${repo}/${sha}/${entry.path.split("/").map(encodeURIComponent).join("/")}`,
+        MAX_FILE_BYTES,
+        deadline,
+      );
+    } catch (error) {
+      deadline.throwIfAborted();
+      if (!companion) throw error;
+      files.push({ path: entry.path, content: UNAVAILABLE_SKILL_FILE });
+      continue;
+    }
     total += Buffer.byteLength(body);
     if (total > MAX_BYTES) throw new Error("Plugin content is too large");
     files.push({ path: entry.path, content: body });
@@ -298,6 +354,23 @@ export async function fetchGitHubRepo(
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSkillTextFile(path: string): boolean {
+  return normalizeSkillFilePath(path) === path && SKILL_TEXT_FILE.test(path);
+}
+
+/** A relative Markdown link declares a file the installed skill must have. */
+function hasMissingSkillLink(body: string, files: ReadonlyMap<string, string>): boolean {
+  for (const target of localSkillLinkTargets(body)) {
+    try {
+      const relative = normalizeSkillFilePath(decodeURIComponent(target.split("#", 1)[0]!));
+      if (relative !== "SKILL.md" && (!relative || !files.has(relative))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 function collectSkills(
@@ -316,18 +389,46 @@ function collectSkills(
     }
     if (names.has(parsed.name.toLowerCase()))
       throw new Error("Plugin contains duplicate skill names");
-    // The current skill store persists SKILL.md text, not companion files. Do not
-    // silently install a recipe whose relative references/scripts would be missing.
-    if ([...files.keys()].some((p) => p.startsWith(`skills/${match[1]}/`) && p !== path)) {
+    const folder = `skills/${match[1]}/`;
+    const companions = new Map(
+      [...files]
+        .filter(([name]) => name.startsWith(folder) && name !== path)
+        .map(([name, text]) => [name.slice(folder.length), text]),
+    );
+    if (
+      [...companions.keys()].some((name) => !isSkillTextFile(name)) ||
+      hasMissingSkillLink(parsed.body, companions)
+    ) {
       skipped.push({
         kind: "skill_invalid",
         name: parsed.name,
-        reason: "Skills with companion files are not supported yet",
+        reason: "The skill has a missing or unsupported reference file.",
+      });
+      continue;
+    }
+    const bodies = [...companions.values()];
+    if (
+      companions.size > PLUGIN_SKILL_FILE_LIMITS.count ||
+      bodies.some(
+        (text) => text.includes(UNAVAILABLE_SKILL_FILE) || Buffer.byteLength(text) > MAX_FILE_BYTES,
+      ) ||
+      bodies.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) >
+        PLUGIN_SKILL_FILE_LIMITS.totalBytes
+    ) {
+      skipped.push({
+        kind: "skill_invalid",
+        name: parsed.name,
+        reason: "The skill has too many reference files, or a file is unreadable or too large.",
       });
       continue;
     }
     names.add(parsed.name.toLowerCase());
-    skills.push({ name: parsed.name, description: parsed.description, content });
+    skills.push({
+      name: parsed.name,
+      description: parsed.description,
+      content,
+      ...(companions.size ? { files: Object.fromEntries(companions) } : {}),
+    });
   }
   return skills.sort((a, b) => compare(a.name, b.name));
 }
@@ -454,8 +555,11 @@ function parsePluginContent(input: {
   let bytes = 0;
   for (const file of input.files) {
     const path = safePath(file.path);
-    bytes += Buffer.byteLength(file.content);
-    if (Buffer.byteLength(file.content) > MAX_FILE_BYTES || bytes > MAX_BYTES)
+    const companion = SKILL_COMPANION.test(path);
+    const size =
+      companion && file.content === UNAVAILABLE_SKILL_FILE ? 0 : Buffer.byteLength(file.content);
+    bytes += size;
+    if ((size > MAX_FILE_BYTES && !companion) || bytes > MAX_BYTES)
       throw new Error("Plugin content is too large");
     if (files.has(path)) throw new Error("Plugin contains duplicate file paths");
     files.set(path, file.content);
@@ -524,7 +628,10 @@ function parsePluginContent(input: {
     mcpServers,
     skipped,
   };
-  assertNoCredentialEcho(toPluginPreview(result), knownCredentials);
+  assertNoCredentialEcho(
+    [toPluginPreview(result), ...skills.map((skill) => skill.files)],
+    knownCredentials,
+  );
   return result;
 }
 
@@ -619,7 +726,18 @@ export function toPluginPreview(plugin: ParsedPlugin): PluginPreview {
     name: plugin.name,
     version: plugin.version,
     description: plugin.description,
-    skills: plugin.skills.map(({ name, description, content }) => ({ name, description, content })),
+    skills: plugin.skills.map(({ name, description, content, files }) => ({
+      name,
+      description,
+      content,
+      ...(files
+        ? {
+            files: Object.entries(files)
+              .sort(([a], [b]) => compare(a, b))
+              .map(([path, body]) => ({ path, size: Buffer.byteLength(body) })),
+          }
+        : {}),
+    })),
     mcpServers: plugin.mcpServers.map(({ name, transport, endpoint, headers }) => ({
       name,
       transport,
@@ -638,7 +756,7 @@ export function toPluginPreview(plugin: ParsedPlugin): PluginPreview {
 }
 
 /** Refuse known credential echoes instead of silently changing reviewed instructions. */
-function assertNoCredentialEcho(preview: PluginPreview, credentials: string[]) {
+function assertNoCredentialEcho(content: unknown, credentials: string[]) {
   const variants = new Set<string>();
   for (const credential of credentials) {
     variants.add(credential);
@@ -648,5 +766,5 @@ function assertNoCredentialEcho(preview: PluginPreview, credentials: string[]) {
     variants.add(Buffer.from(credential).toString("base64"));
     variants.add(Buffer.from(credential).toString("base64url"));
   }
-  if (containsSecret(preview, [...variants])) throw new PluginImportError("invalid_plugin");
+  if (containsSecret(content, [...variants])) throw new PluginImportError("invalid_plugin");
 }

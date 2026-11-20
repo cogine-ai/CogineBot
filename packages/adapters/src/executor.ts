@@ -9507,6 +9507,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 {
                   name: args.name,
                   skillId: args.skillId,
+                  file: args.file,
                 },
               ),
             );

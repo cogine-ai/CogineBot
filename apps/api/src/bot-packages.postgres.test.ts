@@ -1318,6 +1318,21 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         source: "user",
       },
     });
+    const withReferences = await database.prisma.agentSkill.create({
+      data: {
+        spaceId: owner.actor.spaceId,
+        userId: owner.actor.userId,
+        name: "referenced-skill",
+        description: "Example with references",
+        content: buildSkillMd({
+          name: "referenced-skill",
+          description: "Example with references",
+          body: "Read [the template](template.md).",
+        }),
+        source: "plugin",
+        files: { "template.md": "Reference body for the installed skill." },
+      },
+    });
     const exported = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
     expect(JSON.parse(exported.json)).toEqual(exported.document);
     expect(exported.document.skills).toEqual(value.skills);
@@ -1327,11 +1342,20 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(exported.json).not.toContain(receipt.botId!);
     const selected = await call<BotPackageExport>(owner, "export", {
       botId: receipt.botId,
-      skillIds: [shared.id],
+      skillIds: [shared.id, withReferences.id],
       includeMemory: true,
     });
     expect(JSON.parse(selected.json)).toEqual(selected.document);
     expect(selected.document.skills).toHaveLength(2);
+    expect(selected.document.skills.map((skill) => skill.name)).toContain(shared.name);
+    expect(selected.json).not.toContain(withReferences.name);
+    expect(selected.json).not.toContain("Reference body for the installed skill.");
+    expect(selected.leftOut).toContainEqual(
+      expect.objectContaining({
+        kind: "skill",
+        reason: expect.stringContaining(withReferences.name),
+      }),
+    );
     expect(selected.document.memory).toEqual(value.memory);
     expect((await preview(owner, JSON.parse(selected.json), true)).document).toEqual(
       selected.document,

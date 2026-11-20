@@ -1302,6 +1302,7 @@ export const DE_MESSAGES: Record<string, string> = {
     "Skills stehen deinen Bots in diesem Space zur Verfügung.",
   "Skipped components": "Übersprungene Komponenten",
   "View instructions": "Anweisungen anzeigen",
+  "Reference files": "Referenzdateien",
   "Hide instructions": "Anweisungen ausblenden",
   "Installation failed.": "Installation fehlgeschlagen.",
   "Another member": "Anderes Mitglied",

@@ -7742,3 +7742,7 @@ msgstr "首次执行"
 #: src/pages/RoutineEditor.tsx
 msgid "Next run: {nextRun}"
 msgstr "下次执行：{nextRun}"
+
+#: src/components/integrations/PluginInstallsPanel.tsx
+msgid "Reference files"
+msgstr "附属文件"

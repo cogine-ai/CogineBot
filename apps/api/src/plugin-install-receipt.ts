@@ -2,8 +2,13 @@ import type { PluginInstallReceipt } from "@rakazo/contracts";
 import { PluginInstallReceiptSchema } from "@rakazo/contracts";
 import type { Prisma } from "@rakazo/db";
 
+export const pluginReceiptChildren = {
+  agentSkills: { select: { id: true, name: true } },
+  mcpServers: true,
+} as const;
+
 type InstallRow = Prisma.CapabilityInstallGetPayload<{
-  include: { agentSkills: true; mcpServers: true };
+  include: typeof pluginReceiptChildren;
 }>;
 
 /** Only the reviewed public child snapshot survives removal; cleanup refs never leave the server. */

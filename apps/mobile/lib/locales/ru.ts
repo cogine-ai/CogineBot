@@ -1298,6 +1298,7 @@ export const RU_MESSAGES: Record<string, string> = {
     "Навыки доступны вашим ботам в этом пространстве.",
   "Skipped components": "Пропущенные компоненты",
   "View instructions": "Показать инструкции",
+  "Reference files": "Справочные файлы",
   "Hide instructions": "Скрыть инструкции",
   "Installation failed.": "Установка не удалась.",
   "Another member": "Другой участник",

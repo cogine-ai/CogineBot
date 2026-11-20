@@ -852,6 +852,17 @@ export function createBotPackagesService(deps: Deps) {
           "Model, computer, fleet, conversation, file and permission bindings are not exported.",
         ),
       ];
+      const portableSkills = skills.filter((skill, index) => {
+        if (!skill.files || Object.keys(skill.files).length === 0) return true;
+        leftOut.push(
+          note(
+            `skills[${index}]`,
+            `“${skill.name}” has reference files. Install its plugin on the destination.`,
+            "skill",
+          ),
+        );
+        return false;
+      });
       const portableRoutines = routines.flatMap((routine, index) => {
         if (!routine.crons.length || routine.crons.some(isOneShotRoutineCron)) {
           leftOut.push(
@@ -939,7 +950,7 @@ export function createBotPackagesService(deps: Deps) {
                 description: component.description,
                 content: component.content,
               })),
-            ...skills.map((skill) => ({
+            ...portableSkills.map((skill) => ({
               name: skill.name,
               description: skill.description,
               content: skill.content,

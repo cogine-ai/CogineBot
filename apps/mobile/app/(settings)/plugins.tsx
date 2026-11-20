@@ -1,6 +1,10 @@
 import type { PluginInstallReceipt } from "@rakazo/contracts";
 import type { PluginInstallReview, PluginInstallReviewState } from "@rakazo/core";
-import { createPluginInstallReview, initialPluginInstallReview } from "@rakazo/core";
+import {
+  createPluginInstallReview,
+  formatFileSize,
+  initialPluginInstallReview,
+} from "@rakazo/core";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -27,6 +31,7 @@ export default function Plugins() {
   const [state, setState] = useState<PluginInstallReviewState>(initialPluginInstallReview);
   const [removal, setRemoval] = useState<PluginInstallReceipt | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [ready, setReady] = useState(false);
   const [retry, setRetry] = useState(0);
   const manager = useRef<PluginInstallReview | null>(null);
@@ -42,6 +47,7 @@ export default function Plugins() {
         setState(initialPluginInstallReview());
         setRemoval(null);
         setExpanded(new Set());
+        setExpandedFiles(new Set());
         setReady(false);
         setClient(null);
         setSetupId(null);
@@ -118,6 +124,11 @@ export default function Plugins() {
     state.phase === "installing" || state.phase === "unknown" || Boolean(state.removingId);
   const preview = state.preview;
   const rows = state.installations.filter((row) => row.status !== "removed");
+  function requestPreview(source: string) {
+    setExpanded(new Set());
+    setExpandedFiles(new Set());
+    void manager.current?.preview(source);
+  }
   async function remove(row: PluginInstallReceipt) {
     setRemoval(null);
     await manager.current?.uninstall(row);
@@ -130,12 +141,7 @@ export default function Plugins() {
       style={styles.screen}
     >
       {client ? (
-        <PluginDiscovery
-          key={retry}
-          client={client}
-          disabled={locked}
-          onPreview={(source) => void manager.current?.preview(source)}
-        />
+        <PluginDiscovery key={retry} client={client} disabled={locked} onPreview={requestPreview} />
       ) : null}
       <View style={styles.card}>
         <TextInput
@@ -155,7 +161,7 @@ export default function Plugins() {
           label={state.phase === "previewing" ? t("Previewing…") : t("Preview")}
           busy={state.phase === "previewing"}
           disabled={!ready || locked || !state.source.trim()}
-          onPress={() => void manager.current?.preview(state.source.trim())}
+          onPress={() => requestPreview(state.source.trim())}
           prominence="secondary"
         />
       </View>
@@ -195,6 +201,29 @@ export default function Plugins() {
                 <Text selectable style={styles.instructions}>
                   {skill.content}
                 </Text>
+              ) : null}
+              {skill.files?.length ? (
+                <>
+                  <NativeActionButton
+                    label={`${t("Reference files")} (${skill.files.length})`}
+                    prominence="quiet"
+                    onPress={() =>
+                      setExpandedFiles((current) => {
+                        const next = new Set(current);
+                        if (next.has(skill.name)) next.delete(skill.name);
+                        else next.add(skill.name);
+                        return next;
+                      })
+                    }
+                  />
+                  {expandedFiles.has(skill.name)
+                    ? skill.files.map((file) => (
+                        <Text key={file.path} selectable style={styles.metadata}>
+                          {file.path} · {formatFileSize(file.size)}
+                        </Text>
+                      ))
+                    : null}
+                </>
               ) : null}
             </View>
           ))}

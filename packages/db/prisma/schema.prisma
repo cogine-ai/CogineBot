@@ -1102,6 +1102,8 @@ model AgentSkill {
   name        String
   description String
   content     String
+  /// Plugin reference text keyed by path relative to SKILL.md.
+  files       Json?
   /// user | builtin | plugin — only user skills are writable via API/tools.
   source      String   @default("user")
   installId   String?

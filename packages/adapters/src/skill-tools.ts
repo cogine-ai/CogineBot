@@ -3,6 +3,7 @@ import {
   findSkillByName,
   isSkillReadOnly,
   mergeBuiltinSkills,
+  normalizeSkillFilePath,
   parseSkillMd,
   type SkillRecord,
   type SkillSource,
@@ -89,6 +90,7 @@ export async function listAgentSkillRecords(
 ): Promise<Array<SkillRecord & { id: string }>> {
   const rows = await prisma.agentSkill.findMany({
     where: { spaceId: owner.spaceId, userId: owner.userId, ...activePluginSkillWhere },
+    omit: { files: true },
     orderBy: [{ name: "asc" }, { id: "asc" }],
   });
   return mergeBuiltinSkills(builtinRecords(), rows.map(toRecord));
@@ -110,7 +112,7 @@ async function findOwnedSkill(
 export async function skillReadFromTool(
   prisma: PrismaClient,
   owner: SkillOwner,
-  input: { name?: unknown; skillId?: unknown },
+  input: { name?: unknown; skillId?: unknown; file?: unknown },
 ): Promise<Record<string, unknown>> {
   if (input.skillId !== undefined && typeof input.skillId !== "string") {
     return { error: "skillId must be a string." };
@@ -118,25 +120,69 @@ export async function skillReadFromTool(
   if (input.name !== undefined && typeof input.name !== "string") {
     return { error: "name must be a string." };
   }
-  const skills = await listAgentSkillRecords(prisma, owner);
-  const name = input.name?.trim().toLowerCase();
-  const matches =
-    input.skillId !== undefined
-      ? skills.filter((skill) => skill.id === input.skillId)
-      : name
-        ? skills.filter((skill) => skill.name.trim().toLowerCase() === name)
-        : [];
-  if (input.skillId === undefined && matches.length > 1) {
-    return { error: "Multiple skills match this name. Use an exact skillId." };
+  const file = typeof input.file === "string" ? normalizeSkillFilePath(input.file) : undefined;
+  if (input.file !== undefined && !file) {
+    return { error: "file must be a relative path within this skill." };
   }
-  const skill = matches[0];
+  const name = input.name?.trim().toLowerCase();
+  if (input.skillId === undefined && !name) return { error: "Skill not found." };
+  const where = { spaceId: owner.spaceId, userId: owner.userId, ...activePluginSkillWhere };
+  const builtins = builtinRecords();
+  let builtin = builtins.find((skill) => skill.id === input.skillId);
+  let id = input.skillId;
+  // Name matching and legacy builtin shadowing need only the owner's names, not recipe bodies.
+  if (id === undefined || builtin) {
+    const rows = await prisma.agentSkill.findMany({ where, select: { id: true, name: true } });
+    const skills = mergeBuiltinSkills<{ id: string; name: string }>(builtins, rows);
+    const matches = skills.filter((skill) =>
+      id !== undefined ? skill.id === id : skill.name.trim().toLowerCase() === name,
+    );
+    if (id === undefined && matches.length > 1) {
+      return { error: "Multiple skills match this name. Use an exact skillId." };
+    }
+    id = matches[0]?.id;
+    builtin = builtins.find((skill) => skill.id === id);
+  }
+  if (id === undefined) return { error: "Skill not found." };
+  const row = builtin
+    ? null
+    : await prisma.agentSkill.findFirst({
+        where: { ...where, id },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          source: true,
+          content: true,
+          files: true,
+        },
+      });
+  const skill = builtin ?? (row && toRecord(row));
   if (!skill) return { error: "Skill not found." };
+  const files = new Map<string, string>();
+  if (
+    skill.source === "plugin" &&
+    row?.files &&
+    typeof row.files === "object" &&
+    !Array.isArray(row.files)
+  ) {
+    for (const [path, text] of Object.entries(row.files)) {
+      if (normalizeSkillFilePath(path) === path && typeof text === "string") files.set(path, text);
+    }
+  }
+  const paths = [...files.keys()].sort();
+  if (file) {
+    const content = files.get(file);
+    if (content === undefined) return { error: "File not found in this skill.", files: paths };
+    return { name: skill.name, file, content };
+  }
   return {
     name: skill.name,
     description: skill.description,
     source: skill.source,
     readOnly: skill.readOnly,
     content: skill.content,
+    ...(paths.length ? { files: paths } : {}),
   };
 }
 

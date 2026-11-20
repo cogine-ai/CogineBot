@@ -20,6 +20,7 @@ type SkillRow = {
   description: string;
   content: string;
   source: string;
+  files?: Record<string, string>;
 };
 type Catalog = {
   skills: Array<{ id: string; name: string; source: string; readOnly: boolean }>;
@@ -38,6 +39,7 @@ function skillRows() {
       description: `Find marker ${number}`,
       content: `---\nname: ${name}\ndescription: Find marker ${number}\n---\n\nSearch for: recipe-${number}\r\n`,
       source: index === 200 ? "plugin" : "user",
+      ...(index === 200 ? { files: { "references/details.md": "Stored detail\r\n\n" } } : {}),
     };
   });
 }
@@ -181,6 +183,13 @@ async function runDiscovery(
       findMany: vi.fn(async ({ where }: { where: typeof owner }) =>
         rows.filter((row) => row.spaceId === where.spaceId && row.userId === where.userId),
       ),
+      findFirst: vi.fn(
+        async ({ where }: { where: typeof owner & { id: string } }) =>
+          rows.find(
+            (row) =>
+              row.id === where.id && row.spaceId === where.spaceId && row.userId === where.userId,
+          ) ?? null,
+      ),
     },
     scratchpadItem: {
       findMany: vi.fn(async () =>
@@ -296,8 +305,22 @@ describe("model-visible skill discovery", () => {
           "skill_read",
           { skillId: catalog.skills[0]!.id },
           "read",
-        )) as { content: string };
+        )) as { content: string; files?: string[] };
         expect(read.content).toBe(rows[target - 1]!.content);
+        if (target === 201) {
+          expect(read.files).toEqual(["references/details.md"]);
+          expect(
+            await request.executeTool!(
+              "skill_read",
+              { skillId: catalog.skills[0]!.id, file: "./references/details.md" },
+              "read-reference",
+            ),
+          ).toEqual({
+            name: "Recipe 201",
+            file: "references/details.md",
+            content: "Stored detail\r\n\n",
+          });
+        }
         const query = /Search for: ([^\r\n]+)/.exec(read.content)![1]!;
         await request.executeTool!("web_search", { query }, "execute-recipe");
       });

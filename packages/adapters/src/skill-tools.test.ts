@@ -23,6 +23,13 @@ function makePrisma(rows: Array<Record<string, unknown>> = []) {
           })
           .map((row) => ({ ...row })),
       ),
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, string> }) =>
+          store.find(
+            (row) =>
+              row.id === where.id && row.spaceId === where.spaceId && row.userId === where.userId,
+          ) ?? null,
+      ),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const row = {
           id: `skill-${store.length + 1}`,
@@ -457,10 +464,81 @@ describe("skill tools", () => {
     expect(
       await skillReadFromTool(prisma as never, owner, { skillId: "one", name: "Review" }),
     ).toEqual({ error: "Skill not found." });
-    expect(prisma.agentSkill.findMany).toHaveBeenLastCalledWith({
-      where: expect.objectContaining(owner),
-      orderBy: [{ name: "asc" }, { id: "asc" }],
+    expect(prisma.agentSkill.findMany).toHaveBeenCalledExactlyOnceWith({
+      where: expect.objectContaining({ ...owner, OR: expect.any(Array) }),
+      select: { id: true, name: true },
     });
+  });
+
+  it("lists attached paths and returns only the requested file from the authorized skill", async () => {
+    prisma = makePrisma([
+      {
+        id: "attached",
+        ...owner,
+        name: "Reference",
+        description: "Review",
+        content: "Use the list of reference paths",
+        source: "plugin",
+        files: {
+          "templates/welcome.md": "中文\r\n\n",
+          "references/blank.txt": "",
+        },
+      },
+    ]);
+    const input = { skillId: "attached" };
+    expect(await skillReadFromTool(prisma as never, owner, input)).toMatchObject({
+      content: "Use the list of reference paths",
+      files: ["references/blank.txt", "templates/welcome.md"],
+    });
+    expect(
+      await skillReadFromTool(prisma as never, owner, {
+        ...input,
+        file: "./templates/welcome.md",
+      }),
+    ).toEqual({ name: "Reference", file: "templates/welcome.md", content: "中文\r\n\n" });
+    expect(
+      await skillReadFromTool(prisma as never, owner, {
+        ...input,
+        file: "references/blank.txt",
+      }),
+    ).toMatchObject({ content: "" });
+    expect(
+      await skillReadFromTool(prisma as never, owner, {
+        ...input,
+        file: "constructor",
+      }),
+    ).toEqual({
+      error: "File not found in this skill.",
+      files: ["references/blank.txt", "templates/welcome.md"],
+    });
+    for (const file of [
+      "../notes.md",
+      "/notes.md",
+      "c:/notes.md",
+      "a\\notes.md",
+      "%2e%2e/notes.md",
+      "./",
+      2,
+    ]) {
+      expect(await skillReadFromTool(prisma as never, owner, { ...input, file })).toEqual({
+        error: "file must be a relative path within this skill.",
+      });
+    }
+    expect(prisma.agentSkill.findFirst).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({
+        id: "attached",
+        ...owner,
+        OR: expect.any(Array),
+      }),
+      select: { id: true, name: true, description: true, source: true, content: true, files: true },
+    });
+    prisma.agentSkill.findFirst.mockResolvedValueOnce(null);
+    expect(
+      await skillReadFromTool(prisma as never, owner, {
+        ...input,
+        file: "templates/welcome.md",
+      }),
+    ).toEqual({ error: "Skill not found." });
   });
 
   it("rejects overlong skill names on structured create and rename", async () => {
