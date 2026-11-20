@@ -469,6 +469,7 @@ describe("MCP discovery lifecycle", () => {
         CONFIG_FILE: JSON.stringify({
           access: "{{oauth.access_token}}",
           credentials: { key: "private-fixture" },
+          headers: { Authorization: "Bearer static-file-credential" },
           kind: "object",
           format: "text",
           media: "image",
@@ -489,6 +490,7 @@ describe("MCP discovery lifecycle", () => {
         expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
           access: `fixture-grant-${launchNumber}`,
           credentials: { key: "private-fixture" },
+          headers: { Authorization: "Bearer static-file-credential" },
           kind: "object",
           format: "text",
           media: "image",
@@ -528,7 +530,10 @@ describe("MCP discovery lifecycle", () => {
         calls.push(String(args?.content));
         return {
           content: [
-            { type: "text", text: `fixture-grant-${launchNumber} private-fixture yaml-fixture` },
+            {
+              type: "text",
+              text: `fixture-grant-${launchNumber} private-fixture yaml-fixture static-file-credential`,
+            },
             { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
           ],
           structuredContent: { type: "text", state: "read" },
@@ -595,7 +600,7 @@ describe("MCP discovery lifecycle", () => {
           type: "result",
           data: {
             content: [
-              { type: "text", text: "[redacted] [redacted] [redacted]" },
+              { type: "text", text: "[redacted] [redacted] [redacted] [redacted]" },
               { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
             ],
             structuredContent: { type: "[redacted]", state: "[redacted]" },
@@ -716,7 +721,8 @@ describe("MCP discovery lifecycle", () => {
       ],
     });
     const call = vi.spyOn(McpSession.prototype, "callTool").mockResolvedValue({
-      content: [{ type: "text", text: "default production" }],
+      isError: false,
+      content: [{ type: "text", text: "default false production" }],
     });
     const connector = new McpConnector(
       {
@@ -728,7 +734,8 @@ describe("MCP discovery lifecycle", () => {
         secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
       } as never,
       {
-        load: async () => JSON.stringify({ env: { API_KEY: "default", TOKEN: "production" } }),
+        load: async () =>
+          JSON.stringify({ env: { API_KEY: "default", API_SECRET: "false", TOKEN: "production" } }),
       } as never,
       { stdioEnabled: true, allowedCommands: ["fixture"] },
     );
@@ -745,7 +752,10 @@ describe("MCP discovery lifecycle", () => {
         .next();
       expect(result.value).toMatchObject({
         type: "result",
-        data: { content: [{ type: "text", text: "[redacted] production" }] },
+        data: {
+          isError: false,
+          content: [{ type: "text", text: "[redacted] [redacted] production" }],
+        },
       });
     } finally {
       await connector.close();
@@ -802,7 +812,9 @@ describe("MCP discovery lifecycle", () => {
       } as never,
       {
         load: async () =>
-          JSON.stringify({ files: { CONFIG_FILE: 'private-child-"fixture\\value' } }),
+          JSON.stringify({
+            files: { CONFIG_FILE: JSON.stringify('private-child-"fixture\\value') },
+          }),
       } as never,
       { stdioEnabled: true, allowedCommands: [process.execPath], credentialTempRoot: root },
     );

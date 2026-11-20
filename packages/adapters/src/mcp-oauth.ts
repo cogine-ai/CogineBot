@@ -41,7 +41,11 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
 import { combineSignals, sanitizeConnectorError } from "./connector-safety.js";
-import { isAuthHeaderKey, isMcpCredentialFieldValue } from "./mcp-credential-redaction.js";
+import {
+  isAuthHeaderKey,
+  isMcpCredentialFieldValue,
+  mcpCredentialValueVariants,
+} from "./mcp-credential-redaction.js";
 import {
   McpOAuthClientRequiredError,
   mcpHealthError,
@@ -119,13 +123,14 @@ const StoredStatusMaterialSchema = z.object({
 });
 
 /** Values that must never appear in model-visible tool results or errors. */
-export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
+export function oauthMaterialSecrets(
+  material: OAuthMaterial,
+  { stdio = false }: { stdio?: boolean } = {},
+): string[] {
   const values: string[] = [];
   const add = (value: string | undefined) => {
     if (!value) return;
-    values.push(value);
-    const bearer = value.match(/^Bearer\s+(.+)$/i);
-    if (bearer?.[1]) values.push(bearer[1]);
+    values.push(...mcpCredentialValueVariants(value));
   };
   add(material.secret);
   add(material.oauthClient?.clientSecret);
@@ -139,7 +144,7 @@ export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
     if (isAuthHeaderKey(key) || isMcpCredentialFieldValue(key, value)) add(value);
   }
   for (const [key, value] of Object.entries(material.env ?? {})) {
-    if (isMcpCredentialFieldValue(key, value)) add(value);
+    if (isMcpCredentialFieldValue(key, value, stdio)) add(value);
   }
   return [...new Set(values)];
 }

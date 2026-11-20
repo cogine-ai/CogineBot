@@ -61,7 +61,6 @@ import {
 } from "./mcp-server-health.js";
 import type { McpStdioOAuthValues } from "./mcp-stdio-files.js";
 import {
-  mcpCredentialFileSecrets,
   renderMcpStdioFile,
   renderMcpStdioTemplate,
   writeMcpStdioCredentialFiles,
@@ -373,7 +372,9 @@ export class McpConnector implements ConnectorProvider {
       entry = await this.acquire(server, context, signal);
       listed = await withAbort(entry.session.listTools({ signal }), signal);
       const { fileSecrets, launchSecrets } = entry;
-      const storedCredentials = entry.stdio ? oauthMaterialSecrets(entry.material) : [];
+      const storedCredentials = entry.stdio
+        ? oauthMaterialSecrets(entry.material, { stdio: true })
+        : [];
       if (storedCredentials.length || launchSecrets.length || fileSecrets.length) {
         const isLabel = (value: string) =>
           isCommonMcpConfigValue(value) || isMcpProtocolLabel(value);
@@ -675,22 +676,18 @@ export class McpConnector implements ConnectorProvider {
       }
       const result = await dispatched!;
       const secrets = [
-        ...(material ? oauthMaterialSecrets(material) : []),
+        ...(material ? oauthMaterialSecrets(material, { stdio }) : []),
         ...(entry?.launchSecrets ?? []),
         ...(entry?.fileSecrets ?? []),
       ];
       response = {
         type: "result",
-        data: redactConnectorPayload(
-          result,
-          secrets,
-          entry.fileSecrets.length ? "mcp-result" : undefined,
-        ),
+        data: redactConnectorPayload(result, secrets, stdio ? "mcp-result" : undefined),
       };
     } catch (error) {
       // A thrown call means the transport or auth broke; drop the session so the next call reconnects.
       const secrets = [
-        ...(material ? oauthMaterialSecrets(material) : []),
+        ...(material ? oauthMaterialSecrets(material, { stdio: entry?.stdio }) : []),
         ...(entry?.launchSecrets ?? []),
         ...(entry?.fileSecrets ?? []),
       ];
@@ -1071,8 +1068,7 @@ export class McpConnector implements ConnectorProvider {
             this.options.credentialTempRoot,
           );
           removeCredentialFiles = written.remove;
-          for (const content of Object.values(renderedFiles))
-            fileSecrets.push(...mcpCredentialFileSecrets(content));
+          fileSecrets.push(...written.secrets);
           launchSecrets.push(...Object.values(written.env));
           Object.assign(env, written.env);
         }

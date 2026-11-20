@@ -87,8 +87,24 @@ export function isCommonMcpConfigValue(value: string): boolean {
   return COMMON_CONFIG_VALUES.has(value.toLowerCase());
 }
 
-export function isMcpCredentialFieldValue(key: string, value: string): boolean {
-  return isExplicitCredentialKey(key)
-    ? value.length > 0
-    : isAmbiguousCredentialKey(key) && looksLikeSecretValue(value);
+/** An error may quote a token without its authorization scheme. */
+export function mcpCredentialValueVariants(value: string): string[] {
+  const text = value.trim();
+  const bearer = text.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (bearer) return [value, bearer];
+  const basic = text.match(/^Basic\s+([A-Za-z0-9+/]+={0,2})$/i)?.[1];
+  if (basic && Buffer.from(basic, "base64").includes(58)) return [value, basic];
+  return [value];
+}
+
+export function isMcpCredentialFieldValue(
+  key: string,
+  value: string,
+  allowConfigValues = false,
+): boolean {
+  if (isExplicitCredentialKey(key)) {
+    const trimmed = value.trim();
+    return Boolean(trimmed) && (allowConfigValues || !isCommonMcpConfigValue(trimmed));
+  }
+  return isAmbiguousCredentialKey(key) && looksLikeSecretValue(value);
 }

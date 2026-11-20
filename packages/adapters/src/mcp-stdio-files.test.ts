@@ -61,6 +61,13 @@ describe("managed stdio credential files", () => {
       "fixture with spaces",
     );
     expect(mcpCredentialFileSecrets('VALUE="fixture\\nline"')).toContain("fixture\nline");
+    expect(mcpCredentialFileSecrets('{"authorization":"Basic Zml4dHVyZTpjdXN0b20="}')).toContain(
+      "Zml4dHVyZTpjdXN0b20=",
+    );
+    expect(mcpCredentialFileSecrets('{"instruction":"Basic user"}')).not.toContain("user");
+    expect(mcpCredentialFileSecrets("KEY=fixture-value")).toContain("fixture-value");
+    expect(mcpCredentialFileSecrets('KEY="fixture-value"#comment')).toContain("fixture-value");
+    expect(mcpCredentialFileSecrets("KEY=fixture-value#comment")).toContain("fixture-value");
   });
 
   it("writes same-name files into distinct private directories and cleans up only its launch", async () => {
@@ -118,6 +125,29 @@ describe("managed stdio credential files", () => {
           root,
         ),
       ).rejects.toThrow("Could not write MCP credential files");
+      expect(await readdir(root)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unsupported credential grammar before creating a directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-unsupported-fixture-"));
+    try {
+      for (const content of [
+        "machine host.example.test login synthetic password fixture-value",
+        "host.example.test:5432:fixture:synthetic:fixture-value",
+        "<credential>fixture-value</credential>",
+        "Bearer fixture:fixture-value",
+      ]) {
+        await expect(
+          writeMcpStdioCredentialFiles(
+            { CONFIG_FILE: content },
+            new AbortController().signal,
+            root,
+          ),
+        ).rejects.toThrow("Unsupported MCP credential file format");
+      }
       expect(await readdir(root)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

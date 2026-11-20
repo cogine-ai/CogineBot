@@ -2,13 +2,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { parseEnv } from "node:util";
 import {
   MCP_STDIO_OAUTH_FIELDS,
   MCP_STDIO_OAUTH_REFERENCE,
   McpStdioFilesSchema,
 } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
-import { parseAllDocuments } from "yaml";
+import { isMap, isSeq, parseAllDocuments } from "yaml";
+import { mcpCredentialValueVariants } from "./mcp-credential-redaction.js";
 
 export type McpStdioOAuthField = (typeof MCP_STDIO_OAUTH_FIELDS)[number];
 export type McpStdioOAuthValues = Partial<Record<McpStdioOAuthField, string>>;
@@ -64,37 +66,60 @@ export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues
   );
 }
 
+const opaqueCredential = /^[A-Za-z0-9_.~+/-]+=*$/;
+
+function credentialFileValues(content: string): unknown[] {
+  try {
+    return [JSON.parse(content)];
+  } catch {
+    // Check the other supported formats.
+  }
+  try {
+    const documents = parseAllDocuments(content, { logLevel: "silent" });
+    if (
+      documents.length &&
+      documents.every((doc) => !doc.errors.length && (isMap(doc.contents) || isSeq(doc.contents)))
+    )
+      return documents.map((doc) => doc.toJS({ maxAliasCount: 50 }));
+  } catch {
+    // Assignment files do not need to be valid YAML.
+  }
+  const text = content.trim();
+  const [, authorization] = mcpCredentialValueVariants(text);
+  if (
+    !text ||
+    opaqueCredential.test(text) ||
+    (authorization && opaqueCredential.test(authorization))
+  )
+    return [text];
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^[#;]/.test(line) && !/^\[[\w. -]+\]$/.test(line));
+  const values: string[] = [];
+  for (const line of lines) {
+    const assigned = line.match(/^(?:export\s+)?[\w.-]+\s*=\s*(.*)$/)?.[1];
+    if (assigned === undefined)
+      throw new Error(
+        "Unsupported MCP credential file format. Use JSON, YAML, assignment lines, or a single token.",
+      );
+    values.push(assigned);
+    const quoted = assigned.match(/^(["'])(.*?)\1(?:\s*[;#].*)?$/);
+    if (quoted) {
+      const [, quote, value] = quoted as [string, string, string];
+      values.push(value);
+      if (quote === '"') values.push(value.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
+    } else {
+      values.push(assigned.replace(/(?<!\\)[;#].*$/, "").trimEnd());
+    }
+  }
+  return [...values, ...Object.values(parseEnv(lines.join("\n")))];
+}
+
 /** A server can echo part of a credential file instead of its whole contents. */
 export function mcpCredentialFileSecrets(content: string): string[] {
   const secrets = new Set<string>([content]);
-  const pending: unknown[] = [];
-  try {
-    pending.push(JSON.parse(content));
-  } catch {
-    try {
-      for (const doc of parseAllDocuments(content, { logLevel: "silent" })) {
-        if (doc.contents && !doc.errors.length) pending.push(doc.toJS({ maxAliasCount: 50 }));
-      }
-    } catch {
-      // Plain-text and assignment values are still available below.
-    }
-    for (const line of content.split(/\r?\n/)) {
-      const value = line.trim();
-      if (!value) continue;
-      secrets.add(value);
-      const assigned = value.match(/^(?:export\s+)?[\w.-]+\s*[:=]\s*(.+)$/)?.[1];
-      if (!assigned) continue;
-      secrets.add(assigned);
-      const quoted = assigned.match(/^(["'])(.*?)\1(?:\s+[;#].*)?$/);
-      if (quoted) {
-        const [, quote, value] = quoted as [string, string, string];
-        secrets.add(value);
-        if (quote === '"') secrets.add(value.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
-      } else {
-        secrets.add(assigned.replace(/\s+[;#].*$/, ""));
-      }
-    }
-  }
+  const pending = credentialFileValues(content);
   // Credential field names are arbitrary. Collect every decoded scalar.
   const seen = new WeakSet<object>();
   while (pending.length) {
@@ -107,17 +132,22 @@ export function mcpCredentialFileSecrets(content: string): string[] {
       secrets.add(String(value));
     }
   }
-  return [...secrets].filter(Boolean);
+  for (const value of [...secrets]) {
+    for (const variant of mcpCredentialValueVariants(value)) secrets.add(variant);
+  }
+  secrets.delete("");
+  return [...secrets];
 }
 
 export async function writeMcpStdioCredentialFiles(
   files: Record<string, string>,
   signal: AbortSignal,
   root = tmpdir(),
-): Promise<{ env: Record<string, string>; remove: () => Promise<void> }> {
+): Promise<{ env: Record<string, string>; secrets: string[]; remove: () => Promise<void> }> {
   if (!McpStdioFilesSchema.safeParse(files).success)
     throw new Error("Invalid MCP credential files");
   signal.throwIfAborted();
+  const secrets = Object.values(files).flatMap(mcpCredentialFileSecrets);
   const directory = await mkdtemp(join(root, "mcp-credentials-")).catch((error: unknown) => {
     throw new Error("Could not write MCP credential files", { cause: error });
   });
@@ -148,7 +178,7 @@ export async function writeMcpStdioCredentialFiles(
       env[name] = path;
     }
     signal.throwIfAborted();
-    return { env, remove };
+    return { env, secrets, remove };
   } catch (error) {
     await remove();
     signal.throwIfAborted();
