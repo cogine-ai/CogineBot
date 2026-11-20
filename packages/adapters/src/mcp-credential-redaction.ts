@@ -93,7 +93,14 @@ export function mcpCredentialValueVariants(value: string): string[] {
   const bearer = text.match(/^Bearer\s+(.+)$/i)?.[1];
   if (bearer) return [value, bearer];
   const basic = text.match(/^Basic\s+([A-Za-z0-9+/]+={0,2})$/i)?.[1];
-  if (basic && Buffer.from(basic, "base64").includes(58)) return [value, basic];
+  if (basic) {
+    const decoded = Buffer.from(basic, "base64").toString("utf8");
+    const separator = decoded.indexOf(":");
+    if (separator !== -1) {
+      const password = decoded.slice(separator + 1);
+      return password ? [value, basic, password] : [value, basic];
+    }
+  }
   return [value];
 }
 

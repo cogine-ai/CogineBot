@@ -61,13 +61,35 @@ describe("managed stdio credential files", () => {
       "fixture with spaces",
     );
     expect(mcpCredentialFileSecrets('VALUE="fixture\\nline"')).toContain("fixture\nline");
-    expect(mcpCredentialFileSecrets('{"authorization":"Basic Zml4dHVyZTpjdXN0b20="}')).toContain(
-      "Zml4dHVyZTpjdXN0b20=",
+    expect(mcpCredentialFileSecrets('{"authorization":"Basic Zml4dHVyZTpjdXN0b20="}')).toEqual(
+      expect.arrayContaining(["Zml4dHVyZTpjdXN0b20=", "custom"]),
     );
     expect(mcpCredentialFileSecrets('{"instruction":"Basic user"}')).not.toContain("user");
     expect(mcpCredentialFileSecrets("KEY=fixture-value")).toContain("fixture-value");
     expect(mcpCredentialFileSecrets('KEY="fixture-value"#comment')).toContain("fixture-value");
     expect(mcpCredentialFileSecrets("KEY=fixture-value#comment")).toContain("fixture-value");
+  });
+
+  it("retains lossless numeric credential text in JSON and YAML", () => {
+    expect(mcpCredentialFileSecrets('{"code":9007199254740993,"label":1e+7}')).toEqual(
+      expect.arrayContaining(["9007199254740993", "9007199254740992", "1e+7", "10000000"]),
+    );
+    expect(mcpCredentialFileSecrets("code: 9007199254740993\nlabel: 1e+7")).toEqual(
+      expect.arrayContaining(["9007199254740993", "9007199254740992", "1e+7", "10000000"]),
+    );
+  });
+
+  it("keeps multiline quoted assignments and parses the following assignment", () => {
+    const value = "first fixture line\n  next line\n# retained inside the value";
+    for (const quote of ['"', "'", "`"]) {
+      const content = `FILE_VALUE=${quote}${value}${quote} # comment\nANOTHER=fixture-two`;
+      expect(mcpCredentialFileSecrets(content)).toEqual(
+        expect.arrayContaining([value, "fixture-two"]),
+      );
+    }
+    expect(() => mcpCredentialFileSecrets('VALUE="open\nOTHER=fixture-two')).toThrow(
+      /Unsupported MCP credential file format/,
+    );
   });
 
   it("writes same-name files into distinct private directories and cleans up only its launch", async () => {

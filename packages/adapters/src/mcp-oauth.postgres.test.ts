@@ -14,6 +14,16 @@ const databaseUrl = process.env.DATABASE_URL;
 const describePostgres = process.env.VERIFY_DATABASE && databaseUrl ? describe : describe.skip;
 const issuer = "https://auth.example.test";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((finish, fail) => {
+    resolve = finish;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
   const databases: ReturnType<typeof createDb>[] = [];
   const brokers: McpOAuthBroker[] = [];
@@ -160,11 +170,12 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     const makeBroker = (
       db: ReturnType<typeof createDb>,
       resolveHostname = network.resolveHostname,
+      fetcher: typeof fetch = network.fetch,
     ) => {
       const broker = new McpOAuthBroker(
         withSecretPersistence(db.prisma, store),
         store,
-        { ...network, resolveHostname },
+        { fetch: fetcher, resolveHostname },
         false,
         stdio ? stdioConfig : undefined,
       );
@@ -238,17 +249,11 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       peer.providerFor(f.server, runtimeContext, undefined, adopted),
     );
     const refreshFixture = f.refresh.getMockImplementation()!;
-    let receiveRequest = () => {};
-    const requested = new Promise<void>((resolve) => {
-      receiveRequest = resolve;
-    });
-    let releaseRequest = () => {};
-    const release = new Promise<void>((resolve) => {
-      releaseRequest = resolve;
-    });
+    const requested = deferred<void>();
+    const release = deferred<void>();
     f.refresh.mockImplementationOnce(async (input, init) => {
-      receiveRequest();
-      await release;
+      requested.resolve();
+      await release.promise;
       const authorization = new Headers(init?.headers).get("authorization");
       expect(Buffer.from(authorization!.slice(6), "base64").toString()).toBe(
         "team%3Afixture:fixture%2Bsecret+%25",
@@ -260,7 +265,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     let second: typeof first | undefined;
     try {
       await Promise.race([
-        requested,
+        requested.promise,
         first.then(() => {
           throw new Error("Refresh request did not start");
         }),
@@ -268,8 +273,26 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
       second = runAsTenant(f.context, () => other!.tokens());
       void second.catch(() => undefined);
       expect(await f.prisma.mcpServer.findUnique({ where: { id: f.server.id } })).not.toBeNull();
+      await expect
+        .poll(
+          async () => {
+            const result = await f.db.pool.query<{ waiting: boolean }>(
+              `SELECT EXISTS (
+               SELECT 1 FROM pg_locks
+               WHERE locktype = 'advisory' AND NOT granted AND objsubid = 2
+                 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                 AND classid::bigint = (hashtext('mcp-stdio-oauth-refresh')::bigint & 4294967295)
+                 AND objid::bigint = (hashtext($1)::bigint & 4294967295)
+             ) AS waiting`,
+              [f.server.id],
+            );
+            return result.rows[0]?.waiting;
+          },
+          { timeout: 3_000 },
+        )
+        .toBe(true);
     } finally {
-      releaseRequest();
+      release.resolve();
     }
     const [one, two] = await Promise.all([first, second]);
     expect(one).toMatchObject({ access_token: "access-1", refresh_token: "refresh-1" });
@@ -278,6 +301,163 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     expect(adopted).toHaveBeenLastCalledWith(
       expect.objectContaining({ id: (await f.read()).row.id }),
     );
+  });
+
+  it("refreshes a different stdio server while one issuer request is still pending", async () => {
+    const f = await fixture({ stdio: true, poolMax: 1 });
+    const firstMaterial = await f.read();
+    const stored = await f.store.put(JSON.stringify(firstMaterial.material), {
+      ...f.context,
+      operationId: "fixture",
+      traceId: "fixture",
+      signal: new AbortController().signal,
+    });
+    await f.prisma.secret.create({ data: { ...stored, ...f.context, kind: "mcp" } });
+    const sibling = await f.prisma.mcpServer.create({
+      data: {
+        ...f.context,
+        slug: "sibling-oauth",
+        name: "Sibling OAuth test",
+        transport: "stdio",
+        command: "fixture-mcp",
+        secretId: stored.id,
+      },
+    });
+    const provider = await runAsTenant(f.context, () => f.broker.providerFor(sibling, f.context));
+    const refreshFixture = f.refresh.getMockImplementation()!;
+    const requested = deferred<void>();
+    const release = deferred<void>();
+    f.refresh.mockImplementationOnce(async (input, init) => {
+      requested.resolve();
+      await release.promise;
+      return refreshFixture(input, init);
+    });
+    const first = runAsTenant(f.context, () => f.provider.tokens());
+    void first.catch(() => undefined);
+    let second: typeof first | undefined;
+    try {
+      await Promise.race([
+        requested.promise,
+        first.then(() => {
+          throw new Error("First refresh request did not start");
+        }),
+      ]);
+      second = runAsTenant(f.context, () => provider!.tokens());
+      void second.catch(() => undefined);
+      await expect.poll(() => f.refresh.mock.calls.length, { timeout: 3_000 }).toBe(2);
+      expect(await second).toMatchObject({ access_token: "access-1" });
+    } finally {
+      release.resolve();
+      await Promise.allSettled([first, second]);
+    }
+    expect(await first).toMatchObject({ access_token: "access-1" });
+  });
+
+  it("serializes stdio callback persistence with deployment ownership changes", async () => {
+    const f = await fixture({ stdio: true });
+    const where = { id: "default" };
+    const previous = await f.prisma.deploymentSettings.findUnique({ where });
+    await f.prisma.deploymentSettings.upsert({
+      where,
+      create: { ...where, ownerUserId: f.context.userId },
+      update: { ownerUserId: f.context.userId },
+    });
+    const fetcher: typeof fetch = async (input) => {
+      const request = new Request(input);
+      if (new URL(request.url).pathname === "/token")
+        return Response.json({ access_token: "fixture-new-grant", token_type: "Bearer" });
+      return Response.json({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        response_types_supported: ["code"],
+        code_challenge_methods_supported: ["S256"],
+      });
+    };
+    try {
+      const broker = f.makeBroker(openDb(), undefined, fetcher);
+      const begin = await runAsTenant(f.context, () =>
+        broker.begin({
+          ...f.context,
+          serverId: f.server.id,
+          redirectUri: "https://app.example.test/callback",
+        }),
+      );
+      if (begin.status !== "authorization_required") throw new Error("Expected authorization URL");
+      const blocked = deferred<number>();
+      const release = deferred<void>();
+      const grantPrepared = deferred<string>();
+      const returnGrant = deferred<void>();
+      const prepare = f.store.put.bind(f.store);
+      const put = vi.spyOn(f.store, "put").mockImplementationOnce(async (...input) => {
+        const record = await prepare(...input);
+        grantPrepared.resolve(record.ciphertext);
+        await returnGrant.promise;
+        return record;
+      });
+      const callback = runAsTenant(f.context, () =>
+        broker.complete({
+          ...f.context,
+          sessionId: begin.sessionId,
+          state: begin.sessionId,
+          code: "fixture-code",
+        }),
+      );
+      void callback.catch(() => undefined);
+      let ownerChange: Promise<void> | undefined;
+      try {
+        const ref = await Promise.race([
+          grantPrepared.promise,
+          callback.then(() => {
+            throw new Error("Callback did not prepare the granted credentials");
+          }),
+        ]);
+        ownerChange = f.prisma.$transaction(async (tx) => {
+          await tx.deploymentSettings.update({ where, data: { ownerUserId: null } });
+          const [process] = await tx.$queryRaw<
+            Array<{ pid: number }>
+          >`SELECT pg_backend_pid() AS pid`;
+          blocked.resolve(process!.pid);
+          await release.promise;
+        });
+        void ownerChange.catch(blocked.reject);
+        const pid = await blocked.promise;
+        returnGrant.resolve();
+        await expect
+          .poll(
+            async () => {
+              const result = await f.db.pool.query<{ waiting: boolean }>(
+                `SELECT EXISTS (
+                 SELECT 1 FROM pg_stat_activity
+                 WHERE $1 = ANY(pg_blocking_pids(pid))
+                   AND query LIKE '%deployment_settings%FOR SHARE%'
+               ) AS waiting`,
+                [pid],
+              );
+              return result.rows[0]?.waiting;
+            },
+            { timeout: 3_000 },
+          )
+          .toBe(true);
+        release.resolve();
+        await ownerChange;
+        await expect(callback).rejects.toThrow(
+          "MCP stdio authorization requires the deployment owner",
+        );
+        expect((await f.read()).row.id).toBe(f.server.secretId);
+        expect(f.entries.has(ref)).toBe(false);
+      } finally {
+        returnGrant.resolve();
+        release.resolve();
+        await Promise.allSettled([ownerChange, callback]);
+        put.mockRestore();
+      }
+    } finally {
+      await f.prisma.deploymentSettings.update({
+        where,
+        data: { ownerUserId: previous?.ownerUserId ?? null },
+      });
+    }
   });
 
   it("skips stdio refresh when the server is disabled while its grant is loading", async () => {

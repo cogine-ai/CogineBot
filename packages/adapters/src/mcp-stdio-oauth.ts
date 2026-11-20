@@ -84,11 +84,14 @@ export async function beginMcpStdioAuthorization(input: {
     metadata,
     clientInformation: mcpStdioClientInformation(input.client),
     redirectUrl: input.redirectUri,
-    scope: input.client.scope,
     state: input.state,
   });
   const params = start.authorizationUrl.searchParams;
-  const consent = params.getAll("prompt").includes("consent");
+  // The SDK detects offline access by substring. Preserve the requested scope
+  // and require consent only when it contains the complete OIDC scope token.
+  const scope = input.client.scope;
+  if (scope) params.set("scope", scope);
+  const consent = scope?.split(/\s+/).includes("offline_access");
   if (consent) params.set("prompt", "consent");
   if (input.client.authorizationParams) {
     for (const [name, value] of parseMcpStdioAuthorizationParams(

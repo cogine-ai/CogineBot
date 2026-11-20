@@ -668,7 +668,7 @@ function formatOAuthRejection(
 
 export class McpOAuthBroker {
   private readonly pending = new Map<string, Pending>();
-  private readonly stdioRefreshes = new Set<Promise<void>>();
+  private readonly stdioRefreshes = new Map<string, Promise<void>>();
   private refreshLockPool?: Pool;
   private closing = false;
 
@@ -686,7 +686,7 @@ export class McpOAuthBroker {
 
   async close(): Promise<void> {
     this.closing = true;
-    await Promise.allSettled(this.stdioRefreshes);
+    await Promise.allSettled(this.stdioRefreshes.values());
     await this.refreshLockPool?.end().catch(() => undefined);
   }
 
@@ -1302,7 +1302,11 @@ export class McpOAuthBroker {
       });
     const deployment =
       tx && isInteractiveTransaction(tx)
-        ? await runAsSystemInTransaction(tx, reason, read)
+        ? await runAsSystemInTransaction(tx, reason, async () => {
+            const [owner] = await tx.$queryRaw<Array<{ ownerUserId: string | null }>>`
+              SELECT "ownerUserId" FROM deployment_settings WHERE id = 'default' FOR SHARE`;
+            return owner;
+          })
         : await runAsSystem(reason, read);
     if (deployment?.ownerUserId !== userId)
       throw new Error("MCP stdio authorization requires the deployment owner");
@@ -1322,8 +1326,8 @@ export class McpOAuthBroker {
     effect: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
       await this.assertStdioOwner(actor.userId, tx);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
       const server = await tx.mcpServer.findFirst({
         where: {
           id: serverId,
@@ -1398,51 +1402,56 @@ export class McpOAuthBroker {
     // scoped read, conditional write, and commit acknowledgement recovery.
     const databaseUrl = this.stdio?.databaseUrl;
     if (!databaseUrl) throw new TemporarilyUnavailableError("MCP OAuth refresh is unavailable");
-    this.refreshLockPool ??= createPool(databaseUrl, {
-      poolMax: 1,
-      applicationName: "mcp-stdio-refresh",
+    this.refreshLockPool ??= createPool(databaseUrl, { applicationName: "mcp-stdio-refresh" });
+    const lockPool = this.refreshLockPool;
+    // Local callers for the same server queue before checking out a connection.
+    // Different servers can use the other slots in the bounded refresh pool.
+    const ready = this.stdioRefreshes.get(server.id)?.catch(() => undefined) ?? Promise.resolve();
+    const refresh = ready.then(() => {
+      if (this.closing) throw new McpOAuthCredentialsChangedError(server.id);
+      signal?.throwIfAborted();
+      return withSeparateRefreshLock(
+        lockPool,
+        ["mcp-stdio-oauth-refresh", server.id],
+        async (lock) => {
+          signal?.throwIfAborted();
+          const where = {
+            id: server.id,
+            userId,
+            spaceId,
+            revision: server.revision,
+            enabled: true,
+            transport: "stdio",
+          };
+          const current = await this.prisma.mcpServer.findFirst({
+            where,
+            select: { secretId: true },
+          });
+          if (!current?.secretId) throw new McpOAuthCredentialsChangedError(server.id);
+          const record = await this.prisma.secret.findFirst({
+            where: { id: current.secretId, userId, spaceId },
+          });
+          if (!record) throw new McpOAuthCredentialsChangedError(server.id);
+          const material = await this.read(record.ciphertext, record.id);
+          if (!isDeepStrictEqual(material.oauthClient, client) || !hasBoundStdioGrant(material))
+            throw new McpOAuthCredentialsChangedError(server.id);
+          const latest = await this.prisma.mcpServer.findFirst({
+            where: { ...where, secretId: record.id },
+            select: { id: true },
+          });
+          if (!latest) throw new McpOAuthCredentialsChangedError(server.id);
+          await lock.query("SELECT 1");
+          signal?.throwIfAborted();
+          await apply({ id: record.id, ref: record.ciphertext, material });
+          signal?.throwIfAborted();
+        },
+      );
     });
-    const refresh = withSeparateRefreshLock(
-      this.refreshLockPool,
-      ["mcp-stdio-oauth-refresh", server.id],
-      async (lock) => {
-        signal?.throwIfAborted();
-        const where = {
-          id: server.id,
-          userId,
-          spaceId,
-          revision: server.revision,
-          enabled: true,
-          transport: "stdio",
-        };
-        const current = await this.prisma.mcpServer.findFirst({
-          where,
-          select: { secretId: true },
-        });
-        if (!current?.secretId) throw new McpOAuthCredentialsChangedError(server.id);
-        const record = await this.prisma.secret.findFirst({
-          where: { id: current.secretId, userId, spaceId },
-        });
-        if (!record) throw new McpOAuthCredentialsChangedError(server.id);
-        const material = await this.read(record.ciphertext, record.id);
-        if (!isDeepStrictEqual(material.oauthClient, client) || !hasBoundStdioGrant(material))
-          throw new McpOAuthCredentialsChangedError(server.id);
-        const latest = await this.prisma.mcpServer.findFirst({
-          where: { ...where, secretId: record.id },
-          select: { id: true },
-        });
-        if (!latest) throw new McpOAuthCredentialsChangedError(server.id);
-        await lock.query("SELECT 1");
-        signal?.throwIfAborted();
-        await apply({ id: record.id, ref: record.ciphertext, material });
-        signal?.throwIfAborted();
-      },
-    );
-    this.stdioRefreshes.add(refresh);
+    this.stdioRefreshes.set(server.id, refresh);
     try {
       await refresh;
     } finally {
-      this.stdioRefreshes.delete(refresh);
+      if (this.stdioRefreshes.get(server.id) === refresh) this.stdioRefreshes.delete(server.id);
     }
   }
 
@@ -1643,12 +1652,12 @@ export class McpOAuthBroker {
           await this.resolvePluginCredential(installId, context, stored);
         }
         return this.prisma.$transaction(async (tx) => {
+          if (expected?.stdioClient) await this.assertStdioOwner(context.userId, tx);
           if (installId) await lockPluginInstall(tx, installId);
           const parent = installId
             ? await assertManagedPluginActive(tx, installId, context)
             : undefined;
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${serverId}))`;
-          if (expected?.stdioClient) await this.assertStdioOwner(context.userId, tx);
           const server = await tx.mcpServer.findFirst({
             where: {
               id: serverId,

@@ -9,7 +9,7 @@ import {
   McpStdioFilesSchema,
 } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
-import { isMap, isSeq, parseAllDocuments } from "yaml";
+import { isMap, isSeq, parseAllDocuments, visit } from "yaml";
 import { mcpCredentialValueVariants } from "./mcp-credential-redaction.js";
 
 export type McpStdioOAuthField = (typeof MCP_STDIO_OAUTH_FIELDS)[number];
@@ -70,17 +70,33 @@ const opaqueCredential = /^[A-Za-z0-9_.~+/-]+=*$/;
 
 function credentialFileValues(content: string): unknown[] {
   try {
-    return [JSON.parse(content)];
+    const numberSources: string[] = [];
+    const value = JSON.parse(content, (_key, item, context?: { source?: string }) => {
+      if (typeof item === "number" && context?.source) numberSources.push(context.source);
+      return item;
+    });
+    return [value, ...numberSources];
   } catch {
     // Check the other supported formats.
   }
   try {
-    const documents = parseAllDocuments(content, { logLevel: "silent" });
+    const documents = parseAllDocuments(content, { intAsBigInt: true, logLevel: "silent" });
     if (
       documents.length &&
       documents.every((doc) => !doc.errors.length && (isMap(doc.contents) || isSeq(doc.contents)))
-    )
-      return documents.map((doc) => doc.toJS({ maxAliasCount: 50 }));
+    ) {
+      return documents.flatMap((doc) => {
+        const numberSources: string[] = [];
+        visit(doc, {
+          Scalar(_key, node) {
+            if ((typeof node.value === "number" || typeof node.value === "bigint") && node.source)
+              numberSources.push(node.source);
+            if (typeof node.value === "bigint") numberSources.push(String(Number(node.value)));
+          },
+        });
+        return [doc.toJS({ maxAliasCount: 50 }), ...numberSources];
+      });
+    }
   } catch {
     // Assignment files do not need to be valid YAML.
   }
@@ -92,28 +108,35 @@ function credentialFileValues(content: string): unknown[] {
     (authorization && opaqueCredential.test(authorization))
   )
     return [text];
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !/^[#;]/.test(line) && !/^\[[\w. -]+\]$/.test(line));
+  const assignedValues = credentialAssignmentValues(text);
+  if (assignedValues) return assignedValues;
+  throw new Error(
+    "Unsupported MCP credential file format. Use JSON, YAML, assignment lines, or a single token.",
+  );
+}
+
+function credentialAssignmentValues(text: string): string[] | undefined {
+  const lines = text.split(/\r?\n/);
   const values: string[] = [];
-  for (const line of lines) {
-    const assigned = line.match(/^(?:export\s+)?[\w.-]+\s*=\s*(.*)$/)?.[1];
-    if (assigned === undefined)
-      throw new Error(
-        "Unsupported MCP credential file format. Use JSON, YAML, assignment lines, or a single token.",
-      );
-    values.push(assigned);
-    const quoted = assigned.match(/^(["'])(.*?)\1(?:\s*[;#].*)?$/);
-    if (quoted) {
-      const [, quote, value] = quoted as [string, string, string];
-      values.push(value);
-      if (quote === '"') values.push(value.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!.trimStart();
+    if (!line || /^[#;]/.test(line) || /^\[[\w. -]+\]\s*$/.test(line)) continue;
+    let assigned = line.match(/^(?:export\s+)?[\w.-]+\s*=\s*(.*)$/)?.[1];
+    if (assigned === undefined) return undefined;
+    const quote = assigned[0];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      while (assigned.indexOf(quote, 1) === -1 && index + 1 < lines.length)
+        assigned += `\n${lines[++index]}`;
+      const quoted = assigned.match(/^(["'`])([\s\S]*?)\1\s*(?:[;#].*)?$/)?.[2];
+      if (quoted === undefined) return undefined;
+      values.push(quoted);
+      if (quote === '"') values.push(quoted.replaceAll("\\n", "\n").replaceAll("\\r", "\r"));
     } else {
       values.push(assigned.replace(/(?<!\\)[;#].*$/, "").trimEnd());
     }
+    values.push(assigned);
   }
-  return [...values, ...Object.values(parseEnv(lines.join("\n")))];
+  return [...values, ...Object.values(parseEnv(text)).filter((value) => value !== undefined)];
 }
 
 /** A server can echo part of a credential file instead of its whole contents. */
