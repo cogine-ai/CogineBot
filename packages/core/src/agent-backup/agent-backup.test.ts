@@ -882,6 +882,8 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
           ...definition,
           schedule: { ...definition.schedule, expr: "30 2 * * *", tz: "Europe/Oslo" },
         },
+        { ...definition, payload: { ...definition.payload, message: "先运行（@周报 模板）。" } },
+        { ...definition, payload: { ...definition.payload, message: "运行（@。周报）。" } },
       ],
     }),
   };
@@ -911,6 +913,8 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
       { path: "cron/routine-10.json", reason: "routineSchedule" },
       { path: "cron/routine-11.json", reason: "routineSchedule" },
       { path: "cron/routine-12.json", reason: "routineSchedule" },
+      { path: "cron/routine-13.json", reason: "routineSchedule" },
+      { path: "cron/routine-14.json", reason: "routineSchedule" },
       { path: "cron/routine-3.json", reason: "routineOwner" },
       { path: "cron/routine-4.json", reason: "routineSchedule" },
       { path: "cron/routine-5.json", reason: "routineSchedule" },

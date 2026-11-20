@@ -7,7 +7,7 @@ import {
 } from "@rakazo/contracts";
 import { redactSecretText } from "@rakazo/logging/redaction";
 import JSON5 from "json5";
-import { extractForcedSkillName } from "../agent-skill.js";
+import { extractForcedSkillName, hasRoutineSkillReference } from "../agent-skill.js";
 import { nextCronDateAcrossStrict } from "../cron.js";
 
 export const backupJobsPath = "cron/jobs.json";
@@ -132,7 +132,7 @@ export function validateBackupRoutine(value: unknown): Routine | null {
         routine.timezone,
       ) ||
       extractForcedSkillName(routine.prompt) ||
-      /(?:^|[\s(,])@[^\s,.)]/.test(routine.prompt) ||
+      hasRoutineSkillReference(routine.prompt) ||
       redactSecretText(routine.prompt) !== routine.prompt ||
       redactSecretText(routine.name) !== routine.name
     )
