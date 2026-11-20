@@ -36,7 +36,12 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     }
   });
 
-  async function fixture({ withStaticCredential = true, expired = true, stdio = false } = {}) {
+  async function fixture({
+    withStaticCredential = true,
+    expired = true,
+    expiresIn = 3600,
+    stdio = false,
+  } = {}) {
     const db = openDb();
     const entries = new Map<string, string>();
     const listeners = new Set<(ref: string) => void>();
@@ -89,7 +94,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
           access_token: "access-0",
           refresh_token: "refresh-0",
           token_type: "Bearer",
-          expires_in: 3600,
+          expires_in: expiresIn,
           issuer,
           ...(stdio ? { scope: "fixture-granted-scope" } : {}),
         },
@@ -168,8 +173,13 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     };
   }
 
-  it("renews a stdio grant without dropping the registered client or file declarations", async () => {
-    const f = await fixture({ stdio: true, withStaticCredential: false });
+  it.each([3600, 0])("renews a stdio grant with a lifetime of %s seconds", async (expiresIn) => {
+    const f = await fixture({
+      stdio: true,
+      withStaticCredential: false,
+      expired: expiresIn !== 0,
+      expiresIn,
+    });
     const tokens = await runAsTenant(f.context, () => f.provider.tokens());
     expect(tokens).toMatchObject({
       access_token: "access-1",

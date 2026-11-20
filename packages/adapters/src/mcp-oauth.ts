@@ -274,10 +274,12 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   }
 
   private accessTokenExpired(): boolean {
-    const oauth = this.material.oauth;
-    const lifetimeSeconds = oauth?.tokens?.expires_in;
-    if (!oauth?.tokens?.refresh_token || !oauth.obtainedAt || !lifetimeSeconds) return false;
-    return Date.now() >= oauth.obtainedAt + lifetimeSeconds * 1000 - TOKEN_REFRESH_SKEW_MS;
+    const expiresAt = mcpOAuthAccessTokenExpiry(this.material);
+    return (
+      !!this.material.oauth?.tokens?.refresh_token &&
+      expiresAt !== undefined &&
+      Date.now() >= expiresAt - TOKEN_REFRESH_SKEW_MS
+    );
   }
 
   private async refreshExpiredToken(): Promise<void> {
