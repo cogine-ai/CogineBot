@@ -882,8 +882,12 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
           ...definition,
           schedule: { ...definition.schedule, expr: "30 2 * * *", tz: "Europe/Oslo" },
         },
-        { ...definition, payload: { ...definition.payload, message: "先运行（@周报 模板）。" } },
+        { ...definition, payload: { ...definition.payload, message: "先运行“@周报 模板”。" } },
         { ...definition, payload: { ...definition.payload, message: "运行（@。周报）。" } },
+        {
+          ...definition,
+          payload: { ...definition.payload, message: "Print a literal @. Keep this glyph (@)." },
+        },
       ],
     }),
   };
@@ -907,6 +911,7 @@ it("projects and selects only jobs bound to the selected OpenClaw workspace", ()
   expect(groups?.routines).toMatchObject([
     { path: "cron/routine-1.json", name: "Review reports" },
     { path: "cron/routine-9.json", name: "Review reports" },
+    { path: "cron/routine-15.json", name: "Review reports" },
   ]);
   expect(groups?.unavailable).toEqual(
     expect.arrayContaining([

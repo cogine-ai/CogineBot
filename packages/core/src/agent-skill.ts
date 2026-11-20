@@ -109,11 +109,16 @@ const ROUTINE_SKILL_STOP = new Set([
   "a",
   "an",
 ]);
-const ROUTINE_SKILL_START = "(?:^|[\\s(,，。、；：！？（【「『《])@";
-const ROUTINE_SKILL_END = "[\\s,.)，。、；：！？）】」』》]";
+const CJK_SKILL_PUNCTUATION = "，。、；：！？（）【】「」『』《》〈〉“”‘’";
+const ROUTINE_SKILL_TRAILING = `,.)${CJK_SKILL_PUNCTUATION}`;
+const ROUTINE_SKILL_START = `(?:^|[\\s(,${CJK_SKILL_PUNCTUATION}])@`;
+const ROUTINE_SKILL_END = `[\\s${ROUTINE_SKILL_TRAILING}]`;
 const ROUTINE_SKILL_STARTS = new RegExp(ROUTINE_SKILL_START, "g");
 const ROUTINE_SKILL_SEPARATOR = new RegExp(ROUTINE_SKILL_END);
-const ROUTINE_SKILL_REFERENCE = new RegExp(`${ROUTINE_SKILL_START}\\S`);
+const ROUTINE_SKILL_REFERENCE = new RegExp(
+  `${ROUTINE_SKILL_START}[${ROUTINE_SKILL_TRAILING}]*[^\\s${ROUTINE_SKILL_TRAILING}]`,
+);
+const ROUTINE_LINE_BREAK = /[\r\n\u2028\u2029]/;
 /** Fallback when no catalog is available: @Token with optional Title-case words. */
 const ROUTINE_SKILL_MENTION = new RegExp(
   `${ROUTINE_SKILL_START}([A-Za-z][\\w-]*(?:[ ]+[A-Za-z][\\w-]*){0,5})(?=${ROUTINE_SKILL_END}|$)`,
@@ -264,13 +269,15 @@ function knownRoutineSkillMatches(
   knownNames: Iterable<string>,
 ): RoutineSkillMatch[] {
   if (!prompt.includes("@")) return [];
-  const catalog = new Map<string, string>();
+  const catalog = new Map<string, string[]>();
   const lengths = new Set<number>();
   for (const value of knownNames) {
     const name = value.trim();
     const key = routineSkillKey(name);
-    if (!name || catalog.has(key)) continue;
-    catalog.set(key, name);
+    if (!name) continue;
+    const names = catalog.get(key);
+    if (names) names.push(name);
+    else catalog.set(key, [name]);
     lengths.add(name.length);
   }
   const longestFirst = [...lengths].sort((a, b) => b - a);
@@ -286,8 +293,11 @@ function knownRoutineSkillMatches(
         (end < prompt.length && !ROUTINE_SKILL_SEPARATOR.test(prompt.charAt(end)))
       )
         continue;
-      const name = catalog.get(routineSkillKey(prompt.slice(start + 1, end)));
-      if (!name) continue;
+      const text = prompt.slice(start + 1, end);
+      const names = catalog.get(routineSkillKey(text));
+      if (!names) continue;
+      const spelling = text.toLowerCase();
+      const name = names.find((value) => value.toLowerCase() === spelling) ?? names[0]!;
       matches.push({ name, start, end });
       previousEnd = end;
       break;
@@ -347,20 +357,22 @@ export function rewriteRoutineSkillMentions(
   prompt: string,
   replacements: ReadonlyMap<string, string | null>,
 ): { prompt: string; names: string[] } {
-  const matches = knownRoutineSkillMatches(prompt, replacements.keys());
+  const byName = new Map<string, string | null>();
+  for (const [source, to] of replacements) {
+    const name = source.trim();
+    if (!byName.has(name)) byName.set(name, to);
+  }
+  const matches = knownRoutineSkillMatches(prompt, byName.keys());
   if (!matches.length) return { prompt, names: [] };
-  const byName = new Map([...replacements].map(([name, to]) => [name.trim(), to]));
   const parts: string[] = [];
   let cursor = 0;
   for (let index = 0; index < matches.length; index++) {
     const { name, start, end } = matches[index]!;
-    const replacement = byName.get(name);
+    const replacement = byName.get(name) ?? null;
     if (replacement !== null) {
       parts.push(
         prompt.slice(cursor, start),
-        replacement === undefined || replacement === name
-          ? prompt.slice(start, end)
-          : `@${replacement}`,
+        replacement === name ? prompt.slice(start, end) : `@${replacement}`,
       );
       cursor = end;
       continue;
@@ -384,14 +396,14 @@ export function rewriteRoutineSkillMentions(
     while (/[ \t]/.test(prompt.charAt(right))) right++;
     const before = prompt.slice(left, start);
     const after = prompt.slice(lastEnd, right);
-    const hasLeftText = left > 0 && !/[\r\n]/.test(prompt.charAt(left - 1));
-    const hasRightText = right < prompt.length && !/[\r\n]/.test(prompt.charAt(right));
+    const hasLeftText = left > 0 && !ROUTINE_LINE_BREAK.test(prompt.charAt(left - 1));
+    const hasRightText = right < prompt.length && !ROUTINE_LINE_BREAK.test(prompt.charAt(right));
     parts.push(prompt.slice(cursor, left));
     if (hasRightText) parts.push(hasLeftText ? (before && after ? " " : before || after) : before);
     cursor = right;
   }
   parts.push(prompt.slice(cursor));
-  return { prompt: parts.join(""), names: matchedNames(replacements.keys(), matches) };
+  return { prompt: parts.join(""), names: matchedNames(byName.keys(), matches) };
 }
 
 /** Keep user-owned skills reachable when a later builtin claims the same name. */
@@ -441,13 +453,18 @@ export function expandSkillReferencesInPrompt(
   }
 
   if (!prompt.includes("@")) return prompt;
+  const byName = new Map<string, SkillRecord>();
+  for (const skill of skills) {
+    const name = skill.name.trim();
+    if (!byName.has(name)) byName.set(name, skill);
+  }
   const rewritten = rewriteRoutineSkillMentions(
     prompt,
-    new Map(skills.map((skill) => [skill.name, null])),
+    new Map([...byName.keys()].map((name) => [name, null])),
   );
   const blocks: string[] = [];
   for (const mention of rewritten.names) {
-    const skill = findSkillByName(skills, mention);
+    const skill = byName.get(mention);
     if (skill) blocks.push(formatForcedSkillPrompt(skill.name, skill.content));
   }
   if (blocks.length === 0) return prompt;

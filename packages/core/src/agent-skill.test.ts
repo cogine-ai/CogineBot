@@ -347,7 +347,7 @@ describe("skill prompt helpers", () => {
       readOnly: false,
       content: `Instructions for ${name}.`,
     }));
-    const prompt = "执行（@日报 模板），然后运行《@review (V2)》。保留 mailbox@日报。";
+    const prompt = "执行“@日报 模板”，然后运行《@review (V2)》。保留 mailbox@日报。";
     expect(
       extractRoutineSkillMentions(
         prompt,
@@ -358,7 +358,7 @@ describe("skill prompt helpers", () => {
     expect(expanded).toBe(
       "Use skill: Review (v2)\n\nInstructions for Review (v2).\n\n" +
         "Use skill: 日报 模板\n\nInstructions for 日报 模板.\n\n" +
-        "执行（），然后运行《》。保留 mailbox@日报。",
+        "执行“”，然后运行《》。保留 mailbox@日报。",
     );
     expect(expandSkillReferencesInPrompt(expanded, skills)).toBe(expanded);
   });
@@ -393,6 +393,28 @@ describe("skill prompt helpers", () => {
     ).toBe("@ς tools, @Daily.");
   });
 
+  it("uses the literal spelling before a shared legacy case equivalent", () => {
+    const prompt = "Use @σ and @ς.";
+    const renames = new Map([
+      ["σ", "First"],
+      ["ς", "Second"],
+    ]);
+    expect(extractRoutineSkillMentions(prompt, [...renames.keys()])).toEqual(["σ", "ς"]);
+    expect(rewriteRoutineSkillMentions(prompt, renames).prompt).toBe("Use @First and @Second.");
+    expect(
+      expandSkillReferencesInPrompt(
+        prompt,
+        [...renames.entries()].map(([name, content]) => ({
+          name,
+          content,
+          description: name,
+          source: "user",
+          readOnly: false,
+        })),
+      ),
+    ).toContain("Use skill: ς\n\nSecond");
+  });
+
   it("removes adjacent repeats without changing unrelated formatting", () => {
     const prompt =
       "\t@日报 @日报  Keep  this indent\r\n\r\n    code   sample\r\nRun @日报 and @日报 模板.";
@@ -405,6 +427,13 @@ describe("skill prompt helpers", () => {
     );
     expect(result.names).toEqual(["日报 模板", "日报"]);
     expect(result.prompt).toBe("\tKeep  this indent\r\n\r\n    code   sample\r\nRun and .");
+  });
+
+  it.each(["\u2028", "\u2029"])("keeps indentation after Unicode line breaks", (lineBreak) => {
+    expect(
+      rewriteRoutineSkillMentions(`Header${lineBreak}\t@日报  Read`, new Map([["日报", null]]))
+        .prompt,
+    ).toBe(`Header${lineBreak}\tRead`);
   });
 
   it("expands forced and mentioned skills into the prompt", () => {
