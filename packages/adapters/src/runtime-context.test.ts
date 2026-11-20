@@ -1153,12 +1153,51 @@ describe("runtime context policy", () => {
   );
 
   it.each([
-    { contextStrategy: "retrieval", historyCount: 0, argumentBytes: 11389, retainNotice: false },
-    { contextStrategy: "snapshots", historyCount: 100, argumentBytes: 11150, retainNotice: true },
-    { contextStrategy: "cache-aware", historyCount: 100, argumentBytes: 11150, retainNotice: true },
+    {
+      contextStrategy: "retrieval",
+      historyCount: 0,
+      argumentBytes: 11389,
+      retainNotice: false,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 11150,
+      retainNotice: true,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "cache-aware",
+      historyCount: 100,
+      argumentBytes: 11150,
+      retainNotice: true,
+      catalog: "absent",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 10620,
+      retainNotice: true,
+      catalog: "alone",
+    },
+    {
+      contextStrategy: "cache-aware",
+      historyCount: 100,
+      argumentBytes: 10620,
+      retainNotice: true,
+      catalog: "alone",
+    },
+    {
+      contextStrategy: "snapshots",
+      historyCount: 100,
+      argumentBytes: 8000,
+      retainNotice: true,
+      catalog: "together",
+    },
   ] as const)(
-    "fits recall after reserving the unread tool group under $contextStrategy",
-    ({ contextStrategy, historyCount, argumentBytes, retainNotice }) => {
+    "fits recall and $catalog navigation beside the unread tool group under $contextStrategy",
+    ({ contextStrategy, historyCount, argumentBytes, retainNotice, catalog }) => {
       const { request, context } = fixture(historyCount);
       request.contextStrategy = contextStrategy;
       request.instructions = "Fixture";
@@ -1168,7 +1207,7 @@ describe("runtime context policy", () => {
       context.messages[historyCount] = current;
 
       const narrow = { ...model, contextWindow: 4096, maxTokens: 256 };
-      // Leave either no room for the notice or room for it but not the navigation catalog.
+      // Exercise the boundary where optional pieces fit only on their own.
       const call = fauxAssistantMessage([
         {
           type: "toolCall",
@@ -1188,6 +1227,11 @@ describe("runtime context policy", () => {
       context.messages.push(call, result);
       const expected = createRuntimeContextPolicy(request).prepareContext(context, narrow);
       expect(expected.messages.slice(-3)).toEqual([current, call, result]);
+      const hasCatalog = (messages: Message[]) =>
+        messages.some((message) =>
+          String(message.content).startsWith("Historical navigation snapshots"),
+        );
+      expect(hasCatalog(expected.messages)).toBe(catalog !== "absent");
 
       const content = "Memory recall was unavailable.";
       request.history.unshift({ role: "user", content });
@@ -1197,7 +1241,8 @@ describe("runtime context policy", () => {
 
       expect(prepared.messages.slice(-3)).toEqual([current, call, result]);
       expect(prepared.messages.includes(notice)).toBe(retainNotice);
-      expect(JSON.stringify(prepared.messages)).not.toContain("Historical navigation snapshots");
+      expect(hasCatalog(prepared.messages)).toBe(catalog === "together");
+      if (catalog === "together") expect(prepared.messages[0]).toBe(notice);
     },
   );
 

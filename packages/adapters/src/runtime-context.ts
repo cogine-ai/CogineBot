@@ -448,6 +448,7 @@ export function createRuntimeContextPolicy(
     // Apply the safety margin to the actual window, not an already tighter headroom override.
     const contextWindow = Math.min(modelWindow, reserve + inputLimit(window, reserve));
     let navigationMessage = projected?.navigation;
+    let pendingNavigation: Message | undefined;
     let catalogIds = projected?.catalogIds ?? [];
     const budget = {
       contextWindow,
@@ -512,20 +513,7 @@ export function createRuntimeContextPolicy(
           ? [index]
           : [],
       );
-      if (catalog) {
-        const catalogMessage = navigation(catalogIds)!;
-        // Include the bounded catalog only if required content leaves room for it.
-        const required = protectedContextIndexes(messages, protectedIndexes);
-        if (requiredTokens(required) + messageTokens(catalogMessage) < contextWindow - reserve) {
-          const insertIndex = messages[0]?.role === "system" ? 1 : 0;
-          messages.splice(insertIndex, 0, catalogMessage);
-          navigationMessage = catalogMessage;
-          protectedIndexes = [
-            insertIndex,
-            ...protectedIndexes.map((index) => index + Number(index >= insertIndex)),
-          ];
-        }
-      }
+      if (catalog) pendingNavigation = navigation(catalogIds);
     }
     const historicalContext = ctx.messages.filter((message) => {
       const metadata = message as Message & OriginalMetadata;
@@ -540,6 +528,8 @@ export function createRuntimeContextPolicy(
         content === MEMORY_RECALL_UNAVAILABLE_NOTICE
       );
     });
+    const contextInsertIndex = messages[0]?.role === "system" ? 1 : 0;
+    let insertedHistoryCount = 0;
     for (const entry of historicalContext) {
       // Optional history must fit beside the same atomic groups the selector requires.
       const required = protectedContextIndexes(messages, protectedIndexes);
@@ -547,11 +537,26 @@ export function createRuntimeContextPolicy(
       if (required.has(entryIndex)) continue;
       if (requiredTokens(required) + messageTokens(entry) >= contextWindow - reserve) continue;
       if (entryIndex === -1) {
-        const insertIndex = messages[0]?.role === "system" ? 1 : 0;
-        messages.splice(insertIndex, 0, entry);
-        protectedIndexes = protectedIndexes.map((index) => index + Number(index >= insertIndex));
+        messages.splice(contextInsertIndex, 0, entry);
+        protectedIndexes = protectedIndexes.map(
+          (index) => index + Number(index >= contextInsertIndex),
+        );
+        insertedHistoryCount += 1;
       }
       protectedIndexes.push(messages.indexOf(entry));
+    }
+    // Navigation uses the remaining room after fitting summaries and recalled memory.
+    if (pendingNavigation) {
+      const required = protectedContextIndexes(messages, protectedIndexes);
+      if (requiredTokens(required) + messageTokens(pendingNavigation) < contextWindow - reserve) {
+        const insertIndex = contextInsertIndex + insertedHistoryCount;
+        messages.splice(insertIndex, 0, pendingNavigation);
+        navigationMessage = pendingNavigation;
+        protectedIndexes = [
+          insertIndex,
+          ...protectedIndexes.map((index) => index + Number(index >= insertIndex)),
+        ];
+      }
     }
     // Completed loop steps remain useful task state even when their verbose
     // evidence is old. Keep the protocol and controls so dropping large bodies
