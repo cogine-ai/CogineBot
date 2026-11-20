@@ -336,14 +336,19 @@ describe("deployment-managed MCP stdio registration", () => {
       await expect(
         f.client.mcp.servers.update({
           id: f.server.id,
-          config: { ...config, clearCredential: true },
+          config: { ...config, clearCredential: true, verbatimResults: false },
         }),
       ).rejects.toMatchObject({
         code: "SERVICE_UNAVAILABLE",
         message:
           "MCP server was disabled. Its credentials could not be cleared. Retry this setting.",
       });
-      expect(f.server).toMatchObject({ enabled: false, secretId: "old", revision: 2 });
+      expect(f.server).toMatchObject({
+        enabled: false,
+        secretId: "old",
+        revision: 2,
+        verbatimResults: true,
+      });
       expect(f.prisma.secret.deleteMany).not.toHaveBeenCalled();
       expect(f.mcpOAuth.statusFor).not.toHaveBeenCalled();
     },

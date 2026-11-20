@@ -6334,7 +6334,7 @@ export function createRouter(deps: RouterDeps) {
                               }),
                         enabled: config.enabled,
                         ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
-                        ...(config.verbatimResults === undefined
+                        ...(clearFailed || config.verbatimResults === undefined
                           ? {}
                           : { verbatimResults: config.verbatimResults }),
                         revision: { increment: 1 },
