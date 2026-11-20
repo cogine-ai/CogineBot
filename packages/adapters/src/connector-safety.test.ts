@@ -103,6 +103,40 @@ describe("redactConnectorPayload", () => {
     expect(redactConnectorPayload(raw, [])).toEqual(raw);
   });
 
+  it("keeps large result views pageable when a credential has many escaped spellings", () => {
+    const credential = 'future"fixture\nkey';
+    const source = { credential, count: 37, body: "synthetic record ".repeat(1_500) };
+    const expected = {
+      credential: "[redacted]",
+      count: "[redacted]",
+      body: "synthetic [redacted] ".repeat(1_500),
+    };
+    expect(
+      tryRedactConnectorPayload(
+        {
+          content: [{ type: "text", text: JSON.stringify(source) }],
+          structuredContent: source,
+        },
+        [credential, "record", "37"],
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        content: [{ type: "text", text: JSON.stringify(expected) }],
+        structuredContent: expected,
+      },
+    });
+  });
+
+  it("uses original word boundaries when one credential matches next to another", () => {
+    expect(
+      tryRedactConnectorPayload("Descriptor foobar-bar", [], undefined, ["foobar", "-bar"]),
+    ).toEqual({
+      ok: true,
+      value: "Descriptor [redacted]-bar",
+    });
+  });
+
   it("keeps MCP media types valid when obscuring a credential that spans the type separator", () => {
     const result = {
       content: [

@@ -120,6 +120,42 @@ export function knownJsonSecretRedactions(secrets: string[], sourceLength: numbe
   return [...redactions].sort((a, b) => b.length - a.length);
 }
 
+type TextRange = [start: number, end: number];
+
+function splitOnCredential(
+  value: string,
+  range: TextRange,
+  credential: string,
+  wholeWord: boolean,
+): TextRange[] {
+  const leftWord = /[\p{L}\p{N}_]$/u;
+  const rightWord = /^[\p{L}\p{N}_]/u;
+  const [from, to] = range;
+  if (credential.length > to - from) return [range];
+  const text = value.slice(from, to);
+  const parts: TextRange[] = [];
+  let start = from;
+  let at = text.indexOf(credential);
+  while (at !== -1) {
+    const match = from + at;
+    const end = match + credential.length;
+    if (
+      wholeWord &&
+      (leftWord.test(value.slice(Math.max(match - 2, 0), match)) ||
+        rightWord.test(value.slice(end, end + 2)))
+    ) {
+      at = text.indexOf(credential, at + 1);
+      continue;
+    }
+    parts.push([start, match]);
+    start = end;
+    at = text.indexOf(credential, at + credential.length);
+  }
+  if (!parts.length) return [range];
+  parts.push([start, to]);
+  return parts;
+}
+
 /** Redact complete JSON values and embedded JSON text before results leave a provider. */
 export function redactConnectorPayload(
   value: unknown,
@@ -143,17 +179,18 @@ export function tryRedactConnectorPayload(
     if (source === undefined) throw new Error("redaction_error");
     const known = new Set(knownJsonSecretRedactions(secrets, source.length));
     const components = knownJsonSecretRedactions(credentialComponents, source.length);
-    const patterns = [...new Set([...known, ...components])]
-      .filter((secret) => secret.length <= source.length)
-      .sort((a, b) => b.length - a.length)
-      .map((secret) => {
-        const literal = secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return known.has(secret) ? literal : `(?<![\\p{L}\\p{N}_])${literal}(?![\\p{L}\\p{N}_])`;
-      });
-    // Apply matches to the original text once so a short secret cannot match
-    // inside a marker created by redacting a longer one.
-    const pattern = patterns.length ? new RegExp(patterns.join("|"), "gu") : undefined;
-    const redactText = (value: string) => (pattern ? value.replace(pattern, "[redacted]") : value);
+    const spellings = [...new Set([...known, ...components])].sort((a, b) => b.length - a.length);
+    const redactText = (value: string): string => {
+      let parts: TextRange[] = [[0, value.length]];
+      for (const spelling of spellings) {
+        if (spelling.length > value.length) continue;
+        const wholeWord = !known.has(spelling);
+        parts = parts.flatMap((part) => splitOnCredential(value, part, spelling, wholeWord));
+      }
+      // Insert markers after scanning literals so a short secret cannot match
+      // inside a marker created by redacting a longer one.
+      return parts.map(([from, to]) => value.slice(from, to)).join("[redacted]");
+    };
     const sourceBytes = Buffer.byteLength(source, "utf8");
     // Work scales with the caller-bounded payload; large opaque images get no new size cap.
     const maxWorkBytes = Math.max(sourceBytes * 8, 1_048_576);
