@@ -10,7 +10,13 @@ import {
 } from "./cloudflare-ai-gateway.js";
 import { ThreadMessageSchema } from "./events.js";
 import { Id, IsoDate, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
-import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
+import {
+  McpHeadersSchema,
+  McpRemoteEndpointSchema,
+  McpStdioFilesSchema,
+  McpStdioOAuthClientSchema,
+  McpTransportSchema,
+} from "./mcp.js";
 import { ModelHeadersSchema } from "./model-headers.js";
 import { NativeRoutineTriggerSchema, NativeRoutineTriggersInputSchema } from "./native-events.js";
 import { RunTriggerSchema } from "./runs.js";
@@ -833,7 +839,7 @@ export const McpServerConfigInput = z.discriminatedUnion("transport", [
   McpServerBaseInput.extend({
     transport: z.literal("stdio"),
     command: z.string().min(1).max(512),
-    args: z.array(z.string().max(2048)).max(64).default([]),
+    args: z.array(z.string().max(2048)).max(64).optional(),
     env: z
       .record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4096))
       .superRefine((value, ctx) => {
@@ -841,7 +847,9 @@ export const McpServerConfigInput = z.discriminatedUnion("transport", [
           ctx.addIssue({ code: "custom", message: "At most 32 environment variables are allowed" });
         }
       })
-      .default({}),
+      .optional(),
+    files: McpStdioFilesSchema.optional(),
+    oauthClient: McpStdioOAuthClientSchema.nullish(),
     secret: z.string().max(16384).optional(),
   }),
 ]);

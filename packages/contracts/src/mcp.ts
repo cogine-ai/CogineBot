@@ -37,6 +37,65 @@ export const McpHeadersSchema = z
     }
   });
 
+export const McpStdioOAuthClientSchema = z.strictObject({
+  authorizationServer: McpRemoteEndpointSchema.refine((value) => {
+    const url = URL.parse(value);
+    return url?.protocol === "https:" && !value.includes("?");
+  }, "MCP OAuth issuer must be an HTTPS URL without a query"),
+  clientId: z.string().trim().min(1).max(512),
+  clientSecret: z.string().min(1).max(4096).optional(),
+  scope: z.string().trim().max(2000).optional(),
+});
+export type McpStdioOAuthClient = z.infer<typeof McpStdioOAuthClientSchema>;
+
+export const McpStdioFilesSchema = z
+  .record(z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/), z.string().max(65536))
+  .refine((files) => Object.keys(files).length <= 8, "At most 8 credential files are allowed");
+
+export const MCP_STDIO_OAUTH_FIELDS = [
+  "access_token",
+  "refresh_token",
+  "client_id",
+  "client_secret",
+  "expires_at",
+  "scope",
+  "token_type",
+] as const;
+export const MCP_STDIO_OAUTH_REFERENCE = /\{\{\s*oauth\.([^{}]*)\}\}/g;
+export const MCP_STDIO_OAUTH_REFERENCE_START = /\{\{\s*oauth\s*\./;
+
+/** Check the effective environment after the server's stored declaration is merged. */
+export function validateMcpStdioCredentials(config: {
+  args?: readonly string[];
+  env?: Record<string, string>;
+  files?: Record<string, string>;
+  oauthClient?: McpStdioOAuthClient | null;
+}): string | undefined {
+  if (config.args?.some((arg) => MCP_STDIO_OAUTH_REFERENCE_START.test(arg))) {
+    return "Use environment variables or files for MCP OAuth credentials";
+  }
+  const env = config.env ?? {};
+  const files = config.files ?? {};
+  if (Object.keys(files).some((name) => Object.hasOwn(env, name))) {
+    return "MCP credential files and environment variables must use different names";
+  }
+  for (const value of [...Object.values(env), ...Object.values(files)]) {
+    if (!MCP_STDIO_OAUTH_REFERENCE_START.test(value)) continue;
+    if (!config.oauthClient) return "MCP OAuth references require an OAuth client";
+    const fields = MCP_STDIO_OAUTH_FIELDS as readonly string[];
+    for (const [, name] of value.matchAll(MCP_STDIO_OAUTH_REFERENCE)) {
+      const field = name?.trim();
+      if (!field || !fields.includes(field)) return "Invalid MCP OAuth field reference";
+      if (field === "client_secret" && !config.oauthClient.clientSecret) {
+        return "The MCP OAuth reference requires a client secret";
+      }
+    }
+    if (MCP_STDIO_OAUTH_REFERENCE_START.test(value.replaceAll(MCP_STDIO_OAUTH_REFERENCE, ""))) {
+      return "Invalid MCP OAuth field reference";
+    }
+  }
+}
+
 /** A connection edit preserves configuration and separately approved tool access. */
 export const McpConnectionHeadersSchema = McpHeadersSchema.superRefine((headers, context) => {
   const names = new Set<string>();

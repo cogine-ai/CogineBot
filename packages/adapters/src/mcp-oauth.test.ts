@@ -1234,7 +1234,11 @@ describe("MCP OAuth", () => {
     });
   });
 
-  it("rotates the current credential inside a serialized database transaction", async () => {
+  it.each([
+    { secret: "static-token" },
+    { files: { CONFIG_FILE: "fixture-file" } },
+    { oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" } },
+  ])("keeps static MCP configuration when disconnecting OAuth", async (staticMaterial) => {
     const tx = {
       $executeRaw: vi.fn().mockResolvedValue(1),
       $queryRaw: vi.fn().mockResolvedValue([]),
@@ -1273,11 +1277,11 @@ describe("MCP OAuth", () => {
     const secrets = {
       load: vi.fn(() =>
         JSON.stringify({
-          secret: "static-token",
+          ...staticMaterial,
           oauth: { tokens: { access_token: "oauth-token", token_type: "bearer" } },
         }),
       ),
-      put: vi.fn(async () => ({ id: "secret-next", ciphertext: "encrypted-next" })),
+      put: vi.fn(async (_value: string) => ({ id: "secret-next", ciphertext: "encrypted-next" })),
     };
     const broker = new McpOAuthBroker(prisma as never, secrets as never, TEST_NETWORK);
 
@@ -1287,6 +1291,7 @@ describe("MCP OAuth", () => {
       userId: "user-1",
     });
 
+    expect(JSON.parse(secrets.put.mock.calls[0]![0])).toEqual(staticMaterial);
     expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
     expect(tx.mcpServer.update).toHaveBeenCalledWith({
       where: { id: "server-1" },

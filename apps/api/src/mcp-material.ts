@@ -1,5 +1,9 @@
-import type { McpServerConfigInput } from "@rakazo/contracts";
-import { McpConnectionHeadersSchema } from "@rakazo/contracts";
+import type { McpServerConfigInput, McpStdioOAuthClient } from "@rakazo/contracts";
+import {
+  McpConnectionHeadersSchema,
+  McpStdioFilesSchema,
+  McpStdioOAuthClientSchema,
+} from "@rakazo/contracts";
 import { z } from "zod";
 
 /** Shape of the encrypted MCP credential blob. `oauth` holds SDK OAuth state
@@ -8,6 +12,8 @@ export type McpSecretMaterial = {
   secret?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  files?: Record<string, string>;
+  oauthClient?: McpStdioOAuthClient;
   oauth?: Record<string, unknown>;
 };
 
@@ -20,6 +26,8 @@ const ConnectionMaterialSchema = z
     secret: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
     headers: McpConnectionHeadersSchema.optional(),
+    files: McpStdioFilesSchema.optional(),
+    oauthClient: McpStdioOAuthClientSchema.optional(),
     oauth: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
@@ -62,8 +70,41 @@ export function buildMcpConnectionMaterial(
 export function buildMcpUpdateMaterial(
   existing: McpSecretMaterial,
   config: McpServerConfigInput,
-  options: { clearOAuth?: boolean } = {},
+  options: { clearOAuth?: boolean; replaceCredentials?: boolean } = {},
 ): McpMaterialUpdate {
+  if (config.transport === "stdio") {
+    const previous = options.replaceCredentials ? {} : existing;
+    const oauthClient =
+      config.oauthClient === undefined ? previous.oauthClient : config.oauthClient;
+    const oauth =
+      oauthClient && sameStdioClient(previous.oauthClient, oauthClient)
+        ? previous.oauth
+        : undefined;
+    const secret = config.secret || previous.secret;
+    const env = config.env ?? previous.env;
+    const files = config.files ?? previous.files;
+    return {
+      action: "store",
+      material: {
+        ...(oauthClient ? { oauthClient } : {}),
+        ...(oauth ? { oauth } : {}),
+        ...(!config.clearCredential && secret ? { secret } : {}),
+        ...(!config.clearCredential && env && Object.keys(env).length ? { env } : {}),
+        ...(!config.clearCredential && files && Object.keys(files).length ? { files } : {}),
+      },
+    };
+  }
+  if (options.replaceCredentials) {
+    return {
+      action: "store",
+      material: config.clearCredential
+        ? {}
+        : {
+            ...(config.secret ? { secret: config.secret } : {}),
+            ...(Object.keys(config.headers).length ? { headers: config.headers } : {}),
+          },
+    };
+  }
   const material = options.clearOAuth ? { ...existing } : existing;
   const clearedOAuth = options.clearOAuth === true && material.oauth !== undefined;
   if (options.clearOAuth) delete material.oauth;
@@ -72,17 +113,14 @@ export function buildMcpUpdateMaterial(
     return { action: "store", material: material.oauth ? { oauth: material.oauth } : {} };
   }
   const secret = "secret" in config && config.secret ? config.secret : undefined;
-  const env = "env" in config ? config.env : undefined;
-  const headers = "headers" in config ? config.headers : undefined;
+  const headers = config.headers;
   const existingHasMaterial = Boolean(
     material.secret ||
       (material.env && Object.keys(material.env).length > 0) ||
       (material.headers && Object.keys(material.headers).length > 0) ||
       material.oauth,
   );
-  const suppliesMaterial = Boolean(
-    secret || (env && Object.keys(env).length > 0) || (headers && Object.keys(headers).length > 0),
-  );
+  const suppliesMaterial = Boolean(secret || Object.keys(headers).length > 0);
   if (!existingHasMaterial && !suppliesMaterial) {
     return clearedOAuth ? { action: "store", material } : { action: "keep" };
   }
@@ -91,8 +129,19 @@ export function buildMcpUpdateMaterial(
     material: {
       ...material,
       ...(secret ? { secret } : {}),
-      ...(env !== undefined ? { env } : {}),
-      ...(headers !== undefined ? { headers } : {}),
+      headers,
     },
   };
+}
+
+function sameStdioClient(
+  previous: McpStdioOAuthClient | undefined,
+  next: McpStdioOAuthClient | null | undefined,
+): boolean {
+  return (
+    previous?.authorizationServer === next?.authorizationServer &&
+    previous?.clientId === next?.clientId &&
+    previous?.clientSecret === next?.clientSecret &&
+    previous?.scope === next?.scope
+  );
 }

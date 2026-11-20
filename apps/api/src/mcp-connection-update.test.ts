@@ -12,18 +12,18 @@ const actor: Actor = {
   isDeploymentOwner: true,
 };
 
-function fixture() {
+function fixture({ stdio = false, stdioEnabled = true } = {}) {
   const server = {
     id: "server",
     userId: actor.userId,
     spaceId: actor.spaceId,
-    installId: "plugin",
+    installId: stdio ? null : "plugin",
     slug: "demo",
     name: "Demo",
     description: "",
-    transport: "streamable_http",
+    transport: stdio ? "stdio" : "streamable_http",
     endpoint: "https://tools.example.test/mcp",
-    command: null,
+    command: stdio ? "/opt/example-mcp" : null,
     args: [],
     env: { KEEP: true },
     headers: { Authorization: true, "X-Static": true },
@@ -61,6 +61,10 @@ function fixture() {
     where.id === server.id && where.spaceId === actor.spaceId && where.userId === actor.userId;
   const prisma = {
     mcpServer: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(server, data);
+        return structuredClone(server);
+      }),
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         scoped(where) ? structuredClone(server) : null,
       ),
@@ -141,12 +145,19 @@ function fixture() {
     secrets,
     mcpOAuth,
     events: { notify: vi.fn() },
+    remoteConnectors: {
+      resolveHostname: async (hostname: string) => [
+        { address: hostname === "private.example.test" ? "10.0.0.8" : "203.0.113.10", family: 4 },
+      ],
+    },
     env: {
       defaultProvider: "fake",
       defaultModel: "fake-model",
       webOrigin: "http://127.0.0.1:5173",
       screenProxySecret: "fixture",
       sandboxProvider: "fake",
+      mcpStdioEnabled: stdioEnabled,
+      mcpStdioAllowedCommands: ["/opt/example-mcp", "/opt/example-mcp-v2"],
     },
     dataDir: "/tmp/mcp-connection-fixture",
   } as unknown as RouterDeps;
@@ -173,6 +184,131 @@ function fixture() {
     },
   };
 }
+
+describe("deployment-managed MCP stdio registration", () => {
+  const config = {
+    transport: "stdio" as const,
+    slug: "fixture",
+    name: "Fixture",
+    command: "/opt/example-mcp",
+    enabled: false,
+  };
+  const oauthClient = {
+    authorizationServer: "https://login.example.test/issuer",
+    clientId: "fixture-client",
+    clientSecret: "fixture-client-secret",
+  };
+  const files = { CONFIG_FILE: '{"token":"{{oauth.access_token}}","tag":"fixture-private"}' };
+  const env = { MCP_TOKEN: "Bearer {{oauth.access_token}}" };
+
+  it("stores the declaration in the scoped secret without returning its values", async () => {
+    const f = fixture({ stdio: true });
+    const saved = await f.client.mcp.servers.create({ ...config, env, files, oauthClient });
+    expect(saved).toMatchObject({ enabled: false, envKeys: ["MCP_TOKEN"], hasSecret: true });
+    expect(JSON.stringify(saved)).not.toMatch(/fixture-client|fixture-private|oauth\.access_token/);
+    expect(f.rows.get(f.server.secretId!)).toMatchObject({
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+    });
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toMatchObject({
+      env,
+      files,
+      oauthClient,
+    });
+  });
+
+  it("keeps a declaration on metadata edits and discards its grant when the client rotates", async () => {
+    const f = fixture({ stdio: true });
+    await f.client.mcp.servers.create({ ...config, env, files, oauthClient, args: ["--serve"] });
+    f.values.set(
+      f.server.secretId!,
+      JSON.stringify({ env, files, oauthClient, oauth: f.material.oauth }),
+    );
+    const save = (patch: Partial<typeof config> & { oauthClient?: typeof oauthClient }) =>
+      f.client.mcp.servers.update({ id: f.server.id, config: { ...config, ...patch } });
+    await save({ name: "Renamed" });
+    expect(f.server.args).toEqual(["--serve"]);
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
+      env,
+      files,
+      oauthClient,
+      oauth: f.material.oauth,
+    });
+    const rotated = { ...oauthClient, clientSecret: "fixture-next-secret" };
+    await save({ oauthClient: rotated });
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
+      env,
+      files,
+      oauthClient: rotated,
+    });
+    await save({ command: "/opt/example-mcp-v2" });
+    expect(f.server).toMatchObject({ args: [], env: {}, secretId: null });
+  });
+
+  it("requires removal of references when the registered client is removed", async () => {
+    const f = fixture({ stdio: true });
+    await f.client.mcp.servers.create({ ...config, env, files, oauthClient });
+    f.secrets.put.mockClear();
+    await expect(
+      f.client.mcp.servers.update({
+        id: f.server.id,
+        config: { ...config, oauthClient: null },
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(f.secrets.put).not.toHaveBeenCalled();
+    await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, oauthClient: null, env: {}, files: {} },
+    });
+    expect(f.server.secretId).toBeNull();
+  });
+
+  it("rejects a member's create and update before reading or writing secrets", async () => {
+    const f = fixture({ stdio: true });
+    const member = f.clientFor({ ...actor, isDeploymentOwner: false });
+    await expect(member.mcp.servers.create({ ...config, oauthClient })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    await expect(member.mcp.servers.update({ id: f.server.id, config })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    expect(f.secrets.put).not.toHaveBeenCalled();
+    expect(f.secrets.load).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { enabled: true, files, oauthClient },
+    { command: "/opt/disallowed-mcp", files },
+    { oauthClient: { ...oauthClient, authorizationServer: "https://private.example.test" } },
+    { oauthClient: { ...oauthClient, authorizationServer: "https://login.example.test?" } },
+    { oauthClient: { ...oauthClient, authorizationServer: "http://login.example.test" } },
+    { files },
+    { files: { CONFIG_FILE: "{{oauth.unknown}}" }, oauthClient },
+    { files: { CONFIG_FILE: "{{oauth.access_token}" }, oauthClient },
+    { files: { "../CONFIG_FILE": "fixture" } },
+    { env: { CONFIG_FILE: "fixture" }, files, oauthClient },
+    { args: ["{{oauth.client_secret}}"], oauthClient },
+  ])("rejects an unsafe declaration before saving it (%j)", async (patch) => {
+    const f = fixture({ stdio: true });
+    await expect(f.client.mcp.servers.create({ ...config, ...patch })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    expect(f.secrets.put).not.toHaveBeenCalled();
+    expect(f.prisma.mcpServer.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy static stdio available only where the deployment allows it", async () => {
+    const f = fixture({ stdio: true });
+    await expect(
+      f.client.mcp.servers.create({ ...config, enabled: true, env: { KEY: "fixture" } }),
+    ).resolves.toMatchObject({ enabled: true });
+    const disabled = fixture({ stdio: true, stdioEnabled: false });
+    await expect(disabled.client.mcp.servers.create(config)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    expect(disabled.prisma.mcpServer.create).not.toHaveBeenCalled();
+  });
+});
 
 describe("revision-bound MCP connection patches", () => {
   it.each([undefined, false, true])(

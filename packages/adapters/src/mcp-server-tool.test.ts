@@ -56,36 +56,30 @@ describe("parseMcpServerToolArgs", () => {
     expect(parseMcpServerToolArgs({ name: "x", transport: "stdio" })).toBeUndefined();
   });
 
-  it("normalizes stdio commands and string args", () => {
+  it("rejects a complete local command from a Bot", () => {
     const parsed = parseMcpServerToolArgs({
       name: "Local",
       transport: "stdio",
       command: " /opt/mcp ",
       args: "--verbose --port 9",
     });
-    expect(parsed).toMatchObject({
-      transport: "stdio",
-      command: "/opt/mcp",
-      args: ["--verbose", "--port", "9"],
-    });
+    expect(parsed).toBeUndefined();
   });
 
-  it("keeps only string-valued env/headers entries and caps their size", () => {
+  it("keeps only string-valued remote headers and caps their size", () => {
     const parsed = parseMcpServerToolArgs({
       name: "H",
       transport: "sse",
       endpoint: "https://h.example.test",
       headers: { Authorization: "Bearer t", Broken: 42 as unknown as string },
-      env: { A: "b", BAD: null as unknown as string },
     });
     expect(parsed?.headers).toEqual({ Authorization: "Bearer t" });
-    expect(parsed?.env).toEqual({ A: "b" });
 
     const tooMany = parseMcpServerToolArgs({
       name: "H",
-      transport: "stdio",
-      command: "c",
-      env: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`K${i}`, "v"])),
+      transport: "sse",
+      endpoint: "https://h.example.test",
+      headers: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`K${i}`, "v"])),
     });
     expect(tooMany).toBeUndefined();
   });
@@ -105,13 +99,9 @@ describe("buildMcpCredentialBlob", () => {
 });
 
 describe("needsOAuthProbe", () => {
-  it("is true only for remote servers without static credentials", () => {
-    expect(needsOAuthProbe({ transport: "streamable_http" })).toBe(true);
-    expect(needsOAuthProbe({ transport: "sse" })).toBe(true);
-    expect(needsOAuthProbe({ transport: "streamable_http", secret: "tok" })).toBe(false);
-    expect(needsOAuthProbe({ transport: "streamable_http", headers: { Authorization: "x" } })).toBe(
-      false,
-    );
-    expect(needsOAuthProbe({ transport: "stdio", command: "c" } as never)).toBe(false);
+  it("is true for a remote server without static credentials", () => {
+    expect(needsOAuthProbe({})).toBe(true);
+    expect(needsOAuthProbe({ secret: "tok" })).toBe(false);
+    expect(needsOAuthProbe({ headers: { Authorization: "x" } })).toBe(false);
   });
 });
