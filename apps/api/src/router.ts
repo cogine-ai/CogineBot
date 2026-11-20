@@ -6219,7 +6219,11 @@ export function createRouter(deps: RouterDeps) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
             let update: McpMaterialUpdate;
-            if (disableOnly || clearFailure) {
+            if (
+              disableOnly ||
+              clearFailure ||
+              (stdio && !replaceCredentials && !editsStdioCredentials)
+            ) {
               update = { action: "keep" };
             } else if (connection) {
               try {
@@ -6234,6 +6238,7 @@ export function createRouter(deps: RouterDeps) {
               });
             }
             const nextMaterial = update.action === "store" ? update.material : existingMaterial;
+            const writeRevision = expectedRevision ?? (stdio ? existing.revision : undefined);
             if (stdio && !disableOnly && !disableAndClear)
               await assertMcpStdioMaterial(
                 { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
@@ -6336,7 +6341,7 @@ export function createRouter(deps: RouterDeps) {
                       .update({
                         where: {
                           id: existing.id,
-                          ...(expectedRevision === undefined ? {} : { revision: expectedRevision }),
+                          ...(writeRevision === undefined ? {} : { revision: writeRevision }),
                         },
                         data: {
                           ...(clearFailure
@@ -6393,7 +6398,7 @@ export function createRouter(deps: RouterDeps) {
                       })
                       .catch((error: unknown) => {
                         if (
-                          expectedRevision !== undefined &&
+                          writeRevision !== undefined &&
                           error instanceof Prisma.PrismaClientKnownRequestError &&
                           error.code === "P2025"
                         ) {

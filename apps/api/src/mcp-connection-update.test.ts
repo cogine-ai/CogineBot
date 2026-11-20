@@ -24,7 +24,7 @@ function fixture({ stdio = false, stdioEnabled = true } = {}) {
     name: "Demo",
     description: "",
     transport: stdio ? "stdio" : "streamable_http",
-    endpoint: "https://tools.example.test/mcp",
+    endpoint: stdio ? null : "https://tools.example.test/mcp",
     command: stdio ? "/opt/example-mcp" : null,
     args: [],
     env: { KEEP: true },
@@ -287,6 +287,24 @@ describe("deployment-managed MCP stdio registration", () => {
     expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({ oauthClient: rebound });
   });
 
+  it("preserves the exact legacy credentials on an enabled stdio metadata edit", async () => {
+    const f = fixture({ stdio: true });
+    f.server.enabled = true;
+    const legacy = JSON.stringify({ secret: "", env: { KEEP: "fixture" } });
+    f.values.set("old-ref", legacy);
+
+    const saved = await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, enabled: true, name: "Renamed" },
+    });
+
+    expect(saved).toMatchObject({ name: "Renamed", enabled: true, envKeys: ["KEEP"] });
+    expect(f.server.secretId).toBe("old");
+    expect(f.rows.get("old")?.ciphertext).toBe("old-ref");
+    expect(f.values.get("old-ref")).toBe(legacy);
+    expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+
   it("clears the remote server's credentials and approval when switching it to stdio", async () => {
     const f = fixture();
     f.server.installId = null;
@@ -437,6 +455,30 @@ describe("deployment-managed MCP stdio registration", () => {
     expect(f.prisma.secret.deleteMany).not.toHaveBeenCalled();
   });
 
+  it("cannot re-enable stdio when deactivation races with a metadata edit", async () => {
+    const f = fixture({ stdio: true });
+    f.server.enabled = true;
+    f.values.set("old-ref", JSON.stringify({ env: { KEEP: "fixture" } }));
+    f.prisma.mcpServer.update.mockImplementationOnce(async ({ where }) => {
+      f.server.enabled = false;
+      f.server.revision++;
+      expect(where).toMatchObject({ revision: 1 });
+      throw new Prisma.PrismaClientKnownRequestError("The revision no longer matches", {
+        code: "P2025",
+        clientVersion: "fixture",
+      });
+    });
+
+    await expect(
+      f.client.mcp.servers.update({
+        id: f.server.id,
+        config: { ...config, enabled: true, name: "Renamed" },
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(f.server).toMatchObject({ enabled: false, name: "Demo", secretId: "old", revision: 2 });
+    expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+
   it("can disable and explicitly remove all credentials without reading the old blob", async () => {
     const f = fixture({ stdio: true, stdioEnabled: false });
     f.server.enabled = true;
@@ -575,7 +617,7 @@ describe("revision-bound MCP connection patches", () => {
           slug: f.server.slug,
           name: f.server.name,
           transport: "streamable_http",
-          endpoint: f.server.endpoint,
+          endpoint: "https://tools.example.test/mcp",
           headers: {},
           enabled: false,
           verbatimResults,
