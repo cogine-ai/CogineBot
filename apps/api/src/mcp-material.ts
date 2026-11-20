@@ -1,5 +1,10 @@
-import type { McpServerConfigInput } from "@rakazo/contracts";
-import { McpConnectionHeadersSchema } from "@rakazo/contracts";
+import { isDeepStrictEqual } from "node:util";
+import type { McpServerConfigInput, McpStdioOAuthClient } from "@rakazo/contracts";
+import {
+  McpConnectionHeadersSchema,
+  McpStdioFilesSchema,
+  McpStdioOAuthClientSchema,
+} from "@rakazo/contracts";
 import { z } from "zod";
 
 /** Shape of the encrypted MCP credential blob. `oauth` holds SDK OAuth state
@@ -8,6 +13,8 @@ export type McpSecretMaterial = {
   secret?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  files?: Record<string, string>;
+  oauthClient?: McpStdioOAuthClient;
   oauth?: Record<string, unknown>;
 };
 
@@ -20,15 +27,25 @@ const ConnectionMaterialSchema = z
     secret: z.string().optional(),
     env: z.record(z.string(), z.string()).optional(),
     headers: McpConnectionHeadersSchema.optional(),
+    files: McpStdioFilesSchema.optional(),
+    oauthClient: McpStdioOAuthClientSchema.optional(),
     oauth: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
+
+const StdioMaterialSchema = ConnectionMaterialSchema.omit({ headers: true }).strip();
 
 /** Connection patches must never replace unreadable credential material. */
 export function parseMcpConnectionMaterial(value: string): McpSecretMaterial {
   const parsed = ConnectionMaterialSchema.safeParse(JSON.parse(value));
   if (!parsed.success) throw new Error("Stored MCP credentials are unavailable");
   return parsed.data;
+}
+
+export function parseMcpStdioMaterial(value: string): McpSecretMaterial {
+  const material = StdioMaterialSchema.parse(JSON.parse(value));
+  if (material.env && Object.keys(material.env).length === 0) delete material.env;
+  return material;
 }
 
 /** Omitted/empty patches keep the exact stored credential, including OAuth. */
@@ -55,15 +72,32 @@ export function buildMcpConnectionMaterial(
  *   cleared entirely — the caller should delete the secret row and null the
  *   server's secretId instead of storing an empty object.
  *
- * env/headers use full-replace semantics (the update payload is the complete
- * set), matching the create handler. OAuth state is preserved unless the
- * endpoint changed, since tokens issued for one endpoint must never be sent to
- * another server. */
+ * Remote headers replace the full set and a new endpoint drops its OAuth grant.
+ * Stdio keeps omitted env/files on the same launch target. A change to the
+ * registered OAuth client drops its grant. */
 export function buildMcpUpdateMaterial(
   existing: McpSecretMaterial,
   config: McpServerConfigInput,
-  options: { clearOAuth?: boolean } = {},
+  options: { clearOAuth?: boolean; replaceCredentials?: boolean } = {},
 ): McpMaterialUpdate {
+  if (config.transport === "stdio") {
+    const material = buildMcpStdioMaterial(options.replaceCredentials ? {} : existing, config);
+    const clearing = config.clearCredential && Object.keys(material).length === 0;
+    return !options.replaceCredentials && !clearing && isDeepStrictEqual(existing, material)
+      ? { action: "keep" }
+      : { action: "store", material };
+  }
+  if (options.replaceCredentials) {
+    return {
+      action: "store",
+      material: config.clearCredential
+        ? {}
+        : {
+            ...(config.secret ? { secret: config.secret } : {}),
+            ...(Object.keys(config.headers).length ? { headers: config.headers } : {}),
+          },
+    };
+  }
   const material = options.clearOAuth ? { ...existing } : existing;
   const clearedOAuth = options.clearOAuth === true && material.oauth !== undefined;
   if (options.clearOAuth) delete material.oauth;
@@ -72,17 +106,14 @@ export function buildMcpUpdateMaterial(
     return { action: "store", material: material.oauth ? { oauth: material.oauth } : {} };
   }
   const secret = "secret" in config && config.secret ? config.secret : undefined;
-  const env = "env" in config ? config.env : undefined;
-  const headers = "headers" in config ? config.headers : undefined;
+  const headers = config.headers;
   const existingHasMaterial = Boolean(
     material.secret ||
       (material.env && Object.keys(material.env).length > 0) ||
       (material.headers && Object.keys(material.headers).length > 0) ||
       material.oauth,
   );
-  const suppliesMaterial = Boolean(
-    secret || (env && Object.keys(env).length > 0) || (headers && Object.keys(headers).length > 0),
-  );
+  const suppliesMaterial = Boolean(secret || Object.keys(headers).length > 0);
   if (!existingHasMaterial && !suppliesMaterial) {
     return clearedOAuth ? { action: "store", material } : { action: "keep" };
   }
@@ -91,8 +122,36 @@ export function buildMcpUpdateMaterial(
     material: {
       ...material,
       ...(secret ? { secret } : {}),
-      ...(env !== undefined ? { env } : {}),
-      ...(headers !== undefined ? { headers } : {}),
+      headers,
     },
+  };
+}
+
+export function buildMcpStdioMaterial(
+  previous: McpSecretMaterial,
+  config: Extract<McpServerConfigInput, { transport: "stdio" }>,
+): McpSecretMaterial {
+  const registered = previous.oauthClient;
+  let oauthClient = config.oauthClient === undefined ? registered : config.oauthClient;
+  if (
+    registered?.clientSecret &&
+    oauthClient &&
+    oauthClient.clientId === registered.clientId &&
+    oauthClient.authorizationServer === registered.authorizationServer &&
+    oauthClient.clientSecret === undefined
+  ) {
+    oauthClient = { ...oauthClient, clientSecret: registered.clientSecret };
+  }
+  const oauth =
+    oauthClient && isDeepStrictEqual(registered, oauthClient) ? previous.oauth : undefined;
+  const secret = config.secret || previous.secret;
+  const env = config.env ?? previous.env;
+  const files = config.files ?? previous.files;
+  return {
+    ...(oauthClient ? { oauthClient } : {}),
+    ...(oauth ? { oauth } : {}),
+    ...(!config.clearCredential && secret ? { secret } : {}),
+    ...(!config.clearCredential && env && Object.keys(env).length ? { env } : {}),
+    ...(!config.clearCredential && files && Object.keys(files).length ? { files } : {}),
   };
 }

@@ -22,7 +22,8 @@ import {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { isLocalMcpHost } from "@rakazo/contracts";
+import type { McpStdioOAuthClient } from "@rakazo/contracts";
+import { isLocalMcpHost, McpStdioFilesSchema, McpStdioOAuthClientSchema } from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -79,6 +80,8 @@ export type OAuthMaterial = {
   secret?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
+  files?: Record<string, string>;
+  oauthClient?: McpStdioOAuthClient;
   oauth?: OAuthState;
 };
 
@@ -87,6 +90,8 @@ const StoredStatusMaterialSchema = z.object({
   secret: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  files: McpStdioFilesSchema.optional(),
+  oauthClient: McpStdioOAuthClientSchema.optional(),
   oauth: z
     .object({
       tokens: OAuthTokensSchema.optional(),
@@ -109,6 +114,7 @@ export function oauthMaterialSecrets(material: OAuthMaterial): string[] {
     if (bearer?.[1]) values.push(bearer[1]);
   };
   add(material.secret);
+  add(material.oauthClient?.clientSecret);
   add(material.oauth?.tokens?.access_token);
   add(material.oauth?.tokens?.refresh_token);
   const client = material.oauth?.clientInformation;
@@ -150,6 +156,7 @@ export function oauthDiagnosticSecrets(material: OAuthMaterial): string[] {
     ...oauthMaterialSecrets(material),
     ...Object.values(material.headers ?? {}).flatMap((value) => [value, value.trim()]),
     ...Object.values(material.env ?? {}),
+    ...Object.values(material.files ?? {}),
   ];
 }
 
@@ -1262,6 +1269,8 @@ export class McpOAuthBroker {
         nextMaterial.secret ||
           Object.keys(nextMaterial.env ?? {}).length ||
           Object.keys(nextMaterial.headers ?? {}).length ||
+          Object.keys(nextMaterial.files ?? {}).length ||
+          nextMaterial.oauthClient ||
           nextMaterial.oauth,
       );
       const unchanged = hasMaterial && oauthUnchanged;

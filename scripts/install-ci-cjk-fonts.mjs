@@ -6,8 +6,8 @@ import { pathToFileURL } from "node:url";
 
 const runnerMirror = "mirror+file:/etc/apt/apt-mirrors.txt";
 const officialMirrors = [
-  "https://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
-  "https://archive.ubuntu.com/ubuntu/\tpriority:2",
+  "https://archive.ubuntu.com/ubuntu/\tpriority:1",
+  "https://azure.archive.ubuntu.com/ubuntu/\tpriority:2",
   "https://security.ubuntu.com/ubuntu/\tpriority:3",
   "",
 ].join("\n");

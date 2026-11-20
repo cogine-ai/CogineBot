@@ -409,6 +409,40 @@ describe("MCP discovery lifecycle", () => {
     }
   });
 
+  it.each([
+    { files: { CONFIG_FILE: "fixture-config" } },
+    { oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" } },
+    { env: { MCP_TOKEN: "{{oauth.access_token}}" } },
+  ])("does not spawn with unhandled stdio credential material", async (material) => {
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: "fixture",
+      secretId: "material",
+    };
+    const connect = vi.spyOn(McpSession.prototype, "connectStdio").mockResolvedValue(undefined);
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      { load: async () => JSON.stringify(material) } as never,
+      { stdioEnabled: true, allowedCommands: ["fixture"] },
+    );
+    try {
+      expect((await connector.discoverTools(context)).map(({ name }) => name)).toEqual([
+        "mcp__demo__unavailable",
+      ]);
+      expect(connect).not.toHaveBeenCalled();
+    } finally {
+      await connector.close();
+      connect.mockRestore();
+    }
+  });
+
   it("keeps an active stdio session and closes it after the idle limit", async () => {
     const server = { ...SHARED_SERVER, transport: "stdio", command: "fixture" };
     const connect = vi.spyOn(McpSession.prototype, "connectStdio").mockResolvedValue(undefined);

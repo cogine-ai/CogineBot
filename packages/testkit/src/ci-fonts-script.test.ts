@@ -242,8 +242,8 @@ describe("browser CI font source selection", () => {
       expect(call.partsMode).toBe(0o755);
       expect(call.mirrorsMode).toBe(0o644);
       expect(call.mirrors).toBe(
-        "https://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n" +
-          "https://archive.ubuntu.com/ubuntu/\tpriority:2\n" +
+        "https://archive.ubuntu.com/ubuntu/\tpriority:1\n" +
+          "https://azure.archive.ubuntu.com/ubuntu/\tpriority:2\n" +
           "https://security.ubuntu.com/ubuntu/\tpriority:3\n",
       );
       expect(call.args).toEqual(

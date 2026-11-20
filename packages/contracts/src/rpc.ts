@@ -1000,7 +1000,11 @@ export const appContract = {
       update: oc
         .input(
           z.union([
-            z.object({ id: Id, config: McpServerConfigInput }),
+            z.object({
+              id: Id,
+              config: McpServerConfigInput,
+              revision: z.number().int().positive().optional(),
+            }),
             z.object({ id: Id, secret: z.string().min(1).max(16384) }),
             PluginServerConnectionInputSchema,
           ]),

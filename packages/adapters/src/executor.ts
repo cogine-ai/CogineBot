@@ -9570,7 +9570,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!parsed) {
               return finish({
                 error:
-                  "Invalid MCP server details. Required: name, transport (streamable_http|sse|stdio); endpoint for remote transports; command for stdio.",
+                  "Provide a name, remote MCP endpoint, and transport (streamable_http or sse).",
               });
             }
             if (parsed.endpoint) {
@@ -9633,10 +9633,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       name: parsed.name,
                       description: parsed.description,
                       transport: parsed.transport,
-                      endpoint: parsed.endpoint ?? null,
-                      command: parsed.command ?? null,
-                      args: parsed.args as unknown as Prisma.InputJsonValue,
-                      env: Object.fromEntries(Object.keys(parsed.env).map((key) => [key, true])),
+                      endpoint: parsed.endpoint,
                       headers: Object.fromEntries(
                         Object.keys(parsed.headers).map((key) => [key, true]),
                       ),

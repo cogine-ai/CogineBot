@@ -8,7 +8,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { McpServerHealth } from "@rakazo/contracts";
-import { isLocalMcpHost } from "@rakazo/contracts";
+import { isLocalMcpHost, MCP_STDIO_OAUTH_REFERENCE_START } from "@rakazo/contracts";
 import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   assertManagedPluginActive,
@@ -835,6 +835,14 @@ export class McpConnector implements ConnectorProvider {
       context.signal.throwIfAborted();
       if (server.transport === "stdio") {
         if (!this.options.stdioEnabled) throw new Error("MCP stdio is disabled");
+        if (
+          material.oauthClient ||
+          Object.keys(material.files ?? {}).length ||
+          Object.values(env).some((value) => MCP_STDIO_OAUTH_REFERENCE_START.test(value)) ||
+          args.some((arg) => MCP_STDIO_OAUTH_REFERENCE_START.test(arg))
+        ) {
+          throw new Error("MCP stdio credentials are not available to the launcher");
+        }
         await session.connectStdio({
           command: String(server.command ?? ""),
           args,
