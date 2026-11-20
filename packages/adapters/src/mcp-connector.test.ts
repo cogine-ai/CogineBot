@@ -716,13 +716,13 @@ describe("MCP discovery lifecycle", () => {
     const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
     const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
       tools: [
-        { name: "read", inputSchema: { type: "object" } },
+        { name: "read_status", inputSchema: { type: "object" } },
         { name: "hidden", description: "credential is default", inputSchema: { type: "object" } },
       ],
     });
     const call = vi.spyOn(McpSession.prototype, "callTool").mockResolvedValue({
       isError: false,
-      content: [{ type: "text", text: "default false production" }],
+      content: [{ type: "text", text: "default false production fixture-private fixture-aux" }],
     });
     const connector = new McpConnector(
       {
@@ -735,28 +735,40 @@ describe("MCP discovery lifecycle", () => {
       } as never,
       {
         load: async () =>
-          JSON.stringify({ env: { API_KEY: "default", API_SECRET: "false", TOKEN: "production" } }),
+          JSON.stringify({
+            env: {
+              API_KEY: "default",
+              API_SECRET: "false",
+              TOKEN: "production",
+              APP_COOKIE: "sid=a; private=fixture-private; aux=fixture-aux",
+            },
+          }),
       } as never,
       { stdioEnabled: true, allowedCommands: ["fixture"] },
     );
     try {
       const [tool, ...extra] = await connector.discoverTools(context);
-      expect(tool?.name).toBe("mcp__demo__read");
+      expect(tool?.name).toBe("mcp__demo__read_status");
       expect(extra).toEqual([]);
-      const result = await connector
-        .execute(
-          { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
-          context,
-        )
-        [Symbol.asyncIterator]()
-        .next();
-      expect(result.value).toMatchObject({
+      const execute = () =>
+        connector
+          .execute(
+            { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
+            context,
+          )
+          [Symbol.asyncIterator]()
+          .next();
+      expect((await execute()).value).toMatchObject({
         type: "result",
         data: {
           isError: false,
-          content: [{ type: "text", text: "[redacted] [redacted] production" }],
+          content: [
+            { type: "text", text: "[redacted] [redacted] production [redacted] [redacted]" },
+          ],
         },
       });
+      call.mockRejectedValueOnce(new Error("fixture-private"));
+      expect((await execute()).value).toMatchObject({ type: "error", message: "[redacted]" });
     } finally {
       await connector.close();
       call.mockRestore();

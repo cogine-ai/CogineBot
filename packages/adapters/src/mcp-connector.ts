@@ -378,7 +378,10 @@ export class McpConnector implements ConnectorProvider {
         entry;
       const componentSecrets = [...fileCredentialComponents];
       const storedCredentials = entry.stdio
-        ? oauthMaterialSecrets(entry.material, { stdio: true, basicComponents: componentSecrets })
+        ? oauthMaterialSecrets(entry.material, {
+            stdio: true,
+            credentialComponents: componentSecrets,
+          })
         : [];
       if (
         storedCredentials.length ||
@@ -427,7 +430,11 @@ export class McpConnector implements ConnectorProvider {
       this.shutdown.signal.throwIfAborted();
       const reason = signal.aborted ? new Error("MCP tool discovery timed out") : error;
       const secrets = entry
-        ? [...oauthDiagnosticSecrets(entry.material), ...entry.launchSecrets, ...entry.fileSecrets]
+        ? [
+            ...oauthDiagnosticSecrets(entry.material, entry.stdio),
+            ...entry.launchSecrets,
+            ...entry.fileSecrets,
+          ]
         : [];
       health = mcpHealthError(reason, secrets);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
@@ -1182,7 +1189,7 @@ export class McpConnector implements ConnectorProvider {
       // cover only whoever looked first.
       if (!material) throw error;
       const health = mcpHealthError(error, [
-        ...oauthDiagnosticSecrets(material),
+        ...oauthDiagnosticSecrets(material, server.transport === "stdio"),
         ...launchSecrets,
         ...fileSecrets,
       ]);

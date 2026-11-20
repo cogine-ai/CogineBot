@@ -44,6 +44,7 @@ import { combineSignals, sanitizeConnectorError } from "./connector-safety.js";
 import {
   isAuthHeaderKey,
   isMcpCredentialFieldValue,
+  mcpCookieCredentialValues,
   mcpCredentialValueVariants,
 } from "./mcp-credential-redaction.js";
 import {
@@ -125,14 +126,25 @@ const StoredStatusMaterialSchema = z.object({
 /** Values that must never appear in model-visible tool results or errors. */
 export function oauthMaterialSecrets(
   material: OAuthMaterial,
-  { stdio = false, basicComponents }: { stdio?: boolean; basicComponents?: string[] } = {},
+  {
+    stdio = false,
+    credentialComponents,
+  }: { stdio?: boolean; credentialComponents?: string[] } = {},
 ): string[] {
   const values: string[] = [];
   const add = (value: string | undefined) => {
     if (!value) return;
     const variants = mcpCredentialValueVariants(value);
-    if (basicComponents) basicComponents.push(...variants.splice(2));
+    if (credentialComponents) credentialComponents.push(...variants.splice(2));
     values.push(...variants);
+  };
+  const addField = (key: string, value: string, authHeader = false) => {
+    const cookies = stdio ? mcpCookieCredentialValues(key, value) : [];
+    if (authHeader || cookies.length || isMcpCredentialFieldValue(key, value, stdio)) add(value);
+    for (const cookie of cookies) {
+      const variants = mcpCredentialValueVariants(cookie);
+      (credentialComponents ?? values).push(...variants);
+    }
   };
   add(material.secret);
   add(material.oauthClient?.clientSecret);
@@ -143,18 +155,18 @@ export function oauthMaterialSecrets(
     add(client.client_secret);
   }
   for (const [key, value] of Object.entries(material.headers ?? {})) {
-    if (isAuthHeaderKey(key) || isMcpCredentialFieldValue(key, value)) add(value);
+    addField(key, value, isAuthHeaderKey(key));
   }
   for (const [key, value] of Object.entries(material.env ?? {})) {
-    if (isMcpCredentialFieldValue(key, value, stdio)) add(value);
+    addField(key, value);
   }
   return [...new Set(values)];
 }
 
 /** Diagnostics can reflect any configured header or env value. Fetch trims header whitespace. */
-export function oauthDiagnosticSecrets(material: OAuthMaterial): string[] {
+export function oauthDiagnosticSecrets(material: OAuthMaterial, stdio = false): string[] {
   return [
-    ...oauthMaterialSecrets(material),
+    ...oauthMaterialSecrets(material, { stdio }),
     ...Object.values(material.headers ?? {}).flatMap((value) => [value, value.trim()]),
     ...Object.values(material.env ?? {}),
     ...Object.values(material.files ?? {}),
