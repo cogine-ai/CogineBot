@@ -79,6 +79,7 @@ export * from "./search.js";
 export * from "./secrets-guard.js";
 export * from "./self-update.js";
 export * from "./signup-policy.js";
+export * from "./skill-reference-files.js";
 export * from "./speech-locale.js";
 export * from "./speech-text.js";
 export * from "./stuck-work.js";

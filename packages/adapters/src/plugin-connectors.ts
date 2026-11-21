@@ -1,7 +1,6 @@
 /** Portable plugin parsing plus a bounded, public-GitHub acquisition adapter.
  * No repository code is executed and no files are written to the host. */
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
 import type { PluginPreview } from "@rakazo/contracts";
 import {
   McpServerConfigInput,
@@ -10,9 +9,9 @@ import {
 } from "@rakazo/contracts";
 import {
   containsSecret,
-  normalizeSkillFilePath,
+  hasMissingSkillReference,
+  isSkillTextFile,
   parseSkillMd,
-  readSkillMarkdownReferences,
 } from "@rakazo/core";
 import { z } from "zod";
 import { assertNoSensitiveQuery, HeaderName } from "./connector-http.js";
@@ -73,9 +72,6 @@ const MAX_FILE_BYTES = PLUGIN_SKILL_FILE_LIMITS.bytes;
 const FETCH_CONCURRENCY = 8;
 const SKILL_DOCUMENT = /^(skills\/[^/]+\/)SKILL\.md$/;
 const SKILL_COMPANION = /^(skills\/[^/]+\/)(?!SKILL\.md$)(.+)$/;
-const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
-const INLINE_SKILL_FILE =
-  /^(?:\{baseDir\}\/|(?:\.\/|(?:\.\.\/)+)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const UNAVAILABLE_SKILL_FILE = "\u0000";
 const FULL_SHA = /^[a-f0-9]{40}$/;
 const SCHEMAS = new Set([
@@ -374,67 +370,6 @@ export async function fetchGitHubRepo(
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isSkillTextFile(path: string): boolean {
-  return normalizeSkillFilePath(path) === path && SKILL_TEXT_FILE.test(path);
-}
-
-/** Walk references from the main recipe and any Markdown reached through them. */
-function hasMissingSkillReference(
-  body: string,
-  files: ReadonlyMap<string, string>,
-  inferInlineFiles: boolean,
-): boolean {
-  const visited = new Set(["SKILL.md"]);
-  const pending = [{ path: "SKILL.md", body }];
-  for (const document of pending) {
-    const { links, inlineCode } = readSkillMarkdownReferences(document.body);
-    const documentDir = posix.dirname(document.path);
-    const references = [
-      ...links.map((target) => ({ target, base: documentDir })),
-      ...inlineCode
-        .filter(
-          (text) =>
-            (inferInlineFiles || text.startsWith("{baseDir}/")) && INLINE_SKILL_FILE.test(text),
-        )
-        .map((target) => ({
-          target,
-          base: target.startsWith("./") || target.startsWith("../") ? documentDir : ".",
-        })),
-    ];
-    for (const { target, base } of references) {
-      try {
-        const atSkillRoot = target.startsWith("{baseDir}/");
-        const decoded = decodeURIComponent(target.replace(/^\{baseDir\}\//, "").split("#", 1)[0]!);
-        if (
-          !decoded ||
-          decoded.length > 2048 ||
-          /^(?:\/|[a-z][a-z\d+.-]*:)/i.test(decoded) ||
-          /[\\%?#]/.test(decoded) ||
-          hasControlCharacters(decoded)
-        )
-          return true;
-        const path = posix.join(atSkillRoot ? "." : base, decoded);
-        const directory = decoded.endsWith("/") || decoded === "." || decoded === "..";
-        if (directory && (path === "." || path === "./")) continue;
-        const relative = normalizeSkillFilePath(directory ? path.replace(/\/$/, "") : path);
-        if (!relative) return true;
-        if (directory) {
-          if (![...files.keys()].some((file) => file.startsWith(`${relative}/`))) return true;
-          continue;
-        }
-        if (visited.has(relative)) continue;
-        const text = files.get(relative);
-        if (text === undefined) return true;
-        visited.add(relative);
-        if (/\.mdx?$/i.test(relative)) pending.push({ path: relative, body: text });
-      } catch {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 export function skillReferenceRejection(

@@ -29,6 +29,7 @@ import {
   BotPackageSkillFilesSchema,
   BotPackageSkillSchema,
   botPackageUtf8Bytes,
+  countAgentBackupFiles,
   TimeZoneSchema,
 } from "@rakazo/contracts";
 import {
@@ -648,11 +649,16 @@ function backupPackage(
   }
   const skillNames = new Set<string>();
   const skills: BotPackageDocument["skills"] = [];
-  for (const [path, content] of [...byPath].sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0,
+  for (const { path, content, references, referenceLimitExceeded } of [...files].sort(
+    ({ path: left }, { path: right }) => (left < right ? -1 : left > right ? 1 : 0),
   )) {
     if (isBackupSkill(path)) {
-      const assessed = assessBackupSkill(content, incomplete.has(path));
+      const assessed = assessBackupSkill(
+        content,
+        incomplete.has(path),
+        references,
+        referenceLimitExceeded,
+      );
       if ("reason" in assessed) {
         addNote("skill", path, agentBackupOmissionReasons[assessed.reason]);
       } else {
@@ -668,6 +674,7 @@ function backupPackage(
           name,
           description: parsed.description,
           content: renamed,
+          ...(references ? { files: references } : {}),
         });
         if ("error" in validated || validated.name !== name) {
           addNote("skill", path, "The Skill name could not be updated.");
@@ -714,18 +721,8 @@ function backupPackage(
     )
       ? "unavailable"
       : model;
-  const modelOnly =
-    !instructions.length &&
-    !skills.length &&
-    !routines.length &&
-    !backupMcp.length &&
-    !(options.includeMemory && memory.length) &&
-    !identity?.name &&
-    !identity?.description;
-  if (modelOnly && (!backupModel || backupModel === "unavailable"))
-    throw new BotPackageError("No supported Bot content was found in this backup.");
   const safe = prepareBotPackageDocument({
-    format: BOT_PACKAGE_FORMAT,
+    format: skills.some((skill) => skill.files) ? BOT_PACKAGE_FILES_FORMAT : BOT_PACKAGE_FORMAT,
     profile: {
       name:
         options.name ??
@@ -739,6 +736,23 @@ function backupPackage(
     connections: backupMcp.map(({ name, endpoint }) => ({ name, note: endpoint })),
     memory: options.includeMemory ? memory : [],
   });
+  const modelOnly =
+    !instructions.length &&
+    !safe.document.skills.length &&
+    !routines.length &&
+    !backupMcp.length &&
+    !(options.includeMemory && memory.length) &&
+    !identity?.name &&
+    !identity?.description;
+  if (modelOnly && (!backupModel || backupModel === "unavailable"))
+    throw new BotPackageError("No supported Bot content was found in this backup.");
+  if (
+    safe.document.format === BOT_PACKAGE_FILES_FORMAT &&
+    !safe.document.skills.some((skill) => skill.files)
+  ) {
+    safe.document.format = BOT_PACKAGE_FORMAT;
+    safe.json = canonicalBotPackageJson(safe.document);
+  }
   leftOut.push(...safe.leftOut);
   return {
     ...safe,
@@ -773,7 +787,7 @@ export function parseBotPackageSource(
     if (!backup.success)
       throw new BotPackageError("The backup has unsupported or oversized files.");
     if (
-      backup.data.files.length +
+      countAgentBackupFiles(backup.data.files) +
         backup.data.excludedMemoryCount +
         (options.backupRoutines?.length ?? 0) >
       AGENT_BACKUP_MAX_FILES

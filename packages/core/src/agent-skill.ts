@@ -22,10 +22,14 @@ type SkillMarkdownNode = {
 export function readSkillMarkdownReferences(body: string): {
   links: string[];
   inlineCode: string[];
+  prose: string[];
+  code: string[];
 } {
-  const nodes: SkillMarkdownNode[] = [skillMarkdown.parse(body)];
+  const nodes = [{ node: skillMarkdown.parse(body) as SkillMarkdownNode, inLink: false }];
   const links: string[] = [];
   const inlineCode: string[] = [];
+  const prose: string[] = [];
+  const code: string[] = [];
   const references = new Set<string>();
   const definitions = new Map<string, string>();
   const addTarget = (url: string | undefined) => {
@@ -34,9 +38,11 @@ export function readSkillMarkdownReferences(body: string): {
       links.push(value);
   };
   while (nodes.length) {
-    const node = nodes.pop()!;
+    const { node, inLink } = nodes.pop()!;
     if (node.type === "link" || node.type === "image") addTarget(node.url);
-    if (node.type === "inlineCode" && node.value) inlineCode.push(node.value);
+    if (!inLink && node.type === "inlineCode" && node.value) inlineCode.push(node.value);
+    if (!inLink && node.type === "text" && node.value) prose.push(node.value);
+    if (node.type === "code" && node.value) code.push(node.value);
     if (node.identifier) {
       if (node.type === "linkReference" || node.type === "imageReference")
         references.add(node.identifier);
@@ -44,10 +50,14 @@ export function readSkillMarkdownReferences(body: string): {
         definitions.set(node.identifier, node.url ?? "");
     }
     const children = node.children ?? [];
-    for (let index = children.length - 1; index >= 0; index--) nodes.push(children[index]!);
+    for (let index = children.length - 1; index >= 0; index--)
+      nodes.push({
+        node: children[index]!,
+        inLink: inLink || node.type === "link" || node.type === "linkReference",
+      });
   }
   for (const reference of references) addTarget(definitions.get(reference));
-  return { links, inlineCode };
+  return { links, inlineCode, prose, code };
 }
 
 /** Normalize only the optional leading ./ on a skill's stored reference path. */

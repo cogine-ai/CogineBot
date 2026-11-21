@@ -19,12 +19,20 @@ import {
   BOT_PACKAGE_MAX_ROUTINES,
   BOT_PACKAGE_MEMORY_MAX_BYTES,
   BotPackageMemorySchema,
+  BotPackageSkillFilesSchema,
   BotPackageSkillSchema,
   botPackageUtf8Bytes,
+  countAgentBackupFiles,
   isAgentBackupPath,
+  isBackupSkill,
+  PLUGIN_SKILL_FILE_LIMITS,
 } from "@rakazo/contracts";
 import type { ParsedSkillMd } from "../agent-skill.js";
-import { parseSkillMd, readSkillMarkdownReferences } from "../agent-skill.js";
+import { parseSkillMd } from "../agent-skill.js";
+import {
+  hasMissingSkillReference,
+  isPortableSkillReferencePath,
+} from "../skill-reference-files.js";
 import {
   AGENT_IMPORT_ARCHIVE_LIMITS,
   AgentImportArchiveError,
@@ -64,8 +72,7 @@ export const openClawRuntimeFiles = new Set([
   "BOOTSTRAP.md",
   "BOOT.md",
 ]);
-export const isBackupSkill = (path: string) =>
-  /^(?:\.agents\/)?skills\/(?:[^/]+\/){1,4}SKILL\.md$/.test(path);
+export { isBackupSkill };
 export function isBackupMemory(source: AgentBackupSource, path: string) {
   return source === "openclaw"
     ? /^(?:MEMORY|USER)\.md$|^memory\/[^/]+\.md$/.test(path)
@@ -152,11 +159,24 @@ export { isBackupRoutine, isBackupRoutineOmission };
 export function assessBackupSkill(
   content: string,
   incomplete: boolean,
+  references: AgentBackupDocument["files"][number]["references"] = [],
+  referenceLimitExceeded = false,
 ): { skill: ParsedSkillMd } | { reason: AgentBackupOmissionReason } {
+  if (referenceLimitExceeded) return { reason: "skillLimit" };
   if (incomplete) return { reason: "missingSkillFiles" };
   const skill = parseSkillMd(content);
   if ("error" in skill) return { reason: "invalidSkill" };
-  if (/\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(skill.body))
+  const files = new Map(references.map(({ path, content }) => [path, content]));
+  if (
+    references.some(
+      ({ path, content }) => !isPortableSkillReferencePath(path) || content.includes("\0"),
+    ) ||
+    new Set(references.map(({ path }) => path.normalize("NFC").toLowerCase())).size !==
+      references.length ||
+    hasMissingSkillReference(skill.body, files, true, true) ||
+    (!files.size &&
+      /\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(skill.body))
+  )
     return { reason: "missingSkillFiles" };
   const { frontmatter } = skill;
   const metadata = frontmatter.metadata;
@@ -354,10 +374,24 @@ export function encodeAgentBackup(data: Uint8Array): string {
   return encodeBackupDocument(
     source,
     files,
-    [...archive.paths, ...archive.skippedPaths]
-      .filter((path) => path.startsWith(home))
-      .map((path) => path.slice(home.length)),
     (path) => archive.read(`${home}${path}`),
+    [
+      ...backupSkillCompanions(
+        files,
+        [...archive.paths, ...archive.skippedPaths]
+          .filter((path) => path.startsWith(home))
+          .map((path) => path.slice(home.length)),
+        (path) => archive.size(`${home}${path}`),
+      ),
+    ].map(([path, candidates]) => [
+      path,
+      Array.isArray(candidates)
+        ? candidates.map(({ path: relative, inputPath }) => ({
+            path: relative,
+            content: archive.readOptional(`${home}${inputPath}`),
+          }))
+        : candidates,
+    ]),
     routineFiles,
     routineOmissions,
     { model, mcp },
@@ -378,42 +412,107 @@ function projectBackupRoutines(
   return { routineFiles, routineOmissions };
 }
 
+type BackupFile = AgentBackupDocument["files"][number];
+type BackupSkillCompanion = { path: string; inputPath: string };
+type BackupSkillReferences = [
+  path: string,
+  files: { path: string; content: string | undefined }[] | "skillLimit" | undefined,
+];
+
+function backupSkillCompanions(
+  files: ReadonlyMap<string, string>,
+  inventory: readonly string[],
+  fileSize: (path: string) => number | undefined,
+) {
+  const known = new Set(inventory);
+  const roots = new Map(
+    [...files].filter(([path]) => isBackupSkill(path)).map(([path, physical]) => [physical, path]),
+  );
+  const bySkill = new Map<string, BackupSkillCompanion[]>();
+  for (const candidate of inventory) {
+    if (candidate.endsWith("/SKILL.md")) continue;
+    for (let at = candidate.lastIndexOf("/"); at >= 0; at = candidate.lastIndexOf("/", at - 1)) {
+      const recipe = `${candidate.slice(0, at + 1)}SKILL.md`;
+      if (!known.has(recipe)) continue;
+      const path = roots.get(recipe);
+      if (path) {
+        const companions = bySkill.get(path) ?? [];
+        companions.push({ path: candidate.slice(at + 1), inputPath: candidate });
+        bySkill.set(path, companions);
+      }
+      break;
+    }
+  }
+  return [...bySkill].map(
+    ([path, companions]): [string, BackupSkillCompanion[] | "skillLimit" | undefined] => {
+      if (companions.some(({ path }) => !isPortableSkillReferencePath(path)))
+        return [path, undefined];
+      const sizes = companions.map(({ inputPath }) => fileSize(inputPath) ?? 0);
+      if (
+        companions.length > PLUGIN_SKILL_FILE_LIMITS.count ||
+        sizes.some((size) => size > PLUGIN_SKILL_FILE_LIMITS.bytes) ||
+        sizes.reduce((sum, size) => sum + size, 0) > PLUGIN_SKILL_FILE_LIMITS.totalBytes
+      )
+        return [path, "skillLimit"];
+      return [
+        path,
+        companions.sort((left, right) =>
+          left.path < right.path ? -1 : left.path === right.path ? 0 : 1,
+        ),
+      ];
+    },
+  );
+}
+
 function encodeBackupDocument(
   source: AgentBackupSource,
   files: ReadonlyMap<string, string>,
-  inventory: readonly string[],
   read: (path: string) => string,
+  skillReferences: readonly BackupSkillReferences[],
   routineFiles: AgentBackupDocument["files"],
   routineOmissions: NonNullable<AgentBackupDocument["routineOmissions"]>,
   options: {
-    linkedSkills?: ReadonlySet<string>;
     model?: AgentBackupDocument["model"];
     mcp?: AgentBackupDocument["mcp"];
   } = {},
 ): string {
   if (files.size + routineFiles.length > AGENT_BACKUP_MAX_FILES)
     throw new AgentImportArchiveError("too_large");
+  const incompleteSkills: string[] = [];
+  const limitsExceeded = new Set<string>();
+  const referencesBySkill = new Map<string, NonNullable<BackupFile["references"]>>();
+  for (const [path, candidates] of skillReferences) {
+    if (candidates === "skillLimit") {
+      limitsExceeded.add(path);
+      continue;
+    }
+    const parsed = BotPackageSkillFilesSchema.safeParse(candidates);
+    if (!parsed.success || parsed.data.some(({ content }) => content.includes("\0")))
+      incompleteSkills.push(path);
+    else referencesBySkill.set(path, parsed.data);
+  }
   const backup: AgentBackupDocument = {
     format: AGENT_BACKUP_FORMAT,
     source,
     files: [
-      ...[...files].map(([path, inputPath]) => ({
-        path,
-        content: isBackupRuntimeFile(source, path) ? "" : read(inputPath),
-      })),
+      ...[...files].map(([path, inputPath]) => {
+        const content = isBackupRuntimeFile(source, path) ? "" : read(inputPath);
+        const references = referencesBySkill.get(path);
+        return {
+          path,
+          content,
+          ...(references ? { references } : {}),
+          ...(limitsExceeded.has(path) ? { referenceLimitExceeded: true as const } : {}),
+        };
+      }),
       ...routineFiles,
     ],
     excludedMemoryCount: 0,
-    incompleteSkills: [...files].flatMap(([path, inputPath]) => {
-      if (!isBackupSkill(path)) return [];
-      const folder = inputPath.slice(0, -"SKILL.md".length);
-      return options.linkedSkills?.has(path) ||
-        inventory.some((candidate) => candidate !== inputPath && candidate.startsWith(folder))
-        ? [path]
-        : [];
-    }),
+    incompleteSkills,
     ...(routineOmissions.length ? { routineOmissions } : {}),
   };
+  if (countAgentBackupFiles(backup.files) > AGENT_BACKUP_MAX_FILES)
+    throw new AgentImportArchiveError("too_large");
   const parsed = AgentBackupDocumentSchema.safeParse(backup);
   if (!parsed.success) throw new AgentImportArchiveError("unreadable");
   const text = JSON.stringify(parsed.data);
@@ -511,16 +610,10 @@ export async function encodeAgentBackupFolder(
   for (const [, path] of readable) checkSize(byPath.get(path)!.size);
 
   const content = new Map<string, string>();
-  const linkedSkills = new Set<string>();
-  for (const [name, path] of readable) {
+  for (const [, path] of readable) {
     const bytes = await readBytes(byPath.get(path)!);
     const text = decoder.decode(bytes);
     if (text.length > AGENT_BACKUP_MAX_FILE_LENGTH) throw new AgentImportArchiveError("too_large");
-    if (isBackupSkill(name)) {
-      const skill = parseSkillMd(text);
-      if (!("error" in skill) && readSkillMarkdownReferences(skill.body).links.length)
-        linkedSkills.add(name);
-    }
     content.set(path, text);
   }
   const jobsEntry = byPath.get(backupJobsPath);
@@ -534,6 +627,21 @@ export async function encodeAgentBackupFolder(
       if (!isCurrent()) throw error;
       return undefined;
     }
+  }
+  const skillReferences: BackupSkillReferences[] = [];
+  for (const [path, candidates] of backupSkillCompanions(
+    files,
+    paths,
+    (path) => byPath.get(path)?.size,
+  )) {
+    if (!Array.isArray(candidates)) {
+      skillReferences.push([path, candidates]);
+      continue;
+    }
+    const gathered = [];
+    for (const { path, inputPath } of candidates)
+      gathered.push({ path, content: await readOptional(byPath.get(inputPath)) });
+    skillReferences.push([path, gathered]);
   }
   const jobs = source === "hermes" ? await readOptional(jobsEntry) : undefined;
   const configEntry = byPath.get(backupModelConfigPath(source));
@@ -563,11 +671,11 @@ export async function encodeAgentBackupFolder(
   return encodeBackupDocument(
     source,
     files,
-    paths,
     (path) => content.get(path)!,
+    skillReferences,
     routineFiles,
     routineOmissions,
-    { linkedSkills, model, mcp },
+    { model, mcp },
   );
 }
 
@@ -733,7 +841,7 @@ export function agentBackupFileGroups(raw: string) {
       memoryOmissions.set(path, reason);
     }).map(({ file }) => file.path),
   );
-  for (const { path, content } of files) {
+  for (const { path, content, references, referenceLimitExceeded } of files) {
     if (isBackupRoutine(path)) {
       const routine = readBackupRoutine(content);
       if (routine)
@@ -754,7 +862,12 @@ export function agentBackupFileGroups(raw: string) {
       const reason = memoryOmissions.get(path);
       if (reason) groups.unavailable.push({ path, reason });
     } else if (isBackupSkill(path)) {
-      const assessed = assessBackupSkill(content, incomplete.has(path));
+      const assessed = assessBackupSkill(
+        content,
+        incomplete.has(path),
+        references,
+        referenceLimitExceeded,
+      );
       if ("skill" in assessed) groups.skills.push(path);
       else groups.unavailable.push({ path, reason: assessed.reason });
     } else if (
@@ -928,7 +1041,12 @@ export function agentBackupPreview(
         return false;
       }
     } else if (isBackupSkill(file.path)) {
-      const assessed = assessBackupSkill(file.content, incomplete.has(file.path));
+      const assessed = assessBackupSkill(
+        file.content,
+        incomplete.has(file.path),
+        file.references,
+        file.referenceLimitExceeded,
+      );
       if ("reason" in assessed) reason = assessed.reason;
     } else if (!openClawRuntimeFiles.has(file.path)) {
       reason = backupInstructionOmission(backup.source, file.path, file.content);
