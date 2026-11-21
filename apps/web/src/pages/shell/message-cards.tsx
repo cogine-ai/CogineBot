@@ -267,18 +267,20 @@ export function AppConnectCard({
   const [authorizationToRetry, setAuthorizationToRetry] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
+  const authorizationGeneration = useRef(0);
   const status = block.status === "connected" ? "connected" : localStatus;
   useEffect(() => () => connectionAttempt.current?.abort(), []);
   useEffect(() => {
-    if (block.status === "connected") return;
+    if (block.status === "connected" || connectionAttempt.current) return;
     const readback = new AbortController();
+    const generation = authorizationGeneration.current;
     void rpc.onboarding
       .appConnected(
         { botId, messageId, provider: block.provider, connectorId: block.connectorId },
         { signal: readback.signal },
       )
       .then(({ connected, pendingConnectionId }) => {
-        if (readback.signal.aborted || connectionAttempt.current) return;
+        if (readback.signal.aborted || generation !== authorizationGeneration.current) return;
         if (connected) setLocalStatus("connected");
         setPendingConnectionId(pendingConnectionId);
       })
@@ -296,6 +298,7 @@ export function AppConnectCard({
       setAppsOpen(true);
       return;
     }
+    authorizationGeneration.current += 1;
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;

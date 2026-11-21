@@ -141,9 +141,37 @@ for (const failure of ["blocked", "throws"] as const) {
         return open(...args);
       };
     }, failure);
+    const readback = "**/rpc/onboarding/appConnected";
+    const readbackCaptured = Promise.withResolvers<void>();
+    const releaseReadback = Promise.withResolvers<void>();
+    await page.route(readback, async (route) => {
+      const response = await route.fetch();
+      expect((await response.json()).json).toMatchObject({
+        connected: false,
+        pendingConnectionId: null,
+      });
+      readbackCaptured.resolve();
+      await releaseReadback.promise;
+      await route.fulfill({ response });
+    });
+    let begins = 0;
+    await page.route("**/rpc/connections/begin", async (route) => {
+      begins += 1;
+      await readbackCaptured.promise;
+      await route.continue();
+    });
     const { card, completion, connectionId } = await startPendingAirtableCard(page);
     await expect(card.getByText("Could not authorize this app", { exact: true })).toBeVisible();
     await expect(card).not.toContainText("Fixture authorization launch detail");
+    const staleReadback = page.waitForResponse(readback);
+    releaseReadback.resolve();
+    expect(await (await staleReadback).finished()).toBeNull();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
     const reopened = page.waitForEvent("popup");
     await page.unroute(completion);
     await card.getByRole("button", { name: "Authorize", exact: true }).click();
@@ -152,6 +180,7 @@ for (const failure of ["blocked", "throws"] as const) {
     expect(await rpc(page, "connections/list", {})).toEqual([
       expect.objectContaining({ id: connectionId, status: "connected" }),
     ]);
+    expect(begins).toBe(1);
   });
 }
 
