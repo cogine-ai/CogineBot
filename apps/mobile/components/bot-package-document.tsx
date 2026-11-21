@@ -69,6 +69,13 @@ export function BotPackageDocumentView({ document }: { document: BotPackageDocum
             <Text selectable style={styles.raw}>
               {skill.content}
             </Text>
+            {skill.files?.map((file) => (
+              <Details key={file.path} label={file.path}>
+                <Text selectable style={styles.raw}>
+                  {file.content}
+                </Text>
+              </Details>
+            ))}
           </Details>
         ))}
       </Details>

@@ -58,6 +58,16 @@ export function BotPackageDocumentView({ document }: { document: BotPackageDocum
             <pre className={rawClass} dir="auto">
               {skill.content}
             </pre>
+            {skill.files?.map((file) => (
+              <details key={file.path} className="mt-2 ps-3">
+                <summary className="cursor-pointer break-words" dir="auto">
+                  {file.path}
+                </summary>
+                <pre className={rawClass} dir="auto">
+                  {file.content}
+                </pre>
+              </details>
+            ))}
           </details>
         ))}
       </details>

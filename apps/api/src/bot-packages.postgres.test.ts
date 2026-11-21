@@ -15,7 +15,11 @@ import type {
   BotPackageReceipt,
   BotPackageRecentReceipt,
 } from "@rakazo/contracts";
-import { AGENT_BACKUP_FORMAT, BOT_PACKAGE_FORMAT } from "@rakazo/contracts";
+import {
+  AGENT_BACKUP_FORMAT,
+  BOT_PACKAGE_FILES_FORMAT,
+  BOT_PACKAGE_FORMAT,
+} from "@rakazo/contracts";
 import { buildSkillMd, parseSkillMd } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -25,7 +29,10 @@ import {
   releaseSpaceDeletionClaim,
 } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { listAgentSkillRecords } from "../../../packages/adapters/src/skill-tools.js";
+import {
+  listAgentSkillRecords,
+  skillReadFromTool,
+} from "../../../packages/adapters/src/skill-tools.js";
 import { sessionCookieHeader } from "../../../packages/testkit/src/index.js";
 import { createApp } from "./app.js";
 
@@ -1314,7 +1321,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         userId: owner.actor.userId,
         name: "shared-other",
         description: "Shared",
-        content: buildSkillMd({ name: "shared-other", description: "Shared", body: "Shared body" }),
+        content: buildSkillMd({
+          name: "shared-other",
+          description: "Shared",
+          body: "Write the review outcome to `templates/checklist.txt`.",
+        }),
         source: "user",
       },
     });
@@ -1347,6 +1358,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     });
     const exported = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
     expect(JSON.parse(exported.json)).toEqual(exported.document);
+    expect(exported.document.format).toBe(BOT_PACKAGE_FORMAT);
     expect(exported.document.skills).toEqual(value.skills);
     expect(exported.document.memory).toEqual([]);
     expect(exported.document.profile.instructions).toBe(value.profile.instructions);
@@ -1358,16 +1370,13 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       includeMemory: true,
     });
     expect(JSON.parse(selected.json)).toEqual(selected.document);
-    expect(selected.document.skills).toHaveLength(2);
+    expect(selected.document.format).toBe(BOT_PACKAGE_FILES_FORMAT);
+    expect(selected.document.skills).toHaveLength(3);
     expect(selected.document.skills.map((skill) => skill.name)).toContain(shared.name);
-    expect(selected.json).not.toContain(withReferences.name);
-    expect(selected.json).not.toContain("Reference body for the installed skill.");
+    expect(
+      selected.document.skills.find((skill) => skill.name === withReferences.name)?.files,
+    ).toEqual([{ path: "template.md", content: "Reference body for the installed skill." }]);
     expect(JSON.stringify(selected)).not.toContain(credentialShapedName);
-    expect(selected.leftOut).toContainEqual({
-      kind: "skill",
-      name: withReferences.name,
-      reason: "This skill has reference files. Install its plugin on the destination.",
-    });
     expect(selected.document.memory).toEqual(value.memory);
     expect((await preview(owner, JSON.parse(selected.json), true)).document).toEqual(
       selected.document,
@@ -1376,6 +1385,76 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       (await request(owner, "export", { botId: receipt.botId, skillIds: ["builtin:irrelevant"] }))
         .status,
     ).toBe(404);
+    await database.prisma.agentSkill.update({
+      where: { id: withReferences.id },
+      data: { content: withReferences.content.replace("template.md", "missing.md") },
+    });
+    const withoutFiles = await call<BotPackageExport>(owner, "export", {
+      botId: receipt.botId,
+      skillIds: [withReferences.id],
+    });
+    expect(withoutFiles.document.format).toBe(BOT_PACKAGE_FORMAT);
+    expect(JSON.parse(withoutFiles.json)).toEqual(withoutFiles.document);
+    expect(withoutFiles.document.skills).toEqual(value.skills);
+    expect(withoutFiles.leftOut).toContainEqual(
+      expect.objectContaining({ kind: "skill", name: withReferences.name }),
+    );
+  });
+
+  it("keeps a portable Skill with files pending until its exact activation", async () => {
+    const owner = await account();
+    const foreign = await account();
+    const scope = { spaceId: owner.actor.spaceId, userId: owner.actor.userId };
+    const name = "Imported references";
+    const description = "Contains one reference file";
+    const path = "references/notes.md";
+    const fileContent = "First line.\r\n\r\nLast line.\r\n";
+    const source = {
+      format: BOT_PACKAGE_FILES_FORMAT,
+      profile: { name: "Portable example" },
+      skills: [
+        {
+          name,
+          description,
+          content: buildSkillMd({
+            name,
+            description,
+            body: "Read [the notes](references/notes.md).",
+          }),
+          files: [{ path, content: fileContent }],
+        },
+      ],
+    };
+    const plan = await preview(owner, source);
+    expect(plan.document.skills[0]?.files).toEqual(source.skills[0]?.files);
+    const receipt = await importPackage(owner, plan);
+    const pending = receipt.skills[0]!;
+    expect(pending).toMatchObject({ status: "pending", skillId: null });
+    expect(await database.prisma.agentSkill.count({ where: { ...scope, name } })).toBe(0);
+    const pendingExport = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
+    expect(pendingExport.document.skills[0]?.files).toEqual(source.skills[0]?.files);
+
+    const input = { componentId: pending.id, expectedRevision: pending.revision };
+    expect((await request(foreign, "activateSkill", input)).status).toBe(404);
+    const activated = await call<BotPackageReceipt>(owner, "activateSkill", input);
+    const replay = await call<BotPackageReceipt>(owner, "activateSkill", input);
+    const skillId = activated.skills[0]!.skillId!;
+    expect(activated.skills[0]?.status).toBe("activated");
+    expect(replay.skills[0]?.skillId).toBe(skillId);
+    expect(await database.prisma.agentSkill.count({ where: { ...scope, name } })).toBe(1);
+    expect(await skillReadFromTool(database.prisma, scope, { skillId, file: path })).toEqual({
+      name,
+      file: path,
+      content: fileContent,
+    });
+    expect(
+      await skillReadFromTool(database.prisma, foreign.actor, { skillId, file: path }),
+    ).toEqual({ error: "Skill not found." });
+    const activeExport = await call<BotPackageExport>(owner, "export", {
+      botId: receipt.botId,
+      skillIds: [skillId],
+    });
+    expect(activeExport.document.skills[0]?.files).toEqual(source.skills[0]?.files);
   });
   it("uses the current activated Skill on export and never revives deleted Skills or Bots", async () => {
     const owner = await account();
