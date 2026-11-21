@@ -1293,7 +1293,7 @@ export type MobileBot = Pick<
   | "thinkingLevel"
   | "autoSpeak"
   | "autoSpeakInherited"
-  | "settingsRevision"
+  | "readAloudRevision"
 > &
   Partial<Pick<Bot, "parentBotId" | "spaceId">>;
 

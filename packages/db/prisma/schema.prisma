@@ -512,6 +512,7 @@ model Bot {
   voiceId           String?
   autoSpeak         Boolean           @default(false)
   autoSpeakInherited Boolean          @default(false)
+  readAloudRevision Int               @default(0)
   modelProvider     String?
   modelId           String?
   modelCredentialId String?

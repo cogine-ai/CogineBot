@@ -4,7 +4,9 @@ SET LOCAL lock_timeout = '10s';
 
 ALTER TABLE public."user" ADD COLUMN "readAloudHistory" JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE public.space_members ADD COLUMN "readAloudHistory" JSONB NOT NULL DEFAULT '[]';
-ALTER TABLE public.bots ADD COLUMN "autoSpeakInherited" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.bots
+  ADD COLUMN "autoSpeakInherited" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN "readAloudRevision" INTEGER NOT NULL DEFAULT 0;
 
 CREATE OR REPLACE FUNCTION public.advance_bot_settings_revision() RETURNS trigger
 LANGUAGE plpgsql AS $bot_settings_revision$
@@ -15,6 +17,10 @@ BEGIN
      ROW(OLD.instructions, OLD."modelProvider", OLD."modelId", OLD."modelCredentialId",
          OLD."thinkingLevel", OLD."voiceId", OLD."autoSpeak", OLD."autoSpeakInherited") THEN
     NEW."settingsRevision" := OLD."settingsRevision" + 1;
+  END IF;
+  IF ROW(NEW."autoSpeak", NEW."autoSpeakInherited")
+    IS DISTINCT FROM ROW(OLD."autoSpeak", OLD."autoSpeakInherited") THEN
+    NEW."readAloudRevision" := OLD."readAloudRevision" + 1;
   END IF;
   RETURN NEW;
 END;

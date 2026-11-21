@@ -841,8 +841,12 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
   await rpc(page, "bots/update", {
     botId,
     autoSpeak: false,
-    expectedReadAloudRevision: before.settingsRevision,
+    expectedReadAloudRevision: before.readAloudRevision,
   });
+  const staleReadAloud = await page.request.post("/rpc/bots/update", {
+    data: { json: { botId, autoSpeak: true, expectedReadAloudRevision: before.readAloudRevision } },
+  });
+  expect(staleReadAloud.status()).toBe(409);
   expect(await rpc(page, "preferences/readAloudForBot", { botId })).toEqual({
     enabled: false,
     source: "bot",
@@ -870,7 +874,7 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
   await rpc(page, "bots/update", {
     botId,
     autoSpeak: false,
-    expectedReadAloudRevision: reopened.settingsRevision,
+    expectedReadAloudRevision: reopened.readAloudRevision,
   });
   await page.getByRole("button", { name: "Close voice settings" }).click();
   await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
@@ -884,6 +888,17 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
   await botSettings.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(readAloud).not.toBeChecked();
   await botSettings.getByRole("button", { name: "Use Space default", exact: true }).click();
+  await expect(readAloud).toBeChecked();
+  const endedAutoSave = page.waitForResponse(
+    (response) => response.url().endsWith("/rpc/bots/update") && response.ok(),
+    { timeout: 15_000 },
+  );
+  const instructions = botSettings.getByLabel("Instructions", { exact: true });
+  await instructions.fill("Give short answers.");
+  await page.keyboard.press("Tab");
+  const savedInstructions = (await endedAutoSave).request().postDataJSON().json;
+  expect(savedInstructions).toMatchObject({ instructions: "Give short answers." });
+  expect(savedInstructions).not.toHaveProperty("autoSpeakInherited");
   await expect(readAloud).toBeChecked();
   await botSettings.getByRole("button", { name: "Save", exact: true }).click();
   await expect

@@ -20,6 +20,7 @@ export const botSettingsValueSelect = {
   voiceId: true,
   autoSpeak: true,
   autoSpeakInherited: true,
+  readAloudRevision: true,
   settingsRevision: true,
 } as const satisfies Prisma.BotSelect;
 export const botSettingsSelect = { ...botSettingsValueSelect, settingsHistory: true } as const;

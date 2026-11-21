@@ -92,7 +92,7 @@ export const BotSchema = z.object({
   voiceId: z.string().nullable(),
   autoSpeak: z.boolean(),
   autoSpeakInherited: z.boolean().optional(),
-  settingsRevision: z.number().int().nonnegative().optional(),
+  readAloudRevision: z.number().int().nonnegative().optional(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
   modelCredentialId: Id.nullable().optional(),

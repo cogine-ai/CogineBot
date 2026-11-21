@@ -188,6 +188,13 @@ postgres("personal read-aloud settings", () => {
       where: { id: explicit.id },
       select: { ...botSettingsSelect, autoSpeakInherited: true },
     });
+    expect(stored.readAloudRevision).toBe(1);
+    const revisedInstructions = await db.prisma.bot.update({
+      where: { id: legacyOn },
+      data: { instructions: "Updated instructions" },
+      select: { settingsRevision: true, readAloudRevision: true },
+    });
+    expect(revisedInstructions).toEqual({ settingsRevision: 1, readAloudRevision: 0 });
     expect(stored.settingsHistory).toMatchObject([
       { before: { autoSpeak: false }, after: { autoSpeak: true }, revision: 1 },
     ]);

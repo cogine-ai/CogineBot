@@ -106,7 +106,7 @@ export default function BotSettingsScreen() {
         if (!controller.signal.aborted) setReadAloudLoadError(true);
       });
     return () => controller.abort();
-  }, [botId, bot?.id, wantsSpaceDefault, bot?.settingsRevision, readAloudLoadRevision]);
+  }, [botId, bot?.id, wantsSpaceDefault, bot?.readAloudRevision, readAloudLoadRevision]);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [catalog, setCatalog] = useState<MobileModel[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
@@ -412,7 +412,7 @@ export default function BotSettingsScreen() {
       if (autoSpeak !== (bot.autoSpeakInherited ? null : bot.autoSpeak)) {
         if (autoSpeak === null) input.autoSpeakInherited = true;
         else input.autoSpeak = autoSpeak;
-        input.expectedReadAloudRevision = bot.settingsRevision;
+        input.expectedReadAloudRevision = bot.readAloudRevision;
       }
       if (computerMode !== bot.computerMode) {
         await rpc(
@@ -456,7 +456,7 @@ export default function BotSettingsScreen() {
                   ...baseline,
                   autoSpeak: latest.autoSpeak,
                   autoSpeakInherited: latest.autoSpeakInherited,
-                  settingsRevision: latest.settingsRevision,
+                  readAloudRevision: latest.readAloudRevision,
                 }
               : baseline,
           );
@@ -650,15 +650,16 @@ export default function BotSettingsScreen() {
             accessibilityLabel={t("Read replies aloud")}
             onValueChange={setAutoSpeak}
             value={autoSpeak ?? effectiveReadAloud?.enabled ?? false}
-            disabled={autoSpeak === null && !effectiveReadAloud}
+            disabled={pending || (autoSpeak === null && !effectiveReadAloud)}
           />
         </View>
-        {bot?.settingsRevision !== undefined ? (
+        {bot?.readAloudRevision !== undefined ? (
           <View style={styles.row}>
             {wantsSpaceDefault && !bot.autoSpeakInherited ? (
               <NativeActionButton
                 label={t("Cancel")}
                 prominence="plain"
+                disabled={pending}
                 onPress={() => setAutoSpeak(bot.autoSpeak)}
               />
             ) : null}
@@ -666,6 +667,7 @@ export default function BotSettingsScreen() {
               <NativeActionButton
                 label={t("Reload")}
                 prominence="plain"
+                disabled={pending}
                 onPress={() => setReadAloudLoadRevision((revision) => revision + 1)}
               />
             ) : autoSpeak === null ? (
@@ -686,6 +688,7 @@ export default function BotSettingsScreen() {
                 <NativeActionButton
                   label={t("Use Space default")}
                   prominence="plain"
+                  disabled={pending}
                   onPress={() => setAutoSpeak(null)}
                 />
               </>

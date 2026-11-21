@@ -455,11 +455,11 @@ export function BotSettings({
         if (!controller.signal.aborted) setReadAloudLoadError(true);
       });
     return () => controller.abort();
-  }, [bot.id, wantsSpaceDefault, bot.settingsRevision, readAloudLoadRevision]);
+  }, [bot.id, wantsSpaceDefault, bot.readAloudRevision, readAloudLoadRevision]);
   function setAutoSpeak(value: boolean | null) {
     setReadAloudDraft({
       value,
-      revision: readAloudDraft ? readAloudDraft.revision : bot.settingsRevision,
+      revision: readAloudDraft ? readAloudDraft.revision : bot.readAloudRevision,
     });
   }
   const [voiceId, setVoiceId] = useState(bot.voiceId ?? "");
@@ -779,6 +779,7 @@ export function BotSettings({
     // finish after a newer one and clobber fields. Always call through a ref so
     // queued work reads the latest field values, not a stale render closure.
     pendingSavesRef.current += 1;
+    if (patchOverrides?.readAloud) setSaving(true);
     const queuedPatch =
       patchOverrides?.disabledBuiltinTools === undefined
         ? patchOverrides
@@ -1032,18 +1033,19 @@ export function BotSettings({
           <Switch
             id={`${ids}-auto-speak`}
             checked={autoSpeak ?? effectiveReadAloud?.enabled ?? false}
-            disabled={autoSpeak === null && !effectiveReadAloud}
+            disabled={saving || (autoSpeak === null && !effectiveReadAloud)}
             onCheckedChange={setAutoSpeak}
           />
           <Trans>Read replies aloud</Trans>
         </label>
-        {bot.settingsRevision !== undefined ? (
+        {bot.readAloudRevision !== undefined ? (
           <div className="mt-2 text-sm text-muted-foreground">
             {wantsSpaceDefault && readAloudDraft && !bot.autoSpeakInherited ? (
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
+                disabled={saving}
                 onClick={() => setReadAloudDraft(null)}
               >
                 <Trans>Cancel</Trans>
@@ -1054,6 +1056,7 @@ export function BotSettings({
                 type="button"
                 variant="ghost"
                 size="sm"
+                disabled={saving}
                 onClick={() => setReadAloudLoadRevision((revision) => revision + 1)}
               >
                 <Trans>Reload</Trans>
@@ -1071,7 +1074,13 @@ export function BotSettings({
             ) : (
               <>
                 <Trans>This Bot</Trans>
-                <Button type="button" variant="ghost" size="sm" onClick={() => setAutoSpeak(null)}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={saving}
+                  onClick={() => setAutoSpeak(null)}
+                >
                   <Trans>Use Space default</Trans>
                 </Button>
               </>

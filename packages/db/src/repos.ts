@@ -254,7 +254,7 @@ function mapBot(
     voiceId?: string | null;
     autoSpeak?: boolean;
     autoSpeakInherited?: boolean;
-    settingsRevision?: number;
+    readAloudRevision?: number;
     modelProvider?: string | null;
     modelId?: string | null;
     modelCredentialId?: string | null;
@@ -299,7 +299,7 @@ function mapBot(
     voiceId: bot.voiceId ?? null,
     autoSpeak: bot.autoSpeak ?? false,
     autoSpeakInherited: bot.autoSpeakInherited,
-    settingsRevision: bot.settingsRevision,
+    readAloudRevision: bot.readAloudRevision,
     modelProvider: bot.modelProvider ?? null,
     modelId: bot.modelId ?? null,
     modelCredentialId: bot.modelCredentialId ?? null,

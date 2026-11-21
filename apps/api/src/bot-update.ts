@@ -119,7 +119,7 @@ export async function commitBotUpdate(
         if (
           row &&
           options.expectedReadAloudRevision !== undefined &&
-          row.settingsRevision !== options.expectedReadAloudRevision
+          row.readAloudRevision !== options.expectedReadAloudRevision
         )
           throw new BotReadAloudConflictError();
         // Older clients include the displayed boolean in unrelated profile saves.

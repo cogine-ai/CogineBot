@@ -402,7 +402,7 @@ describe("bot settings device voice menu", () => {
           instructions: hadConflict ? "Concurrent instructions" : "Original instructions",
           color: "#62A8EC",
           computerMode: "team",
-          settingsRevision: hadConflict ? 3 : 2,
+          readAloudRevision: hadConflict ? 3 : 2,
           autoSpeak: false,
           autoSpeakInherited: false,
         };
