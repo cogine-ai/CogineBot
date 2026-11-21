@@ -6,12 +6,18 @@ const INLINE_SKILL_FILE =
 const INLINE_BACKUP_FILE = /^(?:(?:\.\.?\/)+|examples\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const BACKUP_PATH_PREFIX =
   /(?:\{baseDir\}\/|(?:\.\.?\/)+|(?:references|assets|examples|scripts|templates)\/)/;
-const QUOTED_BACKUP_PATH = new RegExp(
-  `(?:^|[\\s(=,])(["'])(${BACKUP_PATH_PREFIX.source}[^\\r\\n]*?)\\1`,
+const BACKUP_URL_PREFIX = /(?:[a-z][a-z\d+.-]*:)?\/\//;
+const BACKUP_URL_START = new RegExp(`^${BACKUP_URL_PREFIX.source}`, "i");
+const BACKUP_TOKEN_START = "(?:^|[\\s(=,<>|;&])";
+const BACKUP_TARGET_START = `(?:${BACKUP_PATH_PREFIX.source}|${BACKUP_URL_PREFIX.source})`;
+const QUOTED_BACKUP_TARGET = `(["'])(${BACKUP_TARGET_START}[^\\r\\n]*?)\\1`;
+const UNQUOTED_BACKUP_PATH = `${BACKUP_PATH_PREFIX.source}[^\\s<>"'()[\\]|;&\\u0060]*`;
+const BACKUP_PROSE_TARGET = new RegExp(
+  `${BACKUP_TOKEN_START}(?:${QUOTED_BACKUP_TARGET}|(${UNQUOTED_BACKUP_PATH}|${BACKUP_URL_PREFIX.source}[^\\s<>"']+))`,
   "gi",
 );
-const PROSE_SKILL_FILE = new RegExp(
-  `(?:^|[\\s("'=,])(${BACKUP_PATH_PREFIX.source}[^\\s<>"'()[\\]]*)`,
+const BACKUP_COMMAND_TARGET = new RegExp(
+  `${BACKUP_TOKEN_START}(?:${QUOTED_BACKUP_TARGET}|(${UNQUOTED_BACKUP_PATH}|${BACKUP_URL_PREFIX.source}[^\\s<>"'|;&\\u0060]+))`,
   "gi",
 );
 
@@ -78,17 +84,16 @@ export function hasMissingSkillReference(
           canBeDirectory: false,
         })),
       ...(includeProse
-        ? prose
-            .concat(
-              code,
-              inlineCode.filter((value) => !isInlineFile(value)),
-            )
-            .flatMap(backupReferenceTargets)
-            .map((target) => ({
-              target,
-              base: inlineBase(target),
-              canBeDirectory: false,
-            }))
+        ? [
+            ...prose.flatMap((text) => backupReferenceTargets(text, BACKUP_PROSE_TARGET)),
+            ...code
+              .concat(inlineCode.filter((value) => !isInlineFile(value)))
+              .flatMap((text) => backupReferenceTargets(text, BACKUP_COMMAND_TARGET)),
+          ].map((target) => ({
+            target,
+            base: inlineBase(target),
+            canBeDirectory: false,
+          }))
         : []),
     ];
     for (const { target, base, canBeDirectory } of references) {
@@ -125,17 +130,12 @@ export function hasMissingSkillReference(
   return false;
 }
 
-function backupReferenceTargets(text: string): string[] {
-  const quoted: string[] = [];
-  // Keep path spaces inside quoted command arguments and compound inline calls.
-  const unquoted = text
-    .replace(/https?:\/\/[^\s<>"']+/gi, " ")
-    .replace(QUOTED_BACKUP_PATH, (_match, _quote, path: string) => {
-      quoted.push(path);
-      return " ";
-    });
-  return [
-    ...quoted,
-    ...[...unquoted.matchAll(PROSE_SKILL_FILE)].map((match) => match[1]!.replace(/[.,;:!?]+$/, "")),
-  ];
+function backupReferenceTargets(text: string, pattern: RegExp): string[] {
+  // Match each token once so a URL or path can't be reinterpreted from the middle.
+  const paths: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const target = match[2] ?? match[3]!.replace(/[.,;:!?]+$/, "");
+    if (!BACKUP_URL_START.test(target)) paths.push(target);
+  }
+  return paths;
 }

@@ -674,7 +674,11 @@ it.each(["zip", "folder"] as const)(
       "",
       "```sh",
       'cat "../assets/detail notes.md"',
+      "cat ../assets/details.md|head",
+      "cat<../assets/details.md&&head;cat ../assets/details.md",
+      "cat ../assets/name=//notes.md",
       'curl "https://example.test/export?selector=(assets/local.md)&path=../assets/not-local.md"',
+      'fetch("//example.test/export?path=../assets/not-local.md")',
       "```",
       "",
     ].join("\r\n");
@@ -688,6 +692,8 @@ it.each(["zip", "folder"] as const)(
       [`${root}/picked/references/extra note.md`]: "Path contains a space.",
       [`${root}/picked/examples/extra row.csv`]: "Example path contains a space.",
       [`${root}/picked/assets/detail notes.md`]: "The command can resolve this text.",
+      [`${root}/picked/assets/details.md`]: "The pipe can read this file.",
+      [`${root}/picked/assets/name=/notes.md`]: "A local path with an equals sign.",
       [`${root}/picked/examples/rows.csv`]: "item,value\r\nalpha,8\r\n",
       [`${root}/other/SKILL.md`]: entry("other", "Read references/notes.md."),
       [`${root}/other/references/notes.md`]: "The unchecked Skill's private text.",
@@ -707,6 +713,10 @@ it.each(["zip", "folder"] as const)(
       [`${root}/missing-parent/references/guide.md`]: "```sh\ncat ../assets/details.md\n```",
       [`${root}/escaped/SKILL.md`]: entry("escaped", "See [the guide](references/guide.md)."),
       [`${root}/escaped/references/guide.md`]: "```sh\ncat ../../assets/details.md\n```",
+      [`${root}/missing-after-url/SKILL.md`]: entry(
+        "missing-after-url",
+        "```sh\ncurl //example.test/x;./scripts/missing.sh\n```",
+      ),
       [`${root}/assets/details.md`]: "Outside the Skill folder.",
       [`${root}/limit/SKILL.md`]: entry("limit", "Read [the file](reference.txt)."),
       [`${root}/limit/reference.txt`]: "界".repeat(34_000),
@@ -736,6 +746,7 @@ it.each(["zip", "folder"] as const)(
         { path: `${root}/escaped/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/implicit/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/limit/SKILL.md`, reason: "skillLimit" },
+        { path: `${root}/missing-after-url/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/missing-parent/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/missing/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/script/SKILL.md`, reason: "missingSkillFiles" },
@@ -760,7 +771,7 @@ it.each(["zip", "folder"] as const)(
     expect(preview.source).not.toContain("replace the missing file");
     expect(preview.source).not.toContain("Private runtime dependency.");
     expect(preview.source).not.toContain("Outside the Skill folder.");
-    expect(preview.backupOmissions).toHaveLength(8);
+    expect(preview.backupOmissions).toHaveLength(9);
   },
 );
 
