@@ -183,7 +183,13 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
 
     async create(
       actor: Actor,
-      input: { content?: string; name?: string; description?: string; body?: string },
+      input: {
+        content?: string;
+        name?: string;
+        description?: string;
+        body?: string;
+        files?: Record<string, string>;
+      },
     ): Promise<AgentSkill> {
       const resolved = resolveSkillContent(input);
       const clash = await prisma.agentSkill.findFirst({
@@ -207,6 +213,7 @@ export function createAgentSkillsService(prisma: Pick<PrismaClient, "agentSkill"
             name: resolved.name,
             description: resolved.description,
             content: resolved.content,
+            ...(input.files ? { files: input.files } : {}),
             source: "user",
           },
         });

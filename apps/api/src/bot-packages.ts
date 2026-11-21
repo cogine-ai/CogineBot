@@ -3,6 +3,7 @@ import { ORPCError } from "@orpc/server";
 import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   BotPackageError,
+  canonicalBotPackageJson,
   parseBotPackageSource,
   persistPreparedSecret,
   prepareBotPackageDocument,
@@ -21,11 +22,14 @@ import type {
 import {
   AgentBackupMcpSchema,
   AgentBackupModelSchema,
+  BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
+  BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_CONNECTIONS,
   BOT_PACKAGE_MODEL_KEY_MISMATCH,
   BotPackageDocumentSchema,
   BotPackageLeftOutSchema,
+  BotPackageSkillFilesSchema,
 } from "@rakazo/contracts";
 import { isOneShotRoutineCron } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
@@ -82,8 +86,11 @@ const packagePlanSchema = BotPackageDocumentSchema.extend({
 });
 const includeChildren = {
   bot: { select: { archivedAt: true } },
-  components: { orderBy: { key: "asc" as const } },
+  components: { orderBy: { key: "asc" as const }, omit: { files: true } },
 } as const;
+// Older servers select only "skill" for activation and export.
+const skillWithFilesKind = "skill-with-files";
+const skillComponentKinds = ["skill", skillWithFilesKind];
 type Row = Prisma.BotPackageImportGetPayload<{ include: typeof includeChildren }>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const fleetTools = [
@@ -219,7 +226,7 @@ export function createBotPackagesService(deps: Deps) {
       skills: removed
         ? []
         : row.components
-            .filter((component) => component.kind === "skill")
+            .filter(({ kind }) => skillComponentKinds.includes(kind))
             .map((component) => {
               const target = component.targetSkillId
                 ? targetById.get(component.targetSkillId)
@@ -409,12 +416,13 @@ export function createBotPackagesService(deps: Deps) {
         })),
       });
     const components: Prisma.BotPackageComponentCreateManyInput[] = [
-      ...document.skills.map((skill, index) => ({
+      ...document.skills.map(({ files, ...skill }, index) => ({
         ...skill,
+        ...(files ? { files } : {}),
         importId: marker.id,
         botId: bot.id,
         key: `skill:${index}`,
-        kind: "skill",
+        kind: files ? skillWithFilesKind : "skill",
       })),
       ...(document.backupMcp?.length
         ? await importPendingMcpServers(
@@ -728,7 +736,7 @@ export function createBotPackagesService(deps: Deps) {
         const component = await tx.botPackageComponent.findFirst({
           where: {
             id: input.componentId,
-            kind: "skill",
+            kind: { in: skillComponentKinds },
             import: own(context.actor),
             bot: { ...own(context.actor), archivedAt: null },
           },
@@ -751,13 +759,26 @@ export function createBotPackagesService(deps: Deps) {
           const resolved = input.name
             ? resolveSkillContent({ prior: { content: component.content }, name: input.name })
             : { content: component.content };
-          const skill = await createAgentSkillsService(tx).create(context.actor, resolved);
+          const files = BotPackageSkillFilesSchema.nullable().safeParse(component.files);
+          if (!files.success)
+            throw new ORPCError("CONFLICT", {
+              message: "This skill changed. Refresh the package status.",
+            });
+          const skill = await createAgentSkillsService(tx).create(context.actor, {
+            ...resolved,
+            ...(files.data
+              ? {
+                  files: Object.fromEntries(files.data.map(({ path, content }) => [path, content])),
+                }
+              : {}),
+          });
           await tx.botPackageComponent.update({
             where: { id: component.id },
             data: {
               name: skill.name,
               description: skill.description,
               content: null,
+              files: Sql.DbNull,
               status: "activated",
               targetSkillId: skill.id,
               activationBinding: binding,
@@ -778,17 +799,18 @@ export function createBotPackagesService(deps: Deps) {
     },
     async export(context: Context, input: BotPackageExportInput) {
       await scope(context);
-      const snapshot = await transact(context, async (tx) => {
+      const readSnapshot = async (tx: Prisma.TransactionClient) => {
         const bot = await tx.bot.findFirst({
           where: { ...own(context.actor), id: input.botId, archivedAt: null },
         });
         if (!bot) throw new ORPCError("NOT_FOUND");
-        const components = await tx.botPackageComponent.findMany({
-          where: { botId: bot.id, import: own(context.actor) },
-          orderBy: { key: "asc" },
+        const componentWhere = { botId: bot.id, import: own(context.actor) };
+        const componentsForExport = await tx.botPackageComponent.findMany({
+          where: componentWhere,
+          select: { id: true, kind: true, status: true },
           take: 231,
         });
-        if (components.length > 230)
+        if (componentsForExport.length > 230)
           throw new ORPCError("BAD_REQUEST", {
             message: "The Bot has too many package components to export.",
           });
@@ -799,17 +821,51 @@ export function createBotPackagesService(deps: Deps) {
           source: { in: ["user", "plugin"] },
           id: { in: skillIds },
         };
+        const selected = skillIds.length
+          ? await tx.agentSkill.findMany({ where: selectedSkillWhere, select: { id: true } })
+          : [];
+        if (selected.length !== skillIds.length)
+          throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
+        const pendingSkillIds = componentsForExport
+          .filter(({ kind, status }) => skillComponentKinds.includes(kind) && status === "pending")
+          .map(({ id }) => id);
+        const measurements: Prisma.Sql[] = [];
+        // Count actual text rather than JSONB's extra formatting characters.
+        if (selected.length)
+          measurements.push(Sql.sql`
+          SELECT octet_length(content) + COALESCE(CASE WHEN jsonb_typeof(files) = 'object' THEN (
+            SELECT SUM(octet_length(key) + COALESCE(octet_length(value), 0))
+            FROM jsonb_each_text(files)
+          ) ELSE octet_length(files::text) END, 0) AS bytes
+          FROM agent_skills WHERE id IN (${Sql.join(selected.map(({ id }) => id))})
+        `);
+        if (pendingSkillIds.length)
+          measurements.push(Sql.sql`
+          SELECT COALESCE(octet_length(content), 0) + COALESCE(CASE WHEN jsonb_typeof(files) = 'array' THEN (
+            SELECT SUM(octet_length(field.key) + COALESCE(octet_length(field.value), 0))
+            FROM jsonb_array_elements(files) AS item(entry)
+            CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(entry) = 'object'
+              THEN entry ELSE jsonb_build_object('file', entry) END) AS field
+          ) ELSE octet_length(files::text) END, 0) AS bytes
+          FROM bot_package_components WHERE id IN (${Sql.join(pendingSkillIds)})
+        `);
+        if (measurements.length) {
+          const [size] = await tx.$queryRaw<{ bytes: bigint }[]>(Sql.sql`
+          SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes
+          FROM (${Sql.join(measurements, " UNION ALL ")}) AS skill_payloads
+        `);
+          if (size && size.bytes > BigInt(BOT_PACKAGE_MAX_BYTES))
+            throw new ORPCError("BAD_REQUEST", { message: "Package is larger than 4 MiB." });
+        }
+        const components = await tx.botPackageComponent.findMany({
+          where: componentWhere,
+          orderBy: { key: "asc" },
+          take: 231,
+        });
         const skills = skillIds.length
           ? await tx.agentSkill.findMany({
-              where: { ...selectedSkillWhere, files: { equals: Sql.DbNull } },
-              select: { id: true, name: true, description: true, content: true },
-              orderBy: { id: "asc" },
-            })
-          : [];
-        const referencedSkills = skillIds.length
-          ? await tx.agentSkill.findMany({
-              where: { ...selectedSkillWhere, files: { not: Sql.DbNull } },
-              select: { id: true, name: true },
+              where: selectedSkillWhere,
+              select: { id: true, name: true, description: true, content: true, files: true },
               orderBy: { id: "asc" },
             })
           : [];
@@ -827,8 +883,6 @@ export function createBotPackagesService(deps: Deps) {
               select: { id: true },
             })
           : [];
-        if (skills.length + referencedSkills.length !== skillIds.length)
-          throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
         const routines = await tx.routine.findMany({
           where: { ...own(context.actor), botId: bot.id },
           include: { nativeEventTriggers: { select: { id: true }, take: 1 } },
@@ -856,38 +910,21 @@ export function createBotPackagesService(deps: Deps) {
           bot,
           components,
           skills,
-          referencedSkills,
           routines,
           memory,
           assignments,
           availableTargets,
         };
-      });
-      const {
-        bot,
-        components,
-        skills,
-        referencedSkills,
-        routines,
-        memory,
-        assignments,
-        availableTargets,
-      } = snapshot;
+      };
+      // Size and fetch the payload within the same snapshot.
+      const snapshot = await transact(context, readSnapshot, true);
+      const { bot, components, skills, routines, memory, assignments, availableTargets } = snapshot;
       const leftOut: BotPackageLeftOut[] = [
         note(
           "profile.runtime",
           "Model, computer, fleet, conversation, file and permission bindings are not exported.",
         ),
       ];
-      for (const skill of referencedSkills) {
-        leftOut.push(
-          note(
-            redactSecretText(skill.name),
-            "This skill has reference files. Install its plugin on the destination.",
-            "skill",
-          ),
-        );
-      }
       const portableRoutines = routines.flatMap((routine, index) => {
         if (!routine.crons.length || routine.crons.some(isOneShotRoutineCron)) {
           leftOut.push(
@@ -956,10 +993,35 @@ export function createBotPackagesService(deps: Deps) {
         );
       if (!input.includeMemory)
         leftOut.push(note("memory", "Memory notes were not selected.", "memory"));
+      const portableSkills = [
+        ...components
+          .filter(({ kind, status }) => skillComponentKinds.includes(kind) && status === "pending")
+          .map(({ name, description, content, files }) => ({
+            name,
+            description,
+            content,
+            ...(files === null ? {} : { files }),
+          })),
+        ...skills.map(({ name, description, content, files }) => ({
+          name,
+          description,
+          content,
+          ...(files === null
+            ? {}
+            : {
+                files:
+                  typeof files === "object" && !Array.isArray(files)
+                    ? Object.entries(files).map(([path, content]) => ({ path, content }))
+                    : [],
+              }),
+        })),
+      ];
       let safe: ReturnType<typeof prepareBotPackageDocument>;
       try {
         safe = prepareBotPackageDocument({
-          format: BOT_PACKAGE_FORMAT,
+          format: portableSkills.some(({ files }) => files !== undefined)
+            ? BOT_PACKAGE_FILES_FORMAT
+            : BOT_PACKAGE_FORMAT,
           profile: {
             name: bot.name,
             title: bot.title,
@@ -967,20 +1029,7 @@ export function createBotPackagesService(deps: Deps) {
             instructions: bot.instructions,
             color: bot.color,
           },
-          skills: [
-            ...components
-              .filter((component) => component.kind === "skill" && component.status === "pending")
-              .map((component) => ({
-                name: component.name,
-                description: component.description,
-                content: component.content,
-              })),
-            ...skills.map((skill) => ({
-              name: skill.name,
-              description: skill.description,
-              content: skill.content,
-            })),
-          ],
+          skills: portableSkills,
           routines: portableRoutines,
           connections: uniqueConnections,
           memory,
@@ -989,14 +1038,19 @@ export function createBotPackagesService(deps: Deps) {
         return packageError(error);
       }
       leftOut.push(...safe.leftOut);
-      const json = safe.json;
+      const document = safe.document;
+      const downgrade =
+        document.format === BOT_PACKAGE_FILES_FORMAT &&
+        !document.skills.some((skill) => skill.files);
+      if (downgrade) document.format = BOT_PACKAGE_FORMAT;
+      const json = downgrade ? canonicalBotPackageJson(document) : safe.json;
       const filename = `${
         safe.document.profile.name
           .replace(/[^a-z0-9_-]/gi, "-")
           .replace(/-+/g, "-")
           .slice(0, 60) || "bot"
       }.coginebot.json`;
-      return { document: safe.document, json, filename, leftOut };
+      return { document, json, filename, leftOut };
     },
   };
 }
