@@ -108,8 +108,11 @@ describe("thread bot roster", () => {
     );
     expect(mount).not.toBeNull();
     expect(mount?.[1]).not.toContain("refreshMentionBots()");
-    expect(thread).toContain('AppState.addEventListener("change", speakFinishedReply)');
-    expect(thread).toContain("}, [speakFinishedReply]);");
+    const replyAppState = thread.match(
+      /AppState\.addEventListener\("change", \(state\) => \{\s*if \(state === "active"\) speakFinishedReplyRef\.current\(\);\s*else invalidatePendingSpeech\(\);\s*\}\);[\s\S]*?\}, \[([^\]]*)\]\);/,
+    );
+    expect(replyAppState?.[1]).toBe("invalidatePendingSpeech");
+    expect(thread).toContain("useEffect(() => speakFinishedReply(), [speakFinishedReply]);");
   });
 
   it("does not schedule another refresh for identical data (30 s virtual request harness)", () => {
