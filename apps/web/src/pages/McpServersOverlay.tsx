@@ -384,6 +384,8 @@ export function McpServersOverlay({
               ) : (
                 displayedServers.map((server) => {
                   const statusText = oauthStatusText(server);
+                  const oauthAvailable =
+                    server.transport !== "stdio" || server.stdioOAuthConfigured;
                   return (
                     <Card key={server.id} size="sm">
                       <CardContent>
@@ -405,29 +407,28 @@ export function McpServersOverlay({
                         ) : null}
                         <McpToolAccess server={server} onSaved={refresh} />
                         <div className="mt-3 flex flex-wrap gap-2">
-                          {server.transport !== "stdio" ? (
-                            <>
-                              <Button
-                                type="button"
-                                size="sm"
-                                disabled={oauthPending === server.id}
-                                onClick={() => void connectOAuth(server)}
-                              >
-                                {oauthActionLabel(server, oauthPending === server.id)}
-                              </Button>
-                              {server.oauthStatus === "connected" ||
-                              server.oauthStatus === "reconnect" ? (
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  disabled={oauthPending === server.id}
-                                  onClick={() => void disconnectOAuth(server)}
-                                >
-                                  <Trans>Disconnect</Trans>
-                                </Button>
-                              ) : null}
-                            </>
+                          {oauthAvailable && (server.enabled || server.transport !== "stdio") ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={oauthPending === server.id}
+                              onClick={() => void connectOAuth(server)}
+                            >
+                              {oauthActionLabel(server, oauthPending === server.id)}
+                            </Button>
+                          ) : null}
+                          {oauthAvailable &&
+                          (server.oauthStatus === "connected" ||
+                            server.oauthStatus === "reconnect") ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={oauthPending === server.id}
+                              onClick={() => void disconnectOAuth(server)}
+                            >
+                              <Trans>Disconnect</Trans>
+                            </Button>
                           ) : null}
                           <Button
                             type="button"

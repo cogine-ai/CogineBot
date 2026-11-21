@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import type { Pool, Prisma, PrismaClient } from "@rakazo/db";
+import type { PoolClient } from "pg";
 
 const REFRESH_LOCK_WAIT_MS = 10_000;
 const REFRESH_TRANSACTION_MS = 60_000;
@@ -26,4 +27,30 @@ export function withRefreshLock<T>(
     },
     { maxWait: REFRESH_LOCK_WAIT_MS, timeout: REFRESH_TRANSACTION_MS },
   );
+}
+
+/** Hold an advisory transaction while the caller persists through its own pool. */
+export async function withSeparateRefreshLock<T>(
+  pool: Pick<Pool, "connect">,
+  key: [namespace: string, id: string],
+  work: (connection: PoolClient) => Promise<T>,
+): Promise<T> {
+  const connection = await pool.connect();
+  try {
+    await connection.query("BEGIN");
+    await connection.query(
+      "SELECT set_config('lock_timeout', $1, true), set_config('idle_in_transaction_session_timeout', '0', true)",
+      [`${REFRESH_LOCK_WAIT_MS}ms`],
+    );
+    await connection.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", key);
+    return await work(connection);
+  } finally {
+    let discard = false;
+    try {
+      await connection.query("ROLLBACK");
+    } catch {
+      discard = true;
+    }
+    connection.release(discard);
+  }
 }

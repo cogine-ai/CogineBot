@@ -3,15 +3,8 @@ import type { McpServer } from "@rakazo/contracts";
 import { MCP_OAUTH_CHANNEL } from "../src/lib/mcp-connect";
 import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
 
-test("connects an MCP server through the OAuth popup callback", async ({ page }, testInfo) => {
-  const stamp = Date.now();
-  await signup(page, `mcp-oauth-${stamp}@rakazo.test`, "password12", "MCP OAuth");
-  await completeOnboarding(page);
-
-  let oauthStatus: McpServer["oauthStatus"] = "unknown";
-  let hasSecret = true;
-  let authorizationBegins = 0;
-  const server: McpServer = {
+function serverFixture(overrides: Partial<McpServer> = {}): McpServer {
+  return {
     id: "mcp-oauth-server",
     spaceId: "mcp-oauth-workspace",
     slug: "linear",
@@ -23,8 +16,8 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
     args: [],
     envKeys: [],
     headerKeys: [],
-    hasSecret,
-    oauthStatus,
+    hasSecret: false,
+    oauthStatus: "none",
     enabled: true,
     verbatimResults: false,
     allowAllTools: false,
@@ -32,7 +25,19 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
     revision: 1,
     createdAt: "2026-08-24T00:00:00.000Z",
     updatedAt: "2026-08-24T00:00:00.000Z",
+    ...overrides,
   };
+}
+
+test("connects an MCP server through the OAuth popup callback", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `mcp-oauth-${stamp}@example.test`, "password12", "MCP OAuth");
+  await completeOnboarding(page);
+
+  let oauthStatus: McpServer["oauthStatus"] = "unknown";
+  let hasSecret = true;
+  let authorizationBegins = 0;
+  const server = serverFixture({ hasSecret, oauthStatus });
   const browserOrigin = new URL(page.url()).origin;
   let releaseCompletion = () => {};
   let markCompletionStarted = () => {};
@@ -132,4 +137,88 @@ test("connects an MCP server through the OAuth popup callback", async ({ page },
   }, MCP_OAUTH_CHANNEL);
   await expect(page.getByText("OAuth expired", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "mcp-oauth-expired");
+});
+
+test("offers OAuth only for enabled stdio servers with a registered client", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `mcp-stdio-${stamp}@example.test`, "password12", "MCP OAuth");
+  await completeOnboarding(page);
+
+  const managed = serverFixture({
+    id: "managed-stdio",
+    slug: "managed-stdio",
+    name: "Managed MCP",
+    transport: "stdio",
+    endpoint: null,
+    command: "fixture-mcp",
+    hasSecret: true,
+    stdioOAuthConfigured: true,
+  });
+  const staticServer = {
+    ...managed,
+    id: "static-stdio",
+    slug: "static-stdio",
+    name: "Static MCP",
+    stdioOAuthConfigured: false,
+  };
+  const disabled: McpServer = {
+    ...managed,
+    id: "disabled-stdio",
+    slug: "disabled-stdio",
+    name: "Disabled MCP",
+    enabled: false,
+    oauthStatus: "connected",
+  };
+  await page
+    .context()
+    .route("**/rpc/mcp/servers/list", (route) =>
+      route.fulfill({ json: { json: [managed, staticServer, disabled] } }),
+    );
+  await page
+    .context()
+    .route("**/rpc/mcp/assignments/all", (route) => route.fulfill({ json: { json: [] } }));
+  const origin = new URL(page.url()).origin;
+  await page.context().route("**/rpc/mcp/oauth/begin", async (route) => {
+    expect(route.request().postDataJSON().json.serverId).toBe(managed.id);
+    await route.fulfill({
+      json: {
+        json: {
+          status: "authorization_required",
+          sessionId: "stdio-test-session",
+          authorizationUrl: `${origin}/mcp/oauth/callback?code=fixture-code&state=stdio-test-session`,
+        },
+      },
+    });
+  });
+  await page.context().route("**/rpc/mcp/oauth/complete", async (route) => {
+    managed.oauthStatus = "connected";
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+  await page.context().route("**/rpc/mcp/oauth/disconnect", async (route) => {
+    expect(route.request().postDataJSON().json.serverId).toBe(disabled.id);
+    disabled.oauthStatus = "none";
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+
+  await openIntegrations(page);
+  await page.getByTestId("integrations-advanced").evaluate((element) => {
+    (element as HTMLDetailsElement).open = true;
+  });
+  await page.getByRole("button", { name: "Manage MCP servers", exact: true }).click();
+  await expect(page.getByText("Static MCP", { exact: true })).toBeVisible();
+  await expect(page.getByText("Disabled MCP", { exact: true })).toBeVisible();
+  const connect = page.getByRole("button", { name: "Connect OAuth", exact: true });
+  await expect(connect).toHaveCount(1);
+  await captureScreenshot(page, testInfo, "mcp-stdio-oauth-disabled-revoke");
+  const disconnect = page.getByRole("button", { name: "Disconnect", exact: true });
+  await expect(disconnect).toHaveCount(1);
+  await disconnect.click();
+  await expect(disconnect).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "mcp-stdio-oauth-ready");
+  await connect.click();
+  await expect(page.getByText("OAuth connected", { exact: true })).toBeVisible();
+  await expect(disconnect).toHaveCount(1);
+  await captureScreenshot(page, testInfo, "mcp-stdio-oauth-connected");
 });

@@ -507,12 +507,15 @@ test("a system link restores first-run setup without bypassing it", async () => 
   await setup.getByRole("button", { name: "Continue" }).click();
   const connected = await consoleWindow(production);
   await expect(connected.getByRole("heading", { name: "Console fixture" })).toBeVisible();
+  const setupFile = path.join(env.RAKAZO_PERFORMANCE_USER_DATA!, "setup.json");
   await expect
-    .poll(async () =>
-      JSON.parse(
-        await readFile(path.join(env.RAKAZO_PERFORMANCE_USER_DATA!, "setup.json"), "utf8"),
-      ),
-    )
+    .poll(async () => {
+      const contents = await readFile(setupFile, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      return contents === null ? null : JSON.parse(contents);
+    })
     .toMatchObject({ mode: "existing", serverUrl: origin });
   await close(production);
 });

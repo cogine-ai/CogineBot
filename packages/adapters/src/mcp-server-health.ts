@@ -26,11 +26,17 @@ export function needsMcpOAuthClient(error: unknown): boolean {
   return false;
 }
 
-export function mcpHealthError(error: unknown, secrets: string[] = []): McpHealthUpdate {
+export function mcpHealthError(
+  error: unknown,
+  secrets: string[] = [],
+  scalarNames?: string[],
+): McpHealthUpdate {
   const code = needsMcpOAuthClient(error) ? MCP_OAUTH_CLIENT_REQUIRED : null;
   return {
     status: "error",
-    message: code ? REGISTRATION_REQUIRED_MESSAGE : sanitizeConnectorError(error, secrets),
+    message: code
+      ? REGISTRATION_REQUIRED_MESSAGE
+      : sanitizeConnectorError(error, secrets, scalarNames),
     code,
     toolCount: null,
   };

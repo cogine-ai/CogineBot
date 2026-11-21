@@ -219,13 +219,31 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     }
     const origin = await groupThread("Original");
     const other = await groupThread("Other");
+    let releaseInserts = () => {};
+    const bothInserted = new Promise<void>((resolve) => {
+      releaseInserts = resolve;
+    });
+    let inserts = 0;
+    const concurrent = system.$extends({
+      query: {
+        routine: {
+          async create({ args, query }) {
+            const row = await query(args);
+            // Hold both writes so the serialization conflict is reported at commit.
+            if (++inserts === 2) releaseInserts();
+            await bothInserted;
+            return row;
+          },
+        },
+      },
+    });
     const jobs = {
       enqueue: vi.fn(async () => undefined),
       cancel: vi.fn(async () => undefined),
       close: async () => undefined,
     };
     const deps = {
-      prisma: system,
+      prisma: concurrent as unknown as PrismaClient,
       jobs,
       events: { append: (event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event) },
     } as Parameters<typeof createScheduleFromTool>[0];

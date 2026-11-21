@@ -37,6 +37,45 @@ export const McpHeadersSchema = z
     }
   });
 
+const managedOAuthParameters = new Set([
+  "response_type",
+  "response_mode",
+  "client_id",
+  "client_secret",
+  "client_assertion",
+  "client_assertion_type",
+  "redirect_uri",
+  "scope",
+  "state",
+  "code",
+  "code_challenge",
+  "code_challenge_method",
+  "code_verifier",
+  "resource",
+  "request",
+  "request_uri",
+  "access_token",
+  "refresh_token",
+  "id_token",
+]);
+
+export function parseMcpStdioAuthorizationParams(value: string): URLSearchParams {
+  const params = new URLSearchParams(value);
+  const names = new Set<string>();
+  for (const name of params.keys()) {
+    const normalized = name.toLowerCase();
+    if (
+      !/^[A-Za-z0-9_.~-]+$/.test(name) ||
+      managedOAuthParameters.has(normalized) ||
+      names.has(normalized)
+    ) {
+      throw new Error("Invalid MCP OAuth authorization parameters");
+    }
+    names.add(normalized);
+  }
+  return params;
+}
+
 export const McpStdioOAuthClientSchema = z.strictObject({
   authorizationServer: McpRemoteEndpointSchema.refine((value) => {
     const url = URL.parse(value);
@@ -45,6 +84,19 @@ export const McpStdioOAuthClientSchema = z.strictObject({
   clientId: z.string().trim().min(1).max(512),
   clientSecret: z.string().min(1).max(4096).optional(),
   scope: z.string().trim().max(2000).optional(),
+  authorizationParams: z
+    .string()
+    .trim()
+    .max(1000)
+    .refine((value) => {
+      try {
+        parseMcpStdioAuthorizationParams(value);
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Invalid MCP OAuth authorization parameters")
+    .optional(),
 });
 export type McpStdioOAuthClient = z.infer<typeof McpStdioOAuthClientSchema>;
 

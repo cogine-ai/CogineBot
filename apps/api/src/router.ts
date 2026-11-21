@@ -684,6 +684,7 @@ function mcpServerDto(
     updatedAt: Date;
   },
   oauthStatus: McpServer["oauthStatus"] = "none",
+  stdioOAuthConfigured?: boolean,
 ): McpServer {
   const args = Array.isArray(row.args)
     ? row.args.filter((item): item is string => typeof item === "string")
@@ -708,6 +709,7 @@ function mcpServerDto(
     headerKeys,
     hasSecret: row.secretId !== null,
     oauthStatus,
+    ...(stdioOAuthConfigured === undefined ? {} : { stdioOAuthConfigured }),
     health: mcpServerHealthDto(row),
     enabled: row.enabled,
     verbatimResults: row.verbatimResults ?? false,
@@ -769,15 +771,12 @@ function assertMcpStdioCommand(command: string, env: RouterDeps["env"]): void {
 }
 
 async function assertMcpStdioMaterial(
-  material: Parameters<typeof validateMcpStdioCredentials>[0] & { enabled: boolean },
+  material: Parameters<typeof validateMcpStdioCredentials>[0],
   deps: Pick<RouterDeps, "remoteConnectors">,
   previousClient?: McpStdioOAuthClient,
 ): Promise<void> {
   const message = validateMcpStdioCredentials(material);
   if (message) throw new ORPCError("BAD_REQUEST", { message });
-  if (material.enabled && (material.oauthClient || Object.keys(material.files ?? {}).length)) {
-    throw new ORPCError("BAD_REQUEST", { message: "Save this MCP credential setup disabled" });
-  }
   const issuer = material.oauthClient?.authorizationServer;
   if (!issuer || issuer === previousClient?.authorizationServer) return;
   try {
@@ -1224,7 +1223,18 @@ export function createRouter(deps: RouterDeps) {
     return credential;
   }
   const onboardingDeps = { prisma: deps.prisma, events: deps.events, connectors: deps.connectors };
-  const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
+  const mcpOAuth =
+    deps.mcpOAuth ??
+    new McpOAuthBroker(
+      deps.prisma,
+      deps.secrets,
+      deps.remoteConnectors,
+      deps.env.mcpAllowPrivateEndpoint,
+      {
+        enabled: deps.env.mcpStdioEnabled === true,
+        allowedCommands: deps.env.mcpStdioAllowedCommands ?? [],
+      },
+    );
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const saveSubscription =
     (actor: Actor): SaveSubscription =>
@@ -5854,18 +5864,26 @@ export function createRouter(deps: RouterDeps) {
           return Promise.all(
             rows.map(async (row) => {
               let oauthStatus: McpServer["oauthStatus"] = "none";
+              let stdioOAuthConfigured: boolean | undefined;
               if (row.secretId) {
                 const ciphertext = ciphertextById.get(row.secretId);
                 if (!ciphertext) oauthStatus = "unknown";
                 else {
                   try {
-                    oauthStatus = await mcpOAuth.statusForCiphertext(ciphertext, row.secretId);
+                    if (row.transport === "stdio") {
+                      ({ oauthStatus, stdioOAuthConfigured } = await mcpOAuth.summaryForCiphertext(
+                        ciphertext,
+                        row.secretId,
+                      ));
+                    } else {
+                      oauthStatus = await mcpOAuth.statusForCiphertext(ciphertext, row.secretId);
+                    }
                   } catch {
                     oauthStatus = "unknown";
                   }
                 }
               }
-              return mcpServerDto(row, oauthStatus);
+              return mcpServerDto(row, oauthStatus, stdioOAuthConfigured);
             }),
           );
         }),
@@ -5961,7 +5979,11 @@ export function createRouter(deps: RouterDeps) {
                 });
               }),
           );
-          return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
+          return mcpServerDto(
+            row,
+            await mcpOAuth.statusFor(row, context.actor),
+            input.transport === "stdio" ? Boolean(input.oauthClient) : undefined,
+          );
         }),
         setTools: authed.mcp.servers.setTools.handler(async ({ context, input }) => {
           const { row, seqs } = await withTransactionRetry(() =>
@@ -6241,7 +6263,7 @@ export function createRouter(deps: RouterDeps) {
             const writeRevision = expectedRevision ?? (stdio ? existing.revision : undefined);
             if (stdio && !disableOnly && !disableAndClear)
               await assertMcpStdioMaterial(
-                { ...nextMaterial, args: nextArgs, enabled: stdio.enabled },
+                { ...nextMaterial, args: nextArgs },
                 deps,
                 replaceCredentials ? undefined : existingMaterial.oauthClient,
               );
@@ -6477,7 +6499,13 @@ export function createRouter(deps: RouterDeps) {
                     }
                   }
                 }
-                return mcpServerDto(row.server, oauthStatus);
+                return mcpServerDto(
+                  row.server,
+                  oauthStatus,
+                  stdio && !disableOnly && !disableAndClear
+                    ? Boolean(nextMaterial.oauthClient)
+                    : undefined,
+                );
               }
             } finally {
               if (existing.installId) {
@@ -6499,13 +6527,11 @@ export function createRouter(deps: RouterDeps) {
           throw new ORPCError("CONFLICT", { message: "MCP credentials changed; retry" });
         }),
         remove: authed.mcp.servers.remove.handler(async ({ context, input }) => {
+          const { spaceId, userId } = context.actor;
+          const where = { id: input.id, spaceId, userId };
           const server = await deps.prisma.mcpServer.findFirst({
-            where: {
-              id: input.id,
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-            },
-            select: { id: true, secretId: true, installId: true },
+            where,
+            select: { installId: true },
           });
           if (!server) throw new IsolationError();
           if (server.installId) {
@@ -6521,20 +6547,20 @@ export function createRouter(deps: RouterDeps) {
           // Assignments cascade; the encrypted credential must go with the server.
           // Cards are closed first, including ones that were never assigned.
           const seqs = await deps.prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
             const painted = await dismissMcpServerApprovals(
               onboardingDeps,
               context.actor,
-              server.id,
+              input.id,
               tx,
             );
-            await tx.mcpServer.delete({ where: { id: server.id } });
-            if (server.secretId) {
+            const { secretId } = await tx.mcpServer.delete({
+              where,
+              select: { secretId: true },
+            });
+            if (secretId) {
               await tx.secret.deleteMany({
-                where: {
-                  id: server.secretId,
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                },
+                where: { id: secretId, spaceId, userId },
               });
             }
             return painted;

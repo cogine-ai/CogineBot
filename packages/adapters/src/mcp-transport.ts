@@ -104,6 +104,7 @@ export function secureFetch(
   urlPolicy: McpUrlPolicy,
   headerPolicy: McpHeaderPolicy = {},
   network: RemoteTransportDependencies = {},
+  authorizeDispatch?: () => Promise<void>,
 ): SafeRemoteFetch {
   // A local hostname is not authorization: the unguarded loopback fetch below
   // needs the deployment-owner private-endpoint escape as well.
@@ -180,13 +181,14 @@ export function secureFetch(
     // tool POST (including a retry after OAuth) is the side-effect boundary.
     const check = toolDispatchCheck.getStore();
     const beforeDispatch =
-      check &&
+      authorizeDispatch ??
+      (check &&
       body &&
       source.method === "POST" &&
       source.headers.get("content-type")?.startsWith("application/json") &&
       JSON.parse(new TextDecoder().decode(body))?.method === "tools/call"
         ? check
-        : undefined;
+        : undefined);
     const response =
       localHttp && !beforeDispatch
         ? await (network.fetch ?? globalThis.fetch)(url, requestInit)

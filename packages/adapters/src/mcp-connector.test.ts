@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchTransaction } from "./connector-dispatch.js";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
 import { allowlistDrift, McpConnector } from "./mcp-connector.js";
-import { type McpOAuthBroker, StoredMcpOAuthProvider } from "./mcp-oauth.js";
+import type { McpOAuthBroker, OAuthMaterial } from "./mcp-oauth.js";
+import { StoredMcpOAuthProvider } from "./mcp-oauth.js";
 import { McpSession } from "./mcp-transport.js";
 import { InMemoryRealtimeFanout } from "./realtime.js";
 import { migrateSecrets } from "./secret-migration.js";
@@ -410,10 +411,12 @@ describe("MCP discovery lifecycle", () => {
   });
 
   it.each([
-    { files: { CONFIG_FILE: "fixture-config" } },
-    { oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" } },
-    { env: { MCP_TOKEN: "{{oauth.access_token}}" } },
-  ])("does not spawn with unhandled stdio credential material", async (material) => {
+    { files: { CONFIG_FILE: "{{oauth.access_token}}" } },
+    {
+      oauthClient: { authorizationServer: "https://login.example.test", clientId: "fixture" },
+      env: { MCP_TOKEN: "{{oauth.access_token}}" },
+    },
+  ])("does not spawn when the declared OAuth credential is unavailable", async (material) => {
     const server = {
       ...SHARED_SERVER,
       transport: "stdio",
@@ -440,6 +443,446 @@ describe("MCP discovery lifecycle", () => {
     } finally {
       await connector.close();
       connect.mockRestore();
+    }
+  });
+
+  it("launches with declared credentials, retires an expired child, and never replays its call", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-rebuild-fixture-"));
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: "fixture",
+      secretId: "material",
+    };
+    const registered = {
+      authorizationServer: "https://auth.example.test",
+      clientId: "fixture-client",
+      clientSecret: "fixture-client-secret",
+    };
+    const start = Date.now();
+    let launchNumber = 0;
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    const material = {
+      oauthClient: registered,
+      env: { MCP_TOKEN: "Bearer {{oauth.access_token}}" },
+      files: {
+        CONFIG_FILE: JSON.stringify({
+          access: "{{oauth.access_token}}",
+          credentials: { key: "private-fixture" },
+          headers: { Authorization: "Bearer static-file-credential" },
+          kind: "object",
+          format: "text",
+          media: "image",
+          scope: "read",
+          enabled: false,
+        }),
+        CREDENTIAL_FILE: "details:\n  password: yaml-fixture",
+      },
+    };
+    const calls: string[] = [];
+    const connect = vi
+      .spyOn(McpSession.prototype, "connectStdio")
+      .mockImplementation(async (options) => {
+        launchNumber++;
+        const env = options.env!;
+        expect(Object.keys(env).sort()).toEqual(["CONFIG_FILE", "CREDENTIAL_FILE", "MCP_TOKEN"]);
+        expect(env.MCP_TOKEN).toBe(`Bearer fixture-grant-${launchNumber}`);
+        expect(JSON.parse(await readFile(env.CONFIG_FILE!, "utf8"))).toEqual({
+          access: `fixture-grant-${launchNumber}`,
+          credentials: { key: "private-fixture" },
+          headers: { Authorization: "Bearer static-file-credential" },
+          kind: "object",
+          format: "text",
+          media: "image",
+          scope: "read",
+          enabled: false,
+        });
+        expect(await readFile(env.CREDENTIAL_FILE!, "utf8")).toBe(material.files.CREDENTIAL_FILE);
+        expect((await stat(env.CONFIG_FILE!)).mode & 0o777).toBe(0o600);
+      });
+    const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+      tools: [
+        {
+          name: "read_document",
+          description: "Use this tool to read a document",
+          inputSchema: {
+            type: "object",
+            properties: {
+              item: { type: "object" },
+              entries: { type: "array", uniqueItems: false },
+            },
+          },
+        },
+        {
+          name: "hidden-secret",
+          inputSchema: { type: "object", properties: { item: { default: "private-fixture" } } },
+        },
+        {
+          name: "hidden-default",
+          inputSchema: { type: "object", properties: { item: { default: { type: "object" } } } },
+        },
+      ],
+    });
+    const call = vi
+      .spyOn(McpSession.prototype, "callTool")
+      .mockImplementation(async (_name, args) => {
+        calls.push(String(args?.content));
+        return {
+          content: [
+            {
+              type: "text",
+              text: `fixture-grant-${launchNumber} private-fixture yaml-fixture static-file-credential`,
+            },
+            { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
+          ],
+          structuredContent: { type: "text", state: "read" },
+          isError: false,
+        };
+      });
+    const oauth = {
+      providerFor: async (
+        _server: unknown,
+        _context: AdapterContext,
+        loaded: { material: OAuthMaterial },
+      ) => ({
+        tokens: async () => {
+          const tokens = {
+            access_token: `fixture-grant-${launchNumber + 1}`,
+            refresh_token: "unused-fixture-refresh",
+            token_type: "bearer",
+            expires_in: 3600,
+            issuer: registered.authorizationServer,
+          };
+          loaded.material.oauth = { tokens, obtainedAt: Date.now() };
+          return tokens;
+        },
+      }),
+    };
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      { load: async () => JSON.stringify(material) } as never,
+      { stdioEnabled: true, allowedCommands: ["fixture"], credentialTempRoot: root },
+      oauth as never,
+    );
+    try {
+      const [tool, ...hidden] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__read_document");
+      expect(tool?.description).toBe("Use this tool to [redacted] a document");
+      expect(tool?.inputSchema).toEqual({
+        type: "object",
+        properties: { item: { type: "object" }, entries: { type: "array", uniqueItems: false } },
+      });
+      expect(hidden).toEqual([]);
+      const invoke = (content: string, beforeDispatch?: () => Promise<void>) =>
+        connector
+          .execute(
+            {
+              tool: tool!.name,
+              route: tool!.route,
+              args: { content },
+              executionId: content,
+              beforeDispatch,
+            },
+            context,
+          )
+          [Symbol.asyncIterator]()
+          .next();
+      await expect(invoke("first-invocation")).resolves.toMatchObject({
+        value: {
+          type: "result",
+          data: {
+            content: [
+              { type: "text", text: "[redacted] [redacted] [redacted] [redacted]" },
+              { type: "image", mimeType: "image/png", data: "Zml4dHVyZQ==" },
+            ],
+            structuredContent: { type: "[redacted]", state: "[redacted]" },
+            isError: false,
+          },
+        },
+      });
+      const firstPath = connect.mock.calls[0]![0].env!.CONFIG_FILE!;
+      await expect(
+        invoke("approval-outlived-credential", async () => {
+          now.mockReturnValue(start + 3_600_000);
+        }),
+      ).resolves.toMatchObject({ value: { type: "error" } });
+      await expect(invoke("second-invocation")).resolves.toMatchObject({
+        value: { type: "result" },
+      });
+      expect(connect).toHaveBeenCalledTimes(2);
+      expect(calls).toEqual(["first-invocation", "second-invocation"]);
+      await expect
+        .poll(async () =>
+          stat(firstPath).then(
+            () => true,
+            () => false,
+          ),
+        )
+        .toBe(false);
+    } finally {
+      await connector.close();
+      expect(await readdir(root)).toEqual([]);
+      await rm(root, { recursive: true, force: true });
+      now.mockRestore();
+      call.mockRestore();
+      list.mockRestore();
+      close.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
+  it.each(["startup failure", "process exit", "deactivation", "disabled during setup"])(
+    "removes the credential directory after %s",
+    async (cause) => {
+      const root = await mkdtemp(join(tmpdir(), "mcp-close-fixture-"));
+      const server = {
+        ...SHARED_SERVER,
+        transport: "stdio",
+        command: "fixture",
+        secretId: "material",
+      };
+      let child: McpSession | undefined;
+      const connect = vi
+        .spyOn(McpSession.prototype, "connectStdio")
+        .mockImplementation(async function (this: McpSession) {
+          child = this;
+          if (cause === "startup failure")
+            throw new Error("fixture process error with confidential-value");
+        });
+      const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+      const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+        tools: [{ name: "echo", inputSchema: { type: "object" } }],
+      });
+      const connector = new McpConnector(
+        {
+          mcpServer: {
+            findFirst: async () => {
+              expect(await readdir(root)).toHaveLength(1);
+              return cause === "disabled during setup" ? null : { id: server.id };
+            },
+            findMany: vi.fn().mockResolvedValue([]),
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
+          secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+        } as never,
+        {
+          load: async () => JSON.stringify({ files: { CONFIG_FILE: "confidential-value" } }),
+        } as never,
+        { stdioEnabled: true, allowedCommands: ["fixture"], credentialTempRoot: root },
+      );
+      try {
+        const health = await connector.check(server as never, context);
+        if (cause === "disabled during setup") {
+          expect(health.status).toBe("error");
+          expect(connect).not.toHaveBeenCalled();
+        } else if (cause !== "startup failure") {
+          expect(health.status).toBe("ok");
+          expect(await readdir(root)).toHaveLength(1);
+          if (cause === "process exit") child!.client.onclose?.();
+          else await connector.reapIdle();
+        } else {
+          expect(health).toMatchObject({
+            status: "error",
+            message: "fixture process error with [redacted]",
+          });
+        }
+        await expect.poll(() => readdir(root)).toEqual([]);
+      } finally {
+        await connector.close();
+        await rm(root, { recursive: true, force: true });
+        list.mockRestore();
+        close.mockRestore();
+        connect.mockRestore();
+      }
+    },
+  );
+
+  it("screens literal stdio credentials in tool metadata without requiring a file", async () => {
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: "fixture",
+      secretId: "material",
+      allowAllTools: false,
+      allowedTools: ["read_status", "fixture-private"],
+    };
+    const connect = vi.spyOn(McpSession.prototype, "connectStdio").mockResolvedValue(undefined);
+    const close = vi.spyOn(McpSession.prototype, "close").mockResolvedValue(undefined);
+    const list = vi.spyOn(McpSession.prototype, "listTools").mockResolvedValue({
+      tools: [
+        { name: "read_status", inputSchema: { type: "object" } },
+        { name: "fixture-private", inputSchema: { type: "object" } },
+        { name: "hidden", description: "credential is default", inputSchema: { type: "object" } },
+      ],
+    });
+    const call = vi.spyOn(McpSession.prototype, "callTool").mockResolvedValue({
+      isError: false,
+      content: [
+        {
+          type: "text",
+          text: "default false production fixture-private fixture-aux fixture-session",
+        },
+      ],
+    });
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: async () => ({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      {
+        load: async () =>
+          JSON.stringify({
+            env: {
+              API_KEY: "default",
+              API_SECRET: "false",
+              TOKEN: "production",
+              APP_COOKIE: "sid=a; private=fixture-private; aux=fixture-aux",
+              SESSION: "login=fixture-session",
+            },
+          }),
+      } as never,
+      { stdioEnabled: true, allowedCommands: ["fixture"] },
+    );
+    const sink = createTestSink();
+    const previousLogger = getLogger();
+    installLogger(createLogger({ service: "test", sinks: [sink] }));
+    try {
+      const [tool, ...extra] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__read_status");
+      expect(extra).toEqual([]);
+      const log = JSON.stringify(sink.events);
+      expect(log).toContain("1/2 allowed tools are not offered");
+      expect(log).not.toContain("fixture-private");
+      const execute = () =>
+        connector
+          .execute(
+            { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
+            context,
+          )
+          [Symbol.asyncIterator]()
+          .next();
+      expect((await execute()).value).toMatchObject({
+        type: "result",
+        data: {
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text: "[redacted] [redacted] production [redacted] [redacted] [redacted]",
+            },
+          ],
+        },
+      });
+      call.mockRejectedValueOnce(new Error("fixture-private"));
+      expect((await execute()).value).toMatchObject({ type: "error", message: "[redacted]" });
+    } finally {
+      installLogger(previousLogger);
+      await connector.close();
+      call.mockRestore();
+      list.mockRestore();
+      close.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
+  it("passes a private credential file to a real offline stdio child and removes it on close", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-child-fixture-"));
+    const script = `
+      const { readFileSync, statSync } = require('node:fs');
+      const { createInterface } = require('node:readline');
+      const lines = createInterface({ input: process.stdin });
+      lines.on('line', (line) => {
+        const message = JSON.parse(line);
+        if (message.id === undefined) return;
+        let result;
+        if (message.method === 'initialize') {
+          result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } };
+        } else if (message.method === 'tools/list') {
+          result = { tools: [
+            { name: 'status', description: 'Read a result by label.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+            { name: 'bad_fixture', description: JSON.stringify(readFileSync(process.env.CONFIG_FILE, 'utf8')), inputSchema: { type: 'object' } },
+            { name: 'duplicate_fixture', description: 'prefixfixture-sharedsuffix', inputSchema: { type: 'object' } },
+          ] };
+        } else if (message.method === 'tools/call') {
+          const path = process.env.CONFIG_FILE;
+          const content = readFileSync(path, 'utf8');
+          result = { content: [{ type: 'text', text: (statSync(path).mode & 0o777).toString(8) + ':' + content }] };
+        } else {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Unknown fixture method' } }) + '\\n');
+          return;
+        }
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n');
+      });
+    `;
+    const server = {
+      ...SHARED_SERVER,
+      transport: "stdio",
+      command: process.execPath,
+      args: ["-e", script],
+      secretId: "material",
+    };
+    const connector = new McpConnector(
+      {
+        mcpServer: {
+          findMany: async () => [server],
+          findFirst: async () => server,
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        secret: { findFirst: async () => ({ id: "material", ciphertext: "fixture-ref" }) },
+      } as never,
+      {
+        load: async () =>
+          JSON.stringify({
+            env: { API_KEY: "fixture-shared" },
+            files: {
+              CONFIG_FILE: JSON.stringify({
+                name: "fixture-connection",
+                status: "fixture-label",
+                secret: 'private-child-"fixture\\value',
+                Authorization: `Basic ${Buffer.from("a:fixture-basic-secret").toString("base64")}`,
+                Cookie: "session=fixture; api=fixture-shared",
+              }),
+            },
+          }),
+      } as never,
+      { stdioEnabled: true, allowedCommands: [process.execPath], credentialTempRoot: root },
+    );
+    try {
+      const [tool, ...hidden] = await connector.discoverTools(context);
+      expect(tool?.name).toBe("mcp__demo__status");
+      expect(tool?.description).toContain("Read [redacted] result by label.");
+      expect(hidden).toEqual([]);
+      const result = await connector
+        .execute(
+          { tool: tool!.name, route: tool!.route, args: {}, executionId: "fixture" },
+          context,
+        )
+        [Symbol.asyncIterator]()
+        .next();
+      expect(result.value).toMatchObject({
+        type: "result",
+        data: { content: [{ type: "text", text: "600:[redacted]" }] },
+      });
+      expect(await readdir(root)).toHaveLength(1);
+    } finally {
+      try {
+        await connector.close();
+        expect(await readdir(root)).toEqual([]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   });
 
@@ -2125,3 +2568,8 @@ describe("plugin MCP dispatch settlement", () => {
     }
   });
 });
+
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AdapterContext } from "@rakazo/adapter-kit";
