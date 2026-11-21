@@ -40,6 +40,7 @@ export class Speaker {
   private snapshot: SpeechSnapshot = IDLE;
   private watchers = new Set<(s: SpeechSnapshot) => void>();
   private token = 0;
+  private intentRevision = 0;
   private audio: HTMLAudioElement | null = null;
   private objectUrl: string | null = null;
   private settlePlayback: ((finished: boolean) => void) | null = null;
@@ -54,7 +55,7 @@ export class Speaker {
   }
 
   get playbackRevision(): number {
-    return this.token;
+    return this.intentRevision;
   }
 
   get state(): SpeechSnapshot {
@@ -72,6 +73,11 @@ export class Speaker {
   }
 
   stop() {
+    this.intentRevision += 1;
+    this.clearPlayback();
+  }
+
+  private clearPlayback() {
     this.token += 1;
     this.request?.abort();
     this.request = null;
@@ -103,13 +109,13 @@ export class Speaker {
     const live = () => {
       if (!owned()) return false;
       if (sessionGeneration !== currentRpcSessionGeneration() || opts.isCurrent?.() === false) {
-        this.stop();
+        this.clearPlayback();
         return false;
       }
       return true;
     };
     const stopOwnedSample = () => {
-      if (this.token === mine) this.stop();
+      if (this.token === mine) this.clearPlayback();
     };
     opts.signal?.addEventListener("abort", stopOwnedSample, { once: true });
     const spaceId = opts.spaceId ?? selectedSpaceId();

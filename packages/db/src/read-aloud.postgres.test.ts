@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { UpdateReadAloudInput } from "@rakazo/contracts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   botSettingsSelect,
   botSettingsVersions,
@@ -37,7 +37,7 @@ postgres("personal read-aloud settings", () => {
   const write = (input: UpdateReadAloudInput, scope = actor) =>
     runAsTenant(scope, () => updateReadAloud(db.prisma, scope, input));
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     db = createDb(databaseUrl!);
     await db.prisma.organization.create({
       data: { id: organizationId, name: "Fixture", slug: organizationId, createdAt: new Date() },
@@ -77,7 +77,7 @@ postgres("personal read-aloud settings", () => {
     legacyOn = (await db.prisma.bot.create({ data: { ...data, autoSpeak: true } })).id;
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     if (!db) return;
     await db.prisma.organization.deleteMany({ where: { id: organizationId } });
     await db.prisma.user.deleteMany({ where: { id: { in: [userId, otherUserId] } } });
@@ -160,6 +160,14 @@ postgres("personal read-aloud settings", () => {
   });
 
   it("freezes the effective value for the older application without changing preference history", async () => {
+    const initial = await read();
+    await write({
+      scope: "account",
+      value: true,
+      expectedRevision: initial.account.revision,
+      followingSpaceIds: initial.followingSpaces.map(({ id }) => id),
+      clientNonce: randomUUID(),
+    });
     const history = await read();
     expect(history.account.value).toBe(true);
     expect(await decide(inherited)).toEqual({ enabled: true, source: "account" });

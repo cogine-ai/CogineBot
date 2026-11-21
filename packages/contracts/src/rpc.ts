@@ -342,7 +342,9 @@ export const appContract = {
   },
   preferences: {
     readAloud: oc.output(ReadAloudSettingsSchema),
-    readAloudForBot: oc.input(z.object({ botId: Id })).output(ReadAloudEffectiveSchema),
+    readAloudForBot: oc
+      .input(z.object({ botId: Id, previewSpaceDefault: z.literal(true).optional() }))
+      .output(ReadAloudEffectiveSchema),
     updateReadAloud: oc.input(UpdateReadAloudInput).output(UpdateReadAloudResult),
     update: oc
       .input(

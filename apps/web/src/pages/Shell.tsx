@@ -2404,14 +2404,17 @@ export function ShellPage() {
         owner === committedSettingsOwner.current &&
         scope === autoSpeakScope.current &&
         activeBotId.current === active.id &&
-        autoSpoken.current === lastBot.id &&
         shown?.threadId === snapshot.threadId &&
         shown.messages.some(({ id }) => id === lastBot.id) &&
         !getCallSnapshot()
       );
     };
     const speak = () => {
-      if (current() && playbackRevision === speaker.playbackRevision)
+      if (
+        current() &&
+        autoSpoken.current === lastBot.id &&
+        playbackRevision === speaker.playbackRevision
+      )
         void speaker.speak(text, { botId: active.id, messageId: lastBot.id, isCurrent: current });
     };
     if (legacyServer) {

@@ -52,7 +52,12 @@ export async function readAloudSettings(prisma: PrismaClient, actor: Scope) {
   });
 }
 
-export async function readAloudForBot(prisma: PrismaClient, actor: Scope, botId: string) {
+export async function readAloudForBot(
+  prisma: PrismaClient,
+  actor: Scope,
+  botId: string,
+  previewSpaceDefault = false,
+) {
   return prisma.$transaction(
     async (tx) => {
       const bot = await tx.bot.findFirst({
@@ -64,7 +69,8 @@ export async function readAloudForBot(prisma: PrismaClient, actor: Scope, botId:
         select: { readAloudHistory: true },
       });
       if (!bot || !member) throw new IsolationError();
-      if (!bot.autoSpeakInherited) return resolveReadAloud(bot.autoSpeak, null, null);
+      if (!bot.autoSpeakInherited && !previewSpaceDefault)
+        return resolveReadAloud(bot.autoSpeak, null, null);
       const space = preference(historySchema.parse(member.readAloudHistory)).value;
       if (space !== null) return resolveReadAloud(null, space, null);
       const account = await tx.user.findUniqueOrThrow({

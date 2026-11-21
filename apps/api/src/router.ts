@@ -1581,7 +1581,7 @@ export function createRouter(deps: RouterDeps) {
         readAloudSettings(deps.prisma, context.actor),
       ),
       readAloudForBot: authed.preferences.readAloudForBot.handler(({ context, input }) =>
-        readAloudForBot(deps.prisma, context.actor, input.botId),
+        readAloudForBot(deps.prisma, context.actor, input.botId, input.previewSpaceDefault),
       ),
       updateReadAloud: authed.preferences.updateReadAloud.handler(({ context, input }) =>
         updateReadAloud(deps.prisma, context.actor, input),

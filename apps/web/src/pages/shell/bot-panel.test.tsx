@@ -810,9 +810,9 @@ it.each(["failed", "ready", "refreshing"] as const)(
       expectedRevision: 9,
       computerMode: "dedicated",
       memoryScope: "isolated",
-      autoSpeak: true,
       voiceId: "voice-b",
     });
+    expect(onSave.mock.calls[2]?.[0]).not.toHaveProperty("autoSpeak");
   },
 );
 

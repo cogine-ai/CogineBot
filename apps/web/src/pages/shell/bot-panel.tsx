@@ -432,16 +432,22 @@ export function BotSettings({
     value: boolean | null;
     revision: number | undefined;
   } | null>(null);
+  const autoSpeak = readAloudDraft
+    ? readAloudDraft.value
+    : bot.autoSpeakInherited
+      ? null
+      : bot.autoSpeak;
+  const wantsSpaceDefault = autoSpeak === null;
   const [effectiveReadAloud, setEffectiveReadAloud] = useState<ReadAloudEffective | null>(null);
   const [readAloudLoadError, setReadAloudLoadError] = useState(false);
   const [readAloudLoadRevision, setReadAloudLoadRevision] = useState(0);
   useEffect(() => {
     setEffectiveReadAloud(null);
     setReadAloudLoadError(false);
-    if (!bot.autoSpeakInherited) return;
+    if (!wantsSpaceDefault) return;
     const controller = new AbortController();
     void rpc.preferences
-      .readAloudForBot({ botId: bot.id }, { signal: controller.signal })
+      .readAloudForBot({ botId: bot.id, previewSpaceDefault: true }, { signal: controller.signal })
       .then((value) => {
         if (!controller.signal.aborted) setEffectiveReadAloud(value);
       })
@@ -449,12 +455,7 @@ export function BotSettings({
         if (!controller.signal.aborted) setReadAloudLoadError(true);
       });
     return () => controller.abort();
-  }, [bot.id, bot.autoSpeakInherited, bot.settingsRevision, readAloudLoadRevision]);
-  const autoSpeak = readAloudDraft
-    ? readAloudDraft.value
-    : bot.autoSpeakInherited
-      ? null
-      : bot.autoSpeak;
+  }, [bot.id, wantsSpaceDefault, bot.settingsRevision, readAloudLoadRevision]);
   function setAutoSpeak(value: boolean | null) {
     setReadAloudDraft({
       value,
@@ -1038,6 +1039,16 @@ export function BotSettings({
         </label>
         {bot.settingsRevision !== undefined ? (
           <div className="mt-2 text-sm text-muted-foreground">
+            {wantsSpaceDefault && readAloudDraft && !bot.autoSpeakInherited ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setReadAloudDraft(null)}
+              >
+                <Trans>Cancel</Trans>
+              </Button>
+            ) : null}
             {readAloudLoadError && autoSpeak === null ? (
               <Button
                 type="button"
@@ -1048,15 +1059,15 @@ export function BotSettings({
                 <Trans>Reload</Trans>
               </Button>
             ) : autoSpeak === null ? (
-              effectiveReadAloud?.source === "account" ? (
-                t`My default`
-              ) : effectiveReadAloud?.source === "system" ? (
-                t`System default`
-              ) : effectiveReadAloud?.source === "space" ? (
-                t`This Space`
-              ) : (
-                t`Space default`
-              )
+              <span>
+                {effectiveReadAloud?.source === "account"
+                  ? t`My default`
+                  : effectiveReadAloud?.source === "system"
+                    ? t`System default`
+                    : effectiveReadAloud?.source === "space"
+                      ? t`This Space`
+                      : t`Space default`}
+              </span>
             ) : (
               <>
                 <Trans>This Bot</Trans>

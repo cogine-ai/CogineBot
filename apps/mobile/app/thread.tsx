@@ -1355,7 +1355,6 @@ function Thread({
         isMobileScopeCurrent(owner) &&
         scope !== null &&
         autoSpeakTarget.current === scope &&
-        autoSpoken.current === decision.messageId &&
         shown?.threadId === snap?.threadId &&
         shown?.messages.some(({ id }) => id === decision.messageId) === true &&
         AppState.currentState === "active" &&
@@ -1364,7 +1363,12 @@ function Thread({
       );
     };
     const speak = () => {
-      if (!current() || voicePlaybackRevision() !== playbackRevision) return;
+      if (
+        !current() ||
+        autoSpoken.current !== decision.messageId ||
+        voicePlaybackRevision() !== playbackRevision
+      )
+        return;
       void speakText(decision.text, {
         botId: currentBot.id,
         isCurrent: current,
@@ -1402,20 +1406,17 @@ function Thread({
     speakFinishedReplyRef.current = speakFinishedReply;
   }, [speakFinishedReply]);
 
+  const invalidatePendingSpeech = useCallback(() => {
+    if (autoSpeakTarget.current) autoSpeakTarget.current = {};
+  }, []);
+  useFocusEffect(useCallback(() => invalidatePendingSpeech, [invalidatePendingSpeech]));
   useEffect(() => {
-    function invalidatePendingSpeech() {
-      if (autoSpeakTarget.current) autoSpeakTarget.current = {};
-    }
-    const blur = navigation.addListener("blur", invalidatePendingSpeech);
     const appState = AppState.addEventListener("change", (state) => {
       if (state === "active") speakFinishedReplyRef.current();
       else invalidatePendingSpeech();
     });
-    return () => {
-      blur();
-      appState.remove();
-    };
-  }, [navigation]);
+    return () => appState.remove();
+  }, [invalidatePendingSpeech]);
 
   useEffect(() => speakFinishedReply(), [speakFinishedReply]);
 

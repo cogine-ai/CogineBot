@@ -85,17 +85,18 @@ export default function BotSettingsScreen() {
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
   const [autoSpeak, setAutoSpeak] = useState<boolean | null>(false);
+  const wantsSpaceDefault = autoSpeak === null;
   const [effectiveReadAloud, setEffectiveReadAloud] = useState<ReadAloudEffective | null>(null);
   const [readAloudLoadError, setReadAloudLoadError] = useState(false);
   const [readAloudLoadRevision, setReadAloudLoadRevision] = useState(0);
   useEffect(() => {
     setEffectiveReadAloud(null);
     setReadAloudLoadError(false);
-    if (!botId || bot?.id !== botId || !bot.autoSpeakInherited) return;
+    if (!botId || bot?.id !== botId || !wantsSpaceDefault) return;
     const controller = new AbortController();
     void rpc<ReadAloudEffective>(
       "preferences/readAloudForBot",
-      { botId },
+      { botId, previewSpaceDefault: true },
       { signal: controller.signal },
     )
       .then((value) => {
@@ -105,7 +106,7 @@ export default function BotSettingsScreen() {
         if (!controller.signal.aborted) setReadAloudLoadError(true);
       });
     return () => controller.abort();
-  }, [botId, bot?.id, bot?.autoSpeakInherited, bot?.settingsRevision, readAloudLoadRevision]);
+  }, [botId, bot?.id, wantsSpaceDefault, bot?.settingsRevision, readAloudLoadRevision]);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [catalog, setCatalog] = useState<MobileModel[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
@@ -449,7 +450,16 @@ export default function BotSettingsScreen() {
       if (isReadAloudConflict(err)) {
         const latest = await rpc<BotSettingsRecord>("bots/get", { botId }).catch(() => null);
         if (current() && latest?.id === botId) {
-          setBot(latest);
+          setBot((baseline) =>
+            baseline?.id === botId
+              ? {
+                  ...baseline,
+                  autoSpeak: latest.autoSpeak,
+                  autoSpeakInherited: latest.autoSpeakInherited,
+                  settingsRevision: latest.settingsRevision,
+                }
+              : baseline,
+          );
           setAutoSpeak(latest.autoSpeakInherited ? null : latest.autoSpeak);
         }
       }
@@ -645,6 +655,13 @@ export default function BotSettingsScreen() {
         </View>
         {bot?.settingsRevision !== undefined ? (
           <View style={styles.row}>
+            {wantsSpaceDefault && !bot.autoSpeakInherited ? (
+              <NativeActionButton
+                label={t("Cancel")}
+                prominence="plain"
+                onPress={() => setAutoSpeak(bot.autoSpeak)}
+              />
+            ) : null}
             {readAloudLoadError && autoSpeak === null ? (
               <NativeActionButton
                 label={t("Reload")}

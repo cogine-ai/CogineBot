@@ -1515,4 +1515,16 @@ export const RU_MESSAGES: Record<string, string> = {
   "Date: {value}": "Дата: {value}",
   "Time: {value}": "Время: {value}",
   "Cron expression": "Выражение cron",
+  "My default": "Моя настройка по умолчанию",
+  "Use Space default": "Использовать настройку пространства",
+  "Override in this Space": "Переопределить в этом пространстве",
+  "Read replies aloud in this Space": "Читать ответы вслух в этом пространстве",
+  "Could not load read-aloud settings.": "Не удалось загрузить настройки чтения вслух.",
+  "Could not save read-aloud settings.": "Не удалось сохранить настройки чтения вслух.",
+  "Change my read-aloud default?": "Изменить мою настройку чтения вслух?",
+  "This applies to new replies in Spaces that follow your default.":
+    "Это относится к новым ответам в пространствах, использующих вашу настройку по умолчанию.",
+  On: "Включено",
+  Off: "Выключено",
+  Reload: "Обновить",
 };

@@ -866,6 +866,34 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
     source: "account",
   });
 
+  const reopened = await rpc<Bot>(page, "bots/get", { botId });
+  await rpc(page, "bots/update", {
+    botId,
+    autoSpeak: false,
+    expectedReadAloudRevision: reopened.settingsRevision,
+  });
+  await page.getByRole("button", { name: "Close voice settings" }).click();
+  await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
+  const botSettings = page.getByTestId("bot-settings");
+  await botSettings.getByText("Advanced", { exact: true }).click();
+  const readAloud = botSettings.getByRole("switch", { name: "Read replies aloud", exact: true });
+  await expect(readAloud).not.toBeChecked();
+  await botSettings.getByRole("button", { name: "Use Space default", exact: true }).click();
+  await expect(readAloud).toBeChecked();
+  await expect(botSettings.getByText("My default", { exact: true })).toBeVisible();
+  await botSettings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(readAloud).not.toBeChecked();
+  await botSettings.getByRole("button", { name: "Use Space default", exact: true }).click();
+  await expect(readAloud).toBeChecked();
+  await botSettings.getByRole("button", { name: "Save", exact: true }).click();
+  await expect
+    .poll(() => rpc(page, "preferences/readAloudForBot", { botId }))
+    .toEqual({
+      enabled: true,
+      source: "account",
+    });
+  await openUserSettings(page, "voice");
+
   await settings.getByRole("button", { name: /Scripted/ }).click();
   await settings.getByLabel("API key", { exact: true }).fill("fake-scripted-voice-key");
   await settings.getByRole("button", { name: "Connect", exact: true }).click();
@@ -902,17 +930,27 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
       const decision = page.waitForResponse((response) =>
         response.url().endsWith("/rpc/preferences/readAloudForBot"),
       );
-      const unexpectedPlayback = page
-        .waitForRequest((request) => request.url().endsWith("/rpc/voice/prepare"), {
-          timeout: 1_500,
-        })
-        .catch((error: unknown) => {
+      const preparations: Request[] = [];
+      const recordPrepare = (request: Request) => {
+        if (request.url().endsWith("/rpc/voice/prepare")) preparations.push(request);
+      };
+      page.on("request", recordPrepare);
+      try {
+        resumeDecision();
+        const response = await decision;
+        expect(response.ok()).toBe(true);
+        expect(await response.json()).toMatchObject({ json: { enabled: true } });
+        try {
+          await page.waitForRequest((request) => request.url().endsWith("/rpc/voice/prepare"), {
+            timeout: 1_500,
+          });
+        } catch (error) {
           if (!(error instanceof errors.TimeoutError)) throw error;
-          return null;
-        });
-      resumeDecision();
-      await decision;
-      expect(await unexpectedPlayback).toBeNull();
+        }
+        expect(preparations).toHaveLength(0);
+      } finally {
+        page.off("request", recordPrepare);
+      }
     } finally {
       resumeDecision();
       await page.unroute(routePattern);
