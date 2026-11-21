@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { useHistorySources } from "@rakazo/chat-ui/history-sources";
 import type { HistorySourceReference, MessageBlock } from "@rakazo/contracts";
-import { NativeAppIdSchema } from "@rakazo/contracts";
+import { MANAGED_APP_OAUTH_POPUP_NAME, NativeAppIdSchema } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { X } from "lucide-react";
@@ -320,7 +320,7 @@ export function AppConnectCard({
           popupOpened = Boolean(
             window.open(
               started.authorizationUrl,
-              "managed-app-authorization",
+              MANAGED_APP_OAUTH_POPUP_NAME,
               "popup,width=560,height=720",
             ),
           );
