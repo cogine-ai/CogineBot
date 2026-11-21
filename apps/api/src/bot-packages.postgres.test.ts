@@ -1321,7 +1321,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         userId: owner.actor.userId,
         name: "shared-other",
         description: "Shared",
-        content: buildSkillMd({ name: "shared-other", description: "Shared", body: "Shared body" }),
+        content: buildSkillMd({
+          name: "shared-other",
+          description: "Shared",
+          body: "Write the review outcome to `templates/checklist.txt`.",
+        }),
         source: "user",
       },
     });

@@ -381,7 +381,11 @@ function isSkillTextFile(path: string): boolean {
 }
 
 /** Walk references from the main recipe and any Markdown reached through them. */
-function hasMissingSkillReference(body: string, files: ReadonlyMap<string, string>): boolean {
+function hasMissingSkillReference(
+  body: string,
+  files: ReadonlyMap<string, string>,
+  inferInlineFiles: boolean,
+): boolean {
   const visited = new Set(["SKILL.md"]);
   const pending = [{ path: "SKILL.md", body }];
   for (const document of pending) {
@@ -390,7 +394,10 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
     const references = [
       ...links.map((target) => ({ target, base: documentDir })),
       ...inlineCode
-        .filter((text) => INLINE_SKILL_FILE.test(text))
+        .filter(
+          (text) =>
+            (inferInlineFiles || text.startsWith("{baseDir}/")) && INLINE_SKILL_FILE.test(text),
+        )
         .map((target) => ({
           target,
           base: target.startsWith("./") || target.startsWith("../") ? documentDir : ".",
@@ -433,6 +440,7 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
 export function skillReferenceRejection(
   body: string,
   files: ReadonlyMap<string, string>,
+  { inferInlineFiles = true } = {},
 ): string | null {
   const unsupported = "The skill has a missing or unsupported reference file.";
   const unavailable =
@@ -450,7 +458,7 @@ export function skillReferenceRejection(
     )
       return unavailable;
   }
-  return hasMissingSkillReference(body, files) ? unsupported : null;
+  return hasMissingSkillReference(body, files, inferInlineFiles) ? unsupported : null;
 }
 
 function collectSkills(

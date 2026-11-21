@@ -51,6 +51,40 @@ describe("bounded portable Bot JSON", () => {
     expect(parse(result.document).document.skills).toEqual([withFiles]);
   });
 
+  it("preserves a fileless recipe with an output path next to Skills with files", () => {
+    const output = {
+      name: "output-only",
+      description: "Writes an output file during a run",
+      content: buildSkillMd({
+        name: "output-only",
+        description: "Writes an output file during a run",
+        body: "Use [this folder](./). Write the outcome to `templates/checklist.txt`.",
+      }),
+    };
+    const result = parse({
+      ...document(),
+      format: BOT_PACKAGE_FILES_FORMAT,
+      skills: [
+        withFiles,
+        output,
+        {
+          name: "needed-file",
+          description: "Reads a bundled file",
+          content: buildSkillMd({
+            name: "needed-file",
+            description: "Reads a bundled file",
+            body: "Read `{baseDir}/references/required.md`.",
+          }),
+        },
+      ],
+    });
+
+    expect(result.document.skills).toEqual([withFiles, output]);
+    expect(result.leftOut).toContainEqual(
+      expect.objectContaining({ kind: "skill", name: "needed-file" }),
+    );
+  });
+
   it.each([
     ["v1 envelope", BOT_PACKAGE_FORMAT, files],
     ["missing nested reference", BOT_PACKAGE_FILES_FORMAT, files.slice(0, 1)],

@@ -568,6 +568,8 @@ export function prepareBotPackageDocument(value: unknown): {
     const rejection = skillReferenceRejection(
       content.body,
       new Map(files.map(({ path, content }) => [path, content])),
+      // A recipe without a file list may use inline paths for files it will create.
+      { inferInlineFiles: files.length > 0 },
     );
     return rejection ? omitSkill(skill, index, rejection) : true;
   });
