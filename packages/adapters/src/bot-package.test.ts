@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_BYTES,
   BotPackageDocumentSchema,
@@ -26,6 +27,162 @@ const parse = (value: unknown, includeMemory = false) =>
   parseBotPackageSource(JSON.stringify(value), { includeMemory });
 
 describe("bounded portable Bot JSON", () => {
+  const files = [
+    { path: "references/notes.md", content: "See [details](detail.txt).\r\n" },
+    { path: "references/detail.txt", content: "Exact reference.\r\n" },
+  ] as const;
+  const withFiles = {
+    name: "attached",
+    description: "Uses reference files",
+    content: buildSkillMd({
+      name: "attached",
+      description: "Uses reference files",
+      body: "Read [notes](references/notes.md).",
+    }),
+    files,
+  };
+
+  it("round-trips v2 Skills and their referenced text", () => {
+    const input = { ...document(), format: BOT_PACKAGE_FILES_FORMAT, skills: [withFiles] };
+    const result = parse(input);
+    expect(result.sourceFormat).toBe(input.format);
+    expect(result.document.skills).toEqual([withFiles]);
+    expect(JSON.parse(result.json)).toEqual(result.document);
+    expect(parse(result.document).document.skills).toEqual([withFiles]);
+  });
+
+  it.each([
+    ["v1 envelope", BOT_PACKAGE_FORMAT, files],
+    ["missing nested reference", BOT_PACKAGE_FILES_FORMAT, files.slice(0, 1)],
+    ["missing file list", BOT_PACKAGE_FILES_FORMAT, undefined],
+    [
+      "case-folded duplicate",
+      BOT_PACKAGE_FILES_FORMAT,
+      [...files, { path: "References/NOTES.md", content: "Alternate" }],
+    ],
+    [
+      "path outside the Skill",
+      BOT_PACKAGE_FILES_FORMAT,
+      [...files, { path: "../outside.txt", content: "Outside" }],
+    ],
+    [
+      "unsupported format",
+      BOT_PACKAGE_FILES_FORMAT,
+      [...files, { path: "scripts/run.sh", content: "Script text" }],
+    ],
+    [
+      "private file",
+      BOT_PACKAGE_FILES_FORMAT,
+      [...files, { path: "credentials/auth.json", content: "{}" }],
+    ],
+    [
+      "too many bytes",
+      BOT_PACKAGE_FILES_FORMAT,
+      [...files, { path: "large.txt", content: "字".repeat(34_000) }],
+    ],
+    [
+      "too many files",
+      BOT_PACKAGE_FILES_FORMAT,
+      [
+        ...files,
+        ...Array.from({ length: 39 }, (_, index) => ({
+          path: `notes/${index}.txt`,
+          content: "Text",
+        })),
+      ],
+    ],
+    [
+      "too many total bytes",
+      BOT_PACKAGE_FILES_FORMAT,
+      [
+        ...files,
+        ...Array.from({ length: 4 }, (_, index) => ({
+          path: `notes/${index}.txt`,
+          content: "a".repeat(100_000),
+        })),
+      ],
+    ],
+  ])("omits a whole Skill with %s and keeps the other items", (_name, format, selected) => {
+    const original = document();
+    const result = parse({
+      ...original,
+      format,
+      skills: [...original.skills, { ...withFiles, files: selected }],
+    });
+    expect(result.document.skills).toEqual(original.skills);
+    expect(result.leftOut).toContainEqual(
+      expect.objectContaining({ kind: "skill", name: "attached" }),
+    );
+  });
+
+  it("removes recognizable credential text from attached files before preview", () => {
+    const credentialShapedText = ["gh", "p_", "synthetic".repeat(3)].join("");
+    const input = {
+      ...document(),
+      format: BOT_PACKAGE_FILES_FORMAT,
+      skills: [
+        {
+          ...withFiles,
+          files: [files[0], { ...files[1], content: `Example: ${credentialShapedText}\n` }],
+        },
+      ],
+    };
+
+    const result = parse(input);
+
+    expect(result.document.skills[0]?.files?.[1]?.content).toBe("Example: [Redacted]\n");
+    expect(JSON.stringify(result)).not.toContain(credentialShapedText);
+    expect(result.leftOut).toContainEqual(expect.objectContaining({ kind: "secrets" }));
+  });
+
+  it("enforces the original aggregate size before redaction can shrink it", () => {
+    const credential = ["gh", "p_", "synthetic".repeat(3)].join("");
+    const source = {
+      ...document(),
+      format: BOT_PACKAGE_FILES_FORMAT,
+      skills: [
+        {
+          ...withFiles,
+          files: [
+            { path: "references/notes.md", content: credential.padEnd(100_000, " ") },
+            ...Array.from({ length: 3 }, (_, index) => ({
+              path: `notes/${index}.txt`,
+              content: "a".repeat(100_000),
+            })),
+            { path: "notes/last.txt", content: "x" },
+          ],
+        },
+      ],
+    };
+    const result = parse(source);
+    expect(result.document.skills).toEqual([]);
+    expect(result.leftOut).toContainEqual(
+      expect.objectContaining({ kind: "skill", name: "attached" }),
+    );
+  });
+
+  it("keeps usable Skills when redaction makes one reference file too large", () => {
+    const content = '{"token":"abc","note":""}';
+    const padded = content.replace('""', `"${"a".repeat(100_000 - content.length)}"`);
+    const input = document();
+    const result = parse({
+      ...input,
+      format: BOT_PACKAGE_FILES_FORMAT,
+      skills: [
+        ...input.skills,
+        {
+          ...withFiles,
+          files: [files[0], { ...files[1], content: padded }],
+        },
+      ],
+    });
+
+    expect(result.document.skills).toEqual(input.skills);
+    expect(result.leftOut).toContainEqual(
+      expect.objectContaining({ kind: "skill", name: "attached" }),
+    );
+  });
+
   it("preserves normal profile text and self-contained frontmatter byte for byte", () => {
     const result = parse(document());
     expect(result.document.profile.instructions).toBe(document().profile.instructions);

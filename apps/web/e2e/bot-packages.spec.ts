@@ -183,6 +183,50 @@ test("package review preserves text, keeps execution off, and explicitly enables
   expect(downloads).toBe(1);
 });
 
+test("reviews text reference files before importing a Bot package", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await signup(page, `package-files-${Date.now()}@example.test`, "password12", "Package reviewer");
+  await completeOnboarding(page);
+  await openNewBot(page);
+  await page
+    .getByTestId("create-bot-form")
+    .getByRole("button", { name: "Import bot", exact: true })
+    .click();
+  const panel = page.getByTestId("bot-package-import");
+  const path = "references/notes.md";
+  const content = "Check the original source.\nKeep <draft> marked for review.";
+  const source = {
+    format: "coginebot.package/v2",
+    profile: { name: "Source reviewer", instructions: "Review the supplied material." },
+    skills: [
+      {
+        name: "source-review",
+        description: "Reviews supplied sources",
+        content: `---\nname: source-review\ndescription: Reviews supplied sources\n---\n\nRead [the notes](${path}).\n`,
+        files: [{ path, content }],
+      },
+    ],
+  };
+  await panel.getByLabel("Choose package file", { exact: true }).setInputFiles({
+    name: "source-review.coginebot.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(source)),
+  });
+  await panel.getByRole("button", { name: "Preview", exact: true }).click();
+
+  const preview = panel.getByTestId("bot-package-document");
+  await preview.getByText("Skills · 1", { exact: true }).click();
+  await preview.getByText("source-review", { exact: true }).click();
+  const excerpt = preview.locator("pre").filter({ hasText: "Keep <draft> marked for review." });
+  await expect(excerpt).toBeHidden();
+  await preview.getByText(path, { exact: true }).click();
+  await expect(excerpt).toBeVisible();
+  await expect(excerpt).toHaveText(content);
+  await expect(preview.locator("draft")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "d021-package-skill-files");
+});
+
 test("agent backup import previews supported text and saves only the selected content", async ({
   page,
 }, testInfo) => {

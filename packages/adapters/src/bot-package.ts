@@ -15,6 +15,7 @@ import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
+  BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_CONNECTIONS,
@@ -25,6 +26,7 @@ import {
   BotAvatarValueSchema,
   BotPackageDocumentSchema,
   BotPackageRoutineSchema,
+  BotPackageSkillFilesSchema,
   BotPackageSkillSchema,
   botPackageUtf8Bytes,
   TimeZoneSchema,
@@ -54,6 +56,7 @@ import {
   validateBackupRoutine,
 } from "@rakazo/core/agent-backup";
 import { redactSecretText } from "@rakazo/logging/redaction";
+import { skillReferenceRejection } from "./plugin-connectors.js";
 
 export class BotPackageError extends Error {}
 
@@ -81,7 +84,7 @@ export type ParsedBotPackage = {
   sourceFormat:
     | "openclaw"
     | "hermes"
-    | typeof BOT_PACKAGE_FORMAT
+    | BotPackageDocument["format"]
     | "openmaus.grok/1"
     | "grokbot-bundle/v1";
   leftOut: BotPackageLeftOut[];
@@ -433,7 +436,7 @@ function guardCollections(value: unknown) {
   for (const routine of routines) limitedArray(known(routine).crons, 50, "Routine schedules");
 }
 
-function redactDocument(document: BotPackageDocument, leftOut: LeftOutBudget): BotPackageDocument {
+function redactDocument(document: BotPackageDocument, leftOut: LeftOutBudget): RecordValue {
   const walk = (value: unknown, path: string): unknown => {
     if (typeof value === "string") {
       const cleaned = redactSecretText(value);
@@ -457,13 +460,8 @@ function redactDocument(document: BotPackageDocument, leftOut: LeftOutBudget): B
   };
   // The format discriminator is a protocol identifier rather than portable text.
   const cleaned = walk(document, "") as RecordValue;
-  cleaned.format = BOT_PACKAGE_FORMAT;
-  const parsed = BotPackageDocumentSchema.safeParse(cleaned);
-  if (!parsed.success)
-    throw new BotPackageError(
-      "The package could not be represented safely. Review its fields and limits.",
-    );
-  return parsed.data;
+  cleaned.format = document.format;
+  return cleaned;
 }
 
 /** Stable serialization of the normalized, bounded portable document. */
@@ -491,11 +489,45 @@ export function prepareBotPackageDocument(value: unknown): {
 } {
   guardStructure(value);
   guardCollections(value);
-  const parsed = BotPackageDocumentSchema.safeParse(value);
+  const root = known(value);
+  const leftOut = new LeftOutBudget();
+  const omitSkill = (skill: RecordValue, index: number, reason: string) => {
+    leftOut.push({
+      kind: "skill",
+      name: redactSecretText(text(skill.name) || `skills[${index}]`).slice(0, 200),
+      reason,
+    });
+    return false;
+  };
+  const supportedSkills = (input: RecordValue) =>
+    list(input.skills).filter((entry, index) => {
+      const skill = known(entry);
+      if (!Object.hasOwn(skill, "files")) return true;
+      if (input.format !== BOT_PACKAGE_FILES_FORMAT)
+        return omitSkill(
+          skill,
+          index,
+          "This Skill needs a package format that supports reference files.",
+        );
+      const checked = BotPackageSkillFilesSchema.safeParse(skill.files);
+      return (
+        checked.success ||
+        omitSkill(skill, index, "This Skill has an invalid or oversized reference file list.")
+      );
+    });
+  const parsed = BotPackageDocumentSchema.safeParse({ ...root, skills: supportedSkills(root) });
   if (!parsed.success)
     throw new BotPackageError("The package has unsupported or oversized fields.");
-  const leftOut = new LeftOutBudget();
-  const document = redactDocument(parsed.data, leftOut);
+  const cleaned = redactDocument(parsed.data, leftOut);
+  const redacted = BotPackageDocumentSchema.safeParse({
+    ...cleaned,
+    skills: supportedSkills(cleaned),
+  });
+  if (!redacted.success)
+    throw new BotPackageError(
+      "The package could not be represented safely. Review its fields and limits.",
+    );
+  const document = redacted.data;
   const seenPaths = new Set<string>();
   let memoryBytes = 0;
   for (const note of document.memory) {
@@ -505,15 +537,40 @@ export function prepareBotPackageDocument(value: unknown): {
   }
   if (memoryBytes > BOT_PACKAGE_MEMORY_MAX_BYTES)
     throw new BotPackageError("Memory notes are larger than 1 MiB.");
-  for (const skill of document.skills) {
+  document.skills = document.skills.filter((skill, index) => {
     const content = parseSkillMd(skill.content);
     if (
       "error" in content ||
       content.name !== skill.name ||
       content.description !== skill.description
-    )
+    ) {
+      if (skill.files)
+        return omitSkill(
+          skill,
+          index,
+          "Skill metadata must match its self-contained SKILL.md text.",
+        );
       throw new BotPackageError("Skill metadata must match its self-contained SKILL.md text.");
-  }
+    }
+    if (document.format === BOT_PACKAGE_FORMAT) return true;
+    const files = skill.files ?? [];
+    const paths = new Set(files.map(({ path }) => path.toLowerCase()));
+    if (
+      paths.size !== files.length ||
+      paths.has("skill.md") ||
+      files.some(({ path }) =>
+        /(?:^|\/)(?:credentials|sessions|logs|cron|secrets|\.git|\.env(?:\.[^/]*)?|auth\.json)(?:\/|$)/i.test(
+          path,
+        ),
+      )
+    )
+      return omitSkill(skill, index, "This Skill has a duplicate or private reference path.");
+    const rejection = skillReferenceRejection(
+      content.body,
+      new Map(files.map(({ path, content }) => [path, content])),
+    );
+    return rejection ? omitSkill(skill, index, rejection) : true;
+  });
   for (const routine of document.routines) validateRoutine(routine);
   const json = canonicalBotPackageJson(document);
   return { document, json, leftOut: leftOut.entries };
@@ -722,23 +779,19 @@ export function parseBotPackageSource(
       throw new BotPackageError("The backup has too many files.");
     return backupPackage(backup.data, options);
   }
-  if (
-    format !== BOT_PACKAGE_FORMAT &&
-    format !== "openmaus.grok/1" &&
-    format !== "grokbot-bundle/v1"
-  )
+  const nativeFormat = format === BOT_PACKAGE_FORMAT || format === BOT_PACKAGE_FILES_FORMAT;
+  if (!nativeFormat && format !== "openmaus.grok/1" && format !== "grokbot-bundle/v1")
     throw new BotPackageError("This JSON format is not supported.");
   const leftOut = new LeftOutBudget();
   const zone = TimeZoneSchema.safeParse(options.defaultTimezone ?? "UTC");
-  const candidate =
-    format === BOT_PACKAGE_FORMAT
-      ? root
-      : convertGrok(root, leftOut, zone.success ? zone.data : "UTC");
+  const candidate = nativeFormat
+    ? root
+    : convertGrok(root, leftOut, zone.success ? zone.data : "UTC");
   const native = known(candidate);
   ignoredFields(
     root,
     new Set(
-      format === BOT_PACKAGE_FORMAT
+      nativeFormat
         ? ["format", "profile", "skills", "routines", "connections", "memory"]
         : [
             "format",
@@ -776,7 +829,7 @@ export function parseBotPackageSource(
   for (const [index, skill] of list(native.skills).entries())
     ignoredFields(
       known(skill),
-      new Set(["name", "description", "content"]),
+      new Set(["name", "description", "content", ...(nativeFormat ? ["files"] : [])]),
       `skills[${index}]`,
       leftOut,
     );
@@ -791,7 +844,7 @@ export function parseBotPackageSource(
     ignoredFields(known(connection), new Set(["name", "note"]), `connections[${index}]`, leftOut);
   for (const [index, memory] of list(native.memory).entries())
     ignoredFields(known(memory), new Set(["path", "content"]), `memory[${index}]`, leftOut);
-  if (format !== BOT_PACKAGE_FORMAT) {
+  if (!nativeFormat) {
     ignoredFields(
       known(root.persona),
       new Set(["name", "title", "description", "instructions", "avatarColor"]),
@@ -856,7 +909,7 @@ export function parseBotPackageSource(
       ignoredFields(known(memory), new Set(["text", "content"]), `memory[${index}]`, leftOut);
   }
   guardCollections(native);
-  if (format === BOT_PACKAGE_FORMAT && Array.isArray(native.routines))
+  if (nativeFormat && Array.isArray(native.routines))
     native.routines = native.routines.filter((value, index) => {
       const crons = known(value).crons;
       if (

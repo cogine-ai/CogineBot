@@ -296,6 +296,34 @@ it("previews native text as data and creates only after the explicit new-copy ac
   expect(onOpen).toHaveBeenCalledExactlyOnceWith("new-bot", "Native copy");
 });
 
+it("shows portable Skill reference text only after opening its file", async () => {
+  const path = "references/notes.md";
+  const content = "Exact <draft> text.";
+  const normal = api.request.getMockImplementation()!;
+  api.request.mockImplementation(async (procedure, input) => {
+    if (procedure !== "botPackages/preview") return normal(procedure, input);
+    return {
+      ...preview,
+      sourceFormat: "coginebot.package/v2",
+      document: {
+        ...doc,
+        format: "coginebot.package/v2",
+        skills: [{ ...doc.skills[0]!, files: [{ path, content }] }],
+      },
+    };
+  });
+  await mountImport();
+  await fill("Bot package or Grok JSON", "{}");
+  await click("Preview");
+  await click("Skills · 1");
+  await click("recipe");
+  expect(node.textContent).not.toContain(content);
+  await click(path);
+  expect(node.textContent).toContain(content);
+  expect(node.querySelector("draft")).toBeNull();
+  expect(imports()).toHaveLength(0);
+});
+
 it("invalidates a native preview when memory selection changes", async () => {
   await mountImport();
   await fill("Bot package or Grok JSON", "{}");

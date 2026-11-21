@@ -160,12 +160,7 @@ export async function skillReadFromTool(
   const skill = builtin ?? (row && toRecord(row));
   if (!skill) return { error: "Skill not found." };
   const files = new Map<string, string>();
-  if (
-    skill.source === "plugin" &&
-    row?.files &&
-    typeof row.files === "object" &&
-    !Array.isArray(row.files)
-  ) {
+  if (row?.files && typeof row.files === "object" && !Array.isArray(row.files)) {
     for (const [path, text] of Object.entries(row.files)) {
       if (normalizeSkillFilePath(path) === path && typeof text === "string") files.set(path, text);
     }

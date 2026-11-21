@@ -430,7 +430,10 @@ function hasMissingSkillReference(body: string, files: ReadonlyMap<string, strin
   return false;
 }
 
-function skillReferenceRejection(body: string, files: ReadonlyMap<string, string>): string | null {
+export function skillReferenceRejection(
+  body: string,
+  files: ReadonlyMap<string, string>,
+): string | null {
   const unsupported = "The skill has a missing or unsupported reference file.";
   const unavailable =
     "The skill has too many reference files, or a file is unreadable or too large.";

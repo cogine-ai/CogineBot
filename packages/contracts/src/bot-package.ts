@@ -10,8 +10,10 @@ import {
   TimeZoneSchema,
 } from "./domain.js";
 import { Id } from "./ids.js";
+import { PLUGIN_SKILL_FILE_LIMITS } from "./plugins.js";
 
 export const BOT_PACKAGE_FORMAT = "coginebot.package/v1";
+export const BOT_PACKAGE_FILES_FORMAT = "coginebot.package/v2";
 export const BOT_PACKAGE_MAX_BYTES = 4 * 1024 * 1024;
 export const BOT_PACKAGE_MAX_SKILLS = 200;
 export const BOT_PACKAGE_MAX_ROUTINES = 50;
@@ -37,6 +39,24 @@ export const BotPackageProfileSchema = z.object({
   color: BotAvatarValueSchema.optional(),
 });
 
+export const BotPackageSkillFilesSchema = z
+  .array(
+    z.strictObject({
+      path: z.string().min(1).max(300),
+      content: z
+        .string()
+        .max(PLUGIN_SKILL_FILE_LIMITS.bytes)
+        .refine((value) => botPackageUtf8Bytes(value) <= PLUGIN_SKILL_FILE_LIMITS.bytes),
+    }),
+  )
+  .min(1)
+  .max(PLUGIN_SKILL_FILE_LIMITS.count)
+  .refine(
+    (files) =>
+      files.reduce((total, file) => total + botPackageUtf8Bytes(file.content), 0) <=
+      PLUGIN_SKILL_FILE_LIMITS.totalBytes,
+  );
+
 export const BotPackageSkillSchema = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().min(1).max(2000),
@@ -45,6 +65,7 @@ export const BotPackageSkillSchema = z.object({
     .min(1)
     .max(100_000)
     .refine((value) => botPackageUtf8Bytes(value) <= 100_000, "Skill is too large"),
+  files: BotPackageSkillFilesSchema.optional(),
 });
 
 export const BotPackageRoutineSchema = z.object({
@@ -85,7 +106,7 @@ export const BotPackageMemorySchema = z.object({
 });
 
 export const BotPackageDocumentSchema = z.object({
-  format: z.literal(BOT_PACKAGE_FORMAT),
+  format: z.enum([BOT_PACKAGE_FORMAT, BOT_PACKAGE_FILES_FORMAT]),
   profile: BotPackageProfileSchema,
   skills: z.array(BotPackageSkillSchema).max(BOT_PACKAGE_MAX_SKILLS).default([]),
   routines: z.array(BotPackageRoutineSchema).max(BOT_PACKAGE_MAX_ROUTINES).default([]),
@@ -138,6 +159,7 @@ export const BotPackagePreviewSchema = z.object({
   expiresAt: z.string(),
   sourceFormat: z.enum([
     BOT_PACKAGE_FORMAT,
+    BOT_PACKAGE_FILES_FORMAT,
     "openmaus.grok/1",
     "grokbot-bundle/v1",
     "openclaw",
@@ -170,7 +192,10 @@ export const BotPackageImportInput = BotPackageModelKeyInput.partial().extend({
 });
 export type BotPackageImportInput = z.infer<typeof BotPackageImportInput>;
 
-export const BotPackageSkillReceiptSchema = BotPackageSkillSchema.omit({ content: true }).extend({
+export const BotPackageSkillReceiptSchema = BotPackageSkillSchema.omit({
+  content: true,
+  files: true,
+}).extend({
   id: Id,
   key: z.string(),
   status: z.enum(["pending", "activated", "removed"]),

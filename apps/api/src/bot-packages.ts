@@ -3,6 +3,7 @@ import { ORPCError } from "@orpc/server";
 import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   BotPackageError,
+  canonicalBotPackageJson,
   parseBotPackageSource,
   persistPreparedSecret,
   prepareBotPackageDocument,
@@ -21,11 +22,13 @@ import type {
 import {
   AgentBackupMcpSchema,
   AgentBackupModelSchema,
+  BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
   BOT_PACKAGE_MAX_CONNECTIONS,
   BOT_PACKAGE_MODEL_KEY_MISMATCH,
   BotPackageDocumentSchema,
   BotPackageLeftOutSchema,
+  BotPackageSkillFilesSchema,
 } from "@rakazo/contracts";
 import { isOneShotRoutineCron } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
@@ -82,7 +85,7 @@ const packagePlanSchema = BotPackageDocumentSchema.extend({
 });
 const includeChildren = {
   bot: { select: { archivedAt: true } },
-  components: { orderBy: { key: "asc" as const } },
+  components: { orderBy: { key: "asc" as const }, omit: { files: true } },
 } as const;
 type Row = Prisma.BotPackageImportGetPayload<{ include: typeof includeChildren }>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -409,8 +412,9 @@ export function createBotPackagesService(deps: Deps) {
         })),
       });
     const components: Prisma.BotPackageComponentCreateManyInput[] = [
-      ...document.skills.map((skill, index) => ({
+      ...document.skills.map(({ files, ...skill }, index) => ({
         ...skill,
+        ...(files ? { files } : {}),
         importId: marker.id,
         botId: bot.id,
         key: `skill:${index}`,
@@ -751,13 +755,26 @@ export function createBotPackagesService(deps: Deps) {
           const resolved = input.name
             ? resolveSkillContent({ prior: { content: component.content }, name: input.name })
             : { content: component.content };
-          const skill = await createAgentSkillsService(tx).create(context.actor, resolved);
+          const files = BotPackageSkillFilesSchema.nullable().safeParse(component.files);
+          if (!files.success)
+            throw new ORPCError("CONFLICT", {
+              message: "This skill changed. Refresh the package status.",
+            });
+          const skill = await createAgentSkillsService(tx).create(context.actor, {
+            ...resolved,
+            ...(files.data
+              ? {
+                  files: Object.fromEntries(files.data.map(({ path, content }) => [path, content])),
+                }
+              : {}),
+          });
           await tx.botPackageComponent.update({
             where: { id: component.id },
             data: {
               name: skill.name,
               description: skill.description,
               content: null,
+              files: Sql.DbNull,
               status: "activated",
               targetSkillId: skill.id,
               activationBinding: binding,
@@ -801,15 +818,8 @@ export function createBotPackagesService(deps: Deps) {
         };
         const skills = skillIds.length
           ? await tx.agentSkill.findMany({
-              where: { ...selectedSkillWhere, files: { equals: Sql.DbNull } },
-              select: { id: true, name: true, description: true, content: true },
-              orderBy: { id: "asc" },
-            })
-          : [];
-        const referencedSkills = skillIds.length
-          ? await tx.agentSkill.findMany({
-              where: { ...selectedSkillWhere, files: { not: Sql.DbNull } },
-              select: { id: true, name: true },
+              where: selectedSkillWhere,
+              select: { id: true, name: true, description: true, content: true, files: true },
               orderBy: { id: "asc" },
             })
           : [];
@@ -827,7 +837,7 @@ export function createBotPackagesService(deps: Deps) {
               select: { id: true },
             })
           : [];
-        if (skills.length + referencedSkills.length !== skillIds.length)
+        if (skills.length !== skillIds.length)
           throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
         const routines = await tx.routine.findMany({
           where: { ...own(context.actor), botId: bot.id },
@@ -856,38 +866,19 @@ export function createBotPackagesService(deps: Deps) {
           bot,
           components,
           skills,
-          referencedSkills,
           routines,
           memory,
           assignments,
           availableTargets,
         };
       });
-      const {
-        bot,
-        components,
-        skills,
-        referencedSkills,
-        routines,
-        memory,
-        assignments,
-        availableTargets,
-      } = snapshot;
+      const { bot, components, skills, routines, memory, assignments, availableTargets } = snapshot;
       const leftOut: BotPackageLeftOut[] = [
         note(
           "profile.runtime",
           "Model, computer, fleet, conversation, file and permission bindings are not exported.",
         ),
       ];
-      for (const skill of referencedSkills) {
-        leftOut.push(
-          note(
-            redactSecretText(skill.name),
-            "This skill has reference files. Install its plugin on the destination.",
-            "skill",
-          ),
-        );
-      }
       const portableRoutines = routines.flatMap((routine, index) => {
         if (!routine.crons.length || routine.crons.some(isOneShotRoutineCron)) {
           leftOut.push(
@@ -956,10 +947,35 @@ export function createBotPackagesService(deps: Deps) {
         );
       if (!input.includeMemory)
         leftOut.push(note("memory", "Memory notes were not selected.", "memory"));
+      const portableSkills = [
+        ...components
+          .filter((component) => component.kind === "skill" && component.status === "pending")
+          .map(({ name, description, content, files }) => ({
+            name,
+            description,
+            content,
+            ...(files === null ? {} : { files }),
+          })),
+        ...skills.map(({ name, description, content, files }) => ({
+          name,
+          description,
+          content,
+          ...(files === null
+            ? {}
+            : {
+                files:
+                  typeof files === "object" && !Array.isArray(files)
+                    ? Object.entries(files).map(([path, content]) => ({ path, content }))
+                    : [],
+              }),
+        })),
+      ];
       let safe: ReturnType<typeof prepareBotPackageDocument>;
       try {
         safe = prepareBotPackageDocument({
-          format: BOT_PACKAGE_FORMAT,
+          format: portableSkills.some(({ files }) => files !== undefined)
+            ? BOT_PACKAGE_FILES_FORMAT
+            : BOT_PACKAGE_FORMAT,
           profile: {
             name: bot.name,
             title: bot.title,
@@ -967,20 +983,7 @@ export function createBotPackagesService(deps: Deps) {
             instructions: bot.instructions,
             color: bot.color,
           },
-          skills: [
-            ...components
-              .filter((component) => component.kind === "skill" && component.status === "pending")
-              .map((component) => ({
-                name: component.name,
-                description: component.description,
-                content: component.content,
-              })),
-            ...skills.map((skill) => ({
-              name: skill.name,
-              description: skill.description,
-              content: skill.content,
-            })),
-          ],
+          skills: portableSkills,
           routines: portableRoutines,
           connections: uniqueConnections,
           memory,
@@ -989,14 +992,19 @@ export function createBotPackagesService(deps: Deps) {
         return packageError(error);
       }
       leftOut.push(...safe.leftOut);
-      const json = safe.json;
+      const document = safe.document;
+      const downgrade =
+        document.format === BOT_PACKAGE_FILES_FORMAT &&
+        !document.skills.some((skill) => skill.files);
+      if (downgrade) document.format = BOT_PACKAGE_FORMAT;
+      const json = downgrade ? canonicalBotPackageJson(document) : safe.json;
       const filename = `${
         safe.document.profile.name
           .replace(/[^a-z0-9_-]/gi, "-")
           .replace(/-+/g, "-")
           .slice(0, 60) || "bot"
       }.coginebot.json`;
-      return { document: safe.document, json, filename, leftOut };
+      return { document, json, filename, leftOut };
     },
   };
 }
