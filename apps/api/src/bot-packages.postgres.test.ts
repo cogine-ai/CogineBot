@@ -1505,6 +1505,15 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
           }),
           files: [{ path, content: fileContent }],
         },
+        {
+          name: "Standalone Skill",
+          description: "Has no reference files",
+          content: buildSkillMd({
+            name: "Standalone Skill",
+            description: "Has no reference files",
+            body: "Use the following instructions.",
+          }),
+        },
       ],
     };
     const plan = await preview(owner, source);
@@ -1513,6 +1522,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const pending = receipt.skills[0]!;
     expect(pending).toMatchObject({ status: "pending", skillId: null });
     expect(await database.prisma.agentSkill.count({ where: { ...scope, name } })).toBe(0);
+    // The previous server selects kind "skill" for activation and pending exports.
+    const legacy = await database.prisma.botPackageComponent.findMany({
+      where: { importId: receipt.importId, kind: "skill", status: "pending" },
+      select: { id: true },
+    });
+    expect(legacy).toEqual([{ id: receipt.skills[1]?.id }]);
     const pendingExport = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
     expect(pendingExport.document.skills[0]?.files).toEqual(source.skills[0]?.files);
 
@@ -1523,6 +1538,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const skillId = activated.skills[0]!.skillId!;
     expect(activated.skills[0]?.status).toBe("activated");
     expect(replay.skills[0]?.skillId).toBe(skillId);
+    expect(
+      await database.prisma.botPackageComponent.findUniqueOrThrow({ where: { id: pending.id } }),
+    ).toMatchObject({ content: null, files: null });
     expect(await database.prisma.agentSkill.count({ where: { ...scope, name } })).toBe(1);
     expect(await skillReadFromTool(database.prisma, scope, { skillId, file: path })).toEqual({
       name,
@@ -1536,7 +1554,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       botId: receipt.botId,
       skillIds: [skillId],
     });
-    expect(activeExport.document.skills[0]?.files).toEqual(source.skills[0]?.files);
+    expect(activeExport.document.skills.find((skill) => skill.name === name)?.files).toEqual(
+      source.skills[0]?.files,
+    );
   });
   it("uses the current activated Skill on export and never revives deleted Skills or Bots", async () => {
     const owner = await account();

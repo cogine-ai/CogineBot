@@ -88,6 +88,9 @@ const includeChildren = {
   bot: { select: { archivedAt: true } },
   components: { orderBy: { key: "asc" as const }, omit: { files: true } },
 } as const;
+// Older servers select only "skill" for activation and export.
+const skillWithFilesKind = "skill-with-files";
+const skillComponentKinds = ["skill", skillWithFilesKind];
 type Row = Prisma.BotPackageImportGetPayload<{ include: typeof includeChildren }>;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const fleetTools = [
@@ -223,7 +226,7 @@ export function createBotPackagesService(deps: Deps) {
       skills: removed
         ? []
         : row.components
-            .filter((component) => component.kind === "skill")
+            .filter(({ kind }) => skillComponentKinds.includes(kind))
             .map((component) => {
               const target = component.targetSkillId
                 ? targetById.get(component.targetSkillId)
@@ -419,7 +422,7 @@ export function createBotPackagesService(deps: Deps) {
         importId: marker.id,
         botId: bot.id,
         key: `skill:${index}`,
-        kind: "skill",
+        kind: files ? skillWithFilesKind : "skill",
       })),
       ...(document.backupMcp?.length
         ? await importPendingMcpServers(
@@ -733,7 +736,7 @@ export function createBotPackagesService(deps: Deps) {
         const component = await tx.botPackageComponent.findFirst({
           where: {
             id: input.componentId,
-            kind: "skill",
+            kind: { in: skillComponentKinds },
             import: own(context.actor),
             bot: { ...own(context.actor), archivedAt: null },
           },
@@ -824,7 +827,7 @@ export function createBotPackagesService(deps: Deps) {
         if (selected.length !== skillIds.length)
           throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
         const pendingSkillIds = componentsForExport
-          .filter(({ kind, status }) => kind === "skill" && status === "pending")
+          .filter(({ kind, status }) => skillComponentKinds.includes(kind) && status === "pending")
           .map(({ id }) => id);
         const measurements: Prisma.Sql[] = [];
         // Count actual text rather than JSONB's extra formatting characters.
@@ -992,7 +995,7 @@ export function createBotPackagesService(deps: Deps) {
         leftOut.push(note("memory", "Memory notes were not selected.", "memory"));
       const portableSkills = [
         ...components
-          .filter((component) => component.kind === "skill" && component.status === "pending")
+          .filter(({ kind, status }) => skillComponentKinds.includes(kind) && status === "pending")
           .map(({ name, description, content, files }) => ({
             name,
             description,
