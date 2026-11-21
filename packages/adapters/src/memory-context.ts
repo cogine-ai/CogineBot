@@ -1,4 +1,5 @@
 import type { AdapterContext, MemorySnapshot, MemoryStore } from "@rakazo/adapter-kit";
+import { escapePromptData, redactSecrets } from "@rakazo/core";
 import { byteLength, truncateUtf8 } from "./utf8.js";
 
 const MAX_AGENT_MEMORY_BYTES = 32 * 1024;
@@ -7,23 +8,29 @@ type ScopedMemoryDocument = MemorySnapshot["documents"][number] & {
   scope: "bot" | "user";
 };
 
-export async function loadAgentMemoryContext(
+export async function loadAgentMemoryDocuments(
   memory: MemoryStore,
   botId: string,
   context: AdapterContext,
-  maxBytes = MAX_AGENT_MEMORY_BYTES,
-): Promise<string | undefined> {
+): Promise<ScopedMemoryDocument[]> {
   const [botMemory, userMemory] = await Promise.all([
     memory.read({ scope: "bot", botId }, context),
     memory.read({ scope: "user" }, context),
   ]);
-  const documents: ScopedMemoryDocument[] = [
+  return [
     ...botMemory.documents.map((document) => ({ ...document, scope: "bot" as const })),
     ...userMemory.documents.map((document) => ({ ...document, scope: "user" as const })),
   ];
+}
+
+export function renderAgentMemoryContext(
+  documents: readonly ScopedMemoryDocument[],
+  secrets: string[],
+  maxBytes = MAX_AGENT_MEMORY_BYTES,
+): string | undefined {
   if (documents.length === 0) return undefined;
 
-  documents.sort(
+  const ordered = documents.toSorted(
     (left, right) =>
       memoryTimestamp(right.updatedAt) - memoryTimestamp(left.updatedAt) ||
       right.revision - left.revision ||
@@ -39,21 +46,23 @@ export async function loadAgentMemoryContext(
 
   const sections: string[] = [];
   let remainingBytes = maxBytes - fixedBytes;
-  for (const document of documents) {
-    const heading = `${sections.length === 0 ? "" : "\n\n"}## ${document.scope}: ${document.path} (revision ${document.revision})\n`;
+  for (const document of ordered) {
+    const path = escapePromptData(redactSecrets(document.path, secrets));
+    const heading = `${sections.length === 0 ? "" : "\n\n"}## ${document.scope}: ${path} (revision ${document.revision})\n`;
     const headingBytes = byteLength(heading);
     if (headingBytes > remainingBytes) break;
     sections.push(heading);
     remainingBytes -= headingBytes;
 
+    const escapedContent = escapePromptData(redactSecrets(document.content, secrets));
     const content = truncateUtf8(
-      document.content,
+      escapedContent,
       remainingBytes,
       document.scope === "bot" ? "end" : "start",
     );
     sections.push(content);
     remainingBytes -= byteLength(content);
-    if (content !== document.content) break;
+    if (content !== escapedContent) break;
   }
 
   return `${preamble}${sections.join("")}${closing}`;

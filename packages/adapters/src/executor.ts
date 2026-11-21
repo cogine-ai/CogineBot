@@ -432,7 +432,7 @@ import {
   needsOAuthProbe,
   parseMcpServerToolArgs,
 } from "./mcp-server-tool.js";
-import { loadAgentMemoryContext } from "./memory-context.js";
+import { loadAgentMemoryDocuments, renderAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import {
   appendMemoryFact,
@@ -4946,7 +4946,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const [
           discovered,
           currentTurnImages,
-          memoryContext,
+          memoryDocuments,
           scratchpadContext,
           ticketContext,
           recalled,
@@ -4954,8 +4954,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           discoveredPromise,
           loadCurrentTurnImages(deps, turnBlocks, context),
           messagingChannelRun
-            ? Promise.resolve("")
-            : loadAgentMemoryContext(deps.memory, bot.id, context),
+            ? Promise.resolve([])
+            : loadAgentMemoryDocuments(deps.memory, bot.id, context),
           messagingChannelRun
             ? Promise.resolve("")
             : loadAgentScratchpadContext(deps, {
@@ -11354,9 +11354,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 ),
                 groupContext,
                 messagingContext,
-                redactedMemoryContext: memoryContext
-                  ? redactSecrets(memoryContext, runSecrets)
-                  : undefined,
+                redactedMemoryContext: renderAgentMemoryContext(memoryDocuments, runSecrets),
                 redactedScratchpadContext: scratchpadContext
                   ? redactSecrets(scratchpadContext, runSecrets)
                   : undefined,

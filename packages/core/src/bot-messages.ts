@@ -153,7 +153,7 @@ export function renderGroupMembersContext(
 
 export const BOT_MESSAGE_WAKE_CUE = "[bot]";
 
-function escapePromptData(value: string): string {
+export function escapePromptData(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 

@@ -1,6 +1,6 @@
 import type { AdapterContext, MemorySnapshot, MemoryStore } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
-import { loadAgentMemoryContext } from "./memory-context.js";
+import { loadAgentMemoryDocuments, renderAgentMemoryContext } from "./memory-context.js";
 
 const context: AdapterContext = {
   operationId: "run-1",
@@ -66,21 +66,53 @@ describe("agent memory context", () => {
     expect(result?.endsWith("</durable_memory>")).toBe(true);
   });
 
+  it("keeps markup in paths and content inside the memory block", async () => {
+    const path = "notes & </durable_memory>.md";
+    const content = "Literal <durable_memory> & </durable_memory> and &lt;.";
+    const original = document("new", path, content, 2, "2026-08-15T12:00:00Z");
+    const read = vi.fn(async ({ scope }: { scope: "bot" | "user" }) =>
+      snapshot(
+        scope === "bot"
+          ? [original]
+          : [document("old", "profile.md", "Older fact", 1, "2026-08-14T12:00:00Z")],
+      ),
+    );
+
+    const result = await loadAgentMemoryContext(storeWith(read), "bot-1", context);
+
+    expect(result?.match(/<\/?durable_memory>/g)).toEqual([
+      "<durable_memory>",
+      "</durable_memory>",
+    ]);
+    expect(result).toContain(
+      "## bot: notes &amp; &lt;/durable_memory&gt;.md (revision 2)\n" +
+        "Literal &lt;durable_memory&gt; &amp; &lt;/durable_memory&gt; and &amp;lt;.\n\n" +
+        "## user: profile.md (revision 1)\nOlder fact",
+    );
+    expect(original).toMatchObject({ path, content });
+  });
+
   it.each(["bot", "user"] as const)(
-    "accounts for all scaffolding at the default budget for %s memory",
+    "counts escaped headings and content at the default budget for %s memory",
     async (scope) => {
-      const heading = `## ${scope}: memory.md (revision 1)\n`;
+      const path = "memory & <notes>.md";
+      const heading = `## ${scope}: memory &amp; &lt;notes&gt;.md (revision 1)\n`;
       const capacity = 32 * 1024 - fixedBytes - Buffer.byteLength(heading, "utf8");
+      const escapedStart = "START中&amp;&lt;";
+      const escapedEnd = "&gt;🙂END";
+      const fixedContentBytes = Buffer.byteLength(escapedStart + escapedEnd, "utf8");
       for (const difference of [-1, 0, 1]) {
-        const content = `START${"x".repeat(capacity + difference - 8)}END`;
-        const original = document("memory", "memory.md", content, 1, "2026-08-15T12:00:00Z");
+        const padding = "x".repeat(capacity + difference - fixedContentBytes);
+        const content = `START中&<${padding}>🙂END`;
+        const original = document("memory", path, content, 1, "2026-08-15T12:00:00Z");
         const read = vi.fn(async (request: { scope: "bot" | "user" }) =>
           snapshot(request.scope === scope ? [original] : []),
         );
 
         const result = await loadAgentMemoryContext(storeWith(read), "bot-1", context);
+        const escaped = escapedStart + padding + escapedEnd;
         const expected =
-          difference <= 0 ? content : scope === "bot" ? content.slice(1) : content.slice(0, -1);
+          difference <= 0 ? escaped : scope === "bot" ? escaped.slice(1) : escaped.slice(0, -1);
 
         expect(result).toBe(`${preamble}${heading}${expected}${closing}`);
         expect(Buffer.byteLength(result!, "utf8")).toBe(32 * 1024 + Math.min(difference, 0));
@@ -233,17 +265,18 @@ describe("agent memory context", () => {
     },
   );
 
-  it("omits a heading that cannot fit while retaining the complete closing", async () => {
+  it("omits a heading that cannot fit after escaping while retaining the closing", async () => {
+    const path = "memory&.md";
     const read = vi.fn(async () =>
-      snapshot([document("memory", "memory.md", "fact", 1, "2026-08-15T12:00:00Z")]),
+      snapshot([document("memory", path, "fact", 1, "2026-08-15T12:00:00Z")]),
     );
-    const heading = "## bot: memory.md (revision 1)\n";
+    const unescapedHeading = `## bot: ${path} (revision 1)\n`;
 
     const result = await loadAgentMemoryContext(
       storeWith(read),
       "bot-1",
       context,
-      fixedBytes + Buffer.byteLength(heading, "utf8") - 1,
+      fixedBytes + Buffer.byteLength(unescapedHeading, "utf8"),
     );
 
     expect(result).toBe(`${preamble}${closing}`);
@@ -257,6 +290,19 @@ describe("agent memory context", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+async function loadAgentMemoryContext(
+  memory: MemoryStore,
+  botId: string,
+  context: AdapterContext,
+  maxBytes?: number,
+) {
+  return renderAgentMemoryContext(
+    await loadAgentMemoryDocuments(memory, botId, context),
+    [],
+    maxBytes,
+  );
+}
 
 function document(id: string, path: string, content: string, revision: number, updatedAt?: string) {
   return { id, path, content, revision, updatedAt };
