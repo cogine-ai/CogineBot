@@ -1,9 +1,12 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import type { AppConnectClient } from "@rakazo/chat-ui/app-connect";
+import { useAppConnectCard } from "@rakazo/chat-ui/app-connect";
 import { useHistorySources } from "@rakazo/chat-ui/history-sources";
 import type { HistorySourceReference, MessageBlock } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
-import { abortableDelay } from "@rakazo/core";
+import { MANAGED_APP_OAUTH_POPUP_NAME } from "@rakazo/contracts/connection-popup";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { cn } from "@rakazo/ui-web/lib/utils";
 import { X } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -23,7 +26,7 @@ import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
 import { McpServersOverlay } from "../McpServersOverlay";
 
-const NativeAppsOverlay = lazyOverlay(() =>
+const AppIntegrationsOverlay = lazyOverlay(() =>
   import("../PluginsOverlay").then((module) => module.PluginsOverlay),
 );
 
@@ -245,85 +248,67 @@ function OnboardingFocusOptionLabel({
   }
 }
 
+const appConnectClient: AppConnectClient = {
+  readback: (input, signal) => rpc.onboarding.appConnected(input, { signal }),
+  begin: (input, signal) => rpc.connections.begin(input, { signal }),
+  complete: (input, signal) => rpc.connections.complete(input, { signal }),
+  openAuthorization: (url, afterRequest) => {
+    if (afterRequest && !navigator.userActivation?.isActive) return "activation-required";
+    return window.open(url, MANAGED_APP_OAUTH_POPUP_NAME, "popup,width=560,height=720")
+      ? "opened"
+      : "failed";
+  },
+};
+
 export function AppConnectCard({
   botId,
+  messageId,
   block,
   onConnectionsChanged,
 }: {
   botId: string;
+  messageId: string;
   block: Extract<MessageBlock, { kind: "app_connect" }>;
   onConnectionsChanged: () => void;
 }) {
   const { t } = useLingui();
-  const [busy, setBusy] = useState(false);
-  const [nativeAppsOpen, setNativeAppsOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
   const nativeApp =
     block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
-  const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
-  const [error, setError] = useState<string | null>(null);
-  const connectionAttempt = useRef<AbortController | null>(null);
-  const status = block.status === "connected" ? "connected" : localStatus;
-  useEffect(() => () => connectionAttempt.current?.abort(), []);
+  const connection = useAppConnectCard({ botId, messageId, block }, appConnectClient);
+  const { busy, status, checkOnly, readyToOpen, needsAttention } = connection;
+  const failure = connection.error;
+  const error =
+    nativeError ??
+    (failure?.kind === "pending"
+      ? t`Authorization is still pending.`
+      : failure?.kind === "request"
+        ? errorText(failure.cause, t`Could not authorize this app`)
+        : failure && t`Could not authorize this app`);
 
-  async function authorize() {
-    if (block.connectorId === "native") {
-      if (!nativeApp?.success) {
-        setError(t`This application is not available for direct connection.`);
-        return;
-      }
-      setError(null);
-      setNativeAppsOpen(true);
+  function authorize() {
+    if (block.connectorId !== "native") return connection.authorize(onConnectionsChanged);
+    if (!nativeApp?.success) {
+      setNativeError(t`This application is not available for direct connection.`);
       return;
     }
-    connectionAttempt.current?.abort();
-    const controller = new AbortController();
-    connectionAttempt.current = controller;
-    setBusy(true);
-    setError(null);
-    try {
-      const started = await rpc.connections.begin({
-        connectorId: block.connectorId,
-        provider: block.provider,
-        displayName: block.name,
-      });
-      if (started.authorizationUrl) {
-        window.open(started.authorizationUrl, "rakazo-app-connect", "popup,width=560,height=720");
-      }
-      for (let i = 0; i < 60; i += 1) {
-        if (controller.signal.aborted) return;
-        const row = await rpc.connections
-          .complete({ connectionId: started.connectionId })
-          .catch(() => undefined);
-        if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
-          setLocalStatus("connected");
-          onConnectionsChanged();
-          await rpc.onboarding
-            .appConnected({ botId, provider: block.provider, connectorId: block.connectorId })
-            .catch(() => undefined);
-          return;
-        }
-        await abortableDelay(2_000, controller.signal);
-      }
-      if (!controller.signal.aborted) setError(t`Authorization timed out. Please try again.`);
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        setError(errorText(error, t`Could not authorize this app`));
-      }
-    } finally {
-      if (connectionAttempt.current === controller) {
-        connectionAttempt.current = null;
-        setBusy(false);
-      }
-    }
+    setNativeError(null);
+    setAppsOpen(true);
   }
   return (
     <BuiCard
       role="group"
       aria-label={t`${block.name} connection`}
-      className="w-[min(420px,80%)] px-4 py-3.5"
+      className={cn("px-4 py-3.5", readyToOpen ? "w-56 max-w-full" : "w-[min(420px,80%)]")}
     >
-      <div className="flex items-center gap-3.5">
+      <div
+        className={
+          readyToOpen
+            ? "grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3.5 gap-y-2"
+            : "flex items-center gap-3.5"
+        }
+      >
         {block.logo ? (
           <img
             src={block.logo}
@@ -336,7 +321,14 @@ export function AppConnectCard({
           </span>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block text-[15px] font-medium text-foreground">{block.name}</span>
+          <span
+            className={cn(
+              "block text-[15px] font-medium text-foreground",
+              readyToOpen && "wrap-anywhere",
+            )}
+          >
+            {block.name}
+          </span>
           <span className="block truncate text-[13px] text-muted-foreground">
             {block.description}
           </span>
@@ -346,25 +338,55 @@ export function AppConnectCard({
         ) : (
           <Button
             variant="secondary"
-            className="rounded-full hover:border-border hover:bg-accent hover:text-foreground"
+            className={cn(
+              "rounded-full hover:border-border hover:bg-accent hover:text-foreground",
+              readyToOpen &&
+                "col-span-2 h-auto min-h-8 max-w-full justify-self-end whitespace-normal",
+            )}
             disabled={busy}
             onClick={() => void authorize()}
           >
-            {busy ? t`Waiting…` : block.connectorId === "native" ? t`Connect` : t`Authorize`}
+            {busy
+              ? t`Waiting…`
+              : block.connectorId === "native"
+                ? t`Connect`
+                : checkOnly
+                  ? t`Check status`
+                  : readyToOpen
+                    ? t`Continue authorization`
+                    : t`Authorize`}
           </Button>
         )}
       </div>
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      {nativeAppsOpen && nativeApp?.success ? (
+      {error ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className="text-xs text-destructive">{error}</p>
+          {needsAttention ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                connection.prepareToManage();
+                setAppsOpen(true);
+              }}
+            >{t`Manage`}</Button>
+          ) : null}
+        </div>
+      ) : null}
+      {appsOpen ? (
         <Suspense fallback={null}>
-          <NativeAppsOverlay
+          <AppIntegrationsOverlay
             activeBotId={botId}
-            initialNativeApp={nativeApp.data}
-            onClose={() => setNativeAppsOpen(false)}
+            initialNativeApp={nativeApp?.success ? nativeApp.data : undefined}
+            onClose={() => setAppsOpen(false)}
             onConnectionsChanged={onConnectionsChanged}
             onConnected={(item) => {
-              if (item.connectorId === "native" && item.slug === nativeApp.data)
-                setLocalStatus("connected");
+              if (
+                nativeApp?.success &&
+                item.connectorId === "native" &&
+                item.slug === nativeApp.data
+              )
+                connection.markConnected();
             }}
           />
         </Suspense>

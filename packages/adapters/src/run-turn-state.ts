@@ -208,7 +208,6 @@ export function createRunTurnCheckpointState(input: {
         if (
           real &&
           real.name !== "request_secret" &&
-          real.name !== "connect_app" &&
           args &&
           typeof args === "object" &&
           !Array.isArray(args)

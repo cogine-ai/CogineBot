@@ -1,7 +1,8 @@
+import { MANAGED_APP_OAUTH_POPUP_NAME } from "@rakazo/contracts/connection-popup";
 import { isPageShareDocumentPath } from "@rakazo/contracts/page-paths";
 
 const OAUTH_POPUP_NAMES = new Set([
-  "rakazo-app-connect",
+  MANAGED_APP_OAUTH_POPUP_NAME,
   "rakazo-mcp-oauth",
   "rakazo-sso-oauth",
   "rakazo-model-oauth",

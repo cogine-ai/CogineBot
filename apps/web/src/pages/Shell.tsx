@@ -10389,6 +10389,7 @@ const MessageView = memo(function MessageView({
               <div key={i} className="flex justify-start py-1">
                 <AppConnectCard
                   botId={botId}
+                  messageId={message.id}
                   block={block}
                   onConnectionsChanged={onConnectionsChanged}
                 />

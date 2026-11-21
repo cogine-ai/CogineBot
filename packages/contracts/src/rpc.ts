@@ -1076,9 +1076,20 @@ export const appContract = {
     /** Flip an app_connect card to connected after authorization completes. */
     appConnected: oc
       .input(
-        z.object({ botId: Id, provider: z.string(), connectorId: z.string().default("composio") }),
+        z.object({
+          botId: Id,
+          provider: z.string(),
+          connectorId: z.string().default("composio"),
+          messageId: Id.optional(),
+        }),
       )
-      .output(z.object({ ok: z.literal(true) })),
+      .output(
+        z.object({
+          ok: z.literal(true),
+          connected: z.boolean(),
+          pendingConnectionId: Id.nullable(),
+        }),
+      ),
   },
   integrationSetup: {
     get: oc.output(IntegrationSetupStateSchema),
@@ -1125,11 +1136,19 @@ export const appContract = {
           displayName: z.string(),
           /** Derive a new authorization from this unavailable connection; never replace its identity. */
           connectionId: Id.optional(),
+          /** Chat cards reuse a connected or already-started chat grant for this exact app. */
+          reuseAppGrant: z.boolean().optional(),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),
     complete: oc
-      .input(z.object({ connectionId: Id, code: z.string().optional() }))
+      .input(
+        z.object({
+          connectionId: Id,
+          code: z.string().optional(),
+          card: z.object({ botId: Id, messageId: Id }).optional(),
+        }),
+      )
       .output(ConnectionSchema),
     rename: oc
       .input(z.object({ connectionId: Id, displayName: z.string().trim().min(1).max(80) }))

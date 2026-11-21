@@ -1,6 +1,19 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
+import type {
+  Connection,
+  ConnectionCatalogItem,
+  RunsListOutput,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openIntegrations,
+  rpc,
+  signup,
+} from "./helpers";
 
 const catalog: ConnectionCatalogItem[] = ["composio", "pipedream"].map((connectorId) => ({
   connectorId,
@@ -22,6 +35,304 @@ function account(id: string, status: Connection["status"], connectorId = "compos
     remoteAccountId: status === "connected" ? `record-${id}` : null,
   };
 }
+
+async function openAppCardFromChat(page: Page, app = "Google Mail", cardName = "Gmail") {
+  await signup(page, `chat-app-${Date.now()}@example.test`, "password12", "Robin");
+  await completeOnboarding(page);
+  const composer = page.getByRole("combobox", { name: "Message Chief" });
+  await composer.fill(`Connect ${app} to this chat.`);
+  const sent = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/rpc/threads/send",
+  );
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  expect((await sent).ok()).toBe(true);
+  return page.getByRole("group", { name: `${cardName} connection` });
+}
+
+test("a chat request opens one managed app card and keeps its verified status", async ({
+  page,
+}, testInfo) => {
+  const card = await openAppCardFromChat(page);
+  const authorize = card.getByRole("button", { name: "Authorize" });
+  await expect(authorize).toBeVisible();
+  await captureScreenshot(page, testInfo, "chat-app-connection-pending");
+
+  await authorize.click();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const connections = await rpc<Array<{ provider: string; status: string }>>(
+        page,
+        "connections/list",
+        {},
+      );
+      return connections.some(
+        ({ provider, status }) => provider === "GMAIL" && status === "connected",
+      );
+    })
+    .toBe(true);
+  await captureScreenshot(page, testInfo, "chat-app-connection-connected");
+  await page.reload();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(1);
+  await openIntegrations(page);
+  await expect(
+    page.getByTestId("connection-tile-gmail").getByRole("button", { name: "Manage", exact: true }),
+  ).toBeVisible();
+});
+
+test("rejects a URL supplied as the app name through chat", async ({ page }) => {
+  await signup(page, `invalid-app-${Date.now()}@example.test`, "password12", "Robin");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const sent = await rpc<{ runId: string }>(page, "threads/send", {
+    botId,
+    text: "Connect https://example.test/authorization to this chat.",
+    clientNonce: "invalid-app-name",
+  });
+  await expect
+    .poll(async () => {
+      const { runs } = await rpc<RunsListOutput>(page, "runs/list", {
+        filter: "recent",
+      });
+      return runs.find((run) => run.runId === sent.runId)?.status;
+    })
+    .toBe("completed");
+
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(thread.messages.flatMap((message) => message.blocks)).not.toContainEqual(
+    expect.objectContaining({ kind: "app_connect" }),
+  );
+  expect(await rpc(page, "connections/list", {})).toEqual([]);
+});
+
+test("a card recovers a completed authorization after the original update is interrupted", async ({
+  page,
+}) => {
+  const readback = "**/rpc/onboarding/appConnected";
+  const completion = "**/rpc/connections/complete";
+  await page.route(readback, (route) => route.abort());
+  const card = await openAppCardFromChat(page);
+  let onCommitted!: (connectionId: string) => void;
+  const committed = new Promise<string>((resolve) => {
+    onCommitted = resolve;
+  });
+  await page.route(completion, async (route) => {
+    const { connectionId } = route.request().postDataJSON().json;
+    const response = await route.fetch({ postData: { json: { connectionId } } });
+    expect((await response.json()).json).toMatchObject({ id: connectionId, status: "connected" });
+    await route.abort();
+    onCommitted(connectionId);
+  });
+  await card.getByRole("button", { name: "Authorize", exact: true }).click();
+  const connectionId = await committed;
+  await page.unroute(readback);
+  await page.reload();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+
+  const before = await rpc<Connection[]>(page, "connections/list", {});
+  const account = before.find((row) => row.id === connectionId);
+  if (!account) throw new Error("The verified connection is missing.");
+  expect(account).toMatchObject({ status: "connected" });
+  const reused = await rpc(page, "connections/begin", {
+    connectorId: account.connectorId,
+    provider: account.provider,
+    displayName: account.displayName,
+    reuseAppGrant: true,
+  });
+  expect(reused).toEqual({ connectionId, authorizationUrl: null });
+  expect(await rpc(page, "connections/list", {})).toEqual(before);
+});
+
+async function startPendingAirtableCard(page: Page) {
+  await page
+    .context()
+    .route("https://pipedream.example.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Authorization fixture</p>" }),
+    );
+  const completion = "**/rpc/connections/complete";
+  await page.route(completion, (route) => route.abort());
+  const card = await openAppCardFromChat(page, "Airtable", "Airtable");
+  const firstBegin = page.waitForResponse("**/rpc/connections/begin");
+  await card.getByRole("button", { name: "Authorize", exact: true }).click();
+  const { json: first } = await (await firstBegin).json();
+  expect(first).toMatchObject({ authorizationUrl: expect.stringContaining("example.test") });
+  const before = await rpc<Connection[]>(page, "connections/list", {});
+  expect(before).toEqual([expect.objectContaining({ id: first.connectionId, status: "pending" })]);
+  return { card, completion, connectionId: first.connectionId as string };
+}
+
+for (const failure of ["blocked", "throws"] as const) {
+  test(`retrying an app popup that ${failure === "blocked" ? "was blocked" : "throws"} opens the original grant`, async ({
+    page,
+  }) => {
+    await page.addInitScript((failure) => {
+      const open = window.open.bind(window);
+      let blocked = false;
+      window.open = (...args) => {
+        if (!blocked && String(args[0]).startsWith("https://pipedream.example.test/")) {
+          blocked = true;
+          if (failure === "throws") throw new Error("Fixture authorization launch detail");
+          return null;
+        }
+        return open(...args);
+      };
+    }, failure);
+    let begins = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/rpc/connections/begin") begins += 1;
+    });
+    const { card, completion, connectionId } = await startPendingAirtableCard(page);
+    await expect(card.getByText("Could not authorize this app", { exact: true })).toBeVisible();
+    await expect(card).not.toContainText("Fixture authorization launch detail");
+    if (failure === "blocked") {
+      await card.getByRole("button", { name: "Manage", exact: true }).click();
+      const integrations = page.getByRole("dialog", { name: "Integrations", exact: true });
+      await expect(integrations.getByTestId("connection-tile-airtable")).toBeVisible();
+      await integrations.getByRole("button", { name: "Close integrations" }).click();
+    }
+    const reopened = page.waitForEvent("popup");
+    await page.unroute(completion);
+    await card.getByRole("button", { name: "Authorize", exact: true }).click();
+    await reopened;
+    await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+    expect(await rpc(page, "connections/list", {})).toEqual([
+      expect.objectContaining({ id: connectionId, status: "connected" }),
+    ]);
+    expect(begins).toBe(1);
+  });
+}
+
+test("opens an already prepared authorization from a fresh user gesture", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: false } });
+  });
+  let begins = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/rpc/connections/begin") begins += 1;
+  });
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  const openAuthorization = card.getByRole("button", {
+    name: "Continue authorization",
+    exact: true,
+  });
+  await expect(openAuthorization).toBeVisible();
+  await expect(card).not.toContainText("Could not authorize this app");
+  const appName = card.getByText("Airtable", { exact: true });
+  const normalViewport = page.viewportSize()!;
+  for (const narrow of [false, true]) {
+    if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+    await expect(appName).toBeInViewport();
+    await expect(openAuthorization).toBeInViewport();
+    await expect
+      .poll(async () => {
+        const name = await appName.boundingBox();
+        const action = await openAuthorization.boundingBox();
+        const frame = await card.boundingBox();
+        return Boolean(
+          name &&
+            action &&
+            frame &&
+            action.y >= name.y + name.height &&
+            action.x >= frame.x &&
+            action.x + action.width <= frame.x + frame.width,
+        );
+      })
+      .toBe(true);
+    await captureScreenshot(
+      page,
+      testInfo,
+      narrow ? "chat-app-authorization-ready-narrow" : "chat-app-authorization-ready",
+    );
+  }
+  expect(
+    await appName.evaluate((label) => {
+      const original = label.textContent;
+      label.textContent = "LongAppName".repeat(8);
+      const fits = label.scrollWidth <= label.clientWidth;
+      label.textContent = original;
+      return fits;
+    }),
+  ).toBe(true);
+  await page.setViewportSize(normalViewport);
+
+  await page.unroute(completion);
+  const opened = page.waitForEvent("popup");
+  await openAuthorization.click();
+  await opened;
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  expect(begins).toBe(1);
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "connected" }),
+  ]);
+});
+
+test("a chat card resumes the same pending grant after reload", async ({ page }) => {
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  await page.reload();
+  await expect(card.getByRole("button", { name: "Check status", exact: true })).toBeVisible();
+  const reused = await rpc(page, "connections/begin", {
+    connectorId: "pipedream",
+    provider: "AIRTABLE",
+    displayName: "Airtable",
+    reuseAppGrant: true,
+  });
+  expect(reused).toEqual({ connectionId, authorizationUrl: null });
+  const newRequests: unknown[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/rpc/connections/begin")
+      newRequests.push(request.postDataJSON());
+  });
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(card.getByText("Authorization is still pending.")).toBeVisible();
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  const integrations = page.getByRole("dialog", { name: "Integrations", exact: true });
+  await expect(integrations).toBeVisible();
+  await expect(integrations.getByTestId("connection-tile-airtable")).toBeVisible();
+  await integrations.getByRole("button", { name: "Close integrations" }).click();
+  await page.unroute(completion);
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "connected" }),
+  ]);
+  expect(newRequests).toEqual([]);
+});
+
+test("checking a cancelled chat grant does not start another authorization", async ({ page }) => {
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  await page.reload();
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  await page
+    .getByTestId("connection-tile-airtable")
+    .getByRole("button", { name: /Airtable/ })
+    .click();
+  await page.getByRole("button", { name: "Cancel connection", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect account" }).click();
+  await expect
+    .poll(async () => {
+      const rows = await rpc<Connection[]>(page, "connections/list", {});
+      return rows.find(({ id }) => id === connectionId)?.status;
+    })
+    .toBe("revoked");
+  await page.getByRole("button", { name: "Close integrations" }).click();
+  await page.unroute(completion);
+
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  const authorize = card.getByRole("button", { name: "Authorize", exact: true });
+  await expect(authorize).toBeVisible();
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "revoked" }),
+  ]);
+
+  const next = page.waitForResponse("**/rpc/connections/begin");
+  await authorize.click();
+  const { json: restarted } = await (await next).json();
+  expect(restarted.connectionId).not.toBe(connectionId);
+});
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({
   page,

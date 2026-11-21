@@ -572,8 +572,19 @@ async function lockProviderConnectionScope(
   provider: string,
 ): Promise<void> {
   // Avoid NUL separators in the lock key; text params may truncate at a zero byte and break begin.
-  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider}`;
+  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider.toLowerCase()}`;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
+}
+
+function lacksProviderAuthorization(row: { providerRef: string | null; metadata?: unknown }) {
+  const { metadata } = row;
+  return (
+    !row.providerRef &&
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "authRevision" in metadata &&
+    typeof metadata.authRevision === "string"
+  );
 }
 
 async function lockMcpConnectionScope(
@@ -6748,14 +6759,15 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       appConnected: authed.onboarding.appConnected.handler(async ({ context, input }) => {
-        await markAppConnected(
+        const card = await markAppConnected(
           onboardingDeps,
           context.actor,
           input.botId,
           input.provider,
           input.connectorId,
+          input.messageId,
         );
-        return { ok: true as const };
+        return { ok: true as const, ...card };
       }),
     },
     integrationSetup: {
@@ -7048,6 +7060,7 @@ export function createRouter(deps: RouterDeps) {
             message: "Choose the native application's connection source first.",
           });
         const authRevision = randomUUID();
+        const metadata = { authRevision, ...(input.reuseAppGrant && { chatAppGrant: true }) };
         const connector =
           deps.integrationSettings &&
           (input.connectorId === "composio" || input.connectorId === "pipedream")
@@ -7067,14 +7080,30 @@ export function createRouter(deps: RouterDeps) {
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
               connectorId: input.connectorId,
-              provider: input.provider,
+              provider:
+                input.reuseAppGrant && !input.connectionId
+                  ? { equals: input.provider, mode: "insensitive" }
+                  : input.provider,
             },
-            select: { id: true, status: true },
+            select: { id: true, status: true, metadata: true },
             orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           });
           const target = input.connectionId
             ? existing.find((entry) => entry.id === input.connectionId)
             : undefined;
+          const reusable =
+            input.reuseAppGrant && !input.connectionId
+              ? (existing.find((entry) => entry.status === "connected") ??
+                existing.find(
+                  (entry) =>
+                    entry.status === "pending" &&
+                    entry.metadata &&
+                    typeof entry.metadata === "object" &&
+                    !Array.isArray(entry.metadata) &&
+                    entry.metadata.chatAppGrant === true,
+                ))
+              : undefined;
+          if (reusable) return { id: reusable.id, reused: true };
           if (input.connectionId && !target) throw new IsolationError();
           if (target && target.status !== "error" && target.status !== "revoked") {
             throw new ORPCError("CONFLICT", {
@@ -7083,7 +7112,7 @@ export function createRouter(deps: RouterDeps) {
           }
           // Reauthorization is a new grant. Old account references and queued work
           // must keep pointing to the original connection, even if login changes identity.
-          return tx.connection.create({
+          const created = await tx.connection.create({
             data: {
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
@@ -7091,10 +7120,14 @@ export function createRouter(deps: RouterDeps) {
               provider: input.provider,
               displayName: input.displayName,
               status: "pending",
-              metadata: { authRevision },
+              metadata,
             },
           });
+          return { id: created.id, reused: false };
         });
+        if (row.reused) {
+          return { connectionId: row.id, authorizationUrl: null };
+        }
         try {
           const auth = await connector.begin(
             { provider: input.provider, redirectUrl: `${deps.env.webOrigin}/app` },
@@ -7114,7 +7147,7 @@ export function createRouter(deps: RouterDeps) {
               data: {
                 status: auth.authorizationUrl ? "pending" : "connected",
                 providerRef: auth.state || null,
-                metadata: { state: auth.state, authRevision },
+                metadata: { ...metadata, state: auth.state },
               },
             });
             return updated.count > 0;
@@ -7304,7 +7337,14 @@ export function createRouter(deps: RouterDeps) {
                 });
               }
               if (current.status === "connected" || current.status === "error") return current;
+              // App-level readiness cannot vouch for an account while its own
+              // provider authorization is still being created.
+              const reserved = lacksProviderAuthorization(current);
               if (current.status === "revoked") {
+                if (reserved) {
+                  if (input.card) return current;
+                  throw new IsolationError();
+                }
                 // Authorization URLs from a revoke-win begin can still finish
                 // remotely. Cancel leftover Composio request ids / drop Pipedream
                 // remotes no active local row still references before rejecting.
@@ -7394,8 +7434,11 @@ export function createRouter(deps: RouterDeps) {
                     },
                   );
                 }
+                if (input.card) return current;
                 throw new IsolationError();
               }
+
+              if (reserved) return current;
 
               const adapterContext = connectionContext(
                 context.actor,
@@ -7542,6 +7585,17 @@ export function createRouter(deps: RouterDeps) {
             { timeout: 60_000 },
           );
         }
+        if (row.status === "connected" && input.card) {
+          const card = await markAppConnected(
+            onboardingDeps,
+            context.actor,
+            input.card.botId,
+            row.provider,
+            row.connectorId,
+            input.card.messageId,
+          );
+          if (!card.connected) throw new ORPCError("CONFLICT");
+        }
         return {
           id: row.id,
           connectorId: row.connectorId,
@@ -7607,6 +7661,7 @@ export function createRouter(deps: RouterDeps) {
         const needsProvider =
           snapshot &&
           ["connected", "pending", "error"].includes(snapshot.status) &&
+          !lacksProviderAuthorization(snapshot) &&
           (!snapshot.providerRef || snapshot.providerRef === snapshot.provider) &&
           (await deps.prisma.connection.count({
             where: {
@@ -7626,14 +7681,7 @@ export function createRouter(deps: RouterDeps) {
           : undefined;
         const outcome = await deps.prisma.$transaction(
           async (tx) => {
-            const row = await tx.connection.findFirst({
-              where: {
-                id: input.connectionId,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-            });
-            if (!row) {
+            if (!snapshot) {
               return {
                 remote: null as null | RemoteRevoke,
                 previousStatus: null as string | null,
@@ -7642,16 +7690,29 @@ export function createRouter(deps: RouterDeps) {
 
             // Advisory lock covers inserts as well as existing rows. SELECT FOR UPDATE
             // alone misses a concurrent begin that inserts after the lock query.
-            await lockProviderConnectionScope(tx, context.actor, row.connectorId, row.provider);
+            await lockProviderConnectionScope(
+              tx,
+              context.actor,
+              snapshot.connectorId,
+              snapshot.provider,
+            );
             await tx.$queryRaw`
               SELECT id
               FROM connections
               WHERE "spaceId" = ${context.actor.spaceId}
                 AND "userId" = ${context.actor.userId}
-                AND "connectorId" = ${row.connectorId}
-                AND provider = ${row.provider}
+                AND "connectorId" = ${snapshot.connectorId}
+                AND provider = ${snapshot.provider}
                 AND status IN ('connected', 'pending', 'error')
               FOR UPDATE`;
+            const row = await tx.connection.findFirst({
+              where: {
+                id: input.connectionId,
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+              },
+            });
+            if (!row) return { remote: null, previousStatus: null };
 
             const updated = await tx.connection.updateMany({
               where: {
@@ -7662,7 +7723,9 @@ export function createRouter(deps: RouterDeps) {
               },
               data: { status: "revoked" },
             });
-            if (updated.count === 0) {
+            // Before provider begin assigns a ref, disconnect is local. A
+            // late begin result is handled by the existing begin-race cleanup.
+            if (updated.count === 0 || lacksProviderAuthorization(row)) {
               return {
                 remote: null as null | RemoteRevoke,
                 previousStatus: null as string | null,
@@ -7694,6 +7757,11 @@ export function createRouter(deps: RouterDeps) {
             // still holding the begin/revoke lock so a new authorization cannot be
             // created and then wiped by Pipedream's slug-scoped DELETE.
             if (!accountSpecific) {
+              if (!needsProvider && lacksProviderAuthorization(snapshot)) {
+                throw new ORPCError("CONFLICT", {
+                  message: "Connection status changed; refresh and retry",
+                });
+              }
               if (
                 !needsProvider ||
                 row.connectorId !== snapshot?.connectorId ||

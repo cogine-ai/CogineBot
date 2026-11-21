@@ -83,6 +83,25 @@ describe("built-in tool bridge", () => {
     );
   });
 
+  it("lists app connection cards only when the runtime offers them and the bot permits them", () => {
+    const options = { ...ownerOptions, appConnectionsEnabled: true };
+    expect(partitionTools(selectBuiltinToolsForRun(options)).listed).toContainEqual(
+      expect.objectContaining({ name: "connect_app" }),
+    );
+    expect(
+      selectBuiltinToolsForRun({ ...options, disabledBuiltinTools: ["connect_app"] }),
+    ).not.toContainEqual(expect.objectContaining({ name: "connect_app" }));
+  });
+
+  it("exports an app-name pattern compatible with the runtime tool schema", () => {
+    const options = { ...ownerOptions, appConnectionsEnabled: true };
+    const definition = selectBuiltinToolsForRun(options).find(({ name }) => name === "connect_app");
+    const properties = definition?.inputSchema.properties as { app: { pattern: string } };
+    const pattern = new RegExp(properties.app.pattern);
+    expect(pattern.test("Google Calendar")).toBe(true);
+    expect(pattern.test("https://example.test/oauth")).toBe(false);
+  });
+
   it("classifies only real built-ins and includes separately registered connection tools", () => {
     expect(isDeferredTool("scratchpad_add")).toBe(true);
     expect(isDeferredTool("scratchpad_unknown")).toBe(false);
