@@ -125,6 +125,30 @@ async function startPendingAirtableCard(page: Page) {
   return { card, completion, connectionId: first.connectionId as string };
 }
 
+test("retrying a blocked app popup opens the original grant", async ({ page }) => {
+  await page.addInitScript(() => {
+    const open = window.open.bind(window);
+    let blocked = false;
+    window.open = (...args) => {
+      if (!blocked && String(args[0]).startsWith("https://pipedream.example.test/")) {
+        blocked = true;
+        return null;
+      }
+      return open(...args);
+    };
+  });
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  await expect(card.getByText("Could not authorize this app", { exact: true })).toBeVisible();
+  const reopened = page.waitForEvent("popup");
+  await page.unroute(completion);
+  await card.getByRole("button", { name: "Authorize", exact: true }).click();
+  await reopened;
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "connected" }),
+  ]);
+});
+
 test("a chat card resumes the same pending grant after reload", async ({ page }) => {
   const { card, completion, connectionId } = await startPendingAirtableCard(page);
   await page.reload();

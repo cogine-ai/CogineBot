@@ -263,6 +263,7 @@ export function AppConnectCard({
     block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
   const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
+  const [authorizationToRetry, setAuthorizationToRetry] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
@@ -301,7 +302,7 @@ export function AppConnectCard({
     setError(null);
     try {
       const started = pendingConnectionId
-        ? { connectionId: pendingConnectionId, authorizationUrl: null }
+        ? { connectionId: pendingConnectionId, authorizationUrl: authorizationToRetry }
         : await rpc.connections.begin(
             {
               connectorId: block.connectorId,
@@ -313,10 +314,20 @@ export function AppConnectCard({
           );
       if (controller.signal.aborted) return;
       setPendingConnectionId(started.connectionId);
-      const popup = started.authorizationUrl
-        ? window.open(started.authorizationUrl, "rakazo-app-connect", "popup,width=560,height=720")
-        : null;
-      const checks = popup ? 60 : 1;
+      if (started.authorizationUrl) {
+        const popup = window.open(
+          started.authorizationUrl,
+          "managed-app-authorization",
+          "popup,width=560,height=720",
+        );
+        if (!popup) {
+          setAuthorizationToRetry(started.authorizationUrl);
+          setError(t`Could not authorize this app`);
+          return;
+        }
+        setAuthorizationToRetry(null);
+      }
+      const checks = started.authorizationUrl ? 60 : 1;
       for (let i = 0; i < checks; i += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc.connections
@@ -388,7 +399,7 @@ export function AppConnectCard({
               ? t`Waiting…`
               : block.connectorId === "native"
                 ? t`Connect`
-                : pendingConnectionId
+                : pendingConnectionId && !authorizationToRetry
                   ? t`Check status`
                   : t`Authorize`}
           </Button>
@@ -398,7 +409,14 @@ export function AppConnectCard({
         <div className="mt-2 flex items-center justify-between gap-2">
           <p className="text-xs text-destructive">{error}</p>
           {pendingConnectionId && block.connectorId !== "native" ? (
-            <Button variant="ghost" size="sm" onClick={() => setAppsOpen(true)}>{t`Manage`}</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAuthorizationToRetry(null);
+                setAppsOpen(true);
+              }}
+            >{t`Manage`}</Button>
           ) : null}
         </div>
       ) : null}

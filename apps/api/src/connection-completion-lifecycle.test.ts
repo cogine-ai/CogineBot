@@ -136,7 +136,7 @@ function fixture(
 }
 
 describe("connection completion grant lifecycle", () => {
-  it.each(["gmail", null, "new-request"])(
+  it.each(["gmail", "new-request"])(
     "keeps %s pending when the account resolver cannot bind a concrete account",
     async (providerRef) => {
       const f = fixture({
@@ -162,6 +162,19 @@ describe("connection completion grant lifecycle", () => {
       });
     },
   );
+
+  it("does not adopt an active account while provider begin has not saved the new grant", async () => {
+    const f = fixture({ providerRef: null });
+    f.resolveConnectedAccountId.mockResolvedValue("different-space-account");
+    await expect(
+      f.client.connections.complete({ connectionId: "target", code: "unbound-code" }),
+    ).resolves.toMatchObject({ status: "pending", remoteAccountId: null });
+    expect(f.row()).toMatchObject({ status: "pending", providerRef: null });
+    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.connectionReady).not.toHaveBeenCalled();
+    expect(f.resolveConnectedAccountId).not.toHaveBeenCalled();
+    expect(f.transactionUpdate).not.toHaveBeenCalled();
+  });
 
   it("does not adopt an arbitrary remote account into an old error grant", async () => {
     const f = fixture({ status: "error", providerRef: null });

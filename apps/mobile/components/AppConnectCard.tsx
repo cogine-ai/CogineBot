@@ -32,6 +32,7 @@ export function AppConnectCard({
   const [busy, setBusy] = useState(false);
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
   const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
+  const [authorizationToRetry, setAuthorizationToRetry] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
@@ -77,7 +78,7 @@ export function AppConnectCard({
     setError(null);
     try {
       const started = pendingConnectionId
-        ? { connectionId: pendingConnectionId, authorizationUrl: null }
+        ? { connectionId: pendingConnectionId, authorizationUrl: authorizationToRetry }
         : await rpc<{ connectionId: string; authorizationUrl: string | null }>(
             "connections/begin",
             {
@@ -90,7 +91,18 @@ export function AppConnectCard({
           );
       if (controller.signal.aborted) return;
       setPendingConnectionId(started.connectionId);
-      if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
+      if (started.authorizationUrl) {
+        try {
+          await Linking.openURL(started.authorizationUrl);
+        } catch {
+          if (!controller.signal.aborted) {
+            setAuthorizationToRetry(started.authorizationUrl);
+            setError(t("Could not authorize this app"));
+          }
+          return;
+        }
+        setAuthorizationToRetry(null);
+      }
       const checks = started.authorizationUrl ? 60 : 1;
       for (let attempt = 0; attempt < checks; attempt += 1) {
         if (controller.signal.aborted) return;
@@ -169,14 +181,14 @@ export function AppConnectCard({
             label={
               block.connectorId === "native"
                 ? t("Connect")
-                : pendingConnectionId && !busy
+                : pendingConnectionId && !authorizationToRetry && !busy
                   ? t("Check status")
                   : view.actionLabel
             }
             accessibilityLabel={
               block.connectorId === "native"
                 ? t("Connect {name}", { name: block.name })
-                : pendingConnectionId
+                : pendingConnectionId && !authorizationToRetry
                   ? t("Check status")
                   : t("Authorize {name}", { name: block.name })
             }
@@ -197,7 +209,10 @@ export function AppConnectCard({
           label={t("Manage")}
           fill={false}
           style={{ alignSelf: "flex-end" }}
-          onPress={() => router.push("/(settings)/integrations")}
+          onPress={() => {
+            setAuthorizationToRetry(null);
+            router.push("/(settings)/integrations");
+          }}
         />
       ) : null}
     </View>

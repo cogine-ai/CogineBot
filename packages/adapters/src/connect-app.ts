@@ -1,5 +1,4 @@
 import type { AdapterContext, ManagedConnectorProvider } from "@rakazo/adapter-kit";
-import type { ConnectionCatalogItem } from "@rakazo/contracts";
 import { MessageBlock } from "@rakazo/contracts";
 import { appConnectCard, matchAppCatalog, matchesAppConnection } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
@@ -24,6 +23,10 @@ export const ConnectAppInput = z.strictObject({
 const RECENT_MESSAGES = 50;
 const INVALID_APP = { error: "Provide an application name or slug, up to 100 characters." };
 const UNAVAILABLE_APP = { error: "This app is not available to connect here." };
+const CATALOG_UNAVAILABLE = {
+  error: "Could not finish checking the application catalog. Try again.",
+  retryable: true,
+};
 const ALREADY_CONNECTED = { status: "connected", message: "This app is already connected." };
 const CARD_SHOWN = {
   status: "pending",
@@ -47,7 +50,7 @@ type CardEffect = { id: string; expectedStatus: "intended" | "approved" };
 async function readAppCatalog(
   providers: readonly ManagedConnectorProvider[],
   context: AdapterContext,
-): Promise<ConnectionCatalogItem[]> {
+) {
   const catalogs = await Promise.all(
     providers.map(async (provider) => {
       try {
@@ -57,11 +60,14 @@ async function readAppCatalog(
         );
       } catch {
         context.signal.throwIfAborted();
-        return [];
+        return undefined;
       }
     }),
   );
-  return catalogs.flat();
+  return {
+    catalog: catalogs.flatMap((items) => items ?? []),
+    failed: catalogs.includes(undefined),
+  };
 }
 
 export async function connectApp(
@@ -74,7 +80,9 @@ export async function connectApp(
   readPolicyBlock: (tx: Prisma.TransactionClient) => Promise<{ error: string } | undefined>,
 ) {
   const parsed = ConnectAppInput.safeParse(input);
-  const catalog = parsed.success ? await readAppCatalog(providers, context) : [];
+  const { catalog, failed } = parsed.success
+    ? await readAppCatalog(providers, context)
+    : { catalog: [], failed: false };
   const lease = runLeaseFor(deps, run.id);
   if (!lease) return undefined;
   context.signal.throwIfAborted();
@@ -163,6 +171,8 @@ export async function connectApp(
           }
         }
       }
+      if (failed && result === UNAVAILABLE_APP)
+        return { result: CATALOG_UNAVAILABLE, message: undefined };
       // An effect superseded during approval can never leave a card behind.
       if (!(await completeExternalEffect(tx, effect.id, effect.expectedStatus, result))) {
         throw new Error("The connection request changed before it could be recorded.");

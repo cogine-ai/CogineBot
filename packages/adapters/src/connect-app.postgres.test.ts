@@ -158,6 +158,21 @@ describePostgres("chat app connection cards (PostgreSQL)", () => {
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the same effect retryable when a provider catalog cannot be read", async () => {
+    const source = provider("managed", [entry("managed")]);
+    vi.mocked(source.catalog).mockRejectedValueOnce(new Error("fixture catalog unavailable"));
+    const { prisma, effect, execute, messages } = await fixture([source]);
+    const { id } = await effect();
+    await expect(execute(id)).resolves.toHaveProperty("retryable", true);
+    expect(await prisma.externalEffect.findUnique({ where: { id } })).toHaveProperty(
+      "status",
+      "intended",
+    );
+    expect(await messages()).toEqual([]);
+    await expect(execute(id)).resolves.toHaveProperty("status", "pending");
+    expect(await messages()).toHaveLength(1);
+  });
+
   it.each(["intended", "approved"] as const)("retries an interrupted %s card", async (status) => {
     const source = provider("managed", [entry("managed")]);
     const { prisma, effect, execute, messages } = await fixture([source]);
