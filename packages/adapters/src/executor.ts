@@ -9048,11 +9048,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (name === "remember") {
             const path = memoryCorrection?.path ?? (String(args.path ?? "").trim() || "MEMORY.md");
             const request = { scope: "bot" as const, botId: bot.id, path };
-            const readAgain = (revision?: number) => ({
-              error:
-                "Bot memory changed since it was read. Read the latest version before correcting it.",
-              ...(revision === undefined ? {} : { currentRevision: revision }),
-            });
+            const readAgain = (revision?: number) =>
+              revision === undefined
+                ? {
+                    error:
+                      "Bot memory document not found. Check the exact path before correcting it.",
+                  }
+                : {
+                    error:
+                      "Bot memory changed since it was read. Read the latest version before correcting it.",
+                    currentRevision: revision,
+                  };
             // Append can re-read on conflict; a correction is bound to one revision.
             for (let attempt = 1; ; attempt += 1) {
               context.signal.throwIfAborted();
@@ -13086,7 +13092,7 @@ function toolUsageLine(parts: {
     webLookupClause(disabled),
     ...secretGuidance(parts.pageBrowserAllowed, disabled),
     builtinOffered(disabled, "remember")
-      ? "Use remember for Bot Markdown facts. When the user corrects a saved fact, use correction with the exact path, current revision, and exact old text. If you cannot identify these from current memory, ask the user; do not append a conflicting fact."
+      ? "Use remember for Bot Markdown facts. When the user corrects a saved fact, use correction with the exact path, current revision, and exact old text. Decode one layer of &amp;, &lt;, and &gt; when copying the path or old text from the durable memory block. If you cannot identify these from current memory, ask the user; do not append a conflicting fact."
       : undefined,
     scratchpadClause(disabled),
     builtinOffered(disabled, "request_takeover")

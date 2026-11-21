@@ -756,24 +756,47 @@ describe("mutating tool effect idempotency keys", () => {
     }
 
     it("replaces the exact old text and injects the corrected revision into a later run", async () => {
-      const path = "Preferences & <units>.md";
+      const path = "Preferences & <units &lt;>.md";
+      const exactOld = "Use <imperial> units &lt;";
       const content = "Use <metric> units & distances";
-      const corrected = original.replace(correction.args.correction.original, content);
-      const f = await fixtureWithMemory(original, path);
-      f.setCalls([{ ...correction, args: { ...correction.args, path, content } }]);
+      const source = original.replace(correction.args.correction.original, exactOld);
+      const corrected = source.replace(exactOld, content);
+      const f = await fixtureWithMemory(source, path);
+      f.setCalls([
+        {
+          ...correction,
+          args: { path, content, correction: { original: exactOld, expectedRevision: 1 } },
+        },
+      ]);
       await f.run();
+      const before = f.runtimeRun.mock.lastCall?.[0].instructions;
+      expect(before).toContain("Decode one layer of &amp;, &lt;, and &gt;");
+      expect(before).toContain("Use &lt;imperial&gt; units &amp;lt;");
       expect(f.results).toEqual([{ ok: true, path, revision: 2 }]);
-      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([original, corrected]);
+      expect(f.memoryHistory.map((entry) => entry.content)).toEqual([source, corrected]);
 
       const later = fixture("run-after-correction", { memoryDocuments: f.memoryDocuments });
       await later.run();
       const request = later.runtimeRun.mock.lastCall?.[0];
       expect(request?.instructions).toContain(
-        "## bot: Preferences &amp; &lt;units&gt;.md (revision 2)\n" +
+        "## bot: Preferences &amp; &lt;units &amp;lt;&gt;.md (revision 2)\n" +
           "  Keep this section\r\nUse &lt;metric&gt; units &amp; distances\r\nFollow up  ",
       );
       expect(request?.instructions).not.toContain("(revision 1)");
-      expect(request?.instructions).not.toContain("Use imperial units");
+      expect(request?.instructions).not.toContain("Use &lt;imperial&gt; units &amp;lt;");
+    });
+
+    it("reports a missing correction path without changing memory", async () => {
+      const f = await fixtureWithMemory(original, "Preferences & units.md");
+      f.setCalls([
+        { ...correction, args: { ...correction.args, path: "Preferences &amp; units.md" } },
+      ]);
+      await f.run();
+
+      expect(f.results).toEqual([
+        { error: "Bot memory document not found. Check the exact path before correcting it." },
+      ]);
+      expect(f.memoryCommit).not.toHaveBeenCalled();
     });
 
     it.each([
