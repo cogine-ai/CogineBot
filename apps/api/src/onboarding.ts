@@ -287,24 +287,25 @@ export async function markAppConnected(
   provider: string,
   connectorId = "composio",
   messageId?: string,
-): Promise<boolean> {
+): Promise<{ connected: boolean; pendingConnectionId: string | null }> {
   const { bot, thread } = await requireBotThread(deps, actor, botId);
-  const { connected, updated } = await withTransactionRetry(() =>
+  const { connected, pendingConnectionId, updated } = await withTransactionRetry(() =>
     deps.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+      const scope = {
+        userId: actor.userId,
+        spaceId: actor.spaceId,
+        connectorId,
+        provider: { equals: provider, mode: "insensitive" },
+      } as const;
       const connection = await tx.connection.findFirst({
-        where: {
-          userId: actor.userId,
-          spaceId: actor.spaceId,
-          connectorId,
-          provider: { equals: provider, mode: "insensitive" },
-          status: "connected",
-        },
+        where: { ...scope, status: "connected" },
         select: { id: true },
       });
-      if (!connection) return { connected: false, updated: [] };
       const where = { threadId: thread.id, role: "bot" } as const;
       const select = { id: true, seq: true, blocks: true } as const;
+      if (!connection && !messageId)
+        return { connected: false, pendingConnectionId: null, updated: [] };
       // A card identifies its own message, even after it falls out of recent
       // history. Older clients and the settings flow still find nearby cards.
       const matches = messageId
@@ -314,6 +315,25 @@ export async function markAppConnected(
             ...(await tx.message.findMany({ where, select, orderBy: { seq: "desc" }, take: 50 })),
           ];
       const messages = new Map(matches.map((message) => [message.id, message]));
+      if (!connection) {
+        const hasCard = matches.some((message) =>
+          (message.blocks as MessageBlock[]).some((block) =>
+            matchesAppConnection(block, connectorId, provider),
+          ),
+        );
+        const pending = hasCard
+          ? await tx.connection.findFirst({
+              where: {
+                ...scope,
+                status: "pending",
+                metadata: { path: ["chatAppGrant"], equals: true },
+              },
+              orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+              select: { id: true },
+            })
+          : null;
+        return { connected: false, pendingConnectionId: pending?.id ?? null, updated: [] };
+      }
       const updated = [];
       let connected = messageId === undefined;
       for (const message of messages.values()) {
@@ -335,7 +355,7 @@ export async function markAppConnected(
           }),
         );
       }
-      return { connected, updated };
+      return { connected, pendingConnectionId: null, updated };
     }),
   );
   for (const event of updated) {
@@ -343,7 +363,7 @@ export async function markAppConnected(
       .notify(thread.id, event.seq)
       .catch((error) => getLogger().error("connection card realtime notification", error));
   }
-  return connected;
+  return { connected, pendingConnectionId };
 }
 
 function capitalize(value: string): string {

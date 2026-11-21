@@ -75,9 +75,12 @@ it("marks only the authorized connector when provider slugs collide", async () =
   }));
   tx.connection.findFirst.mockResolvedValue({ id: "connection" });
   tx.message.findMany.mockResolvedValue([{ id: "cards", seq: 7, blocks }] as never);
-  await expect(markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards")).resolves.toBe(
-    true,
-  );
+  await expect(
+    markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards"),
+  ).resolves.toEqual({
+    connected: true,
+    pendingConnectionId: null,
+  });
   expect(tx.connection.findFirst).toHaveBeenCalledWith({
     where: {
       userId: actor.userId,
@@ -108,9 +111,44 @@ it("marks only the authorized connector when provider slugs collide", async () =
 
 it("does not change a card without a connected account in this Space", async () => {
   const { deps, actor, tx } = fixture([]);
-  await expect(markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards")).resolves.toBe(
-    false,
-  );
-  expect(tx.message.findMany).not.toHaveBeenCalled();
+  await expect(
+    markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards"),
+  ).resolves.toEqual({
+    connected: false,
+    pendingConnectionId: null,
+  });
+  expect(tx.connection.findFirst).toHaveBeenCalledTimes(1);
   expect(tx.message.update).not.toHaveBeenCalled();
+});
+
+it("recovers only a pending chat grant for the specified card", async () => {
+  const { deps, actor, tx } = fixture([]);
+  tx.connection.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "pending" });
+  tx.message.findMany.mockResolvedValue([
+    {
+      id: "cards",
+      seq: 7,
+      blocks: [
+        { kind: "app_connect", connectorId: "pipedream", provider: "slack", status: "pending" },
+      ],
+    },
+  ] as never);
+  await expect(
+    markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards"),
+  ).resolves.toEqual({
+    connected: false,
+    pendingConnectionId: "pending",
+  });
+  expect(tx.connection.findFirst).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      where: {
+        userId: actor.userId,
+        spaceId: actor.spaceId,
+        connectorId: "pipedream",
+        provider: { equals: "slack", mode: "insensitive" },
+        status: "pending",
+        metadata: { path: ["chatAppGrant"], equals: true },
+      },
+    }),
+  );
 });

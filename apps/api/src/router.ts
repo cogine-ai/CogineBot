@@ -572,7 +572,7 @@ async function lockProviderConnectionScope(
   provider: string,
 ): Promise<void> {
   // Avoid NUL separators in the lock key; text params may truncate at a zero byte and break begin.
-  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider}`;
+  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider.toLowerCase()}`;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
 }
 
@@ -6748,7 +6748,7 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       appConnected: authed.onboarding.appConnected.handler(async ({ context, input }) => {
-        const connected = await markAppConnected(
+        const card = await markAppConnected(
           onboardingDeps,
           context.actor,
           input.botId,
@@ -6756,7 +6756,7 @@ export function createRouter(deps: RouterDeps) {
           input.connectorId,
           input.messageId,
         );
-        return { ok: true as const, connected };
+        return { ok: true as const, ...card };
       }),
     },
     integrationSetup: {
@@ -7049,6 +7049,7 @@ export function createRouter(deps: RouterDeps) {
             message: "Choose the native application's connection source first.",
           });
         const authRevision = randomUUID();
+        const metadata = { authRevision, ...(input.reuseAppGrant && { chatAppGrant: true }) };
         const connector =
           deps.integrationSettings &&
           (input.connectorId === "composio" || input.connectorId === "pipedream")
@@ -7068,19 +7069,30 @@ export function createRouter(deps: RouterDeps) {
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
               connectorId: input.connectorId,
-              provider: input.provider,
+              provider:
+                input.reuseAppGrant && !input.connectionId
+                  ? { equals: input.provider, mode: "insensitive" }
+                  : input.provider,
             },
-            select: { id: true, status: true },
+            select: { id: true, status: true, metadata: true },
             orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
           });
           const target = input.connectionId
             ? existing.find((entry) => entry.id === input.connectionId)
             : undefined;
           const reusable =
-            input.reuseConnected && !input.connectionId
-              ? existing.find((entry) => entry.status === "connected")
+            input.reuseAppGrant && !input.connectionId
+              ? (existing.find((entry) => entry.status === "connected") ??
+                existing.find(
+                  (entry) =>
+                    entry.status === "pending" &&
+                    entry.metadata &&
+                    typeof entry.metadata === "object" &&
+                    !Array.isArray(entry.metadata) &&
+                    entry.metadata.chatAppGrant === true,
+                ))
               : undefined;
-          if (reusable) return reusable;
+          if (reusable) return { id: reusable.id, reused: true };
           if (input.connectionId && !target) throw new IsolationError();
           if (target && target.status !== "error" && target.status !== "revoked") {
             throw new ORPCError("CONFLICT", {
@@ -7089,7 +7101,7 @@ export function createRouter(deps: RouterDeps) {
           }
           // Reauthorization is a new grant. Old account references and queued work
           // must keep pointing to the original connection, even if login changes identity.
-          return tx.connection.create({
+          const created = await tx.connection.create({
             data: {
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
@@ -7097,11 +7109,12 @@ export function createRouter(deps: RouterDeps) {
               provider: input.provider,
               displayName: input.displayName,
               status: "pending",
-              metadata: { authRevision },
+              metadata,
             },
           });
+          return { id: created.id, reused: false };
         });
-        if (row.status === "connected") {
+        if (row.reused) {
           return { connectionId: row.id, authorizationUrl: null };
         }
         try {
@@ -7123,7 +7136,7 @@ export function createRouter(deps: RouterDeps) {
               data: {
                 status: auth.authorizationUrl ? "pending" : "connected",
                 providerRef: auth.state || null,
-                metadata: { state: auth.state, authRevision },
+                metadata: { ...metadata, state: auth.state },
               },
             });
             return updated.count > 0;
@@ -7552,7 +7565,7 @@ export function createRouter(deps: RouterDeps) {
           );
         }
         if (row.status === "connected" && input.card) {
-          await markAppConnected(
+          const card = await markAppConnected(
             onboardingDeps,
             context.actor,
             input.card.botId,
@@ -7560,6 +7573,7 @@ export function createRouter(deps: RouterDeps) {
             row.connectorId,
             input.card.messageId,
           );
+          if (!card.connected) throw new ORPCError("CONFLICT");
         }
         return {
           id: row.id,

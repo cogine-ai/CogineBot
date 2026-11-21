@@ -31,6 +31,7 @@ export function AppConnectCard({
   const tokens = useMobileTokens();
   const [busy, setBusy] = useState(false);
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
+  const [startedAuthorization, setStartedAuthorization] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
@@ -40,13 +41,15 @@ export function AppConnectCard({
   useEffect(() => {
     if (readOnly || block.status === "connected") return;
     const readback = new AbortController();
-    void rpc<{ connected: boolean }>(
+    void rpc<{ connected: boolean; pendingConnectionId: string | null }>(
       "onboarding/appConnected",
       { botId, messageId, provider: block.provider, connectorId: block.connectorId },
       { signal: readback.signal },
     )
-      .then(({ connected }) => {
-        if (connected && !readback.signal.aborted) setLocalStatus("connected");
+      .then(({ connected, pendingConnectionId }) => {
+        if (readback.signal.aborted) return;
+        if (connected) setLocalStatus("connected");
+        setStartedAuthorization(Boolean(pendingConnectionId));
       })
       .catch(() => undefined);
     return () => readback.abort();
@@ -79,13 +82,15 @@ export function AppConnectCard({
           connectorId: block.connectorId,
           provider: block.provider,
           displayName: block.name,
-          reuseConnected: true,
+          reuseAppGrant: true,
         },
         { signal: controller.signal },
       );
       if (controller.signal.aborted) return;
+      setStartedAuthorization(true);
       if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      const checks = started.authorizationUrl ? 60 : 1;
+      for (let attempt = 0; attempt < checks; attempt += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc<{ status: string }>(
           "connections/complete",
@@ -97,9 +102,14 @@ export function AppConnectCard({
           setLocalStatus("connected");
           return;
         }
-        await abortableDelay(2_000, controller.signal);
+        if (row?.status === "revoked" || row?.status === "error") {
+          setStartedAuthorization(false);
+          setError(t("Could not authorize this app"));
+          return;
+        }
+        if (attempt + 1 < checks) await abortableDelay(2_000, controller.signal);
       }
-      if (!controller.signal.aborted) setError(t("Authorization timed out. Please try again."));
+      if (!controller.signal.aborted) setError(t("Authorization is still pending."));
     } catch (reason) {
       if (!controller.signal.aborted) {
         setError(errorText(reason, t("Could not authorize this app")));
@@ -153,11 +163,19 @@ export function AppConnectCard({
         </View>
         {view.showAuthorize && !readOnly ? (
           <NativeActionButton
-            label={block.connectorId === "native" ? t("Connect") : view.actionLabel}
+            label={
+              block.connectorId === "native"
+                ? t("Connect")
+                : startedAuthorization && !busy
+                  ? t("Check status")
+                  : view.actionLabel
+            }
             accessibilityLabel={
               block.connectorId === "native"
                 ? t("Connect {name}", { name: block.name })
-                : t("Authorize {name}", { name: block.name })
+                : startedAuthorization
+                  ? t("Check status")
+                  : t("Authorize {name}", { name: block.name })
             }
             fill={false}
             busy={busy}

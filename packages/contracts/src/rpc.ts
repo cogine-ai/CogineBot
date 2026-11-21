@@ -1083,7 +1083,13 @@ export const appContract = {
           messageId: Id.optional(),
         }),
       )
-      .output(z.object({ ok: z.literal(true), connected: z.boolean() })),
+      .output(
+        z.object({
+          ok: z.literal(true),
+          connected: z.boolean(),
+          pendingConnectionId: Id.nullable(),
+        }),
+      ),
   },
   integrationSetup: {
     get: oc.output(IntegrationSetupStateSchema),
@@ -1130,8 +1136,8 @@ export const appContract = {
           displayName: z.string(),
           /** Derive a new authorization from this unavailable connection; never replace its identity. */
           connectionId: Id.optional(),
-          /** A chat card can reuse an existing grant for this exact app. */
-          reuseConnected: z.boolean().optional(),
+          /** Chat cards reuse a connected or already-started chat grant for this exact app. */
+          reuseAppGrant: z.boolean().optional(),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),

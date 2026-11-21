@@ -1,4 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
 import { captureScreenshot, completeOnboarding, openIntegrations, rpc, signup } from "./helpers";
 
@@ -23,23 +24,23 @@ function account(id: string, status: Connection["status"], connectorId = "compos
   };
 }
 
-async function openGmailCardFromChat(page: Page) {
+async function openAppCardFromChat(page: Page, app = "Google Mail", cardName = "Gmail") {
   await signup(page, `chat-app-${Date.now()}@example.test`, "password12", "Robin");
   await completeOnboarding(page);
   const composer = page.getByRole("combobox", { name: "Message Chief" });
-  await composer.fill("Connect Google Mail to this chat.");
+  await composer.fill(`Connect ${app} to this chat.`);
   const sent = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/rpc/threads/send",
   );
   await page.getByRole("button", { name: "Send", exact: true }).click();
   expect((await sent).ok()).toBe(true);
-  return page.getByRole("group", { name: "Gmail connection" });
+  return page.getByRole("group", { name: `${cardName} connection` });
 }
 
 test("a chat request opens one managed app card and keeps its verified status", async ({
   page,
 }, testInfo) => {
-  const card = await openGmailCardFromChat(page);
+  const card = await openAppCardFromChat(page);
   const authorize = card.getByRole("button", { name: "Authorize" });
   await expect(authorize).toBeVisible();
   await captureScreenshot(page, testInfo, "chat-app-connection-pending");
@@ -74,7 +75,7 @@ test("a card recovers a completed authorization after the original update is int
   const readback = "**/rpc/onboarding/appConnected";
   const completion = "**/rpc/connections/complete";
   await page.route(readback, (route) => route.abort());
-  const card = await openGmailCardFromChat(page);
+  const card = await openAppCardFromChat(page);
   let onCommitted!: (connectionId: string) => void;
   const committed = new Promise<string>((resolve) => {
     onCommitted = resolve;
@@ -100,10 +101,43 @@ test("a card recovers a completed authorization after the original update is int
     connectorId: account.connectorId,
     provider: account.provider,
     displayName: account.displayName,
-    reuseConnected: true,
+    reuseAppGrant: true,
   });
   expect(reused).toEqual({ connectionId, authorizationUrl: null });
   expect(await rpc(page, "connections/list", {})).toEqual(before);
+});
+
+test("a chat card resumes the same pending grant after reload", async ({ page }) => {
+  await page
+    .context()
+    .route("https://pipedream.example.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Authorization fixture</p>" }),
+    );
+  const completion = "**/rpc/connections/complete";
+  await page.route(completion, (route) => route.abort());
+  const card = await openAppCardFromChat(page, "Airtable", "Airtable");
+  const firstBegin = page.waitForResponse("**/rpc/connections/begin");
+  await card.getByRole("button", { name: "Authorize", exact: true }).click();
+  const { json: first } = await (await firstBegin).json();
+  expect(first).toMatchObject({ authorizationUrl: expect.stringContaining("example.test") });
+  const before = await rpc<Connection[]>(page, "connections/list", {});
+  expect(before).toEqual([expect.objectContaining({ id: first.connectionId, status: "pending" })]);
+
+  await page.reload();
+  await expect(card.getByRole("button", { name: "Check status", exact: true })).toBeVisible();
+  const reused = await rpc(page, "connections/begin", {
+    connectorId: "pipedream",
+    provider: "AIRTABLE",
+    displayName: "Airtable",
+    reuseAppGrant: true,
+  });
+  expect(reused).toEqual({ connectionId: first.connectionId, authorizationUrl: null });
+  await page.unroute(completion);
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: first.connectionId, status: "connected" }),
+  ]);
 });
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({
