@@ -1,5 +1,6 @@
 import { BOT_PACKAGE_MAX_BYTES, isAgentBackupPath } from "@rakazo/contracts";
 import { Gunzip, Inflate } from "fflate";
+import { isPortableSkillReferencePath } from "../skill-reference-files.js";
 
 /**
  * Modified for bounded text-only Bot package import.
@@ -40,7 +41,7 @@ export class AgentImportArchiveError extends Error {
 const unreadable = () => new AgentImportArchiveError("unreadable");
 const tooLarge = () => new AgentImportArchiveError("too_large");
 
-type Entry = { path: string; data?: Uint8Array; skipped?: true };
+type Entry = { path: string; data?: Uint8Array; size?: number; skipped?: true };
 
 /**
  * Paths are mapped under `.openclaw/` or `.hermes/` when the layout is known. Files outside
@@ -58,6 +59,7 @@ export function openAgentImportArchive(
   stateSourcePath?: string;
   readOpenClawConfig(): string | undefined;
   has(path: string): boolean;
+  size(path: string): number | undefined;
   readOptional(path: string): string | undefined;
   read: (path: string) => string;
 } {
@@ -121,6 +123,7 @@ export function openAgentImportArchive(
     workspaceSourcePath: layout.workspaceSourcePath,
     stateSourcePath: layout.stateSourcePath,
     has: (path) => byVirtual.has(path),
+    size: (path) => byVirtual.get(path)?.size,
     readOptional: (path) => readOptionalEntry(byVirtual.get(path)),
     readOpenClawConfig: () => {
       if (!layout.configArchivePath) return undefined;
@@ -177,8 +180,13 @@ function mayBeRead(path: string, includeModelCredential: boolean): boolean {
   const name = segments.at(-1) ?? "";
   const folder = segments.at(-2) ?? "";
   if (segments.some((segment) => NOISE_FOLDERS.has(segment))) return false;
+  const isSkillReference = segments.some(
+    (segment, index) =>
+      segment === "skills" && isPortableSkillReferencePath(segments.slice(index + 2).join("/")),
+  );
   return (
     name === "SKILL.md" ||
+    isSkillReference ||
     READ_MARKDOWN.has(name) ||
     ((folder === "memory" || folder === "memories") && name.endsWith(".md")) ||
     name === "manifest.json" ||
@@ -452,7 +460,7 @@ class TarStream {
         if (this.retained > this.limits.retainedBytes) throw tooLarge();
       }
       if (path)
-        this.entries.push({ path, ...(NESTED_ARCHIVE.test(path) ? { skipped: true } : {}) });
+        this.entries.push({ path, size, ...(NESTED_ARCHIVE.test(path) ? { skipped: true } : {}) });
     } else {
       // Directories, links, devices, FIFOs, global headers and anything unknown.
       this.nextName = null;

@@ -243,6 +243,8 @@ test("agent backup import previews supported text and saves only the selected co
   const note = "Keep selected notes in this Bot only.";
   const otherInstructions = "Instructions left on the device.";
   const otherNote = "Private preferences left on the device.";
+  const referencePath = "references/checklist.md";
+  const referenceText = "Fixture row <draft> is kept.";
   const backupRoot = "backup/state";
   const files = {
     "backup/manifest.json": JSON.stringify({
@@ -263,8 +265,8 @@ test("agent backup import previews supported text and saves only the selected co
     [`${backupRoot}/workspace/AGENTS.md`]: otherInstructions,
     [`${backupRoot}/workspace/MEMORY.md`]: note,
     [`${backupRoot}/workspace/USER.md`]: otherNote,
-    [`${backupRoot}/workspace/skills/check/SKILL.md`]:
-      "---\nname: check\ndescription: Check a report.\n---\nInspect each row.\n",
+    [`${backupRoot}/workspace/skills/check/SKILL.md`]: `---\nname: check\ndescription: Check a report.\n---\nInspect each row using [the checklist](${referencePath}).\n`,
+    [`${backupRoot}/workspace/skills/check/${referencePath}`]: referenceText,
     [`${backupRoot}/workspace/skills/missing/SKILL.md`]:
       "---\nname: missing\ndescription: Needs a reference.\n---\nRead references/guide.md.\n",
     [`${backupRoot}/workspace/skills/invalid/SKILL.md`]: "Private text without metadata.",
@@ -351,7 +353,8 @@ test("agent backup import previews supported text and saves only the selected co
   expect(uploaded).not.toContain("IGNORE_THIS_FIXTURE_VALUE");
   expect(uploaded).not.toContain("Private config fixture.");
   expect(uploaded).not.toContain(otherInstructions);
-  expect(uploaded).not.toContain("Inspect each row.");
+  expect(uploaded).not.toContain("Inspect each row using");
+  expect(uploaded).not.toContain(referenceText);
   expect(uploaded).not.toContain("Read references/guide.md.");
   expect(uploaded).not.toContain("Private text without metadata.");
   expect(uploaded).not.toContain("Private runtime fixture.");
@@ -369,6 +372,7 @@ test("agent backup import previews supported text and saves only the selected co
   await expect(morning).not.toBeChecked();
   await expect(evening).not.toBeChecked();
   await morning.click();
+  await panel.getByRole("checkbox", { name: "skills/check/SKILL.md", exact: true }).click();
   await expect(evening).not.toBeChecked();
   await expect(panel.getByRole("button", { name: "Import as new bot", exact: true })).toHaveCount(
     0,
@@ -383,8 +387,14 @@ test("agent backup import previews supported text and saves only the selected co
   await expect(panel.getByText("Imported routines start paused.", { exact: true })).toBeVisible();
   expect(uploaded).not.toContain(otherNote);
   expect(uploaded).not.toContain("Read references/guide.md.");
-  await expect(document.getByText("Skills · 0", { exact: true })).toBeVisible();
+  await expect(document.getByText("Skills · 1", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "agent-backup-import");
+  await document.getByText("Skills · 1", { exact: true }).click();
+  await document.getByText("check", { exact: true }).click();
+  await document.getByText(referencePath, { exact: true }).click();
+  await expect(document.getByText(referenceText, { exact: true })).toBeVisible();
+  expect(uploaded).toContain(referenceText);
+  await captureScreenshot(page, testInfo, "d021-package-backup-skill-files");
   await panel.getByText("Choose backup content", { exact: true }).click();
   await document.getByText("Memory · 1", { exact: true }).click();
   await document.getByText("Routines · 1", { exact: true }).click();
@@ -404,6 +414,7 @@ test("agent backup import previews supported text and saves only the selected co
   ).toEqual([expect.objectContaining({ path: "MEMORY.md", content: note })]);
   const receipt = await rpc<BotPackageReceipt>(page, "botPackages/forBot", { botId: bot!.id });
   expect(receipt).toMatchObject({ status: "completed", botId: bot!.id, botName: importedName });
+  expect(receipt.skills).toMatchObject([{ name: "check", status: "pending" }]);
   expect(receipt.leftOut.length).toBeGreaterThan(0);
   const paused = await rpc<Routine[]>(page, "routines/list", { botId: bot!.id });
   expect(paused).toMatchObject([{ name: "Morning review", active: false, nextRunAt: null }]);

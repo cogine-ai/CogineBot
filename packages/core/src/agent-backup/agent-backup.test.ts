@@ -18,20 +18,25 @@ function folderEntry(path: string, text: string | Uint8Array = "", size?: number
   return { path, size: size ?? bytes.length, read: vi.fn(async () => bytes) };
 }
 
-it("reads only the selected workspace and flags Skill dependencies by name", async () => {
+it("reads the selected workspace's Skill and its reference without opening shadowed files", async () => {
   const soul = folderEntry(".openclaw/workspace-reports/SOUL.md", "\uFEFFReview rows.\r\n");
   const skill = folderEntry(
     ".openclaw/workspace-reports/skills/report/SKILL.md",
-    "---\nname: report\ndescription: Read a report.\n---\nCheck each row.\n",
+    "---\nname: report\ndescription: Read a report.\n---\nCheck references/table.md.\n",
+  );
+  const reference = folderEntry(
+    ".openclaw/workspace-reports/skills/report/references/table.md",
+    "\uFEFFReference rows.\r\n",
+  );
+  const shadow = folderEntry(
+    ".openclaw/skills/report/references/table.md",
+    "unselected managed reference",
   );
   const localOnly = [
     folderEntry(".openclaw/.env", "fixture secret", 9_000_000),
     folderEntry(".openclaw/cron/jobs.json", "fixture jobs"),
     folderEntry(".openclaw/workspace-reports/HEARTBEAT.md", "fixture runtime"),
-    folderEntry(
-      ".openclaw/workspace-reports/skills/report/references/table.md",
-      "fixture reference",
-    ),
+    shadow,
     folderEntry(".openclaw/SOUL.md", "home persona"),
     folderEntry(".openclaw/skills/report/SKILL.md", "managed Skill"),
   ];
@@ -40,22 +45,26 @@ it("reads only the selected workspace and flags Skill dependencies by name", asy
     "{ agents: { defaults: { model: 'openai/gpt-4.1' } } }",
   );
   const result = JSON.parse(
-    await encodeAgentBackupFolder([soul, skill, config, ...localOnly], () => true),
+    await encodeAgentBackupFolder([soul, skill, config, reference, ...localOnly], () => true),
   );
   expect(result).toMatchObject({
     source: "openclaw",
     files: [
       { path: "HEARTBEAT.md", content: "" },
       { path: "SOUL.md", content: "\uFEFFReview rows.\r\n" },
-      { path: "skills/report/SKILL.md" },
+      {
+        path: "skills/report/SKILL.md",
+        references: [{ path: "references/table.md", content: "\uFEFFReference rows.\r\n" }],
+      },
     ],
-    incompleteSkills: ["skills/report/SKILL.md"],
+    incompleteSkills: [],
     routineOmissions: [{ path: "cron/jobs.json", reason: "routineOwner" }],
     model: "unavailable",
   });
   expect(config.read).toHaveBeenCalledOnce();
   expect(soul.read).toHaveBeenCalledExactlyOnceWith(soul.size + 1);
   expect(skill.read).toHaveBeenCalledOnce();
+  expect(reference.read).toHaveBeenCalledExactlyOnceWith(reference.size + 1);
   for (const file of localOnly) expect(file.read).not.toHaveBeenCalled();
 });
 
@@ -621,14 +630,21 @@ it("does not offer Skills linking to files absent from the picker inventory", as
         "> [ref]: helper.txt\n\n[ref]: https://example.test\n\nRead [the helper][ref].",
       ),
       skill("external", "Read [the docs](https://example.test) and [the heading](#summary)."),
+      skill("external-reference-url", "Read [the docs](https://example.test/references/guide.md)."),
+      skill("local-fenced-script", "```sh\nbash scripts/setup.sh\n```"),
       skill("unused", "Review rows.\n\n[unused]: helper.txt"),
     ],
     () => true,
   );
   expect(agentBackupFileGroups(folder)).toMatchObject({
-    skills: ["skills/external/SKILL.md", "skills/unused/SKILL.md"],
+    skills: [
+      "skills/external-reference-url/SKILL.md",
+      "skills/external/SKILL.md",
+      "skills/unused/SKILL.md",
+    ],
     unavailable: [
       { path: "skills/local-autolink/SKILL.md", reason: "missingSkillFiles" },
+      { path: "skills/local-fenced-script/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-first/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-reference/SKILL.md", reason: "missingSkillFiles" },
@@ -639,10 +655,141 @@ it("does not offer Skills linking to files absent from the picker inventory", as
     "IDENTITY.md": strToU8("- Name: Review"),
     "skills/local-file/SKILL.md": await archiveSkill.read(),
   });
-  expect(agentBackupFileGroups(encodeAgentBackup(archive))?.skills).toEqual([
-    "skills/local-file/SKILL.md",
-  ]);
+  expect(agentBackupFileGroups(encodeAgentBackup(archive))).toMatchObject({
+    skills: [],
+    unavailable: [{ path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" }],
+  });
 });
+
+it.each(["zip", "folder"] as const)(
+  "keeps only the selected Hermes Skill's reference text in the preview from %s",
+  async (input) => {
+    const entry = (name: string, body: string) =>
+      `---\nname: ${name}\ndescription: Read the source.\n---\n${body}\n`;
+    const root = "skills/research";
+    const notes = [
+      "\uFEFFSee [the table](../examples/rows.csv).",
+      "",
+      "Don't change \"../assets/detail notes.md\" because it's required.",
+      "",
+      "```sh",
+      'cat "../assets/detail notes.md"',
+      "cat ../assets/details.md|head",
+      "cat<../assets/details.md&&head;cat ../assets/details.md",
+      "cat ../assets/name=//notes.md",
+      'curl "https://example.test/export?selector=(assets/local.md)&path=../assets/not-local.md"',
+      'fetch("//example.test/export?path=../assets/not-local.md")',
+      "```",
+      "",
+      "```js",
+      'const paths = ["../assets/detail notes.md","//example.test/files?path=../assets/not-local.md"];',
+      'const defaults = {"guide":"../assets/details.md"};',
+      "```",
+      "",
+    ].join("\r\n");
+    const files = {
+      "HERMES.md": "Review the selected notes.",
+      [`${root}/picked/SKILL.md`]: entry(
+        "picked",
+        [
+          "Read [the notes](references/notes.md), [references/extra note.md](references/extra%20note.md), [the examples](examples) and `examples/extra row.csv`.",
+          "The notation ../ points to a parent directory. The inline notation `../` means the same thing.",
+          "See [references/external.md](https://example.test/guide).",
+        ].join("\n"),
+      ),
+      [`${root}/picked/references/notes.md`]: notes,
+      [`${root}/picked/references/extra note.md`]: "Path contains a space.",
+      [`${root}/picked/examples/extra row.csv`]: "Example path contains a space.",
+      [`${root}/picked/assets/detail notes.md`]: "The command can resolve this text.",
+      [`${root}/picked/assets/details.md`]: "The pipe can read this file.",
+      [`${root}/picked/assets/name=/notes.md`]: "A local path with an equals sign.",
+      [`${root}/picked/examples/rows.csv`]: "item,value\r\nalpha,8\r\n",
+      [`${root}/other/SKILL.md`]: entry("other", "Read references/notes.md."),
+      [`${root}/other/references/notes.md`]: "The unchecked Skill's private text.",
+      [`${root}/missing/SKILL.md`]: entry("missing", "Read references/missing.md."),
+      [`${root}/missing/references/other.md`]: "This file cannot replace the missing file.",
+      [`${root}/implicit/SKILL.md`]: entry(
+        "implicit",
+        'Read `skill_view("implicit", "references/guide.md")`.\n\n```text\n{baseDir}/references/unknown.md\n```',
+      ),
+      [`${root}/implicit/references/guide.md`]: "Available inline dependency.",
+      [`${root}/array/SKILL.md`]: entry(
+        "array",
+        '```js\nconst files = ["./references/missing.md"];\n```',
+      ),
+      [`${root}/directory/SKILL.md`]: entry("directory", "Browse [inputs](./)."),
+      [`${root}/directory/references/index.md`]: "[An absent file](missing.md).",
+      [`${root}/missing-parent/SKILL.md`]: entry(
+        "missing-parent",
+        "See [the guide](references/guide.md).",
+      ),
+      [`${root}/missing-parent/references/guide.md`]: "```sh\ncat ../assets/details.md\n```",
+      [`${root}/escaped/SKILL.md`]: entry("escaped", "See [the guide](references/guide.md)."),
+      [`${root}/escaped/references/guide.md`]: "```sh\ncat ../../assets/details.md\n```",
+      [`${root}/escaped-link/SKILL.md`]: entry("escaped-link", "Open [the parent directory](../)."),
+      [`${root}/missing-after-url/SKILL.md`]: entry(
+        "missing-after-url",
+        "```sh\ncurl //example.test/x;./scripts/missing.sh\n```",
+      ),
+      [`${root}/assets/details.md`]: "Outside the Skill folder.",
+      [`${root}/limit/SKILL.md`]: entry("limit", "Read [the file](reference.txt)."),
+      [`${root}/limit/reference.txt`]: "界".repeat(34_000),
+      [`${root}/dependency/SKILL.md`]: entry("dependency", "Read [docs](venv/docs.md)."),
+      [`${root}/dependency/venv/docs.md`]: "Private runtime dependency.",
+      [`${root}/script/SKILL.md`]: entry("script", "Read [the helper](scripts/helper.sh)."),
+      [`${root}/script/scripts/helper.sh`]: "An unsupported script.",
+    };
+    const raw =
+      input === "zip"
+        ? encodeAgentBackup(
+            zipSync(
+              Object.fromEntries(
+                Object.entries(files).map(([path, content]) => [path, strToU8(content)]),
+              ),
+            ),
+          )
+        : await encodeAgentBackupFolder(
+            Object.entries(files).map(([path, content]) => folderEntry(`.hermes/${path}`, content)),
+            () => true,
+          );
+    expect(agentBackupFileGroups(raw)).toMatchObject({
+      skills: [`${root}/other/SKILL.md`, `${root}/picked/SKILL.md`],
+      unavailable: [
+        { path: `${root}/array/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/dependency/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/directory/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/escaped-link/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/escaped/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/implicit/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/limit/SKILL.md`, reason: "skillLimit" },
+        { path: `${root}/missing-after-url/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/missing-parent/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/missing/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/script/SKILL.md`, reason: "missingSkillFiles" },
+      ],
+    });
+    const preview = agentBackupPreview(raw, false, [`${root}/other/SKILL.md`]);
+    expect(JSON.parse(preview.source).files).toMatchObject([
+      { path: "HERMES.md" },
+      {
+        path: `${root}/picked/SKILL.md`,
+        references: expect.arrayContaining([
+          { path: "references/notes.md", content: notes },
+          { path: "references/extra note.md", content: "Path contains a space." },
+          { path: "examples/extra row.csv", content: "Example path contains a space." },
+          { path: "assets/detail notes.md", content: "The command can resolve this text." },
+          { path: "examples/rows.csv", content: "item,value\r\nalpha,8\r\n" },
+        ]),
+      },
+    ]);
+    expect(preview.source).not.toContain("unchecked Skill");
+    expect(preview.source).not.toContain("unsupported script");
+    expect(preview.source).not.toContain("replace the missing file");
+    expect(preview.source).not.toContain("Private runtime dependency.");
+    expect(preview.source).not.toContain("Outside the Skill folder.");
+    expect(preview.backupOmissions).toHaveLength(11);
+  },
+);
 
 it.each([
   ["other/AGENTS.md", "mixed roots"],
@@ -1325,28 +1472,33 @@ it("keeps unavailable file bodies and runtime text out of the preview request", 
 
 it("reads an OpenClaw manifest and keeps the workspace ahead of managed skills", () => {
   const root = "backup/payload/posix";
+  const workspace = "outer/skills/profiles/.chosen";
   const backup = tar({
     "backup/manifest.json": JSON.stringify({
       schemaVersion: 1,
       archiveRoot: "backup",
       assets: [
         { kind: "state", archivePath: "payload/posix/state" },
-        { kind: "workspace", archivePath: "payload/posix/workspace" },
+        { kind: "workspace", archivePath: `payload/posix/${workspace}` },
       ],
     }),
     [`${root}/state/.env`]: "NEVER_UPLOAD_THIS_VALUE",
     [`${root}/state/skills/review/SKILL.md`]: "managed",
-    [`${root}/workspace/SOUL.md`]: "Workspace persona",
-    [`${root}/workspace/skills/review/SKILL.md`]: "selected",
-    [`${root}/workspace/skills/review/references/checklist.md`]: "local only",
+    [`${root}/${workspace}/SOUL.md`]: "Workspace persona",
+    [`${root}/${workspace}/skills/review/SKILL.md`]: "selected",
+    [`${root}/${workspace}/skills/review/references/checklist.md`]: "local only",
   });
   const result = JSON.parse(encodeAgentBackup(backup));
   expect(result.source).toBe("openclaw");
   expect(result.files).toEqual([
     { path: "SOUL.md", content: "Workspace persona" },
-    { path: "skills/review/SKILL.md", content: "selected" },
+    {
+      path: "skills/review/SKILL.md",
+      content: "selected",
+      references: [{ path: "references/checklist.md", content: "local only" }],
+    },
   ]);
-  expect(result.incompleteSkills).toEqual(["skills/review/SKILL.md"]);
+  expect(result.incompleteSkills).toEqual([]);
 });
 
 it("reads Hermes ZIP notes without exposing config, credentials, and chat history", () => {

@@ -674,6 +674,32 @@ it("preserves both colliding Skills and leaves oversized multibyte memory out", 
   );
 });
 
+it("counts backup references and separately submitted routines in the same file limit", () => {
+  const files = Array.from({ length: 13 }, (_, index) => ({
+    path: `skills/example-${index}/SKILL.md`,
+    content: skill,
+    references: Array.from({ length: index === 12 ? 6 : 40 }, (_, ref) => ({
+      path: `references/row-${ref}.txt`,
+      content: "Reference content.",
+    })),
+  }));
+  const source = JSON.stringify({ format: "agent-backup/v1", source: "hermes", files });
+  const selectedRoutine = (index: number) => ({
+    path: `cron/routine-${index}.json`,
+    routine: { name: `Routine ${index}`, prompt: "Check.", crons: ["0 8 * * *"], timezone: "UTC" },
+  });
+  expect(
+    parseBotPackageSource(source, { includeMemory: false, backupRoutines: [selectedRoutine(1)] })
+      .document.routines,
+  ).toHaveLength(1);
+  expect(() =>
+    parseBotPackageSource(source, {
+      includeMemory: false,
+      backupRoutines: [selectedRoutine(1), selectedRoutine(2)],
+    }),
+  ).toThrow("The backup has too many files.");
+});
+
 it("does not approve an empty import from excluded backup notes", () => {
   const source = JSON.stringify({
     format: "agent-backup/v1",

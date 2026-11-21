@@ -22,6 +22,7 @@ import {
   BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
 import { buildSkillMd, parseSkillMd } from "@rakazo/core";
+import { agentBackupPreview } from "@rakazo/core/agent-backup";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import {
   claimEmptySpaceDeletionForMember,
@@ -662,8 +663,15 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       const skill = buildSkillMd({
         name: "backup-review",
         description: "Review a supplied document",
-        body: "Review the supplied material before reporting.",
+        body: "Review [the reference folder](references) and [its checklist](references/checklist.md) before reporting.",
       });
+      const reference = {
+        path: "references/checklist.md",
+        content: "核对一条。\r\n\r\nLast row.\r\n",
+      };
+      const skillPath = "skills/backup-review/SKILL.md";
+      const unchecked = "skills/unchecked/SKILL.md";
+      const uncheckedContent = "Only the unchecked source contains this text.";
       const value = {
         format: AGENT_BACKUP_FORMAT,
         source: sourceFormat,
@@ -673,7 +681,12 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
             path: sourceFormat === "hermes" ? "memories/MEMORY.md" : "MEMORY.md",
             content: "Chosen backup note.",
           },
-          { path: "skills/backup-review/SKILL.md", content: skill },
+          { path: skillPath, content: skill, references: [reference] },
+          {
+            path: unchecked,
+            content: skill,
+            references: [{ ...reference, content: uncheckedContent }],
+          },
           { path: "skills/incomplete/SKILL.md", content: skill },
         ],
         incompleteSkills: ["skills/incomplete/SKILL.md"],
@@ -684,7 +697,16 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         availableMemoryCount: 1,
         document: { memory: [] },
       });
-      const selected = await preview(owner, value, true);
+      const selectedInput = agentBackupPreview(JSON.stringify(value), true, [unchecked]);
+      expect(selectedInput.source).not.toContain(uncheckedContent);
+      const selected = await call<BotPackagePreview>(owner, "preview", {
+        ...selectedInput,
+        includeMemory: true,
+      });
+      expect(selected.document).toMatchObject({
+        format: BOT_PACKAGE_FILES_FORMAT,
+        skills: [{ name: "backup-review", files: [reference] }],
+      });
       expect(selected.leftOut).toContainEqual(
         expect.objectContaining({ name: "skills/incomplete/SKILL.md" }),
       );
@@ -693,6 +715,23 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       const receipt = await importPackage(owner, selected, nonce);
       expect(receipt).toMatchObject({ status: "completed", skills: [{ status: "pending" }] });
       expect(await importPackage(owner, selected, nonce)).toEqual(receipt);
+      const pending = receipt.skills[0]!;
+      const scope = { spaceId: owner.actor.spaceId, userId: owner.actor.userId };
+      expect(
+        await database.prisma.agentSkill.count({ where: { ...scope, name: pending.name } }),
+      ).toBe(0);
+      const activated = await call<BotPackageReceipt>(owner, "activateSkill", {
+        componentId: pending.id,
+        expectedRevision: pending.revision,
+      });
+      const skillId = activated.skills[0]!.skillId!;
+      expect(
+        await skillReadFromTool(database.prisma, scope, { skillId, file: reference.path }),
+      ).toEqual({
+        name: pending.name,
+        file: reference.path,
+        content: reference.content,
+      });
       const bot = await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } });
       expect(bot).toMatchObject({ instructions, memoryScope: "isolated", modelCredentialId: null });
       expect(await database.prisma.run.count({ where: { botId: bot.id } })).toBe(0);
