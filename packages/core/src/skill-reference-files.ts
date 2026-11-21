@@ -3,9 +3,17 @@ import { normalizeSkillFilePath, readSkillMarkdownReferences } from "./agent-ski
 const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
 const INLINE_SKILL_FILE =
   /^(?:\{baseDir\}\/|(?:\.\/|(?:\.\.\/)+)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
-const INLINE_BACKUP_EXAMPLE = /^(?:\.\/|(?:\.\.\/)+)?examples\/.+\.[a-z0-9]+(?:#.*)?$/i;
-const PROSE_SKILL_FILE =
-  /(?:^|[\s("'])(\{baseDir\}\/[^\s<>"'()[\]]+|(?:\.\/)?(?:references|assets|examples|scripts|templates)\/[^\s<>"'()[\]]*)/gi;
+const INLINE_BACKUP_FILE = /^(?:(?:\.\.?\/)+|examples\/).+\.[a-z0-9]+(?:#.*)?$/i;
+const BACKUP_PATH_PREFIX =
+  /(?:\{baseDir\}\/|(?:\.\.?\/)+|(?:references|assets|examples|scripts|templates)\/)/;
+const QUOTED_BACKUP_PATH = new RegExp(
+  `(?:^|[\\s(=,])(["'])(${BACKUP_PATH_PREFIX.source}[^\\r\\n]*?)\\1`,
+  "gi",
+);
+const PROSE_SKILL_FILE = new RegExp(
+  `(?:^|[\\s("'=,])(${BACKUP_PATH_PREFIX.source}[^\\s<>"'()[\\]]*)`,
+  "gi",
+);
 
 export function isPortableSkillReferencePath(path: string): boolean {
   return (
@@ -46,7 +54,7 @@ export function hasMissingSkillReference(
   const visited = new Set(["SKILL.md"]);
   const pending = [{ path: "SKILL.md", body }];
   const isInlineFile = (value: string) =>
-    INLINE_SKILL_FILE.test(value) || (includeProse && INLINE_BACKUP_EXAMPLE.test(value));
+    INLINE_SKILL_FILE.test(value) || (includeProse && INLINE_BACKUP_FILE.test(value));
   function visit(path: string): boolean {
     if (visited.has(path)) return true;
     const text = files.get(path);
@@ -58,13 +66,15 @@ export function hasMissingSkillReference(
   for (const document of pending) {
     const { links, inlineCode, prose, code } = readSkillMarkdownReferences(document.body);
     const documentDir = document.path.slice(0, document.path.lastIndexOf("/") + 1);
+    const inlineBase = (target: string) =>
+      target.startsWith("./") || target.startsWith("../") ? documentDir : "";
     const references = [
       ...links.map((target) => ({ target, base: documentDir, canBeDirectory: true })),
       ...inlineCode
         .filter((text) => (inferInlineFiles || text.startsWith("{baseDir}/")) && isInlineFile(text))
         .map((target) => ({
           target,
-          base: target.startsWith("./") || target.startsWith("../") ? documentDir : "",
+          base: inlineBase(target),
           canBeDirectory: false,
         })),
       ...(includeProse
@@ -76,7 +86,7 @@ export function hasMissingSkillReference(
             .flatMap(backupReferenceTargets)
             .map((target) => ({
               target,
-              base: target.startsWith("./") ? documentDir : "",
+              base: inlineBase(target),
               canBeDirectory: false,
             }))
         : []),
@@ -116,5 +126,16 @@ export function hasMissingSkillReference(
 }
 
 function backupReferenceTargets(text: string): string[] {
-  return [...text.matchAll(PROSE_SKILL_FILE)].map((match) => match[1]!.replace(/[.,;:!?]+$/, ""));
+  const quoted: string[] = [];
+  // Keep path spaces inside quoted command arguments and compound inline calls.
+  const unquoted = text
+    .replace(/https?:\/\/[^\s<>"']+/gi, " ")
+    .replace(QUOTED_BACKUP_PATH, (_match, _quote, path: string) => {
+      quoted.push(path);
+      return " ";
+    });
+  return [
+    ...quoted,
+    ...[...unquoted.matchAll(PROSE_SKILL_FILE)].map((match) => match[1]!.replace(/[.,;:!?]+$/, "")),
+  ];
 }
