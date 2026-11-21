@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parseAllDocuments } from "yaml";
 import { redactConnectorPayload } from "./connector-safety.js";
 import {
   mcpCredentialFileSecrets,
@@ -38,6 +39,63 @@ describe("managed stdio credential files", () => {
     expect(() =>
       renderMcpStdioFile('{"expires":1{{oauth.expires_at}}}', { expires_at: "1770000000000" }),
     ).toThrow(/inside strings/);
+  });
+
+  it("renders YAML credential scalars without letting injected text change the document", () => {
+    const template = [
+      "# keep this configuration",
+      "single: &secret '{{oauth.client_secret}}' # keep anchor",
+      'double: "prefix {{oauth.client_secret}} suffix"',
+      "plain: {{oauth.access_token}}",
+      "folded: >- # keep block note",
+      "  before {{oauth.client_secret}}",
+      "  after",
+      "alias: *secret",
+      "expiration: {{oauth.expires_at}}",
+      'quotedExpiry: "{{oauth.expires_at}}"',
+      "---",
+      "mode: true",
+      "",
+    ].join("\n");
+    const secret = "quote:'\"\\value\n---\nentry: false\nmcp_oauth_field_0_";
+    const rendered = renderMcpStdioFile(template, {
+      client_secret: secret,
+      access_token: "false",
+      expires_at: "1770000000000",
+    });
+    expect(parseAllDocuments(rendered).map((document) => document.toJS())).toEqual([
+      {
+        single: secret,
+        double: `prefix ${secret} suffix`,
+        plain: "false",
+        folded: `before ${secret} after`,
+        alias: secret,
+        expiration: 1770000000000,
+        quotedExpiry: "1770000000000",
+      },
+      { mode: true },
+    ]);
+    expect(rendered).toContain("# keep this configuration");
+    expect(rendered).toContain("# keep anchor");
+    expect(rendered).toContain("# keep block note");
+    expect(mcpCredentialFileSecrets(rendered)).toContain(secret);
+  });
+
+  it("rejects YAML references outside materialized scalars", () => {
+    expect(() =>
+      renderMcpStdioFile("token: fixture # {{oauth.client_secret}}\n", { client_secret: token }),
+    ).toThrow("MCP YAML credentials require OAuth values inside scalars");
+    expect(() =>
+      renderMcpStdioFile("token: {{oauth.access_token}}\n---\n{{oauth.refresh_token}}\n", {
+        access_token: "fixture\nextra: confirmed",
+        refresh_token: "next: fixture",
+      }),
+    ).toThrow("MCP YAML credentials require OAuth values inside scalars");
+    expect(
+      renderMcpStdioFile("[credentials]\nsecret='{{oauth.client_secret}}'\n", {
+        client_secret: "fixture-value",
+      }),
+    ).toBe("[credentials]\nsecret='fixture-value'\n");
   });
 
   it("collects complete files and credential values separately for redaction", () => {

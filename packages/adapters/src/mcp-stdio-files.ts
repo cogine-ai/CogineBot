@@ -35,13 +35,15 @@ function oauthValue(name: string, values: McpStdioOAuthValues): string {
 
 /** JSON strings need escaping. Only the expiry can be interpolated as a bare number. */
 export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues): string {
+  if (!template.match(MCP_STDIO_OAUTH_REFERENCE)) return template;
+  const renderNonJson = () =>
+    renderMcpStdioYaml(template, values) ?? renderMcpStdioTemplate(template, values);
   const first = template.trimStart()[0];
-  if (first !== "{" && first !== "[" && first !== '"')
-    return renderMcpStdioTemplate(template, values);
+  if (first !== "{" && first !== "[" && first !== '"') return renderNonJson();
   try {
     JSON.parse(template.replaceAll(MCP_STDIO_OAUTH_REFERENCE, "0"));
   } catch {
-    return renderMcpStdioTemplate(template, values);
+    return renderNonJson();
   }
   // Match complete JSON string literals before matching bare references. The
   // replacement never scans an injected value as a second template.
@@ -67,6 +69,72 @@ export function renderMcpStdioFile(template: string, values: McpStdioOAuthValues
       return value;
     },
   );
+}
+
+/** Parse placeholder shapes before inserting any bytes supplied by the issuer. */
+function renderMcpStdioYaml(template: string, values: McpStdioOAuthValues): string | undefined {
+  const scalarRequired = "MCP YAML credentials require OAuth values inside scalars";
+  let marker = "mcp_oauth_field_";
+  while (template.includes(marker)) marker += "_";
+  const fields: string[] = [];
+  const marked = template.replaceAll(MCP_STDIO_OAUTH_REFERENCE, (_reference, name: string) => {
+    fields.push(name.trim());
+    return `${marker}${fields.length - 1}_`;
+  });
+  const documents = parseAllDocuments(marked, { logLevel: "silent" });
+  const collections = documents.filter((doc) => isMap(doc.contents) || isSeq(doc.contents));
+  if (!collections.length) return undefined;
+  if (collections.length !== documents.length || documents.some((doc) => doc.errors.length)) {
+    // INI headings resemble YAML sequences, but keep valid assignment files
+    // on their existing text path. Invalid YAML must not be repaired by data.
+    if (credentialAssignmentValues(marked, new Set())) return undefined;
+    throw new Error(scalarRequired);
+  }
+  const placeholders = new RegExp(`${marker}(\\d+)_`, "g");
+  const edits: Array<{ start: number; end: number; value: string }> = [];
+  let resolved = 0;
+  for (const document of documents) {
+    visit(document, {
+      Scalar(_key, node) {
+        if (typeof node.value !== "string" || !node.value.includes(marker) || !node.range) return;
+        const scalar = node.value;
+        let numericExpiry = false;
+        const decoded = scalar.replaceAll(placeholders, (reference, index: string) => {
+          resolved++;
+          const field = fields[Number(index)]!;
+          const value = oauthValue(field, values);
+          numericExpiry =
+            scalar === reference &&
+            node.type === "PLAIN" &&
+            !node.tag &&
+            field === "expires_at" &&
+            /^[1-9]\d*$/.test(value);
+          return value;
+        });
+        const [start, end] = node.range;
+        const source = marked.slice(start, end);
+        const newline = source.match(/\r?\n$/)?.[0] ?? "";
+        const blockComment =
+          node.type === "BLOCK_LITERAL" || node.type === "BLOCK_FOLDED"
+            ? (source.split(/\r?\n/, 1)[0]?.match(/[ \t]+#.*$/)?.[0] ?? "")
+            : "";
+        edits.push({
+          start,
+          end,
+          value: (numericExpiry ? decoded : JSON.stringify(decoded)) + blockComment + newline,
+        });
+      },
+    });
+  }
+  if (resolved !== fields.length) throw new Error(scalarRequired);
+  const chunks: string[] = [];
+  let start = 0;
+  for (const edit of edits.sort((a, b) => a.start - b.start)) {
+    chunks.push(marked.slice(start, edit.start), edit.value);
+    start = edit.end;
+  }
+  chunks.push(marked.slice(start));
+  return chunks.join("");
 }
 
 const opaqueCredential = /^[A-Za-z0-9_.~+/-]+=*$/;
