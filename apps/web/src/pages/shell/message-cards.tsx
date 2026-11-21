@@ -315,12 +315,19 @@ export function AppConnectCard({
       if (controller.signal.aborted) return;
       setPendingConnectionId(started.connectionId);
       if (started.authorizationUrl) {
-        const popup = window.open(
-          started.authorizationUrl,
-          "managed-app-authorization",
-          "popup,width=560,height=720",
-        );
-        if (!popup) {
+        let popupOpened: boolean;
+        try {
+          popupOpened = Boolean(
+            window.open(
+              started.authorizationUrl,
+              "managed-app-authorization",
+              "popup,width=560,height=720",
+            ),
+          );
+        } catch {
+          popupOpened = false;
+        }
+        if (!popupOpened) {
           setAuthorizationToRetry(started.authorizationUrl);
           setError(t`Could not authorize this app`);
           return;
