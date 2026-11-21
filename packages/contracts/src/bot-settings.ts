@@ -22,6 +22,7 @@ export const BotSettingsValuesSchema = z.strictObject({
   thinkingLevel: ThinkingLevelSchema.nullable().optional(),
   voiceId: z.string().nullable().optional(),
   autoSpeak: z.boolean().optional(),
+  autoSpeakInherited: z.boolean().optional(),
 });
 export type BotSettingsValues = z.infer<typeof BotSettingsValuesSchema>;
 
@@ -47,7 +48,7 @@ export const BotSettingsHistorySchema = z.object({
   revision: BotSettingsRevisionSchema,
   current: z.array(
     BotSettingsChangeSchema.pick({ field: true, after: true }).extend({
-      source: z.enum(["bot", "space", "system", "model"]),
+      source: z.enum(["bot", "space", "account", "system", "model"]),
     }),
   ),
   versions: z.array(

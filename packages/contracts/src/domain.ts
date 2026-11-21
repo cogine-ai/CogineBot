@@ -91,6 +91,8 @@ export const BotSchema = z.object({
   createdAt: z.string(),
   voiceId: z.string().nullable(),
   autoSpeak: z.boolean(),
+  autoSpeakInherited: z.boolean().optional(),
+  settingsRevision: z.number().int().nonnegative().optional(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
   modelCredentialId: Id.nullable().optional(),
@@ -493,6 +495,8 @@ export const UpdateBotInput = z
     sectionId: Id.nullable().optional(),
     voiceId: z.string().max(120).nullable().optional(),
     autoSpeak: z.boolean().optional(),
+    autoSpeakInherited: z.literal(true).optional(),
+    expectedReadAloudRevision: z.number().int().nonnegative().optional(),
     modelProvider: z.string().trim().min(1).max(80).nullable().optional(),
     modelId: z.string().trim().min(1).max(512).nullable().optional(),
     modelCredentialId: Id.nullable().optional(),
@@ -502,7 +506,19 @@ export const UpdateBotInput = z
     teamChatRules: z.string().max(TEAM_CHAT_RULES_MAX_LENGTH).optional(),
     disabledBuiltinTools: DisabledBuiltinToolsSchema.optional(),
   })
-  .superRefine(validateModelPinInput);
+  .superRefine((input, context) => {
+    validateModelPinInput(input, context);
+    if (
+      input.autoSpeakInherited &&
+      (input.autoSpeak !== undefined || input.expectedReadAloudRevision === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["autoSpeakInherited"],
+        message: "Choose the Space default with the current settings revision.",
+      });
+    }
+  });
 
 export const RoutineSchema = z.object({
   nativeTriggers: z.array(NativeRoutineTriggerSchema).optional(),

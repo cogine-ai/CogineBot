@@ -47,6 +47,7 @@ export * from "./model-backups.js";
 export * from "./model-credentials.js";
 export * from "./page-shares.js";
 export * from "./plugin-installs.js";
+export { readAloudForBot, readAloudSettings, updateReadAloud } from "./read-aloud.js";
 export * from "./readiness.js";
 export * from "./repos.js";
 export {

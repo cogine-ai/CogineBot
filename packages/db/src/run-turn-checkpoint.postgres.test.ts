@@ -637,6 +637,14 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       const lease = await installLease(f.run.id, 8, f.park.until);
       const member = await prisma.spaceMember.delete({
         where: { spaceId_userId: { spaceId, userId } },
+        select: {
+          id: true,
+          spaceId: true,
+          organizationId: true,
+          userId: true,
+          role: true,
+          createdAt: true,
+        },
       });
       try {
         await expect(claimRunQuotaResume(prisma, { ...lease, state }, f.park.until)).resolves.toBe(

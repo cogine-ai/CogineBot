@@ -101,6 +101,7 @@ export function BotSettingsCard({
     bot: t("This Bot"),
     space: t("This Space"),
     model: t("Model default"),
+    account: t("My default"),
     system: t("System default"),
   };
   async function answer(choice: "allow" | "deny") {

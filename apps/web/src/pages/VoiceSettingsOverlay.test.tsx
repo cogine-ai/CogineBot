@@ -1,3 +1,5 @@
+vi.mock("./ReadAloudSettings", () => ({ ReadAloudSettings: () => null }));
+
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";

@@ -42,7 +42,7 @@ export function botSettingsHistory(
     model: row.modelId ? "bot" : "space",
     thinkingLevel: row.thinkingLevel ? "bot" : "model",
     voice: row.voiceId ? "bot" : "space",
-    readAloud: "bot",
+    readAloud: row.autoSpeakInherited ? "space" : "bot",
   } as const;
   return {
     revision: row.settingsRevision,

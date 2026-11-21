@@ -1,9 +1,12 @@
 import type { Page, Request } from "@playwright/test";
-import { expect, test } from "@playwright/test";
+import { errors, expect, test } from "@playwright/test";
 import type {
   ActionApprovalRule,
+  Bot,
   Me,
   ModelCredential,
+  ReadAloudSettings,
+  Space,
   SpaceNavigation,
   ThreadSnapshot,
 } from "@rakazo/contracts";
@@ -12,6 +15,7 @@ import {
   captureScreenshot,
   completeOnboarding,
   openNewSpace,
+  openUserSettings,
   rpc,
   signup,
 } from "./helpers";
@@ -782,4 +786,172 @@ test("a stored stopped collaboration receipt remains readable without sending or
   await expect(peerConversation).toHaveCount(0);
   await expect(composer).toHaveValue("Keep the human draft. 保留草稿。");
   expect(sends).toBe(0);
+});
+
+test("applies personal read-aloud settings only to new replies and respects a Space override", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `read-aloud-${Date.now()}@example.test`, "password12", "Voice Settings");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const second = await rpc<Space>(page, "spaces/create", { name: "Project Lab" });
+  const initial = await rpc<ReadAloudSettings>(page, "preferences/readAloud", {});
+  expect(initial.followingSpaces.some(({ id }) => id === second.id)).toBe(true);
+  expect(initial.effective).toEqual({ enabled: false, source: "system" });
+  await openUserSettings(page, "voice");
+
+  const settings = page.getByTestId("voice-settings");
+  const accountDefault = settings.getByLabel("My default", { exact: true });
+  const override = settings.getByRole("switch", { name: "Override in this Space" });
+  await expect(accountDefault).toHaveValue("default");
+  await accountDefault.selectOption("true");
+  const confirmation = page.getByRole("alertdialog", { name: "Change my read-aloud default?" });
+  await expect(confirmation).toContainText("Project Lab");
+  await captureScreenshot(page, testInfo, "read-aloud-account-confirm");
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(accountDefault).toHaveValue("default");
+
+  await accountDefault.selectOption("true");
+  await confirmation.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(accountDefault).toHaveValue("true");
+  await override.click();
+  const spaceSwitch = settings.getByRole("switch", { name: "Read replies aloud in this Space" });
+  await expect(spaceSwitch).toBeChecked();
+  await spaceSwitch.click();
+  await expect(spaceSwitch).not.toBeChecked();
+  await expect
+    .poll(() => rpc(page, "preferences/readAloudForBot", { botId }))
+    .toEqual({
+      enabled: false,
+      source: "space",
+    });
+  await captureScreenshot(page, testInfo, "read-aloud-space-override");
+
+  await override.click();
+  await expect(spaceSwitch).toHaveCount(0);
+  await expect
+    .poll(() => rpc(page, "preferences/readAloudForBot", { botId }))
+    .toEqual({
+      enabled: true,
+      source: "account",
+    });
+
+  const before = await rpc<Bot>(page, "bots/update", { botId, title: "Reader", autoSpeak: false });
+  expect(before.autoSpeakInherited).toBe(true);
+  await rpc(page, "bots/update", {
+    botId,
+    autoSpeak: false,
+    expectedReadAloudRevision: before.settingsRevision,
+  });
+  expect(await rpc(page, "preferences/readAloudForBot", { botId })).toEqual({
+    enabled: false,
+    source: "bot",
+  });
+  const history = await rpc<{ revision: number; versions: { id: string; changes: unknown[] }[] }>(
+    page,
+    "bots/settingsHistory",
+    { botId },
+  );
+  expect(history.versions[0]?.changes).toEqual([
+    { field: "readAloud", before: "Space default", after: "Off" },
+  ]);
+  await rpc(page, "bots/undoSettings", {
+    botId,
+    versionId: history.versions[0]?.id,
+    expectedRevision: history.revision,
+    clientNonce: "undo-read-aloud-fixture",
+  });
+  expect(await rpc(page, "preferences/readAloudForBot", { botId })).toEqual({
+    enabled: true,
+    source: "account",
+  });
+
+  await settings.getByRole("button", { name: /Scripted/ }).click();
+  await settings.getByLabel("API key", { exact: true }).fill("fake-scripted-voice-key");
+  await settings.getByRole("button", { name: "Connect", exact: true }).click();
+  await expect(settings.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close voice settings" }).click();
+  const playback = page.waitForResponse(
+    (response) => response.url().includes("/api/voice/speak") && response.ok(),
+  );
+  const composer = page.getByPlaceholder(/Message/);
+  await composer.fill("say hello");
+  await page.keyboard.press("Enter");
+  await playback;
+
+  async function checkPendingDecision(prompt: string, supersede: () => Promise<void>) {
+    let resumeDecision!: () => void;
+    const held = new Promise<void>((resolve) => {
+      resumeDecision = resolve;
+    });
+    let markHeld!: () => void;
+    const decisionRequested = new Promise<void>((resolve) => {
+      markHeld = resolve;
+    });
+    const routePattern = "**/rpc/preferences/readAloudForBot";
+    await page.route(routePattern, async (route) => {
+      markHeld();
+      await held;
+      await route.continue();
+    });
+    try {
+      await composer.fill(prompt);
+      await page.keyboard.press("Enter");
+      await decisionRequested;
+      await supersede();
+      const decision = page.waitForResponse((response) =>
+        response.url().endsWith("/rpc/preferences/readAloudForBot"),
+      );
+      const unexpectedPlayback = page
+        .waitForRequest((request) => request.url().endsWith("/rpc/voice/prepare"), {
+          timeout: 1_500,
+        })
+        .catch((error: unknown) => {
+          if (!(error instanceof errors.TimeoutError)) throw error;
+          return null;
+        });
+      resumeDecision();
+      await decision;
+      expect(await unexpectedPlayback).toBeNull();
+    } finally {
+      resumeDecision();
+      await page.unroute(routePattern);
+    }
+  }
+
+  await checkPendingDecision("say hello again", async () => {
+    const manualReply = page.getByRole("button", { name: "Speak this reply", exact: true }).first();
+    let resumePrepare!: () => void;
+    const heldPrepare = new Promise<void>((resolve) => {
+      resumePrepare = resolve;
+    });
+    const preparePattern = "**/rpc/voice/prepare";
+    await page.route(preparePattern, async (route) => {
+      await heldPrepare;
+      await route.continue().catch(() => undefined);
+    });
+    try {
+      const manualPrepare = page.waitForRequest((request) =>
+        request.url().endsWith("/rpc/voice/prepare"),
+      );
+      await manualReply.click();
+      await manualPrepare;
+      await page.getByRole("button", { name: "Stop speaking", exact: true }).first().click();
+    } finally {
+      resumePrepare();
+      await page.unroute(preparePattern);
+    }
+  });
+
+  await checkPendingDecision("say goodbye", async () => {
+    await page
+      .getByTestId("bots-sidebar")
+      .locator(`[data-roster-bot-id="${botId}"]`)
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Speak this reply", exact: true })).toHaveCount(
+      0,
+    );
+  });
 });

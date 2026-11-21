@@ -104,6 +104,10 @@ let speechQueue: SpeechQueueItem[] = [];
 /** Invalidates in-flight speak calls. Stop and a new speak or queue each bump it. */
 let playbackEpoch = 0;
 
+export function voicePlaybackRevision(): number {
+  return playbackEpoch;
+}
+
 function isCurrentSpeech(epoch: number): boolean {
   return epoch === playbackEpoch;
 }
@@ -189,7 +193,7 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
     }
     if (!live()) return false;
     if (useDeviceVoice) {
-      const spoken = await speakOnDevice(text, opts.botId, opts.messageId, epoch);
+      const spoken = await speakOnDevice(text, opts.botId, opts.messageId, epoch, live);
       if (!live()) return false;
       if (!spoken && playback.status !== "idle") setPlayback(IDLE_PLAYBACK, null);
       return spoken;
@@ -281,6 +285,7 @@ async function speakOnDevice(
   botId?: string,
   messageId?: string,
   epoch?: number,
+  isCurrent?: () => boolean,
 ): Promise<boolean> {
   const utterances = toUtterances(text);
   if (utterances.length === 0) return false;
@@ -289,12 +294,15 @@ async function speakOnDevice(
   // Claim the session before importing so a newer call cannot start during
   // that await and then overlap this call's remaining chunks.
   const session = startDeviceSpeechSession();
+  const live = () =>
+    isCurrentDeviceSpeechSession(session) && isCurrentSpeech(mine) && isCurrent?.() !== false;
   const Speech = await loadExpoSpeech();
+  if (!live()) return true;
   // Each bot keeps its own offline voice; without one the engine's default speaks.
   const voice = botId ? await voiceForBot(botId).catch(() => undefined) : undefined;
-  if (!isCurrentDeviceSpeechSession(session) || !isCurrentSpeech(mine)) return true;
+  if (!live()) return true;
   await Speech.stop();
-  if (!isCurrentDeviceSpeechSession(session) || !isCurrentSpeech(mine)) return true;
+  if (!live()) return true;
 
   // Android's TextToSpeech engine has no pause/resume, only stop; iOS's does.
   // Feature-detect rather than trust the platform alone: support has moved
@@ -307,7 +315,7 @@ async function speakOnDevice(
     Platform.OS === "ios" &&
     typeof pausable.pause === "function" &&
     typeof pausable.resume === "function";
-  if (!isCurrentDeviceSpeechSession(session) || !isCurrentSpeech(mine)) return true;
+  if (!live()) return true;
   const control: VoiceControl = {
     pause: () => {
       if (!canPause) return;
@@ -329,10 +337,10 @@ async function speakOnDevice(
   let finished = false;
   try {
     for (const utterance of utterances) {
-      if (!isCurrentDeviceSpeechSession(session) || !isCurrentSpeech(mine)) return true;
+      if (!live()) return true;
       await speakOneUtterance(Speech, utterance, voice);
     }
-    finished = isCurrentDeviceSpeechSession(session) && isCurrentSpeech(mine);
+    finished = live();
     return true;
   } finally {
     releasePlayback(mine, isCurrentDeviceSpeechSession(session), finished);

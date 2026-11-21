@@ -394,7 +394,17 @@ describePostgres("Gmail push verifier to exact Routine compensation queue (Postg
   });
   it("does not enqueue a Routine after its owner leaves the Space", async () => {
     const f = await fixture();
-    const membership = await db.prisma.spaceMember.findFirstOrThrow({ where: scope });
+    const membership = await db.prisma.spaceMember.findFirstOrThrow({
+      where: scope,
+      select: {
+        id: true,
+        spaceId: true,
+        organizationId: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+      },
+    });
     await db.prisma.spaceMember.delete({ where: { id: membership.id } });
     try {
       expect(await f.ingest()).toBe(0);

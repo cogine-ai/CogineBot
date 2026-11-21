@@ -1014,6 +1014,14 @@ a request requires a compatible image.
 If a browser tab or bundled desktop app still has the previous Settings UI after
 a server update, reload the web page or update the desktop app before changing a request.
 
+Before a planned downgrade to a build with only per-Bot auto-read settings, stop
+application writers and apply [the read-aloud freeze SQL](../packages/db/prisma/operations/freeze-read-aloud.sql)
+with the database migration role. It copies the current effective value into each
+inheriting Bot and makes it explicit. Existing explicit Bot settings and preference
+history are retained. A downgrade disables undo for a version that would restore
+inheritance. After upgrading again, users can select **Use Space default**
+for any Bot they want to follow Space and account changes.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

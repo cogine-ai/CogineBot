@@ -35,6 +35,7 @@ import {
   currentComputerStatus,
   DelegatedApprovalAction,
   HISTORY_LOOKUP_STATUS,
+  isReadAloudConflict,
   MESSAGE_REACTIONS,
   type MessageReaction,
 } from "@rakazo/contracts";
@@ -207,7 +208,7 @@ import {
   requestBrowserNotificationPermission,
   shouldNotifyBrowser,
 } from "../lib/browser-notifications";
-import { startCall, useCallSession } from "../lib/call-session";
+import { getSnapshot as getCallSnapshot, startCall, useCallSession } from "../lib/call-session";
 import { newClientId } from "../lib/client-id";
 import type {
   ComposerDraft,
@@ -2366,15 +2367,24 @@ export function ShellPage() {
     };
   }, []);
 
+  const autoSpeakScope = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    autoSpeakScope.current = {};
+    return () => {
+      autoSpeakScope.current = null;
+    };
+  }, [active?.id, botId, snapshot?.threadId, call?.startedAt]);
+
   useEffect(() => {
     if (!active || !snapshot || snapshot.botId !== active.id) return;
     const lastBot = [...snapshot.messages].reverse().find((message) => message.role === "bot");
-    if (autoSpokenBotId.current !== active.id) {
+    const legacyServer = active.autoSpeakInherited === undefined;
+    if (
+      autoSpokenBotId.current !== active.id ||
+      getCallSnapshot() ||
+      (legacyServer && !active.autoSpeak)
+    ) {
       autoSpokenBotId.current = active.id;
-      autoSpoken.current = lastBot?.id ?? null;
-      return;
-    }
-    if (call?.botId === active.id || !active.autoSpeak) {
       autoSpoken.current = lastBot?.id ?? null;
       return;
     }
@@ -2383,14 +2393,45 @@ export function ShellPage() {
     const text = speechFromBlocks(lastBot.blocks);
     if (!text) return;
     autoSpoken.current = lastBot.id;
-    void speaker.speak(text, { botId: active.id, messageId: lastBot.id });
+    const generation = currentSpaceSelectionGeneration();
+    const owner = committedSettingsOwner.current;
+    const scope = autoSpeakScope.current;
+    const playbackRevision = speaker.playbackRevision;
+    const current = () => {
+      const shown = snapshotRef.current;
+      return (
+        generation === currentSpaceSelectionGeneration() &&
+        owner === committedSettingsOwner.current &&
+        scope === autoSpeakScope.current &&
+        activeBotId.current === active.id &&
+        autoSpoken.current === lastBot.id &&
+        shown?.threadId === snapshot.threadId &&
+        shown.messages.some(({ id }) => id === lastBot.id) &&
+        !getCallSnapshot()
+      );
+    };
+    const speak = () => {
+      if (current() && playbackRevision === speaker.playbackRevision)
+        void speaker.speak(text, { botId: active.id, messageId: lastBot.id, isCurrent: current });
+    };
+    if (legacyServer) {
+      speak();
+    } else {
+      void createSpaceRpc(active.spaceId, current)
+        .preferences.readAloudForBot({ botId: active.id })
+        .then(({ enabled }) => {
+          if (enabled) speak();
+        })
+        .catch(() => undefined);
+    }
   }, [
     snapshot?.messages,
     snapshot?.run?.status,
     snapshot?.botId,
     active?.autoSpeak,
+    active?.autoSpeakInherited,
     active?.id,
-    call?.botId,
+    call?.startedAt,
   ]);
 
   useEffect(() => {
@@ -7033,7 +7074,12 @@ export function ShellPage() {
                       mode: computerMode,
                     });
                   }
-                  const updated = await rpc.bots.update({ botId: active.id, ...patch });
+                  const updated = await rpc.bots
+                    .update({ botId: active.id, ...patch })
+                    .catch(async (error: unknown) => {
+                      if (isReadAloudConflict(error)) await refreshBots().catch(() => undefined);
+                      throw error;
+                    });
                   setBots((current) =>
                     current.map((bot) => (bot.id === updated.id ? updated : bot)),
                   );

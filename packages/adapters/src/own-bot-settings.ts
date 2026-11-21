@@ -13,6 +13,7 @@ import {
   findDefaultVoiceCredential,
   lockDefaultVoiceCredential,
   prepareBotSettingsVersion,
+  readAloudForBot,
 } from "@rakazo/db";
 import { z } from "zod";
 import { modelCredentialDto } from "./model-connect.js";
@@ -286,12 +287,13 @@ export async function readOwnBotSettings(
     },
   });
   if (!bot) return { error: "This Bot is unavailable." };
-  const [active, choices, voice] = await Promise.all([
+  const [active, choices, voice, readAloud] = await Promise.all([
     effectiveModel(deps, scope, bot, fallback),
     modelChoices(deps, scope),
     query || connection
       ? Promise.resolve(null)
       : spaceVoices(deps, scope, context).catch(() => null),
+    bot.autoSpeakInherited ? readAloudForBot(deps.prisma, scope, bot.id) : null,
   ]);
   const selection = connection
     ? choices.filter((choice) => choice.connection.label.toLowerCase() === connection.toLowerCase())
@@ -352,8 +354,8 @@ export async function readOwnBotSettings(
       choices: voice?.voices.slice(0, 10).map(({ id, label }) => ({ id, label })) ?? [],
     },
     readAloud: {
-      value: bot.autoSpeak,
-      source: "bot",
+      value: readAloud?.enabled ?? bot.autoSpeak,
+      source: readAloud?.source ?? "bot",
       playback: voice ? "provider_or_device" : "device_if_enabled",
     },
   };
@@ -381,7 +383,11 @@ export async function prepareOwnBotSettings(
     if (bot.instructions !== baseline.instructions || bot.settingsRevision !== baseline.revision)
       return { error: OWN_BOT_SETTINGS_CHANGED };
   }
-  const patch: BotSettingsValues = { instructions: args.instructions, autoSpeak: args.readAloud };
+  const patch: BotSettingsValues = {
+    instructions: args.instructions,
+    autoSpeak: args.readAloud,
+    autoSpeakInherited: args.readAloud === undefined ? undefined : false,
+  };
   let modelConnection: OwnSettingsRequest["modelConnection"];
   let previousModelConnection: string | undefined;
   let expectsNoSpaceModel = false;

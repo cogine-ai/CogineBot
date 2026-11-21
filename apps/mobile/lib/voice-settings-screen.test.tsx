@@ -61,6 +61,7 @@ vi.mock("../components/native-action-button", () => ({ NativeActionButton: () =>
 vi.mock("react-native-safe-area-context", () => ({
   SafeAreaView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
+vi.mock("../components/read-aloud-settings", () => ({ ReadAloudSettingsRows: () => null }));
 vi.mock("../components/native-switch", () => ({
   NativeSwitch: (props: {
     accessibilityLabel: string;

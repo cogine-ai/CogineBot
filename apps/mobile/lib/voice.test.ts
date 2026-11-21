@@ -876,6 +876,28 @@ describe("on-device speech", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("discards on-device playback when its thread closes during engine preparation", async () => {
+    vi.mocked(SecureStore.getItemAsync).mockResolvedValue("1");
+    let current = true;
+    let release!: () => void;
+    const engineReady = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(Speech.stop).mockReturnValueOnce(engineReady);
+    const pending = speakText("Old reply", { isCurrent: () => current });
+    try {
+      await flushDeviceSpeechImport();
+      expect(Speech.stop).toHaveBeenCalledOnce();
+      current = false;
+    } finally {
+      release();
+    }
+    await expect(pending).resolves.toBe(false);
+    expect(Speech.speak).not.toHaveBeenCalled();
+    expect(getVoicePlaybackState().status).toBe("idle");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("uses on-device speech when the preference cannot be read, and never hosts the reply", async () => {
     vi.mocked(SecureStore.getItemAsync).mockRejectedValue(new Error("device locked"));
     vi.mocked(Speech.speak).mockImplementation((_text, options) => options?.onDone?.());

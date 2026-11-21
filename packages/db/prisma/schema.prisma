@@ -37,6 +37,7 @@ model User {
   updatedAt                   DateTime                     @updatedAt
   avatarStyle                 String                       @default("robot")
   timezone                    String?
+  readAloudHistory            Json                         @default("[]")
   sessions                    Session[]
   accounts                    Account[]
   members                     Member[]
@@ -294,6 +295,7 @@ model SpaceMember {
   modelPreferences SpaceModelPreference[]
   modelOAuthSessions ModelOAuthSession[]
   voicePreferences SpaceVoicePreference[]
+  readAloudHistory Json                   @default("[]")
   aiDataConsents AiDataConsent[]
   backupModels SpaceBackupModel[]
 
@@ -509,6 +511,7 @@ model Bot {
   computerSwitching Boolean           @default(false)
   voiceId           String?
   autoSpeak         Boolean           @default(false)
+  autoSpeakInherited Boolean          @default(false)
   modelProvider     String?
   modelId           String?
   modelCredentialId String?

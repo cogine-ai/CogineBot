@@ -53,6 +53,10 @@ export class Speaker {
     };
   }
 
+  get playbackRevision(): number {
+    return this.token;
+  }
+
   get state(): SpeechSnapshot {
     return this.snapshot;
   }

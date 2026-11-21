@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
+import { ReadAloudSettingsRows } from "../../components/read-aloud-settings";
 import { Checkmark } from "../../components/row-accessories";
 import { mobileTokens } from "../../lib/appearance";
 import {
@@ -414,6 +415,7 @@ function VoiceSettingsForm({
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
       {targetName ? <Stack.Screen options={{ title: `${targetName} · ${t("Voice")}` }} /> : null}
       <ScrollView contentContainerStyle={styles.content} contentInsetAdjustmentBehavior="automatic">
+        <ReadAloudSettingsRows settings={settings} />
         {loading ? <ActivityIndicator color={native.secondaryLabel} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <View style={styles.group}>

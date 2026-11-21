@@ -135,6 +135,7 @@ async function main() {
     "packages/db/src/model-connection-migration.postgres.test.ts",
     "packages/db/src/board.postgres.test.ts",
     "packages/db/src/bot-sections.postgres.test.ts",
+    "packages/db/src/read-aloud.postgres.test.ts",
     "packages/testkit/src/voice.test.ts",
     "packages/testkit/src/search.test.ts",
     "packages/testkit/src/executor-lifecycle.test.ts",
