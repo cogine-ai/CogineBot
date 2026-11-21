@@ -31,7 +31,7 @@ export function AppConnectCard({
   const tokens = useMobileTokens();
   const [busy, setBusy] = useState(false);
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
-  const [startedAuthorization, setStartedAuthorization] = useState(false);
+  const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
@@ -47,9 +47,9 @@ export function AppConnectCard({
       { signal: readback.signal },
     )
       .then(({ connected, pendingConnectionId }) => {
-        if (readback.signal.aborted) return;
+        if (readback.signal.aborted || connectionAttempt.current) return;
         if (connected) setLocalStatus("connected");
-        setStartedAuthorization(Boolean(pendingConnectionId));
+        setPendingConnectionId(pendingConnectionId);
       })
       .catch(() => undefined);
     return () => readback.abort();
@@ -76,18 +76,20 @@ export function AppConnectCard({
     setBusy(true);
     setError(null);
     try {
-      const started = await rpc<{ connectionId: string; authorizationUrl: string | null }>(
-        "connections/begin",
-        {
-          connectorId: block.connectorId,
-          provider: block.provider,
-          displayName: block.name,
-          reuseAppGrant: true,
-        },
-        { signal: controller.signal },
-      );
+      const started = pendingConnectionId
+        ? { connectionId: pendingConnectionId, authorizationUrl: null }
+        : await rpc<{ connectionId: string; authorizationUrl: string | null }>(
+            "connections/begin",
+            {
+              connectorId: block.connectorId,
+              provider: block.provider,
+              displayName: block.name,
+              reuseAppGrant: true,
+            },
+            { signal: controller.signal },
+          );
       if (controller.signal.aborted) return;
-      setStartedAuthorization(true);
+      setPendingConnectionId(started.connectionId);
       if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
       const checks = started.authorizationUrl ? 60 : 1;
       for (let attempt = 0; attempt < checks; attempt += 1) {
@@ -97,13 +99,14 @@ export function AppConnectCard({
           { connectionId: started.connectionId, card: { botId, messageId } },
           { signal: controller.signal },
         ).catch(() => undefined);
+        if (controller.signal.aborted) return;
         if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
+          setPendingConnectionId(null);
           setLocalStatus("connected");
           return;
         }
         if (row?.status === "revoked" || row?.status === "error") {
-          setStartedAuthorization(false);
+          setPendingConnectionId(null);
           setError(t("Could not authorize this app"));
           return;
         }
@@ -166,14 +169,14 @@ export function AppConnectCard({
             label={
               block.connectorId === "native"
                 ? t("Connect")
-                : startedAuthorization && !busy
+                : pendingConnectionId && !busy
                   ? t("Check status")
                   : view.actionLabel
             }
             accessibilityLabel={
               block.connectorId === "native"
                 ? t("Connect {name}", { name: block.name })
-                : startedAuthorization
+                : pendingConnectionId
                   ? t("Check status")
                   : t("Authorize {name}", { name: block.name })
             }
@@ -189,6 +192,14 @@ export function AppConnectCard({
         ) : null}
       </View>
       {error ? <Text style={{ color: tokens.destructive, fontSize: 13 }}>{error}</Text> : null}
+      {error && pendingConnectionId && !readOnly && block.connectorId !== "native" ? (
+        <NativeActionButton
+          label={t("Manage")}
+          fill={false}
+          style={{ alignSelf: "flex-end" }}
+          onPress={() => router.push("/(settings)/integrations")}
+        />
+      ) : null}
     </View>
   );
 }

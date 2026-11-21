@@ -1644,6 +1644,57 @@ describe("connections.begin", () => {
 });
 
 describe("connections.complete", () => {
+  it("does not adopt an active account while provider begin has not saved the new grant", async () => {
+    const current = {
+      id: "reserved-grant",
+      connectorId: "composio",
+      provider: "gmail",
+      providerRef: null,
+      displayName: "New Gmail",
+      status: "pending",
+      createdAt: new Date(0),
+      metadata: { authRevision: "reserved-authorization", chatAppGrant: true },
+    };
+    const connectionReady = vi.fn(async () => true);
+    const resolveConnectedAccountId = vi.fn(async () => "different-space-account");
+    const update = vi.fn();
+    const tx = {
+      $executeRaw: vi.fn(),
+      connection: { findFirst: vi.fn(async () => current), update },
+    };
+    const deps = {
+      prisma: {
+        ...tx,
+        $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx),
+        ),
+      },
+      connectors: { managed: vi.fn(() => ({ connectionReady, resolveConnectedAccountId })) },
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "http://127.0.0.1:5173",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@example.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    await expect(client.connections.complete({ connectionId: current.id })).resolves.toMatchObject({
+      id: current.id,
+      status: "pending",
+      remoteAccountId: null,
+    });
+    expect(connectionReady).not.toHaveBeenCalled();
+    expect(resolveConnectedAccountId).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it.each(["error", "connected", "pending"])(
     "handles an unresolved %s sibling without adopting its raw ref",
     async (siblingStatus) => {

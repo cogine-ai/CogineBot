@@ -132,12 +132,25 @@ test("a chat card resumes the same pending grant after reload", async ({ page })
     reuseAppGrant: true,
   });
   expect(reused).toEqual({ connectionId: first.connectionId, authorizationUrl: null });
+  const newRequests: unknown[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/rpc/connections/begin")
+      newRequests.push(request.postDataJSON());
+  });
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await expect(card.getByText("Authorization is still pending.")).toBeVisible();
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  const integrations = page.getByRole("dialog", { name: "Integrations", exact: true });
+  await expect(integrations).toBeVisible();
+  await expect(integrations.getByTestId("connection-tile-airtable")).toBeVisible();
+  await integrations.getByRole("button", { name: "Close integrations" }).click();
   await page.unroute(completion);
   await card.getByRole("button", { name: "Check status", exact: true }).click();
   await expect(card.getByText("Connected", { exact: true })).toBeVisible();
   expect(await rpc(page, "connections/list", {})).toEqual([
     expect.objectContaining({ id: first.connectionId, status: "connected" }),
   ]);
+  expect(newRequests).toEqual([]);
 });
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({

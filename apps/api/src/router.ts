@@ -7327,6 +7327,7 @@ export function createRouter(deps: RouterDeps) {
               }
               if (current.status === "connected" || current.status === "error") return current;
               if (current.status === "revoked") {
+                if (input.card) return current;
                 // Authorization URLs from a revoke-win begin can still finish
                 // remotely. Cancel leftover Composio request ids / drop Pipedream
                 // remotes no active local row still references before rejecting.
@@ -7418,6 +7419,17 @@ export function createRouter(deps: RouterDeps) {
                 }
                 throw new IsolationError();
               }
+
+              // The local reservation exists before provider begin returns. App-level
+              // readiness cannot attest that this request authorized a particular account.
+              if (
+                !current.providerRef &&
+                current.metadata &&
+                typeof current.metadata === "object" &&
+                !Array.isArray(current.metadata) &&
+                typeof current.metadata.authRevision === "string"
+              )
+                return current;
 
               const adapterContext = connectionContext(
                 context.actor,

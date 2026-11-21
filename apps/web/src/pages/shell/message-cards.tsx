@@ -23,7 +23,7 @@ import { useArtifactImage } from "../../lib/use-artifact-image";
 import { errorText } from "../../lib/user-error";
 import { McpServersOverlay } from "../McpServersOverlay";
 
-const NativeAppsOverlay = lazyOverlay(() =>
+const AppIntegrationsOverlay = lazyOverlay(() =>
   import("../PluginsOverlay").then((module) => module.PluginsOverlay),
 );
 
@@ -258,11 +258,11 @@ export function AppConnectCard({
 }) {
   const { t } = useLingui();
   const [busy, setBusy] = useState(false);
-  const [nativeAppsOpen, setNativeAppsOpen] = useState(false);
+  const [appsOpen, setAppsOpen] = useState(false);
   const nativeApp =
     block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
   const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
-  const [startedAuthorization, setStartedAuthorization] = useState(false);
+  const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
@@ -276,9 +276,9 @@ export function AppConnectCard({
         { signal: readback.signal },
       )
       .then(({ connected, pendingConnectionId }) => {
-        if (readback.signal.aborted) return;
+        if (readback.signal.aborted || connectionAttempt.current) return;
         if (connected) setLocalStatus("connected");
-        setStartedAuthorization(Boolean(pendingConnectionId));
+        setPendingConnectionId(pendingConnectionId);
       })
       .catch(() => undefined);
     return () => readback.abort();
@@ -291,7 +291,7 @@ export function AppConnectCard({
         return;
       }
       setError(null);
-      setNativeAppsOpen(true);
+      setAppsOpen(true);
       return;
     }
     connectionAttempt.current?.abort();
@@ -300,21 +300,23 @@ export function AppConnectCard({
     setBusy(true);
     setError(null);
     try {
-      const started = await rpc.connections.begin(
-        {
-          connectorId: block.connectorId,
-          provider: block.provider,
-          displayName: block.name,
-          reuseAppGrant: true,
-        },
-        { signal: controller.signal },
-      );
+      const started = pendingConnectionId
+        ? { connectionId: pendingConnectionId, authorizationUrl: null }
+        : await rpc.connections.begin(
+            {
+              connectorId: block.connectorId,
+              provider: block.provider,
+              displayName: block.name,
+              reuseAppGrant: true,
+            },
+            { signal: controller.signal },
+          );
       if (controller.signal.aborted) return;
-      setStartedAuthorization(true);
-      if (started.authorizationUrl) {
-        window.open(started.authorizationUrl, "rakazo-app-connect", "popup,width=560,height=720");
-      }
-      const checks = started.authorizationUrl ? 60 : 1;
+      setPendingConnectionId(started.connectionId);
+      const popup = started.authorizationUrl
+        ? window.open(started.authorizationUrl, "rakazo-app-connect", "popup,width=560,height=720")
+        : null;
+      const checks = popup ? 60 : 1;
       for (let i = 0; i < checks; i += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc.connections
@@ -323,14 +325,15 @@ export function AppConnectCard({
             { signal: controller.signal },
           )
           .catch(() => undefined);
+        if (controller.signal.aborted) return;
         if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
+          setPendingConnectionId(null);
           setLocalStatus("connected");
           onConnectionsChanged();
           return;
         }
         if (row?.status === "revoked" || row?.status === "error") {
-          setStartedAuthorization(false);
+          setPendingConnectionId(null);
           setError(t`Could not authorize this app`);
           return;
         }
@@ -385,22 +388,33 @@ export function AppConnectCard({
               ? t`Waiting…`
               : block.connectorId === "native"
                 ? t`Connect`
-                : startedAuthorization
+                : pendingConnectionId
                   ? t`Check status`
                   : t`Authorize`}
           </Button>
         )}
       </div>
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-      {nativeAppsOpen && nativeApp?.success ? (
+      {error ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <p className="text-xs text-destructive">{error}</p>
+          {pendingConnectionId && block.connectorId !== "native" ? (
+            <Button variant="ghost" size="sm" onClick={() => setAppsOpen(true)}>{t`Manage`}</Button>
+          ) : null}
+        </div>
+      ) : null}
+      {appsOpen ? (
         <Suspense fallback={null}>
-          <NativeAppsOverlay
+          <AppIntegrationsOverlay
             activeBotId={botId}
-            initialNativeApp={nativeApp.data}
-            onClose={() => setNativeAppsOpen(false)}
+            initialNativeApp={nativeApp?.success ? nativeApp.data : undefined}
+            onClose={() => setAppsOpen(false)}
             onConnectionsChanged={onConnectionsChanged}
             onConnected={(item) => {
-              if (item.connectorId === "native" && item.slug === nativeApp.data)
+              if (
+                nativeApp?.success &&
+                item.connectorId === "native" &&
+                item.slug === nativeApp.data
+              )
                 setLocalStatus("connected");
             }}
           />
