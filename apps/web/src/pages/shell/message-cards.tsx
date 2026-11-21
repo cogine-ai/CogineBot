@@ -6,6 +6,7 @@ import type { HistorySourceReference, MessageBlock } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
 import { MANAGED_APP_OAUTH_POPUP_NAME } from "@rakazo/contracts/connection-popup";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import { cn } from "@rakazo/ui-web/lib/utils";
 import { X } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -299,9 +300,15 @@ export function AppConnectCard({
     <BuiCard
       role="group"
       aria-label={t`${block.name} connection`}
-      className="w-[min(420px,80%)] px-4 py-3.5"
+      className={cn("px-4 py-3.5", readyToOpen ? "w-56 max-w-full" : "w-[min(420px,80%)]")}
     >
-      <div className="flex items-center gap-3.5">
+      <div
+        className={
+          readyToOpen
+            ? "grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3.5 gap-y-2"
+            : "flex items-center gap-3.5"
+        }
+      >
         {block.logo ? (
           <img
             src={block.logo}
@@ -314,7 +321,14 @@ export function AppConnectCard({
           </span>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block text-[15px] font-medium text-foreground">{block.name}</span>
+          <span
+            className={cn(
+              "block text-[15px] font-medium text-foreground",
+              readyToOpen && "wrap-anywhere",
+            )}
+          >
+            {block.name}
+          </span>
           <span className="block truncate text-[13px] text-muted-foreground">
             {block.description}
           </span>
@@ -324,7 +338,11 @@ export function AppConnectCard({
         ) : (
           <Button
             variant="secondary"
-            className="rounded-full hover:border-border hover:bg-accent hover:text-foreground"
+            className={cn(
+              "rounded-full hover:border-border hover:bg-accent hover:text-foreground",
+              readyToOpen &&
+                "col-span-2 h-auto min-h-8 max-w-full justify-self-end whitespace-normal",
+            )}
             disabled={busy}
             onClick={() => void authorize()}
           >

@@ -183,7 +183,43 @@ test("opens an already prepared authorization from a fresh user gesture", async 
   });
   await expect(openAuthorization).toBeVisible();
   await expect(card).not.toContainText("Could not authorize this app");
-  await captureScreenshot(page, testInfo, "chat-app-authorization-ready");
+  const appName = card.getByText("Airtable", { exact: true });
+  const normalViewport = page.viewportSize()!;
+  for (const narrow of [false, true]) {
+    if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+    await expect(appName).toBeInViewport();
+    await expect(openAuthorization).toBeInViewport();
+    await expect
+      .poll(async () => {
+        const name = await appName.boundingBox();
+        const action = await openAuthorization.boundingBox();
+        const frame = await card.boundingBox();
+        return Boolean(
+          name &&
+            action &&
+            frame &&
+            action.y >= name.y + name.height &&
+            action.x >= frame.x &&
+            action.x + action.width <= frame.x + frame.width,
+        );
+      })
+      .toBe(true);
+    await captureScreenshot(
+      page,
+      testInfo,
+      narrow ? "chat-app-authorization-ready-narrow" : "chat-app-authorization-ready",
+    );
+  }
+  expect(
+    await appName.evaluate((label) => {
+      const original = label.textContent;
+      label.textContent = "LongAppName".repeat(8);
+      const fits = label.scrollWidth <= label.clientWidth;
+      label.textContent = original;
+      return fits;
+    }),
+  ).toBe(true);
+  await page.setViewportSize(normalViewport);
 
   await page.unroute(completion);
   const opened = page.waitForEvent("popup");
