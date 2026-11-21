@@ -173,9 +173,7 @@ export function assessBackupSkill(
     ) ||
     new Set(references.map(({ path }) => path.normalize("NFC").toLowerCase())).size !==
       references.length ||
-    hasMissingSkillReference(skill.body, files, true, true) ||
-    (!files.size &&
-      /\{baseDir\}|(?:^|[\s(`'"/])(?:scripts|references|templates|assets)\//m.test(skill.body))
+    hasMissingSkillReference(skill.body, files, true, true)
   )
     return { reason: "missingSkillFiles" };
   const { frontmatter } = skill;

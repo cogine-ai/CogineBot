@@ -663,7 +663,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       const skill = buildSkillMd({
         name: "backup-review",
         description: "Review a supplied document",
-        body: "Review [the checklist](references/checklist.md) before reporting.",
+        body: "Review [the reference folder](references) and [its checklist](references/checklist.md) before reporting.",
       });
       const reference = {
         path: "references/checklist.md",

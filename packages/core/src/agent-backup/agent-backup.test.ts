@@ -630,14 +630,21 @@ it("does not offer Skills linking to files absent from the picker inventory", as
         "> [ref]: helper.txt\n\n[ref]: https://example.test\n\nRead [the helper][ref].",
       ),
       skill("external", "Read [the docs](https://example.test) and [the heading](#summary)."),
+      skill("external-reference-url", "Read [the docs](https://example.test/references/guide.md)."),
+      skill("local-fenced-script", "```sh\nbash scripts/setup.sh\n```"),
       skill("unused", "Review rows.\n\n[unused]: helper.txt"),
     ],
     () => true,
   );
   expect(agentBackupFileGroups(folder)).toMatchObject({
-    skills: ["skills/external/SKILL.md", "skills/unused/SKILL.md"],
+    skills: [
+      "skills/external-reference-url/SKILL.md",
+      "skills/external/SKILL.md",
+      "skills/unused/SKILL.md",
+    ],
     unavailable: [
       { path: "skills/local-autolink/SKILL.md", reason: "missingSkillFiles" },
+      { path: "skills/local-fenced-script/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-file/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-first/SKILL.md", reason: "missingSkillFiles" },
       { path: "skills/local-reference/SKILL.md", reason: "missingSkillFiles" },
@@ -665,7 +672,7 @@ it.each(["zip", "folder"] as const)(
       "HERMES.md": "Review the selected notes.",
       [`${root}/picked/SKILL.md`]: entry(
         "picked",
-        "Read [references/extra note.md](references/extra%20note.md) and `examples/extra row.csv`. See [references/external.md](https://example.test/guide).",
+        "Read [references/extra note.md](references/extra%20note.md), [the examples](examples) and `examples/extra row.csv`. See [references/external.md](https://example.test/guide).",
       ),
       [`${root}/picked/references/notes.md`]: notes,
       [`${root}/picked/references/extra note.md`]: "Path contains a space.",

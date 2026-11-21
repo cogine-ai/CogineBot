@@ -59,25 +59,29 @@ export function hasMissingSkillReference(
     const { links, inlineCode, prose, code } = readSkillMarkdownReferences(document.body);
     const documentDir = document.path.slice(0, document.path.lastIndexOf("/") + 1);
     const references = [
-      ...links.map((target) => ({ target, base: documentDir })),
+      ...links.map((target) => ({ target, base: documentDir, canBeDirectory: true })),
       ...inlineCode
         .filter((text) => (inferInlineFiles || text.startsWith("{baseDir}/")) && isInlineFile(text))
         .map((target) => ({
           target,
           base: target.startsWith("./") || target.startsWith("../") ? documentDir : "",
+          canBeDirectory: false,
         })),
       ...(includeProse
-        ? [
-            ...prose
-              .concat(inlineCode.filter((value) => !isInlineFile(value)))
-              .flatMap(backupReferenceTargets),
-            ...code
-              .flatMap(backupReferenceTargets)
-              .filter((target) => target.startsWith("{baseDir}/")),
-          ].map((target) => ({ target, base: target.startsWith("./") ? documentDir : "" }))
+        ? prose
+            .concat(
+              code,
+              inlineCode.filter((value) => !isInlineFile(value)),
+            )
+            .flatMap(backupReferenceTargets)
+            .map((target) => ({
+              target,
+              base: target.startsWith("./") ? documentDir : "",
+              canBeDirectory: false,
+            }))
         : []),
     ];
-    for (const { target, base } of references) {
+    for (const { target, base, canBeDirectory } of references) {
       try {
         const atSkillRoot = target.startsWith("{baseDir}/");
         const decoded = decodeURIComponent(target.replace(/^\{baseDir\}\//, "").split("#", 1)[0]!);
@@ -98,13 +102,11 @@ export function hasMissingSkillReference(
         }
         const relative = normalizeSkillFilePath(path);
         if (!relative) return true;
-        if (directory) {
-          const children = [...files.keys()].filter((file) => file.startsWith(`${relative}/`));
-          if (!children.length) return true;
-          if (includeProse) children.forEach(visit);
-          continue;
-        }
-        if (!visit(relative)) return true;
+        if (!directory && visit(relative)) continue;
+        if (!directory && !canBeDirectory) return true;
+        const children = [...files.keys()].filter((file) => file.startsWith(`${relative}/`));
+        if (!children.length) return true;
+        if (includeProse) children.forEach(visit);
       } catch {
         return true;
       }
