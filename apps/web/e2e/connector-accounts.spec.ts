@@ -1,7 +1,19 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
-import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, openIntegrations, rpc, signup } from "./helpers";
+import type {
+  Connection,
+  ConnectionCatalogItem,
+  RunsListOutput,
+  ThreadSnapshot,
+} from "@rakazo/contracts";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  openIntegrations,
+  rpc,
+  signup,
+} from "./helpers";
 
 const catalog: ConnectionCatalogItem[] = ["composio", "pipedream"].map((connectorId) => ({
   connectorId,
@@ -67,6 +79,31 @@ test("a chat request opens one managed app card and keeps its verified status", 
   await expect(
     page.getByTestId("connection-tile-gmail").getByRole("button", { name: "Manage", exact: true }),
   ).toBeVisible();
+});
+
+test("rejects a URL supplied as the app name through chat", async ({ page }) => {
+  await signup(page, `invalid-app-${Date.now()}@example.test`, "password12", "Robin");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const sent = await rpc<{ runId: string }>(page, "threads/send", {
+    botId,
+    text: "Connect https://example.test/authorization to this chat.",
+    clientNonce: "invalid-app-name",
+  });
+  await expect
+    .poll(async () => {
+      const { runs } = await rpc<RunsListOutput>(page, "runs/list", {
+        filter: "recent",
+      });
+      return runs.find((run) => run.runId === sent.runId)?.status;
+    })
+    .toBe("completed");
+
+  const thread = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  expect(thread.messages.flatMap((message) => message.blocks)).not.toContainEqual(
+    expect.objectContaining({ kind: "app_connect" }),
+  );
+  expect(await rpc(page, "connections/list", {})).toEqual([]);
 });
 
 test("a card recovers a completed authorization after the original update is interrupted", async ({

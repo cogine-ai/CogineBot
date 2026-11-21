@@ -79,6 +79,7 @@ export async function connectApp(
   effect: CardEffect,
   readPolicyBlock: (tx: Prisma.TransactionClient) => Promise<{ error: string } | undefined>,
 ) {
+  // Approval replay can replace the arguments validated at the dispatcher entry.
   const parsed = ConnectAppInput.safeParse(input);
   const { catalog, failed } = parsed.success
     ? await readAppCatalog(providers, context)
@@ -105,14 +106,11 @@ export async function connectApp(
           ? { result: blocked, message: undefined }
           : undefined;
       }
-      const nonce = `connect-app:${effect.id}`;
-      const replayed = await tx.message.findFirst({
-        where: { threadId: run.threadId, clientNonce: nonce, role: "bot", runId: run.id },
-        select: { id: true },
-      });
-      let result = replayed ? CARD_SHOWN : parsed.success ? UNAVAILABLE_APP : INVALID_APP;
+      let result: typeof UNAVAILABLE_APP | typeof CARD_SHOWN = parsed.success
+        ? UNAVAILABLE_APP
+        : INVALID_APP;
       let message: Awaited<ReturnType<typeof persistMessageInTransaction>> | undefined;
-      if (!replayed && parsed.success && matchAppCatalog(catalog, parsed.data.app)) {
+      if (parsed.success && matchAppCatalog(catalog, parsed.data.app)) {
         const rows = await tx.connection.findMany({
           where: { userId: run.userId, spaceId: run.spaceId, status: "connected" },
           select: { connectorId: true, provider: true },
@@ -164,7 +162,7 @@ export async function connectApp(
               "bot",
               [appConnectCard({ ...available, connected: false })],
               undefined,
-              nonce,
+              `connect-app:${effect.id}`,
               false,
               lease,
             );
