@@ -1,12 +1,13 @@
 import type { Connection, MessageBlock } from "@rakazo/contracts";
 import { abortableDelay } from "@rakazo/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 type AppConnectBlock = Extract<MessageBlock, { kind: "app_connect" }>;
 type Card = { botId: string; messageId: string };
 type App = Pick<AppConnectBlock, "connectorId" | "provider">;
 type Grant = { connectionId: string; authorizationUrl: string | null };
 type ConnectError = { kind: "authorization" | "pending" } | { kind: "request"; cause: unknown };
+type LaunchResult = "opened" | "activation-required" | "failed";
 
 export type AppConnectClient = {
   readback(
@@ -24,7 +25,7 @@ export type AppConnectClient = {
     input: { connectionId: string; card: Card },
     signal: AbortSignal,
   ): Promise<Pick<Connection, "status">>;
-  openAuthorization(url: string): boolean | Promise<boolean>;
+  openAuthorization(url: string, afterRequest: boolean): LaunchResult | Promise<LaunchResult>;
 };
 
 export function useAppConnectCard(
@@ -43,8 +44,13 @@ export function useAppConnectCard(
   const [error, setError] = useState<ConnectError | null>(null);
   const connectionAttempt = useRef<AbortController | null>(null);
   const authorizationGeneration = useRef(0);
+  const verifyBeforeReopen = useRef(false);
+  const cardConnected = useRef(savedStatus === "connected");
   const status = savedStatus === "connected" ? "connected" : localStatus;
 
+  useLayoutEffect(() => {
+    cardConnected.current = savedStatus === "connected";
+  }, [savedStatus]);
   useEffect(() => () => connectionAttempt.current?.abort(), []);
   useEffect(() => {
     if (readOnly || savedStatus === "connected" || connectionAttempt.current) return;
@@ -68,11 +74,12 @@ export function useAppConnectCard(
 
   function markConnected() {
     setGrant(null);
+    setError(null);
     setLocalStatus("connected");
   }
 
-  function dismissAuthorizationLink() {
-    setGrant((current) => current && { ...current, authorizationUrl: null });
+  function prepareToManage() {
+    verifyBeforeReopen.current = Boolean(grant?.authorizationUrl);
   }
 
   async function authorize(onConnected?: () => void) {
@@ -85,25 +92,51 @@ export function useAppConnectCard(
     setBusy(true);
     setError(null);
     try {
+      const grantToRecheck = verifyBeforeReopen.current && grant?.authorizationUrl ? grant : null;
+      if (grantToRecheck) {
+        const { connected, pendingConnectionId } = await client.readback(
+          { botId, messageId, connectorId, provider },
+          signal,
+        );
+        if (signal.aborted) return;
+        verifyBeforeReopen.current = false;
+        if (connected) {
+          markConnected();
+          onConnected?.();
+          return;
+        }
+        if (pendingConnectionId !== grantToRecheck.connectionId) {
+          setGrant(
+            pendingConnectionId
+              ? { connectionId: pendingConnectionId, authorizationUrl: null }
+              : null,
+          );
+          return;
+        }
+      }
       const started =
         grant ??
         (await client.begin(
           { connectorId, provider, displayName: name, reuseAppGrant: true },
           signal,
         ));
-      if (signal.aborted) return;
+      // A saved update can make a delayed pending response obsolete before the launch.
+      if (signal.aborted || cardConnected.current) return;
       setGrant({ connectionId: started.connectionId, authorizationUrl: null });
       if (started.authorizationUrl) {
-        let opened = false;
+        let launch: LaunchResult = "failed";
         try {
-          opened = await client.openAuthorization(started.authorizationUrl);
+          launch = await client.openAuthorization(
+            started.authorizationUrl,
+            !grant || grantToRecheck !== null,
+          );
         } catch {
           // Retain the link in memory so a second explicit attempt can reopen it.
         }
         if (signal.aborted) return;
-        if (!opened) {
+        if (launch !== "opened") {
           setGrant(started);
-          setError({ kind: "authorization" });
+          if (launch === "failed") setError({ kind: "authorization" });
           return;
         }
       }
@@ -137,14 +170,16 @@ export function useAppConnectCard(
     }
   }
 
+  const pending = status === "pending";
   return {
     status,
-    busy,
-    error,
-    checkOnly: Boolean(grant && !grant.authorizationUrl),
-    needsAttention: Boolean(grant && error),
+    busy: pending && busy,
+    error: pending ? error : null,
+    readyToOpen: pending && Boolean(grant?.authorizationUrl) && !error,
+    checkOnly: pending && Boolean(grant && !grant.authorizationUrl),
+    needsAttention: pending && Boolean(grant && error),
     authorize,
     markConnected,
-    dismissAuthorizationLink,
+    prepareToManage,
   };
 }

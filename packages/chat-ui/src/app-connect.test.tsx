@@ -27,7 +27,7 @@ function fixture() {
     readback: vi.fn<AppConnectClient["readback"]>().mockResolvedValue(emptyReadback),
     begin: vi.fn<AppConnectClient["begin"]>().mockResolvedValue(grant),
     complete: vi.fn<AppConnectClient["complete"]>().mockResolvedValue({ status: "connected" }),
-    openAuthorization: vi.fn<AppConnectClient["openAuthorization"]>().mockReturnValue(true),
+    openAuthorization: vi.fn<AppConnectClient["openAuthorization"]>().mockReturnValue("opened"),
   };
 }
 
@@ -45,13 +45,16 @@ afterEach(async () => {
 });
 
 async function mount(client: AppConnectClient, readOnly = false) {
-  let view: ReturnType<typeof useAppConnectCard>;
-  function Card() {
-    view = useAppConnectCard({ ...card, readOnly }, client);
+  let current: ReturnType<typeof useAppConnectCard>;
+  function Card({ status = "pending" }: { status?: "pending" | "connected" }) {
+    current = useAppConnectCard({ ...card, block: { ...card.block, status }, readOnly }, client);
     return null;
   }
   await act(async () => root.render(<Card />));
-  return () => view;
+  return {
+    view: () => current,
+    publishConnected: () => act(async () => root.render(<Card status="connected" />)),
+  };
 }
 
 it("ignores an old readback after a rejected asynchronous launch and reopens the same grant", async () => {
@@ -63,7 +66,7 @@ it("ignores an old readback after a rejected asynchronous launch and reopens the
     }),
   );
   client.openAuthorization.mockRejectedValueOnce(new Error("Device could not open the URL"));
-  const view = await mount(client);
+  const { view } = await mount(client);
 
   await act(async () => view().authorize());
   expect(view()).toMatchObject({
@@ -76,8 +79,8 @@ it("ignores an old readback after a rejected asynchronous launch and reopens the
   await act(async () => view().authorize(connected));
 
   expect(client.openAuthorization.mock.calls).toEqual([
-    [grant.authorizationUrl],
-    [grant.authorizationUrl],
+    [grant.authorizationUrl, true],
+    [grant.authorizationUrl, false],
   ]);
   expect(client.begin).toHaveBeenCalledTimes(1);
   expect(client.complete).toHaveBeenCalledExactlyOnceWith(
@@ -94,7 +97,7 @@ it("checks a recovered grant once and leaves a revoked grant ready for an explic
   client.complete
     .mockResolvedValueOnce({ status: "pending" })
     .mockResolvedValueOnce({ status: "revoked" });
-  const view = await mount(client);
+  const { view } = await mount(client);
 
   await act(async () => view().authorize());
   expect(view()).toMatchObject({
@@ -117,11 +120,128 @@ it("checks a recovered grant once and leaves a revoked grant ready for an explic
   expect(client.openAuthorization).not.toHaveBeenCalled();
 });
 
+it("offers an explicit open action when the browser needs a new gesture", async () => {
+  const client = fixture();
+  client.openAuthorization.mockReturnValueOnce("activation-required");
+  const { view } = await mount(client);
+
+  await act(async () => view().authorize());
+  expect(view()).toMatchObject({ busy: false, readyToOpen: true, error: null });
+  expect(client.complete).not.toHaveBeenCalled();
+  await act(async () => view().authorize());
+  expect(view().status).toBe("connected");
+  expect(client.begin).toHaveBeenCalledTimes(1);
+  expect(client.openAuthorization.mock.calls).toEqual([
+    [grant.authorizationUrl, true],
+    [grant.authorizationUrl, false],
+  ]);
+});
+
+it.each([
+  { label: "still pending", pendingConnectionId: grant.connectionId, reopens: true },
+  { label: "cancelled", pendingConnectionId: null, reopens: false },
+  { label: "replaced", pendingConnectionId: "replacement", reopens: false },
+])(
+  "revalidates a $label grant after Manage before reusing its link",
+  async ({ pendingConnectionId, reopens }) => {
+    const client = fixture();
+    client.openAuthorization.mockReturnValueOnce("failed");
+    const { view } = await mount(client);
+    await act(async () => view().authorize());
+    view().prepareToManage();
+    client.readback.mockResolvedValueOnce({ connected: false, pendingConnectionId });
+
+    await act(async () => view().authorize());
+    expect(client.begin).toHaveBeenCalledTimes(1);
+    expect(client.readback).toHaveBeenCalledTimes(2);
+    expect(client.openAuthorization).toHaveBeenCalledTimes(reopens ? 2 : 1);
+    expect(client.complete).toHaveBeenCalledTimes(reopens ? 1 : 0);
+    expect(view()).toMatchObject({
+      status: reopens ? "connected" : "pending",
+      checkOnly: !reopens && pendingConnectionId !== null,
+    });
+  },
+);
+
+it("keeps the link for a later verification when the read after Manage fails", async () => {
+  const client = fixture();
+  client.openAuthorization.mockReturnValueOnce("failed");
+  const { view } = await mount(client);
+  await act(async () => view().authorize());
+  view().prepareToManage();
+  client.readback
+    .mockRejectedValueOnce(new Error("Fixture readback error"))
+    .mockResolvedValueOnce({ connected: false, pendingConnectionId: grant.connectionId });
+
+  await act(async () => view().authorize());
+  expect(view()).toMatchObject({ error: { kind: "request" }, needsAttention: true });
+  expect(client.openAuthorization).toHaveBeenCalledTimes(1);
+  await act(async () => view().authorize());
+  expect(client.readback).toHaveBeenCalledTimes(3);
+  expect(client.openAuthorization).toHaveBeenLastCalledWith(grant.authorizationUrl, true);
+  expect(view().status).toBe("connected");
+});
+
+it("uses a connected readback after Manage without reopening an old link", async () => {
+  const client = fixture();
+  client.openAuthorization.mockReturnValueOnce("failed");
+  const { view } = await mount(client);
+  await act(async () => view().authorize());
+  view().prepareToManage();
+  client.readback.mockResolvedValueOnce({ connected: true, pendingConnectionId: null });
+  const connected = vi.fn();
+
+  await act(async () => view().authorize(connected));
+  expect(client.openAuthorization).toHaveBeenCalledTimes(1);
+  expect(client.complete).not.toHaveBeenCalled();
+  expect(view()).toMatchObject({ status: "connected", error: null, needsAttention: false });
+  expect(connected).toHaveBeenCalledTimes(1);
+});
+
+it("clears pending attention when the saved card becomes connected", async () => {
+  const client = fixture();
+  client.readback.mockResolvedValueOnce({ connected: false, pendingConnectionId: "recovered" });
+  client.complete.mockResolvedValueOnce({ status: "pending" });
+  const { view, publishConnected } = await mount(client);
+  await act(async () => view().authorize());
+  expect(view()).toMatchObject({ error: { kind: "pending" }, needsAttention: true });
+
+  await publishConnected();
+  expect(view()).toMatchObject({ status: "connected", error: null, needsAttention: false });
+});
+
+it("does not reopen the link after a connected event supersedes a pending readback", async () => {
+  const client = fixture();
+  client.openAuthorization.mockReturnValueOnce("failed");
+  const { view, publishConnected } = await mount(client);
+  await act(async () => view().authorize());
+  view().prepareToManage();
+  let returnPending!: () => void;
+  client.readback.mockReturnValueOnce(
+    new Promise((resolve) => {
+      returnPending = () => resolve({ connected: false, pendingConnectionId: grant.connectionId });
+    }),
+  );
+  let retry!: Promise<void>;
+  await act(async () => {
+    retry = view().authorize();
+  });
+
+  await publishConnected();
+  await act(async () => {
+    returnPending();
+    await retry;
+  });
+  expect(view()).toMatchObject({ status: "connected", error: null, needsAttention: false });
+  expect(client.openAuthorization).toHaveBeenCalledTimes(1);
+  expect(client.complete).not.toHaveBeenCalled();
+});
+
 it("rechecks an opened grant and aborts the wait when the card unmounts", async () => {
   vi.useFakeTimers();
   const client = fixture();
   client.complete.mockResolvedValue({ status: "pending" });
-  const view = await mount(client);
+  const { view } = await mount(client);
   let attempt!: Promise<void>;
   await act(async () => {
     attempt = view().authorize();
@@ -139,7 +259,7 @@ it("rechecks an opened grant and aborts the wait when the card unmounts", async 
 
 it("leaves a read-only card idle", async () => {
   const client = fixture();
-  const view = await mount(client, true);
+  const { view } = await mount(client, true);
   await act(async () => view().authorize());
   expect(client.readback).not.toHaveBeenCalled();
   expect(client.begin).not.toHaveBeenCalled();

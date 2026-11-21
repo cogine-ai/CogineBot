@@ -18,9 +18,9 @@ const appConnectClient: AppConnectClient = {
   readback: (input, signal) => rpc("onboarding/appConnected", input, { signal }),
   begin: (input, signal) => rpc("connections/begin", input, { signal }),
   complete: (input, signal) => rpc("connections/complete", input, { signal }),
-  openAuthorization: async (url) => {
+  openAuthorization: async (url): Promise<"opened"> => {
     await Linking.openURL(url);
-    return true;
+    return "opened";
   },
 };
 
@@ -141,7 +141,7 @@ export function AppConnectCard({
           fill={false}
           style={{ alignSelf: "flex-end" }}
           onPress={() => {
-            connection.dismissAuthorizationLink();
+            connection.prepareToManage();
             router.push("/(settings)/integrations");
           }}
         />

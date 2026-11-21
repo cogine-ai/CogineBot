@@ -141,37 +141,19 @@ for (const failure of ["blocked", "throws"] as const) {
         return open(...args);
       };
     }, failure);
-    const readback = "**/rpc/onboarding/appConnected";
-    const readbackCaptured = Promise.withResolvers<void>();
-    const releaseReadback = Promise.withResolvers<void>();
-    await page.route(readback, async (route) => {
-      const response = await route.fetch();
-      expect((await response.json()).json).toMatchObject({
-        connected: false,
-        pendingConnectionId: null,
-      });
-      readbackCaptured.resolve();
-      await releaseReadback.promise;
-      await route.fulfill({ response });
-    });
     let begins = 0;
-    await page.route("**/rpc/connections/begin", async (route) => {
-      begins += 1;
-      await readbackCaptured.promise;
-      await route.continue();
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/rpc/connections/begin") begins += 1;
     });
     const { card, completion, connectionId } = await startPendingAirtableCard(page);
     await expect(card.getByText("Could not authorize this app", { exact: true })).toBeVisible();
     await expect(card).not.toContainText("Fixture authorization launch detail");
-    const staleReadback = page.waitForResponse(readback);
-    releaseReadback.resolve();
-    expect(await (await staleReadback).finished()).toBeNull();
-    await page.evaluate(
-      () =>
-        new Promise<void>((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        }),
-    );
+    if (failure === "blocked") {
+      await card.getByRole("button", { name: "Manage", exact: true }).click();
+      const integrations = page.getByRole("dialog", { name: "Integrations", exact: true });
+      await expect(integrations.getByTestId("connection-tile-airtable")).toBeVisible();
+      await integrations.getByRole("button", { name: "Close integrations" }).click();
+    }
     const reopened = page.waitForEvent("popup");
     await page.unroute(completion);
     await card.getByRole("button", { name: "Authorize", exact: true }).click();
@@ -183,6 +165,36 @@ for (const failure of ["blocked", "throws"] as const) {
     expect(begins).toBe(1);
   });
 }
+
+test("opens an already prepared authorization from a fresh user gesture", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: false } });
+  });
+  let begins = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/rpc/connections/begin") begins += 1;
+  });
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  const openAuthorization = card.getByRole("button", {
+    name: "Continue authorization",
+    exact: true,
+  });
+  await expect(openAuthorization).toBeVisible();
+  await expect(card).not.toContainText("Could not authorize this app");
+  await captureScreenshot(page, testInfo, "chat-app-authorization-ready");
+
+  await page.unroute(completion);
+  const opened = page.waitForEvent("popup");
+  await openAuthorization.click();
+  await opened;
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  expect(begins).toBe(1);
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "connected" }),
+  ]);
+});
 
 test("a chat card resumes the same pending grant after reload", async ({ page }) => {
   const { card, completion, connectionId } = await startPendingAirtableCard(page);

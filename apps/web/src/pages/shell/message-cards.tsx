@@ -251,8 +251,12 @@ const appConnectClient: AppConnectClient = {
   readback: (input, signal) => rpc.onboarding.appConnected(input, { signal }),
   begin: (input, signal) => rpc.connections.begin(input, { signal }),
   complete: (input, signal) => rpc.connections.complete(input, { signal }),
-  openAuthorization: (url) =>
-    Boolean(window.open(url, MANAGED_APP_OAUTH_POPUP_NAME, "popup,width=560,height=720")),
+  openAuthorization: (url, afterRequest) => {
+    if (afterRequest && !navigator.userActivation?.isActive) return "activation-required";
+    return window.open(url, MANAGED_APP_OAUTH_POPUP_NAME, "popup,width=560,height=720")
+      ? "opened"
+      : "failed";
+  },
 };
 
 export function AppConnectCard({
@@ -272,7 +276,7 @@ export function AppConnectCard({
   const nativeApp =
     block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
   const connection = useAppConnectCard({ botId, messageId, block }, appConnectClient);
-  const { busy, status, checkOnly, needsAttention } = connection;
+  const { busy, status, checkOnly, readyToOpen, needsAttention } = connection;
   const failure = connection.error;
   const error =
     nativeError ??
@@ -330,7 +334,9 @@ export function AppConnectCard({
                 ? t`Connect`
                 : checkOnly
                   ? t`Check status`
-                  : t`Authorize`}
+                  : readyToOpen
+                    ? t`Continue authorization`
+                    : t`Authorize`}
           </Button>
         )}
       </div>
@@ -342,7 +348,7 @@ export function AppConnectCard({
               variant="ghost"
               size="sm"
               onClick={() => {
-                connection.dismissAuthorizationLink();
+                connection.prepareToManage();
                 setAppsOpen(true);
               }}
             >{t`Manage`}</Button>
