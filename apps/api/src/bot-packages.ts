@@ -24,6 +24,7 @@ import {
   AgentBackupModelSchema,
   BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
+  BOT_PACKAGE_MAX_BYTES,
   BOT_PACKAGE_MAX_CONNECTIONS,
   BOT_PACKAGE_MODEL_KEY_MISMATCH,
   BotPackageDocumentSchema,
@@ -795,17 +796,18 @@ export function createBotPackagesService(deps: Deps) {
     },
     async export(context: Context, input: BotPackageExportInput) {
       await scope(context);
-      const snapshot = await transact(context, async (tx) => {
+      const readSnapshot = async (tx: Prisma.TransactionClient) => {
         const bot = await tx.bot.findFirst({
           where: { ...own(context.actor), id: input.botId, archivedAt: null },
         });
         if (!bot) throw new ORPCError("NOT_FOUND");
-        const components = await tx.botPackageComponent.findMany({
-          where: { botId: bot.id, import: own(context.actor) },
-          orderBy: { key: "asc" },
+        const componentWhere = { botId: bot.id, import: own(context.actor) };
+        const componentsForExport = await tx.botPackageComponent.findMany({
+          where: componentWhere,
+          select: { id: true, kind: true, status: true },
           take: 231,
         });
-        if (components.length > 230)
+        if (componentsForExport.length > 230)
           throw new ORPCError("BAD_REQUEST", {
             message: "The Bot has too many package components to export.",
           });
@@ -816,6 +818,47 @@ export function createBotPackagesService(deps: Deps) {
           source: { in: ["user", "plugin"] },
           id: { in: skillIds },
         };
+        const selected = skillIds.length
+          ? await tx.agentSkill.findMany({ where: selectedSkillWhere, select: { id: true } })
+          : [];
+        if (selected.length !== skillIds.length)
+          throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
+        const pendingSkillIds = componentsForExport
+          .filter(({ kind, status }) => kind === "skill" && status === "pending")
+          .map(({ id }) => id);
+        const measurements: Prisma.Sql[] = [];
+        // Count actual text rather than JSONB's extra formatting characters.
+        if (selected.length)
+          measurements.push(Sql.sql`
+          SELECT octet_length(content) + COALESCE(CASE WHEN jsonb_typeof(files) = 'object' THEN (
+            SELECT SUM(octet_length(key) + COALESCE(octet_length(value), 0))
+            FROM jsonb_each_text(files)
+          ) ELSE octet_length(files::text) END, 0) AS bytes
+          FROM agent_skills WHERE id IN (${Sql.join(selected.map(({ id }) => id))})
+        `);
+        if (pendingSkillIds.length)
+          measurements.push(Sql.sql`
+          SELECT COALESCE(octet_length(content), 0) + COALESCE(CASE WHEN jsonb_typeof(files) = 'array' THEN (
+            SELECT SUM(octet_length(field.key) + COALESCE(octet_length(field.value), 0))
+            FROM jsonb_array_elements(files) AS item(entry)
+            CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(entry) = 'object'
+              THEN entry ELSE jsonb_build_object('file', entry) END) AS field
+          ) ELSE octet_length(files::text) END, 0) AS bytes
+          FROM bot_package_components WHERE id IN (${Sql.join(pendingSkillIds)})
+        `);
+        if (measurements.length) {
+          const [size] = await tx.$queryRaw<{ bytes: bigint }[]>(Sql.sql`
+          SELECT COALESCE(SUM(bytes), 0)::bigint AS bytes
+          FROM (${Sql.join(measurements, " UNION ALL ")}) AS skill_payloads
+        `);
+          if (size && size.bytes > BigInt(BOT_PACKAGE_MAX_BYTES))
+            throw new ORPCError("BAD_REQUEST", { message: "Package is larger than 4 MiB." });
+        }
+        const components = await tx.botPackageComponent.findMany({
+          where: componentWhere,
+          orderBy: { key: "asc" },
+          take: 231,
+        });
         const skills = skillIds.length
           ? await tx.agentSkill.findMany({
               where: selectedSkillWhere,
@@ -837,8 +880,6 @@ export function createBotPackagesService(deps: Deps) {
               select: { id: true },
             })
           : [];
-        if (skills.length !== skillIds.length)
-          throw new ORPCError("NOT_FOUND", { message: "A selected skill is unavailable." });
         const routines = await tx.routine.findMany({
           where: { ...own(context.actor), botId: bot.id },
           include: { nativeEventTriggers: { select: { id: true }, take: 1 } },
@@ -871,7 +912,9 @@ export function createBotPackagesService(deps: Deps) {
           assignments,
           availableTargets,
         };
-      });
+      };
+      // Size and fetch the payload within the same snapshot.
+      const snapshot = await transact(context, readSnapshot, true);
       const { bot, components, skills, routines, memory, assignments, availableTargets } = snapshot;
       const leftOut: BotPackageLeftOut[] = [
         note(

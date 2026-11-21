@@ -19,6 +19,7 @@ import {
   AGENT_BACKUP_FORMAT,
   BOT_PACKAGE_FILES_FORMAT,
   BOT_PACKAGE_FORMAT,
+  BOT_PACKAGE_MAX_BYTES,
 } from "@rakazo/contracts";
 import { buildSkillMd, parseSkillMd } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
@@ -47,6 +48,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   let database: ReturnType<typeof createDb>;
   let dataDir: string;
   let failComponents = false;
+  let forbidSkillPayloadRead = false;
   let loseClaimAck = false;
   let loseCommitAck = false;
   let afterMarkerAccepted: (() => Promise<void>) | undefined;
@@ -70,6 +72,19 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
               callback(
                 new Proxy(tx, {
                   get(target, key, txReceiver) {
+                    if (key === "agentSkill" && forbidSkillPayloadRead) {
+                      return new Proxy(target.agentSkill, {
+                        get(model, operation, modelReceiver) {
+                          if (operation !== "findMany")
+                            return Reflect.get(model, operation, modelReceiver);
+                          return (args: Prisma.AgentSkillFindManyArgs) => {
+                            if (args.select?.files)
+                              throw new Error("Unexpected oversized Skill payload read");
+                            return model.findMany(args);
+                          };
+                        },
+                      });
+                    }
                     if (key !== "botPackageComponent") return Reflect.get(target, key, txReceiver);
                     return new Proxy(target.botPackageComponent, {
                       get(model, operation, modelReceiver) {
@@ -332,6 +347,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   });
   afterEach(() => {
     failComponents = false;
+    forbidSkillPayloadRead = false;
     loseClaimAck = false;
     loseCommitAck = false;
     afterMarkerAccepted = undefined;
@@ -1399,6 +1415,72 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(withoutFiles.leftOut).toContainEqual(
       expect.objectContaining({ kind: "skill", name: withReferences.name }),
     );
+  });
+
+  it("rejects oversized selected Skill data before fetching the payload", async () => {
+    const owner = await account();
+    const receipt = await importPackage(owner, await preview(owner));
+    const ids = Array.from({ length: 11 }, () => randomUUID());
+    const files = Object.fromEntries(
+      Array.from({ length: 4 }, (_, index) => [`reference-${index}.txt`, "x".repeat(100_000)]),
+    );
+    await database.prisma.agentSkill.createMany({
+      data: ids.map((id, index) => {
+        const name = `fixture-${index}`;
+        return {
+          id,
+          spaceId: owner.actor.spaceId,
+          userId: owner.actor.userId,
+          name,
+          description: "An export size fixture",
+          content: buildSkillMd({
+            name,
+            description: "An export size fixture",
+            body: "Review it.",
+          }),
+          files,
+        };
+      }),
+    });
+    forbidSkillPayloadRead = true;
+    const response = await request(owner, "export", { botId: receipt.botId, skillIds: ids });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Package is larger than 4 MiB.");
+  });
+
+  it("can re-export a near-limit package with pending reference files", async () => {
+    const owner = await account();
+    const skills = Array.from({ length: 11 }, (_, index) => {
+      const name = `S${index}`;
+      return {
+        name,
+        description: "D",
+        content: `---\nname: ${name}\ndescription: D\n---\n\nReview it.\n`,
+        files: Array.from({ length: 40 }, (_, file) => ({
+          path: `file-${file}.txt`,
+          content: "x".repeat(index < 10 ? 10_000 : file === 0 ? 21_005 : 4_000),
+        })),
+      };
+    });
+    const source = {
+      format: BOT_PACKAGE_FILES_FORMAT,
+      profile: { name: "A", title: "", description: "", instructions: "" },
+      skills,
+      routines: [],
+      connections: [],
+      memory: [],
+    };
+    expect(Buffer.byteLength(JSON.stringify(source))).toBe(BOT_PACKAGE_MAX_BYTES - 256);
+    const plan = await preview(owner, source);
+    const receipt = await importPackage(owner, plan);
+
+    const exported = await call<BotPackageExport>(owner, "export", { botId: receipt.botId });
+
+    expect(exported.document.skills).toHaveLength(skills.length);
+    expect(exported.document.skills.find(({ name }) => name === "S10")?.files).toEqual(
+      skills[10]!.files,
+    );
+    expect(Buffer.byteLength(exported.json)).toBeLessThanOrEqual(BOT_PACKAGE_MAX_BYTES);
   });
 
   it("keeps a portable Skill with files pending until its exact activation", async () => {
