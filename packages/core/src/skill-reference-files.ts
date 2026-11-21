@@ -8,7 +8,7 @@ const BACKUP_PATH_PREFIX =
   /(?:\{baseDir\}\/|(?:\.\.?\/)+|(?:references|assets|examples|scripts|templates)\/)/;
 const BACKUP_URL_PREFIX = /(?:[a-z][a-z\d+.-]*:)?\/\//;
 const BACKUP_URL_START = new RegExp(`^${BACKUP_URL_PREFIX.source}`, "i");
-const BACKUP_TOKEN_START = "(?:^|[\\s(=,<>|;&])";
+const BACKUP_TOKEN_START = "(?:^|[\\s({\\[=:,<>|;&])";
 const BACKUP_TARGET_START = `(?:${BACKUP_PATH_PREFIX.source}|${BACKUP_URL_PREFIX.source})`;
 const QUOTED_BACKUP_TARGET = `(["'])(${BACKUP_TARGET_START}[^\\r\\n]*?)\\1`;
 const UNQUOTED_BACKUP_PATH = `${BACKUP_PATH_PREFIX.source}[^\\s<>"'()[\\]|;&\\u0060]*`;

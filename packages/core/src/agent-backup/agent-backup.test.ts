@@ -681,6 +681,11 @@ it.each(["zip", "folder"] as const)(
       'fetch("//example.test/export?path=../assets/not-local.md")',
       "```",
       "",
+      "```js",
+      'const paths = ["../assets/detail notes.md","//example.test/files?path=../assets/not-local.md"];',
+      'const defaults = {"guide":"../assets/details.md"};',
+      "```",
+      "",
     ].join("\r\n");
     const files = {
       "HERMES.md": "Review the selected notes.",
@@ -704,6 +709,10 @@ it.each(["zip", "folder"] as const)(
         'Read `skill_view("implicit", "references/guide.md")`.\n\n```text\n{baseDir}/references/unknown.md\n```',
       ),
       [`${root}/implicit/references/guide.md`]: "Available inline dependency.",
+      [`${root}/array/SKILL.md`]: entry(
+        "array",
+        '```js\nconst files = ["./references/missing.md"];\n```',
+      ),
       [`${root}/directory/SKILL.md`]: entry("directory", "Browse [inputs](./)."),
       [`${root}/directory/references/index.md`]: "[An absent file](missing.md).",
       [`${root}/missing-parent/SKILL.md`]: entry(
@@ -741,6 +750,7 @@ it.each(["zip", "folder"] as const)(
     expect(agentBackupFileGroups(raw)).toMatchObject({
       skills: [`${root}/other/SKILL.md`, `${root}/picked/SKILL.md`],
       unavailable: [
+        { path: `${root}/array/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/dependency/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/directory/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/escaped/SKILL.md`, reason: "missingSkillFiles" },
@@ -771,7 +781,7 @@ it.each(["zip", "folder"] as const)(
     expect(preview.source).not.toContain("replace the missing file");
     expect(preview.source).not.toContain("Private runtime dependency.");
     expect(preview.source).not.toContain("Outside the Skill folder.");
-    expect(preview.backupOmissions).toHaveLength(9);
+    expect(preview.backupOmissions).toHaveLength(10);
   },
 );
 
