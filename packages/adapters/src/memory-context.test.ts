@@ -1,4 +1,5 @@
 import type { AdapterContext, MemorySnapshot, MemoryStore } from "@rakazo/adapter-kit";
+import * as core from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
 import { loadAgentMemoryDocuments, renderAgentMemoryContext } from "./memory-context.js";
 
@@ -91,6 +92,97 @@ describe("agent memory context", () => {
     );
     expect(original).toMatchObject({ path, content });
   });
+
+  it("bounds the text passed to the escaper for a long document", async () => {
+    const content = "Read & revise the notes.\n".repeat(4_000);
+    const original = document("memory", "memory.md", content, 1);
+    const read = vi.fn(async ({ scope }: { scope: "bot" | "user" }) =>
+      snapshot(scope === "bot" ? [original] : []),
+    );
+    const escapeSpy = vi.spyOn(core, "escapePromptData");
+    try {
+      const maxBytes = 300;
+      const result = await loadAgentMemoryContext(storeWith(read), "bot-1", context, maxBytes);
+
+      expect(result).toContain("Read &amp; revise the notes.");
+      expect(escapeSpy).toHaveBeenCalled();
+      expect(
+        escapeSpy.mock.calls.every(([text]) => Buffer.byteLength(text, "utf8") <= maxBytes),
+      ).toBe(true);
+    } finally {
+      escapeSpy.mockRestore();
+    }
+  });
+
+  it.each(["bot", "user"] as const)("redacts a value crossing the retained %s edge", (scope) => {
+    const secret = "example-<key>";
+    const path = "memory.md";
+    const content = `visible ${secret} visible`;
+    const heading = `## ${scope}: ${path} (revision 1)\n`;
+    const maxBytes = fixedBytes + Buffer.byteLength(heading, "utf8") + 20;
+    const documents = [{ ...document("memory", path, content, 1), scope }];
+
+    const result = renderAgentMemoryContext(documents, [secret], maxBytes);
+
+    expect(result).toContain(scope === "bot" ? "[redacted] visible" : "visible [redacted]");
+    expect(result).not.toContain("example-");
+    expect(result).not.toContain("key");
+    expect(Buffer.byteLength(result!, "utf8")).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it.each(["bot", "user"] as const)(
+    "keeps following documents when a long value is shorter after redaction in %s memory",
+    (scope) => {
+      const secret = `example-${"x".repeat(120)}`;
+      const path = "memory.md";
+      const heading = `## ${scope}: ${path} (revision 2)\n`;
+      const documents = [
+        { ...document("memory", path, `First ${secret} Last`, 2), scope },
+        { ...document("older", "older.md", "Older fact", 1), scope },
+      ];
+      const maxBytes = fixedBytes + Buffer.byteLength(heading, "utf8") + 80;
+
+      const result = renderAgentMemoryContext(documents, [secret], maxBytes);
+
+      expect(result).toContain("First [redacted] Last");
+      expect(result).toContain("Older fact");
+      expect(Buffer.byteLength(result!, "utf8")).toBeLessThanOrEqual(maxBytes);
+    },
+  );
+
+  it.each(["bot", "user"] as const)(
+    "redacts the full overlap of known values in %s memory",
+    (scope) => {
+      const documents = [
+        {
+          ...document("memory", "memory.md", "First fixture-secret-tail-other Last", 1),
+          scope,
+        },
+      ];
+
+      const result = renderAgentMemoryContext(documents, ["fixture-secret-tail", "tail-other"]);
+
+      expect(result).toContain("First [redacted] Last");
+      expect(result).not.toContain("fixture-secret-");
+      expect(result).not.toContain("-other");
+    },
+  );
+
+  it.each(["bot", "user"] as const)(
+    "retains surrounding text when a redaction spans scan windows in %s memory",
+    (scope) => {
+      const overlapping = "XY".repeat(600);
+      const documents = [
+        { ...document("memory", "memory.md", `First ${overlapping} Last`, 2), scope },
+        { ...document("older", "older.md", "Older fact", 1), scope },
+      ];
+
+      const result = renderAgentMemoryContext(documents, ["XYX", "YXY"]);
+
+      expect(result).toMatch(/First (?:\[redacted\]){2,} Last/);
+      expect(result).toContain("Older fact");
+    },
+  );
 
   it.each(["bot", "user"] as const)(
     "counts escaped headings and content at the default budget for %s memory",
