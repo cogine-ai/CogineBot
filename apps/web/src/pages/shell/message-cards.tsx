@@ -247,10 +247,12 @@ function OnboardingFocusOptionLabel({
 
 export function AppConnectCard({
   botId,
+  messageId,
   block,
   onConnectionsChanged,
 }: {
   botId: string;
+  messageId: string;
   block: Extract<MessageBlock, { kind: "app_connect" }>;
   onConnectionsChanged: () => void;
 }) {
@@ -299,7 +301,12 @@ export function AppConnectCard({
           setLocalStatus("connected");
           onConnectionsChanged();
           await rpc.onboarding
-            .appConnected({ botId, provider: block.provider, connectorId: block.connectorId })
+            .appConnected({
+              botId,
+              messageId,
+              provider: block.provider,
+              connectorId: block.connectorId,
+            })
             .catch(() => undefined);
           return;
         }

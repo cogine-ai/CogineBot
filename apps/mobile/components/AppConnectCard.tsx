@@ -15,11 +15,13 @@ import { NativeActionButton } from "./native-action-button";
 
 export function AppConnectCard({
   botId,
+  messageId,
   block,
   accessibilityActions,
   onAccessibilityAction,
 }: {
   botId: string;
+  messageId: string;
   block: Extract<MessageBlock, { kind: "app_connect" }>;
   accessibilityActions?: ViewProps["accessibilityActions"];
   onAccessibilityAction?: ViewProps["onAccessibilityAction"];
@@ -79,6 +81,7 @@ export function AppConnectCard({
           if (controller.signal.aborted) return;
           await rpc("onboarding/appConnected", {
             botId,
+            messageId,
             provider: block.provider,
             connectorId: block.connectorId,
           });

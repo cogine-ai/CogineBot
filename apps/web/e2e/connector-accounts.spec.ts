@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
-import { captureScreenshot, completeOnboarding, openIntegrations, signup } from "./helpers";
+import { captureScreenshot, completeOnboarding, openIntegrations, rpc, signup } from "./helpers";
 
 const catalog: ConnectionCatalogItem[] = ["composio", "pipedream"].map((connectorId) => ({
   connectorId,
@@ -22,6 +22,48 @@ function account(id: string, status: Connection["status"], connectorId = "compos
     remoteAccountId: status === "connected" ? `record-${id}` : null,
   };
 }
+
+test("a chat request opens one managed app card and keeps its verified status", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `chat-app-${Date.now()}@example.test`, "password12", "Robin");
+  await completeOnboarding(page);
+  const composer = page.getByRole("combobox", { name: "Message Chief" });
+  await composer.fill("Connect Google Mail to this chat.");
+  const sent = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/rpc/threads/send",
+  );
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  expect((await sent).ok()).toBe(true);
+
+  const card = page.getByRole("group", { name: "Gmail connection" });
+  const authorize = card.getByRole("button", { name: "Authorize" });
+  await expect(authorize).toBeVisible();
+  await captureScreenshot(page, testInfo, "chat-app-connection-pending");
+
+  await authorize.click();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const connections = await rpc<Array<{ provider: string; status: string }>>(
+        page,
+        "connections/list",
+        {},
+      );
+      return connections.some(
+        ({ provider, status }) => provider === "GMAIL" && status === "connected",
+      );
+    })
+    .toBe(true);
+  await page.reload();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(1);
+  await captureScreenshot(page, testInfo, "chat-app-connection-connected");
+  await openIntegrations(page);
+  await expect(
+    page.getByTestId("connection-tile-gmail").getByRole("button", { name: "Manage", exact: true }),
+  ).toBeVisible();
+});
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({
   page,

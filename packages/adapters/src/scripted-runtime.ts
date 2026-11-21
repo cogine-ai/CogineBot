@@ -429,6 +429,10 @@ export function inferScript(
   resumeFromCheckpoint?: string,
 ): NonNullable<AgentRunRequest["script"]> {
   const lower = prompt.toLowerCase();
+  const connectApp = /^connect (.+) to this chat\.$/i.exec(prompt.trim());
+  if (!resumeFromCheckpoint && connectApp) {
+    return [{ toolCalls: [{ name: "connect_app", args: { app: connectApp[1] } }], complete: true }];
+  }
   if (resumeFromCheckpoint === "takeover-skipped") {
     return [
       {

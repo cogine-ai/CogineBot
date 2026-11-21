@@ -17,6 +17,7 @@ import {
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
 import { BROWSER_ACT_KINDS } from "./browser-tools.js";
+import { ConnectAppInput } from "./connect-app.js";
 import { MemoryCorrection } from "./memory-tools.js";
 import {
   DEFAULT_WEB_FETCH_MAX_CHARS,
@@ -426,6 +427,12 @@ export const builtinAgentTools: ConnectorTool[] = [
     get inputSchema() {
       return secretAskToolSurface().inputSchema;
     },
+  },
+  {
+    name: "connect_app",
+    description:
+      "When the user asks to connect an application, look up its name or slug in the managed catalog. If a connection card is shown, wait for the user to authorize it. If the app is unavailable, report that without asking for tokens or setup values.",
+    inputSchema: z.toJSONSchema(ConnectAppInput, { io: "input" }),
   },
   {
     name: "generate_secret",

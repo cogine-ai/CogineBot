@@ -16,6 +16,7 @@ function fixture(catalog: unknown[]) {
   posted.length = 0;
   const tx = {
     $executeRaw: vi.fn(),
+    connection: { findFirst: vi.fn(async (): Promise<{ id: string } | null> => null) },
     message: {
       findMany: vi.fn(async () => [
         { id: "choice", seq: 7, blocks: [{ kind: "choice", answerId: null }] },
@@ -72,12 +73,27 @@ it("marks only the authorized connector when provider slugs collide", async () =
     name: "Slack",
     status: "pending",
   }));
-  deps.prisma.message = { findMany: vi.fn(async () => [{ id: "cards", blocks }]) } as never;
-  await markAppConnected(deps, actor, "bot", "slack", "pipedream");
+  tx.connection.findFirst.mockResolvedValue({ id: "connection" });
+  tx.message.findMany.mockResolvedValue([{ id: "cards", seq: 7, blocks }] as never);
+  await markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards");
+  expect(tx.connection.findFirst).toHaveBeenCalledWith({
+    where: {
+      userId: actor.userId,
+      spaceId: actor.spaceId,
+      connectorId: "pipedream",
+      provider: { equals: "slack", mode: "insensitive" },
+      status: "connected",
+    },
+    select: { id: true },
+  });
+  expect(tx.message.findMany).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: { id: "cards", threadId: "thread", role: "bot" },
+    }),
+  );
   expect(tx.message.update).toHaveBeenCalledWith({
     where: { id: "cards" },
     data: { blocks: [blocks[0], { ...blocks[1], status: "connected" }] },
-    select: { seq: true },
   });
   expect(appendEventInTransaction).toHaveBeenLastCalledWith(
     tx,
@@ -86,4 +102,11 @@ it("marks only the authorized connector when provider slugs collide", async () =
       payload: expect.objectContaining({ messageId: "cards", messageSeq: 7 }),
     }),
   );
+});
+
+it("does not change a card without a connected account in this Space", async () => {
+  const { deps, actor, tx } = fixture([]);
+  await markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards");
+  expect(tx.message.findMany).not.toHaveBeenCalled();
+  expect(tx.message.update).not.toHaveBeenCalled();
 });

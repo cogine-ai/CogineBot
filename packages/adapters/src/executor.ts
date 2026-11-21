@@ -381,6 +381,7 @@ import {
   unchangedVisualStreakAfterPageBrowser,
 } from "./computer-tools.js";
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
+import { ConnectAppInput, connectApp } from "./connect-app.js";
 import {
   allowsLegacyConnectorRecovery,
   assertBoundConnectorAccount,
@@ -2992,7 +2993,10 @@ export interface ExecutorDeps {
   home: AgentHomeStore;
   artifacts?: ArtifactStore;
   connector?: ConnectorProvider;
-  connectors?: { managed(id: string): ManagedConnectorProvider | undefined };
+  connectors?: {
+    managed(id: string): ManagedConnectorProvider | undefined;
+    managedProviders?(): ManagedConnectorProvider[];
+  };
   secrets: string[];
   secretStore: SecretStore;
   platformModelAllowlist?: PlatformModelAllowlist;
@@ -5334,6 +5338,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const callEndRun = run.trigger === "call_end";
         const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
         const voiceCall = callEndRun || isCallClientNonce(sourceClientNonce);
+        const appConnectionsEnabled =
+          !voiceCall &&
+          !messagingChannelRun &&
+          !thread.groupId &&
+          !thread.externalConversationId &&
+          !channelId &&
+          thread.userId === run.userId &&
+          thread.botId === bot.id &&
+          (run.trigger === "user" || run.trigger === "follow_up") &&
+          sourceMessage?.role === "user" &&
+          sourceMessage.authorUserId === run.userId &&
+          Boolean(deps.connectors?.managedProviders);
         const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
@@ -5363,6 +5379,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
+            appConnectionsEnabled,
             disabledBuiltinTools: [...disabledBuiltinTools],
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
@@ -6358,6 +6375,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name) && !pageBrowserAllowed) {
             return { error: "Page browser is unavailable on this computer." };
+          }
+          if (name === "connect_app") {
+            if (!appConnectionsEnabled) return { error: "App connections require your own chat." };
+            const input = ConnectAppInput.safeParse(args);
+            if (!input.success) {
+              return { error: "Provide an application name or slug, up to 100 characters." };
+            }
+            args = input.data;
           }
           if (IMAGE_RETURNING_COMPUTER_TOOLS.has(name) && !acceptsImages) {
             return { error: MODEL_CANNOT_SEE_MESSAGE };
@@ -7405,7 +7430,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? loginGenerationEffectArgs(runId, loginGeneration)
             : args;
           const occurrence =
-            name === "request_secret"
+            name === "request_secret" || name === "connect_app"
               ? 0
               : nextMutatingEffectOccurrence(
                   replayEffectToolName,
@@ -9563,6 +9588,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               ),
             );
+          }
+          if (name === "connect_app") {
+            if (!applied) throw new Error("Missing app connection effect.");
+            const result = await connectApp(
+              deps,
+              deps.connectors?.managedProviders?.() ?? [],
+              context,
+              run,
+              args,
+              { id: applied.effect.id, expectedStatus: claimedEffect ? "executing" : "intended" },
+            );
+            return result ?? uncertainEffectResult(name);
           }
           if (name === "add_mcp_server") {
             const narration = pendingConnectionNarration.get(executionId);
@@ -12705,6 +12742,7 @@ export function selectBuiltinToolsForRun(options: {
   messagingChannelRun: boolean;
   /** Hanging up is only offered to a turn the caller spoke on a live call. */
   voiceCall?: boolean;
+  appConnectionsEnabled?: boolean;
   /** Built-in names this bot turned off. Unknown names are ignored. */
   disabledBuiltinTools?: readonly string[];
 }) {
@@ -12738,6 +12776,7 @@ export function selectBuiltinToolsForRun(options: {
       (!isBackgroundRunTrigger(options.trigger) ||
         !["message_user", "message_bot", "handoff_to_bot", "message_agent"].includes(tool.name)) &&
       (options.voiceCall || tool.name !== "end_call") &&
+      (options.appConnectionsEnabled || tool.name !== "connect_app") &&
       (options.historyRetrievalEnabled ||
         (options.toolResultHistoryEnabled && tool.name === "read_history") ||
         !["search_history", "read_history"].includes(tool.name)) &&

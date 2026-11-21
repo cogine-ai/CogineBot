@@ -83,6 +83,16 @@ describe("built-in tool bridge", () => {
     );
   });
 
+  it("lists app connection cards only when the runtime offers them and the bot permits them", () => {
+    const options = { ...ownerOptions, appConnectionsEnabled: true };
+    expect(partitionTools(selectBuiltinToolsForRun(options)).listed).toContainEqual(
+      expect.objectContaining({ name: "connect_app" }),
+    );
+    expect(
+      selectBuiltinToolsForRun({ ...options, disabledBuiltinTools: ["connect_app"] }),
+    ).not.toContainEqual(expect.objectContaining({ name: "connect_app" }));
+  });
+
   it("classifies only real built-ins and includes separately registered connection tools", () => {
     expect(isDeferredTool("scratchpad_add")).toBe(true);
     expect(isDeferredTool("scratchpad_unknown")).toBe(false);

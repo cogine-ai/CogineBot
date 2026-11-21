@@ -73,6 +73,7 @@ async function main() {
     "packages/testkit/src/openapi-import.postgres.test.ts",
     "packages/adapters/src/mcp-server-health.postgres.test.ts",
     "packages/adapters/src/mcp-oauth.postgres.test.ts",
+    "packages/adapters/src/connect-app.postgres.test.ts",
     "apps/api/src/bot-packages.postgres.test.ts",
     "apps/api/src/deployment-transfer.postgres.test.ts",
     "apps/api/src/plugin-installs.postgres.test.ts",

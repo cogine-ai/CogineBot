@@ -1,13 +1,14 @@
 import type { ConnectorRegistry } from "@rakazo/adapters";
 import type { Actor, MessageBlock } from "@rakazo/contracts";
-import { featuredConnectorProvidersMatch } from "@rakazo/core";
+import { appConnectCard, matchAppCatalog, matchesAppConnection } from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
   createThreadMessageInTransaction,
   IsolationError,
+  withTransactionRetry,
 } from "@rakazo/db";
-import { requireBotThread, updateBlocks } from "./bot-thread.js";
+import { requireBotThread } from "./bot-thread.js";
 
 /**
  * First-run conversational onboarding, seeded deterministically into the bot's
@@ -59,15 +60,6 @@ const FOCUS_OPTIONS: FocusOption[] = [
     apps: ["slack", "gmail", "googlecalendar"],
   },
 ];
-
-const APP_DESCRIPTIONS: Record<string, string> = {
-  slack: "Search, read, and send messages.",
-  gmail: "Search, read, draft, and send email.",
-  googlecalendar: "Search events and schedule meetings.",
-  notion: "Search and edit pages and databases.",
-  googledocs: "Draft and edit documents.",
-  hackernews: "Search stories and discussions.",
-};
 
 async function post(
   deps: OnboardingDeps,
@@ -261,23 +253,8 @@ export async function chooseFocus(
     )
   ).flat();
   const cards: MessageBlock[] = option.apps.flatMap((slug) => {
-    const entry = catalog.find(
-      (item) =>
-        item.slug.toLowerCase() === slug.toLowerCase() ||
-        featuredConnectorProvidersMatch(item.slug, slug),
-    );
-    if (!entry) return [];
-    return [
-      {
-        kind: "app_connect" as const,
-        connectorId: entry.connectorId ?? "composio",
-        provider: entry.slug,
-        name: entry.name,
-        description: APP_DESCRIPTIONS[slug] ?? "",
-        logo: entry.logo ?? null,
-        status: entry.connected ? ("connected" as const) : ("pending" as const),
-      },
-    ];
+    const entry = matchAppCatalog(catalog, slug);
+    return entry ? [appConnectCard(entry)] : [];
   });
   if (!cards.length) {
     await post(deps, target, [{ kind: "text", text: "What would you like to work on first?" }]);
@@ -308,36 +285,58 @@ export async function markAppConnected(
   botId: string,
   provider: string,
   connectorId = "composio",
+  messageId?: string,
 ): Promise<void> {
   const { bot, thread } = await requireBotThread(deps, actor, botId);
-  const target = { spaceId: actor.spaceId, botId: bot.id, threadId: thread.id };
-  const messages = await deps.prisma.message.findMany({
-    where: { threadId: thread.id },
-    select: { id: true, blocks: true },
-    orderBy: { createdAt: "asc" },
-    take: 100,
-  });
-  for (const message of messages) {
-    const blocks = message.blocks as MessageBlock[];
-    if (
-      !blocks.some(
-        (block) =>
-          block.kind === "app_connect" &&
-          (block.connectorId ?? "composio") === connectorId &&
-          featuredConnectorProvidersMatch(block.provider, provider) &&
-          block.status !== "connected",
-      )
-    )
-      continue;
-    const next = blocks.map((block) =>
-      block.kind === "app_connect" &&
-      (block.connectorId ?? "composio") === connectorId &&
-      featuredConnectorProvidersMatch(block.provider, provider)
-        ? { ...block, status: "connected" as const }
-        : block,
-    );
-    await updateBlocks(deps, target, message.id, next);
-  }
+  const events = await withTransactionRetry(() =>
+    deps.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
+      const connection = await tx.connection.findFirst({
+        where: {
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          connectorId,
+          provider: { equals: provider, mode: "insensitive" },
+          status: "connected",
+        },
+        select: { id: true },
+      });
+      if (!connection) return [];
+      const where = { threadId: thread.id, role: "bot" } as const;
+      const select = { id: true, seq: true, blocks: true } as const;
+      // A card identifies its own message, even after it falls out of recent
+      // history. Older clients and the settings flow still find nearby cards.
+      const matches = messageId
+        ? await tx.message.findMany({ where: { ...where, id: messageId }, select })
+        : [
+            ...(await tx.message.findMany({ where, select, orderBy: { seq: "asc" }, take: 100 })),
+            ...(await tx.message.findMany({ where, select, orderBy: { seq: "desc" }, take: 50 })),
+          ];
+      const messages = new Map(matches.map((message) => [message.id, message]));
+      const updated = [];
+      for (const message of messages.values()) {
+        const blocks = message.blocks as MessageBlock[];
+        const next = blocks.map((block) =>
+          matchesAppConnection(block, connectorId, provider) && block.status === "pending"
+            ? { ...block, status: "connected" as const }
+            : block,
+        );
+        if (!next.some((block, index) => block !== blocks[index])) continue;
+        await tx.message.update({ where: { id: message.id }, data: { blocks: next } });
+        updated.push(
+          await appendEventInTransaction(tx, {
+            spaceId: actor.spaceId,
+            botId: bot.id,
+            threadId: thread.id,
+            type: "thread.message.updated",
+            payload: { messageId: message.id, messageSeq: message.seq, role: "bot", blocks: next },
+          }),
+        );
+      }
+      return updated;
+    }),
+  );
+  for (const event of events) await deps.events.notify(thread.id, event.seq);
 }
 
 function capitalize(value: string): string {
