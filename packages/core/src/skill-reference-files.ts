@@ -4,6 +4,7 @@ const SKILL_TEXT_FILE = /\.(md|mdx|txt|json|ya?ml|csv)$/i;
 const INLINE_SKILL_FILE =
   /^(?:\{baseDir\}\/|(?:\.\/|(?:\.\.\/)+)?(?:assets|references|scripts|templates)\/).+\.[a-z0-9]+(?:#.*)?$/i;
 const INLINE_BACKUP_FILE = /^(?:(?:\.\.?\/)+|examples\/).+\.[a-z0-9]+(?:#.*)?$/i;
+const RELATIVE_DIRECTORY_NOTATION = /^(?:\.\.?\/)+$/;
 const BACKUP_PATH_PREFIX =
   /(?:\{baseDir\}\/|(?:\.\.?\/)+|(?:references|assets|examples|scripts|templates)\/)/;
 const BACKUP_URL_PREFIX = /(?:[a-z][a-z\d+.-]*:)?\/\//;
@@ -85,9 +86,16 @@ export function hasMissingSkillReference(
         })),
       ...(includeProse
         ? [
-            ...prose.flatMap((text) => backupReferenceTargets(text, BACKUP_PROSE_TARGET)),
+            ...prose
+              .flatMap((text) => backupReferenceTargets(text, BACKUP_PROSE_TARGET))
+              .filter((target) => !RELATIVE_DIRECTORY_NOTATION.test(target)),
             ...code
-              .concat(inlineCode.filter((value) => !isInlineFile(value)))
+              .concat(
+                inlineCode.filter(
+                  (value) =>
+                    !isInlineFile(value) && !RELATIVE_DIRECTORY_NOTATION.test(value.trim()),
+                ),
+              )
               .flatMap((text) => backupReferenceTargets(text, BACKUP_COMMAND_TARGET)),
           ].map((target) => ({
             target,

@@ -691,7 +691,11 @@ it.each(["zip", "folder"] as const)(
       "HERMES.md": "Review the selected notes.",
       [`${root}/picked/SKILL.md`]: entry(
         "picked",
-        "Read [references/extra note.md](references/extra%20note.md), [the examples](examples) and `examples/extra row.csv`. See [references/external.md](https://example.test/guide).",
+        [
+          "Read [the notes](references/notes.md), [references/extra note.md](references/extra%20note.md), [the examples](examples) and `examples/extra row.csv`.",
+          "The notation ../ points to a parent directory. The inline notation `../` means the same thing.",
+          "See [references/external.md](https://example.test/guide).",
+        ].join("\n"),
       ),
       [`${root}/picked/references/notes.md`]: notes,
       [`${root}/picked/references/extra note.md`]: "Path contains a space.",
@@ -722,6 +726,7 @@ it.each(["zip", "folder"] as const)(
       [`${root}/missing-parent/references/guide.md`]: "```sh\ncat ../assets/details.md\n```",
       [`${root}/escaped/SKILL.md`]: entry("escaped", "See [the guide](references/guide.md)."),
       [`${root}/escaped/references/guide.md`]: "```sh\ncat ../../assets/details.md\n```",
+      [`${root}/escaped-link/SKILL.md`]: entry("escaped-link", "Open [the parent directory](../)."),
       [`${root}/missing-after-url/SKILL.md`]: entry(
         "missing-after-url",
         "```sh\ncurl //example.test/x;./scripts/missing.sh\n```",
@@ -753,6 +758,7 @@ it.each(["zip", "folder"] as const)(
         { path: `${root}/array/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/dependency/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/directory/SKILL.md`, reason: "missingSkillFiles" },
+        { path: `${root}/escaped-link/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/escaped/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/implicit/SKILL.md`, reason: "missingSkillFiles" },
         { path: `${root}/limit/SKILL.md`, reason: "skillLimit" },
@@ -781,7 +787,7 @@ it.each(["zip", "folder"] as const)(
     expect(preview.source).not.toContain("replace the missing file");
     expect(preview.source).not.toContain("Private runtime dependency.");
     expect(preview.source).not.toContain("Outside the Skill folder.");
-    expect(preview.backupOmissions).toHaveLength(10);
+    expect(preview.backupOmissions).toHaveLength(11);
   },
 );
 
