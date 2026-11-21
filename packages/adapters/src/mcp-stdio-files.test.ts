@@ -187,6 +187,32 @@ describe("managed stdio credential files", () => {
     });
   });
 
+  it.each(["fixtureOpaqueIdent", "fixture_live_7f92ab83cd"])(
+    "masks arbitrary identifier-like credentials when echoed as structured result keys",
+    (key) => {
+      const metadata = {
+        literals: new Set<string>(),
+        components: new Set<string>(),
+        scalarNames: new Set<string>(),
+      };
+      const secrets = mcpCredentialFileSecrets(
+        JSON.stringify({ [key]: "role", name: "fixture-config" }),
+        metadata,
+      );
+      const structuredContent = { [key]: "reported", name: "visible field" };
+      const content = [{ type: "text", text: JSON.stringify(structuredContent) }];
+      const expected = { "[redacted]": "reported", name: "visible field" };
+      expect(
+        redactConnectorPayload({ structuredContent, content }, secrets, "mcp-result", {
+          scalarNames: [...metadata.scalarNames],
+        }),
+      ).toEqual({
+        structuredContent: expected,
+        content: [{ type: "text", text: JSON.stringify(expected) }],
+      });
+    },
+  );
+
   it("retains lossless numeric credential text in JSON and YAML", () => {
     expect(mcpCredentialFileSecrets('{"code":9007199254740993,"label":1e+7}')).toEqual(
       expect.arrayContaining(["9007199254740993", "9007199254740992", "1e+7", "10000000"]),

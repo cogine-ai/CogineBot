@@ -11,6 +11,7 @@ import {
 import { getLogger } from "@rakazo/logging";
 import { isMap, isSeq, parseAllDocuments, visit } from "yaml";
 import {
+  isMcpCredentialFileSettingName,
   mcpCookieCredentialValues,
   mcpCredentialValueVariants,
 } from "./mcp-credential-redaction.js";
@@ -241,7 +242,7 @@ export function mcpCredentialFileSecrets(
       seen.add(value);
       for (const [key, child] of Object.entries(value)) {
         if (!Array.isArray(value) && key) {
-          if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) metadata?.scalarNames.add(key);
+          if (isMcpCredentialFileSettingName(key)) metadata?.scalarNames.add(key);
           else components.add(key);
         }
         pending.push(child);

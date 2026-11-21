@@ -87,6 +87,63 @@ export function isCommonMcpConfigValue(value: string): boolean {
   return COMMON_CONFIG_VALUES.has(value.toLowerCase());
 }
 
+const credentialFileSettingNames = new Set([
+  "id",
+  "name",
+  "label",
+  "description",
+  "kind",
+  "type",
+  "version",
+  "status",
+  "enabled",
+  "mode",
+  "provider",
+  "issuer",
+  "protocol",
+  "transport",
+  "host",
+  "port",
+  "path",
+  "url",
+  "uri",
+  "base_url",
+  "endpoint",
+  "method",
+  "options",
+  "settings",
+  "env",
+  "headers",
+  "auth",
+  "credentials",
+  "credential",
+  "user",
+  "username",
+  "password",
+  "secret",
+  "key",
+  "token",
+  "tokens",
+  "session",
+  "sessions",
+  "cookie",
+  "cookies",
+  "scope",
+  "client_id",
+  "client_secret",
+  "access_token",
+  "refresh_token",
+  "id_token",
+  "expires_at",
+  "expires_in",
+  "token_type",
+]);
+
+/** Conventional settings names retain their structural role in a tool schema or result. */
+export function isMcpCredentialFileSettingName(key: string): boolean {
+  return isAuthHeaderKey(key) || credentialFileSettingNames.has(normalizedCredentialKey(key));
+}
+
 /** An error may quote a token without its authorization scheme. */
 export function mcpCredentialValueVariants(value: string): string[] {
   const text = value.trim();

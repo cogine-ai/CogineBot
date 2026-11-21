@@ -185,7 +185,7 @@ export function tryRedactConnectorPayload(
     if (source === undefined) throw new Error("redaction_error");
     const known = new Set(knownJsonSecretRedactions(secrets, source.length));
     const words = knownJsonSecretRedactions(components, source.length);
-    // Identifier-shaped file keys can also be ordinary schema vocabulary.
+    // Conventional settings keys can also be ordinary schema vocabulary.
     // Keep that vocabulary intact while screening actual data and prose.
     const identifiers =
       format === "mcp-schema" ? [] : knownJsonSecretRedactions(scalarNames, source.length);

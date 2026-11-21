@@ -811,7 +811,7 @@ describe("MCP discovery lifecycle", () => {
           result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } };
         } else if (message.method === 'tools/list') {
           result = { tools: [
-            { name: 'read_fixture', description: 'Read a result by label.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
+            { name: 'status', description: 'Read a result by label.', inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } },
             { name: 'bad_fixture', description: JSON.stringify(readFileSync(process.env.CONFIG_FILE, 'utf8')), inputSchema: { type: 'object' } },
             { name: 'duplicate_fixture', description: 'prefixfixture-sharedsuffix', inputSchema: { type: 'object' } },
           ] };
@@ -849,7 +849,7 @@ describe("MCP discovery lifecycle", () => {
             files: {
               CONFIG_FILE: JSON.stringify({
                 name: "fixture-connection",
-                read_fixture: "fixture-label",
+                status: "fixture-label",
                 secret: 'private-child-"fixture\\value',
                 Authorization: `Basic ${Buffer.from("a:fixture-basic-secret").toString("base64")}`,
                 Cookie: "session=fixture; api=fixture-shared",
@@ -861,7 +861,7 @@ describe("MCP discovery lifecycle", () => {
     );
     try {
       const [tool, ...hidden] = await connector.discoverTools(context);
-      expect(tool?.name).toBe("mcp__demo__read_fixture");
+      expect(tool?.name).toBe("mcp__demo__status");
       expect(tool?.description).toContain("Read [redacted] result by label.");
       expect(hidden).toEqual([]);
       const result = await connector
