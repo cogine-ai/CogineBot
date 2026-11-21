@@ -9,6 +9,7 @@
       "development": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./connection-popup": "./src/connection-popup.js",
     "./local-settings": "./src/local-settings.js",
     "./page-paths": "./src/page-paths.js"
   },

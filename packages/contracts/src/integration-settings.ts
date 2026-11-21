@@ -1,8 +1,5 @@
 import * as z from "zod";
 
-/** The renderer and desktop window policy share this name across app versions. */
-export const MANAGED_APP_OAUTH_POPUP_NAME = "rakazo-app-connect";
-
 export const IntegrationProviderIdSchema = z.enum(["composio", "pipedream"]);
 export const IntegrationProviderConfigSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("composio"), apiKey: z.string().trim().min(1).max(16384) }),
