@@ -7757,6 +7757,11 @@ export function createRouter(deps: RouterDeps) {
             // still holding the begin/revoke lock so a new authorization cannot be
             // created and then wiped by Pipedream's slug-scoped DELETE.
             if (!accountSpecific) {
+              if (!needsProvider && lacksProviderAuthorization(snapshot)) {
+                throw new ORPCError("CONFLICT", {
+                  message: "Connection status changed; refresh and retry",
+                });
+              }
               if (
                 !needsProvider ||
                 row.connectorId !== snapshot?.connectorId ||
