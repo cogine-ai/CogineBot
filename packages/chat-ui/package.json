@@ -8,6 +8,7 @@
     "./web": "./src/markdown.web.tsx",
     "./mermaid": "./src/mermaid.ts",
     "./announcement-visibility": "./src/announcement-visibility.ts",
+    "./app-connect": "./src/app-connect.ts",
     "./bot-settings": "./src/bot-settings.ts",
     "./history-sources": "./src/history-sources.ts",
     "./delegated-approvals": "./src/delegated-approvals.ts"
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@rakazo/contracts": "workspace:*",
+    "@rakazo/core": "workspace:*",
     "@rakazo/ui-tokens": "workspace:*",
     "@rakazo/ui-web": "workspace:*",
     "@ronradtke/react-native-markdown-display": "9.0.3",

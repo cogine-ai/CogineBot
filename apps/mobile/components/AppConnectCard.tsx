@@ -1,8 +1,9 @@
+import type { AppConnectClient } from "@rakazo/chat-ui/app-connect";
+import { useAppConnectCard } from "@rakazo/chat-ui/app-connect";
 import type { MessageBlock } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
-import { abortableDelay } from "@rakazo/core";
 import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { ViewProps } from "react-native";
 import { Linking, Text, View } from "react-native";
 import { rpc } from "../lib/api";
@@ -12,6 +13,16 @@ import { native, useMobileTokens } from "../lib/native";
 import { useThreadReadOnly } from "../lib/thread-read-only";
 import { errorText } from "../lib/user-error";
 import { NativeActionButton } from "./native-action-button";
+
+const appConnectClient: AppConnectClient = {
+  readback: (input, signal) => rpc("onboarding/appConnected", input, { signal }),
+  begin: (input, signal) => rpc("connections/begin", input, { signal }),
+  complete: (input, signal) => rpc("connections/complete", input, { signal }),
+  openAuthorization: async (url) => {
+    await Linking.openURL(url);
+    return true;
+  },
+};
 
 export function AppConnectCard({
   botId,
@@ -29,115 +40,32 @@ export function AppConnectCard({
   const { t } = useI18n();
   const readOnly = useThreadReadOnly();
   const tokens = useMobileTokens();
-  const [busy, setBusy] = useState(false);
-  const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
-  const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
-  const [authorizationToRetry, setAuthorizationToRetry] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const connectionAttempt = useRef<AbortController | null>(null);
-  const authorizationGeneration = useRef(0);
-  const status = block.status === "connected" ? "connected" : localStatus;
+  const [nativeError, setNativeError] = useState<string | null>(null);
+  const connection = useAppConnectCard({ botId, messageId, block, readOnly }, appConnectClient);
+  const { status, busy, checkOnly, needsAttention } = connection;
   const view = appConnectPresentation({ ...block, status }, busy);
+  const failure = connection.error;
+  const error =
+    nativeError ??
+    (failure?.kind === "pending"
+      ? t("Authorization is still pending.")
+      : failure?.kind === "request"
+        ? errorText(failure.cause, t("Could not authorize this app"))
+        : failure && t("Could not authorize this app"));
 
-  useEffect(() => () => connectionAttempt.current?.abort(), []);
-  useEffect(() => {
-    if (readOnly || block.status === "connected" || connectionAttempt.current) return;
-    const readback = new AbortController();
-    const generation = authorizationGeneration.current;
-    void rpc<{ connected: boolean; pendingConnectionId: string | null }>(
-      "onboarding/appConnected",
-      { botId, messageId, provider: block.provider, connectorId: block.connectorId },
-      { signal: readback.signal },
-    )
-      .then(({ connected, pendingConnectionId }) => {
-        if (readback.signal.aborted || generation !== authorizationGeneration.current) return;
-        if (connected) setLocalStatus("connected");
-        setPendingConnectionId(pendingConnectionId);
-      })
-      .catch(() => undefined);
-    return () => readback.abort();
-  }, [block.status, block.provider, block.connectorId, botId, messageId, readOnly]);
-
-  async function authorize() {
+  function authorize() {
     if (readOnly) return;
-    if (block.connectorId === "native") {
-      const appId = NativeAppIdSchema.safeParse(block.provider);
-      if (!appId.success) {
-        setError(t("This app is not available."));
-        return;
-      }
-      setError(null);
-      router.push({
-        pathname: "/(settings)/integrations",
-        params: { app: appId.data, botId },
-      });
+    if (block.connectorId !== "native") return connection.authorize();
+    const appId = NativeAppIdSchema.safeParse(block.provider);
+    if (!appId.success) {
+      setNativeError(t("This app is not available."));
       return;
     }
-    authorizationGeneration.current += 1;
-    connectionAttempt.current?.abort();
-    const controller = new AbortController();
-    connectionAttempt.current = controller;
-    setBusy(true);
-    setError(null);
-    try {
-      const started = pendingConnectionId
-        ? { connectionId: pendingConnectionId, authorizationUrl: authorizationToRetry }
-        : await rpc<{ connectionId: string; authorizationUrl: string | null }>(
-            "connections/begin",
-            {
-              connectorId: block.connectorId,
-              provider: block.provider,
-              displayName: block.name,
-              reuseAppGrant: true,
-            },
-            { signal: controller.signal },
-          );
-      if (controller.signal.aborted) return;
-      setPendingConnectionId(started.connectionId);
-      if (started.authorizationUrl) {
-        try {
-          await Linking.openURL(started.authorizationUrl);
-        } catch {
-          if (!controller.signal.aborted) {
-            setAuthorizationToRetry(started.authorizationUrl);
-            setError(t("Could not authorize this app"));
-          }
-          return;
-        }
-        setAuthorizationToRetry(null);
-      }
-      const checks = started.authorizationUrl ? 60 : 1;
-      for (let attempt = 0; attempt < checks; attempt += 1) {
-        if (controller.signal.aborted) return;
-        const row = await rpc<{ status: string }>(
-          "connections/complete",
-          { connectionId: started.connectionId, card: { botId, messageId } },
-          { signal: controller.signal },
-        ).catch(() => undefined);
-        if (controller.signal.aborted) return;
-        if (row?.status === "connected") {
-          setPendingConnectionId(null);
-          setLocalStatus("connected");
-          return;
-        }
-        if (row?.status === "revoked" || row?.status === "error") {
-          setPendingConnectionId(null);
-          setError(t("Could not authorize this app"));
-          return;
-        }
-        if (attempt + 1 < checks) await abortableDelay(2_000, controller.signal);
-      }
-      if (!controller.signal.aborted) setError(t("Authorization is still pending."));
-    } catch (reason) {
-      if (!controller.signal.aborted) {
-        setError(errorText(reason, t("Could not authorize this app")));
-      }
-    } finally {
-      if (connectionAttempt.current === controller) {
-        connectionAttempt.current = null;
-        setBusy(false);
-      }
-    }
+    setNativeError(null);
+    router.push({
+      pathname: "/(settings)/integrations",
+      params: { app: appId.data, botId },
+    });
   }
 
   return (
@@ -184,14 +112,14 @@ export function AppConnectCard({
             label={
               block.connectorId === "native"
                 ? t("Connect")
-                : pendingConnectionId && !authorizationToRetry && !busy
+                : checkOnly && !busy
                   ? t("Check status")
                   : view.actionLabel
             }
             accessibilityLabel={
               block.connectorId === "native"
                 ? t("Connect {name}", { name: block.name })
-                : pendingConnectionId && !authorizationToRetry
+                : checkOnly
                   ? t("Check status")
                   : t("Authorize {name}", { name: block.name })
             }
@@ -207,13 +135,13 @@ export function AppConnectCard({
         ) : null}
       </View>
       {error ? <Text style={{ color: tokens.destructive, fontSize: 13 }}>{error}</Text> : null}
-      {error && pendingConnectionId && !readOnly && block.connectorId !== "native" ? (
+      {needsAttention && !readOnly ? (
         <NativeActionButton
           label={t("Manage")}
           fill={false}
           style={{ alignSelf: "flex-end" }}
           onPress={() => {
-            setAuthorizationToRetry(null);
+            connection.dismissAuthorizationLink();
             router.push("/(settings)/integrations");
           }}
         />

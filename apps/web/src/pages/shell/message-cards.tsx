@@ -1,9 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import type { AppConnectClient } from "@rakazo/chat-ui/app-connect";
+import { useAppConnectCard } from "@rakazo/chat-ui/app-connect";
 import { useHistorySources } from "@rakazo/chat-ui/history-sources";
 import type { HistorySourceReference, MessageBlock } from "@rakazo/contracts";
 import { NativeAppIdSchema } from "@rakazo/contracts";
 import { MANAGED_APP_OAUTH_POPUP_NAME } from "@rakazo/contracts/connection-popup";
-import { abortableDelay } from "@rakazo/core";
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
 import { X } from "lucide-react";
 import { Suspense, useEffect, useRef, useState } from "react";
@@ -246,6 +247,14 @@ function OnboardingFocusOptionLabel({
   }
 }
 
+const appConnectClient: AppConnectClient = {
+  readback: (input, signal) => rpc.onboarding.appConnected(input, { signal }),
+  begin: (input, signal) => rpc.connections.begin(input, { signal }),
+  complete: (input, signal) => rpc.connections.complete(input, { signal }),
+  openAuthorization: (url) =>
+    Boolean(window.open(url, MANAGED_APP_OAUTH_POPUP_NAME, "popup,width=560,height=720")),
+};
+
 export function AppConnectCard({
   botId,
   messageId,
@@ -258,120 +267,29 @@ export function AppConnectCard({
   onConnectionsChanged: () => void;
 }) {
   const { t } = useLingui();
-  const [busy, setBusy] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
+  const [nativeError, setNativeError] = useState<string | null>(null);
   const nativeApp =
     block.connectorId === "native" ? NativeAppIdSchema.safeParse(block.provider) : null;
-  const [localStatus, setLocalStatus] = useState<"pending" | "connected">(block.status);
-  const [pendingConnectionId, setPendingConnectionId] = useState<string | null>(null);
-  const [authorizationToRetry, setAuthorizationToRetry] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const connectionAttempt = useRef<AbortController | null>(null);
-  const authorizationGeneration = useRef(0);
-  const status = block.status === "connected" ? "connected" : localStatus;
-  useEffect(() => () => connectionAttempt.current?.abort(), []);
-  useEffect(() => {
-    if (block.status === "connected" || connectionAttempt.current) return;
-    const readback = new AbortController();
-    const generation = authorizationGeneration.current;
-    void rpc.onboarding
-      .appConnected(
-        { botId, messageId, provider: block.provider, connectorId: block.connectorId },
-        { signal: readback.signal },
-      )
-      .then(({ connected, pendingConnectionId }) => {
-        if (readback.signal.aborted || generation !== authorizationGeneration.current) return;
-        if (connected) setLocalStatus("connected");
-        setPendingConnectionId(pendingConnectionId);
-      })
-      .catch(() => undefined);
-    return () => readback.abort();
-  }, [block.status, block.provider, block.connectorId, botId, messageId]);
+  const connection = useAppConnectCard({ botId, messageId, block }, appConnectClient);
+  const { busy, status, checkOnly, needsAttention } = connection;
+  const failure = connection.error;
+  const error =
+    nativeError ??
+    (failure?.kind === "pending"
+      ? t`Authorization is still pending.`
+      : failure?.kind === "request"
+        ? errorText(failure.cause, t`Could not authorize this app`)
+        : failure && t`Could not authorize this app`);
 
-  async function authorize() {
-    if (block.connectorId === "native") {
-      if (!nativeApp?.success) {
-        setError(t`This application is not available for direct connection.`);
-        return;
-      }
-      setError(null);
-      setAppsOpen(true);
+  function authorize() {
+    if (block.connectorId !== "native") return connection.authorize(onConnectionsChanged);
+    if (!nativeApp?.success) {
+      setNativeError(t`This application is not available for direct connection.`);
       return;
     }
-    authorizationGeneration.current += 1;
-    connectionAttempt.current?.abort();
-    const controller = new AbortController();
-    connectionAttempt.current = controller;
-    setBusy(true);
-    setError(null);
-    try {
-      const started = pendingConnectionId
-        ? { connectionId: pendingConnectionId, authorizationUrl: authorizationToRetry }
-        : await rpc.connections.begin(
-            {
-              connectorId: block.connectorId,
-              provider: block.provider,
-              displayName: block.name,
-              reuseAppGrant: true,
-            },
-            { signal: controller.signal },
-          );
-      if (controller.signal.aborted) return;
-      setPendingConnectionId(started.connectionId);
-      if (started.authorizationUrl) {
-        let popupOpened: boolean;
-        try {
-          popupOpened = Boolean(
-            window.open(
-              started.authorizationUrl,
-              MANAGED_APP_OAUTH_POPUP_NAME,
-              "popup,width=560,height=720",
-            ),
-          );
-        } catch {
-          popupOpened = false;
-        }
-        if (!popupOpened) {
-          setAuthorizationToRetry(started.authorizationUrl);
-          setError(t`Could not authorize this app`);
-          return;
-        }
-        setAuthorizationToRetry(null);
-      }
-      const checks = started.authorizationUrl ? 60 : 1;
-      for (let i = 0; i < checks; i += 1) {
-        if (controller.signal.aborted) return;
-        const row = await rpc.connections
-          .complete(
-            { connectionId: started.connectionId, card: { botId, messageId } },
-            { signal: controller.signal },
-          )
-          .catch(() => undefined);
-        if (controller.signal.aborted) return;
-        if (row?.status === "connected") {
-          setPendingConnectionId(null);
-          setLocalStatus("connected");
-          onConnectionsChanged();
-          return;
-        }
-        if (row?.status === "revoked" || row?.status === "error") {
-          setPendingConnectionId(null);
-          setError(t`Could not authorize this app`);
-          return;
-        }
-        if (i + 1 < checks) await abortableDelay(2_000, controller.signal);
-      }
-      if (!controller.signal.aborted) setError(t`Authorization is still pending.`);
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        setError(errorText(error, t`Could not authorize this app`));
-      }
-    } finally {
-      if (connectionAttempt.current === controller) {
-        connectionAttempt.current = null;
-        setBusy(false);
-      }
-    }
+    setNativeError(null);
+    setAppsOpen(true);
   }
   return (
     <BuiCard
@@ -410,7 +328,7 @@ export function AppConnectCard({
               ? t`Waiting…`
               : block.connectorId === "native"
                 ? t`Connect`
-                : pendingConnectionId && !authorizationToRetry
+                : checkOnly
                   ? t`Check status`
                   : t`Authorize`}
           </Button>
@@ -419,12 +337,12 @@ export function AppConnectCard({
       {error ? (
         <div className="mt-2 flex items-center justify-between gap-2">
           <p className="text-xs text-destructive">{error}</p>
-          {pendingConnectionId && block.connectorId !== "native" ? (
+          {needsAttention ? (
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
-                setAuthorizationToRetry(null);
+                connection.dismissAuthorizationLink();
                 setAppsOpen(true);
               }}
             >{t`Manage`}</Button>
@@ -444,7 +362,7 @@ export function AppConnectCard({
                 item.connectorId === "native" &&
                 item.slug === nativeApp.data
               )
-                setLocalStatus("connected");
+                connection.markConnected();
             }}
           />
         </Suspense>
