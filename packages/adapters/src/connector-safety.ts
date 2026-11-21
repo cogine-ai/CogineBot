@@ -18,9 +18,13 @@ export async function withRequestSignal<T>(
   }
 }
 
-export function sanitizeConnectorError(error: unknown, secrets: string[] = []): string {
+export function sanitizeConnectorError(
+  error: unknown,
+  secrets: string[] = [],
+  scalarNames?: string[],
+): string {
   const message = error instanceof Error ? error.message : String(error);
-  const redacted = redactConnectorPayload(message, secrets);
+  const redacted = redactConnectorPayload(message, secrets, undefined, { scalarNames });
   if (typeof redacted !== "string") return "redaction_error";
   return redacted
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
@@ -32,6 +36,7 @@ export const CONNECTOR_REDACTION_MAX_DEPTH = 64;
 export const CONNECTOR_REDACTION_MAX_NODES = 100_000;
 
 export type ConnectorPayloadFormat = "mcp-schema" | "mcp-result";
+export type ConnectorCredentialMatches = { components?: string[]; scalarNames?: string[] };
 type PayloadPosition =
   | ConnectorPayloadFormat
   | "schema-map"
@@ -161,8 +166,9 @@ export function redactConnectorPayload(
   value: unknown,
   secrets: string[],
   format?: ConnectorPayloadFormat,
+  matches?: ConnectorCredentialMatches,
 ): unknown {
-  const redacted = tryRedactConnectorPayload(value, secrets, format);
+  const redacted = tryRedactConnectorPayload(value, secrets, format, matches);
   return redacted.ok ? redacted.value : { error: redacted.error };
 }
 
@@ -171,18 +177,27 @@ export function tryRedactConnectorPayload(
   value: unknown,
   secrets: string[],
   format?: ConnectorPayloadFormat,
-  credentialComponents: string[] = [],
+  { components = [], scalarNames = [] }: ConnectorCredentialMatches = {},
 ): { ok: true; value: unknown } | { ok: false; error: "redaction_error" } {
   if (value === undefined) return { ok: true, value: undefined };
   try {
     const source = JSON.stringify(value);
     if (source === undefined) throw new Error("redaction_error");
     const known = new Set(knownJsonSecretRedactions(secrets, source.length));
-    const components = knownJsonSecretRedactions(credentialComponents, source.length);
-    const spellings = [...new Set([...known, ...components])].sort((a, b) => b.length - a.length);
-    const redactText = (value: string): string => {
+    const words = knownJsonSecretRedactions(components, source.length);
+    // Identifier-shaped file keys can also be ordinary schema vocabulary.
+    // Keep that vocabulary intact while screening actual data and prose.
+    const identifiers =
+      format === "mcp-schema" ? [] : knownJsonSecretRedactions(scalarNames, source.length);
+    const structuralSpellings = [...new Set([...known, ...words])].sort(
+      (a, b) => b.length - a.length,
+    );
+    const scalarSpellings = [...new Set([...structuralSpellings, ...identifiers])].sort(
+      (a, b) => b.length - a.length,
+    );
+    const redactText = (value: string, includeScalarNames = true): string => {
       let parts: TextRange[] = [[0, value.length]];
-      for (const spelling of spellings) {
+      for (const spelling of includeScalarNames ? scalarSpellings : structuralSpellings) {
         if (spelling.length > value.length) continue;
         const wholeWord = !known.has(spelling);
         parts = parts.flatMap((part) => splitOnCredential(value, part, spelling, wholeWord));
@@ -281,7 +296,7 @@ export function tryRedactConnectorPayload(
               (position === "embedded-resource" && mcpResourceFields.has(key)) ||
               (position === "mcp-schema" && childPosition !== undefined);
             return [
-              stableField ? key : redactText(key),
+              stableField ? key : redactText(key, format !== "mcp-result"),
               visit(
                 child,
                 depth + 1,

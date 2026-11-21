@@ -26,7 +26,7 @@ import { catalogToolPrefix } from "./approval-effect.js";
 import { composioToolBatch } from "./composio-batch.js";
 import type { ConnectorDispatchCheck } from "./connector-dispatch.js";
 import { dispatchTransaction } from "./connector-dispatch.js";
-import type { ConnectorPayloadFormat } from "./connector-safety.js";
+import type { ConnectorCredentialMatches, ConnectorPayloadFormat } from "./connector-safety.js";
 import {
   combineSignals,
   isMcpProtocolLabel,
@@ -99,6 +99,7 @@ type ConnectedSession = {
   fileSecrets: string[];
   fileCredentialLiterals: string[];
   fileCredentialComponents: string[];
+  fileScalarNames: string[];
   expiresAt?: number;
   processExited?: () => boolean;
   removeCredentialFiles?: () => Promise<void>;
@@ -117,9 +118,9 @@ function unchangedAfterRedaction(
   value: unknown,
   secrets: string[],
   format?: ConnectorPayloadFormat,
-  credentialComponents?: string[],
+  matches?: ConnectorCredentialMatches,
 ): boolean {
-  const redacted = tryRedactConnectorPayload(value, secrets, format, credentialComponents);
+  const redacted = tryRedactConnectorPayload(value, secrets, format, matches);
   return redacted.ok && JSON.stringify(redacted.value) === JSON.stringify(value);
 }
 type PendingSession = {
@@ -374,8 +375,13 @@ export class McpConnector implements ConnectorProvider {
     try {
       entry = await this.acquire(server, context, signal);
       listed = await withAbort(entry.session.listTools({ signal }), signal);
-      const { fileSecrets, launchSecrets, fileCredentialLiterals, fileCredentialComponents } =
-        entry;
+      const {
+        fileSecrets,
+        launchSecrets,
+        fileCredentialLiterals,
+        fileCredentialComponents,
+        fileScalarNames,
+      } = entry;
       const componentSecrets = [...fileCredentialComponents];
       const storedCredentials = entry.stdio
         ? oauthMaterialSecrets(entry.material, {
@@ -397,18 +403,16 @@ export class McpConnector implements ConnectorProvider {
           ...launchSecrets,
           ...fileCredentialLiterals.filter((value) => !isLabel(value)),
         ];
+        const matches = { components: componentSecrets, scalarNames: fileScalarNames };
         listed = {
           ...listed,
           tools: listed.tools.flatMap((tool) => {
             if (
-              !unchangedAfterRedaction(tool.name, knownCredentials, undefined, componentSecrets) ||
+              !unchangedAfterRedaction(tool.name, knownCredentials, undefined, {
+                components: componentSecrets,
+              }) ||
               !unchangedAfterRedaction(tool.description, knownCredentials) ||
-              !unchangedAfterRedaction(
-                tool.inputSchema,
-                knownCredentials,
-                "mcp-schema",
-                componentSecrets,
-              )
+              !unchangedAfterRedaction(tool.inputSchema, knownCredentials, "mcp-schema", matches)
             )
               return [];
             if (!tool.description) return [tool];
@@ -416,7 +420,7 @@ export class McpConnector implements ConnectorProvider {
               tool.description,
               knownCredentials,
               undefined,
-              componentSecrets,
+              matches,
             );
             return description.ok && typeof description.value === "string"
               ? [{ ...tool, description: description.value }]
@@ -436,10 +440,13 @@ export class McpConnector implements ConnectorProvider {
             ...entry.fileSecrets,
           ]
         : [];
-      health = mcpHealthError(reason, secrets);
+      health = mcpHealthError(reason, secrets, entry?.fileScalarNames);
       getLogger().error(`mcp discovery failed for server ${server.slug}:`, health.message);
       await withAbort(
-        this.recordDiscoveryFailure(server.slug, reason, context, checkedAt.getTime(), secrets),
+        this.recordDiscoveryFailure(server.slug, reason, context, checkedAt.getTime(), [
+          ...secrets,
+          ...(entry?.fileScalarNames ?? []),
+        ]),
         combineSignals(context.signal, AbortSignal.timeout(1_000)),
       ).catch(() => undefined);
     } finally {
@@ -707,7 +714,9 @@ export class McpConnector implements ConnectorProvider {
       ];
       response = {
         type: "result",
-        data: redactConnectorPayload(result, secrets, stdio ? "mcp-result" : undefined),
+        data: redactConnectorPayload(result, secrets, stdio ? "mcp-result" : undefined, {
+          scalarNames: entry.fileScalarNames,
+        }),
       };
     } catch (error) {
       // A thrown call means the transport or auth broke; drop the session so the next call reconnects.
@@ -719,7 +728,7 @@ export class McpConnector implements ConnectorProvider {
       // Rejecting queued work must not close a session another already-dispatched
       // call is using. Permission changes are enforced by DB checks on every call.
       if (!admissionRejected && !context.signal.aborted && entry) this.retire(sessionKey, entry);
-      const health = mcpHealthError(error, secrets);
+      const health = mcpHealthError(error, secrets, entry?.fileScalarNames);
       response = {
         type: "error",
         message: health.message ?? "MCP tool failed",
@@ -985,6 +994,7 @@ export class McpConnector implements ConnectorProvider {
     const fileSecrets: string[] = [];
     const fileCredentialLiterals: string[] = [];
     const fileCredentialComponents: string[] = [];
+    const fileScalarNames: string[] = [];
     let removeCredentialFiles: (() => Promise<void>) | undefined;
     let expiresAt: number | undefined;
     let processExited: (() => boolean) | undefined;
@@ -1098,6 +1108,7 @@ export class McpConnector implements ConnectorProvider {
           fileSecrets.push(...written.secrets);
           fileCredentialLiterals.push(...written.metadataLiterals);
           fileCredentialComponents.push(...written.metadataComponents);
+          fileScalarNames.push(...written.scalarNames);
           launchSecrets.push(...Object.values(written.env));
           Object.assign(env, written.env);
         }
@@ -1176,6 +1187,7 @@ export class McpConnector implements ConnectorProvider {
         fileSecrets,
         fileCredentialLiterals,
         fileCredentialComponents,
+        fileScalarNames,
         expiresAt,
         processExited,
         removeCredentialFiles,
@@ -1188,11 +1200,15 @@ export class McpConnector implements ConnectorProvider {
       // the secrets: the session never reached `sessions`. Sanitizing per caller would
       // cover only whoever looked first.
       if (!material) throw error;
-      const health = mcpHealthError(error, [
-        ...oauthDiagnosticSecrets(material, server.transport === "stdio"),
-        ...launchSecrets,
-        ...fileSecrets,
-      ]);
+      const health = mcpHealthError(
+        error,
+        [
+          ...oauthDiagnosticSecrets(material, server.transport === "stdio"),
+          ...launchSecrets,
+          ...fileSecrets,
+        ],
+        fileScalarNames,
+      );
       if (health.code) throw new McpOAuthClientRequiredError();
       throw new Error(health.message ?? "MCP connection failed");
     }

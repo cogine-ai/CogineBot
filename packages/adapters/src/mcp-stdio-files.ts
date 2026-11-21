@@ -227,12 +227,12 @@ function credentialAssignmentValues(text: string, components: Set<string>): stri
 /** A server can echo part of a credential file instead of its whole contents. */
 export function mcpCredentialFileSecrets(
   content: string,
-  metadata?: { literals: Set<string>; components: Set<string> },
+  metadata?: { literals: Set<string>; components: Set<string>; scalarNames: Set<string> },
 ): string[] {
   const secrets = new Set<string>([content]);
   const components = new Set<string>();
   const pending = credentialFileValues(content, components);
-  // Credential field names are arbitrary. Collect every decoded scalar.
+  // Either side of a mapping can carry a credential. Array indexes are synthetic.
   const seen = new WeakSet<object>();
   while (pending.length) {
     const value = pending.pop();
@@ -240,6 +240,10 @@ export function mcpCredentialFileSecrets(
       if (seen.has(value)) continue;
       seen.add(value);
       for (const [key, child] of Object.entries(value)) {
+        if (!Array.isArray(value) && key) {
+          if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) metadata?.scalarNames.add(key);
+          else components.add(key);
+        }
         pending.push(child);
         for (const scalar of Array.isArray(child) ? child : [child]) {
           if (typeof scalar === "string") addCookieComponents(components, key, scalar);
@@ -276,12 +280,17 @@ export async function writeMcpStdioCredentialFiles(
   secrets: string[];
   metadataLiterals: string[];
   metadataComponents: string[];
+  scalarNames: string[];
   remove: () => Promise<void>;
 }> {
   if (!McpStdioFilesSchema.safeParse(files).success)
     throw new Error("Invalid MCP credential files");
   signal.throwIfAborted();
-  const metadata = { literals: new Set<string>(), components: new Set<string>() };
+  const metadata = {
+    literals: new Set<string>(),
+    components: new Set<string>(),
+    scalarNames: new Set<string>(),
+  };
   const secrets = Object.values(files).flatMap((content) =>
     mcpCredentialFileSecrets(content, metadata),
   );
@@ -320,6 +329,7 @@ export async function writeMcpStdioCredentialFiles(
       secrets,
       metadataLiterals: [...metadata.literals],
       metadataComponents: [...metadata.components],
+      scalarNames: [...metadata.scalarNames],
       remove,
     };
   } catch (error) {

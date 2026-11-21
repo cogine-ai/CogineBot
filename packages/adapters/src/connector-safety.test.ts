@@ -130,7 +130,9 @@ describe("redactConnectorPayload", () => {
 
   it("uses original word boundaries when one credential matches next to another", () => {
     expect(
-      tryRedactConnectorPayload("Descriptor foobar-bar", [], undefined, ["foobar", "-bar"]),
+      tryRedactConnectorPayload("Descriptor foobar-bar", [], undefined, {
+        components: ["foobar", "-bar"],
+      }),
     ).toEqual({
       ok: true,
       value: "Descriptor [redacted]-bar",
@@ -163,6 +165,15 @@ describe("redactConnectorPayload", () => {
     expect(
       sanitizeConnectorError(new Error(`upstream rejected ${json}`), [credential]),
     ).not.toContain("credential");
+  });
+
+  it("masks a file identifier echoed as a key in a JSON diagnostic", () => {
+    const message = sanitizeConnectorError(
+      new Error('{"fixtureOpaqueIdent":"reported"}'),
+      [],
+      ["fixtureOpaqueIdent"],
+    );
+    expect(JSON.parse(message)).toEqual({ "[redacted]": "reported" });
   });
   it("fails closed on deep or excessive JSON graphs and nested encoded JSON", () => {
     let deep: unknown = "credential";

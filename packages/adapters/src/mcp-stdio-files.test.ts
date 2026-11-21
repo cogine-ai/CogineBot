@@ -142,6 +142,51 @@ describe("managed stdio credential files", () => {
     ]);
   });
 
+  it("masks credentials used as JSON and YAML mapping keys without treating indexes as keys", () => {
+    const value = "fixture-mapping-key";
+    const json = JSON.stringify({ [value]: "role", other: ["entry"] });
+    const yaml = `'${value}': role\nother:\n  - entry\n`;
+    for (const file of [json, yaml]) {
+      const metadata = {
+        literals: new Set<string>(),
+        components: new Set<string>(),
+        scalarNames: new Set<string>(),
+      };
+      const secrets = mcpCredentialFileSecrets(file, metadata);
+      expect(secrets).toContain(value);
+      expect(secrets).not.toContain("0");
+      expect(metadata.components.has(value)).toBe(true);
+      expect(metadata.literals.has(value)).toBe(false);
+      expect(
+        redactConnectorPayload({ content: [{ type: "text", text: value }] }, secrets, "mcp-result"),
+      ).toEqual({ content: [{ type: "text", text: "[redacted]" }] });
+    }
+  });
+
+  it("preserves structural setting names and masks those names when echoed as scalar data", () => {
+    const metadata = {
+      literals: new Set<string>(),
+      components: new Set<string>(),
+      scalarNames: new Set<string>(),
+    };
+    const secrets = mcpCredentialFileSecrets(
+      '{"id":"fixture-id","name":"fixture-config"}',
+      metadata,
+    );
+    const matches = { scalarNames: [...metadata.scalarNames] };
+    const schema = {
+      type: "object",
+      properties: { name: { type: "string", description: "Item name" } },
+      required: ["name"],
+      dependentRequired: { name: ["id"] },
+    };
+    expect(redactConnectorPayload(schema, secrets, "mcp-schema", matches)).toEqual(schema);
+    const result = { structuredContent: { id: "safe-1", name: "safe-2", echo: "name" } };
+    expect(redactConnectorPayload(result, secrets, "mcp-result", matches)).toEqual({
+      structuredContent: { id: "safe-1", name: "safe-2", echo: "[redacted]" },
+    });
+  });
+
   it("retains lossless numeric credential text in JSON and YAML", () => {
     expect(mcpCredentialFileSecrets('{"code":9007199254740993,"label":1e+7}')).toEqual(
       expect.arrayContaining(["9007199254740993", "9007199254740992", "1e+7", "10000000"]),
