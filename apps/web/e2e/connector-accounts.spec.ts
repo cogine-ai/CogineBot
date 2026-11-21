@@ -107,7 +107,7 @@ test("a card recovers a completed authorization after the original update is int
   expect(await rpc(page, "connections/list", {})).toEqual(before);
 });
 
-test("a chat card resumes the same pending grant after reload", async ({ page }) => {
+async function startPendingAirtableCard(page: Page) {
   await page
     .context()
     .route("https://pipedream.example.test/**", (route) =>
@@ -122,7 +122,11 @@ test("a chat card resumes the same pending grant after reload", async ({ page })
   expect(first).toMatchObject({ authorizationUrl: expect.stringContaining("example.test") });
   const before = await rpc<Connection[]>(page, "connections/list", {});
   expect(before).toEqual([expect.objectContaining({ id: first.connectionId, status: "pending" })]);
+  return { card, completion, connectionId: first.connectionId as string };
+}
 
+test("a chat card resumes the same pending grant after reload", async ({ page }) => {
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
   await page.reload();
   await expect(card.getByRole("button", { name: "Check status", exact: true })).toBeVisible();
   const reused = await rpc(page, "connections/begin", {
@@ -131,7 +135,7 @@ test("a chat card resumes the same pending grant after reload", async ({ page })
     displayName: "Airtable",
     reuseAppGrant: true,
   });
-  expect(reused).toEqual({ connectionId: first.connectionId, authorizationUrl: null });
+  expect(reused).toEqual({ connectionId, authorizationUrl: null });
   const newRequests: unknown[] = [];
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/rpc/connections/begin")
@@ -148,9 +152,42 @@ test("a chat card resumes the same pending grant after reload", async ({ page })
   await card.getByRole("button", { name: "Check status", exact: true }).click();
   await expect(card.getByText("Connected", { exact: true })).toBeVisible();
   expect(await rpc(page, "connections/list", {})).toEqual([
-    expect.objectContaining({ id: first.connectionId, status: "connected" }),
+    expect.objectContaining({ id: connectionId, status: "connected" }),
   ]);
   expect(newRequests).toEqual([]);
+});
+
+test("checking a cancelled chat grant does not start another authorization", async ({ page }) => {
+  const { card, completion, connectionId } = await startPendingAirtableCard(page);
+  await page.reload();
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  await card.getByRole("button", { name: "Manage", exact: true }).click();
+  await page
+    .getByTestId("connection-tile-airtable")
+    .getByRole("button", { name: /Airtable/ })
+    .click();
+  await page.getByRole("button", { name: "Cancel connection", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Disconnect account" }).click();
+  await expect
+    .poll(async () => {
+      const rows = await rpc<Connection[]>(page, "connections/list", {});
+      return rows.find(({ id }) => id === connectionId)?.status;
+    })
+    .toBe("revoked");
+  await page.getByRole("button", { name: "Close integrations" }).click();
+  await page.unroute(completion);
+
+  await card.getByRole("button", { name: "Check status", exact: true }).click();
+  const authorize = card.getByRole("button", { name: "Authorize", exact: true });
+  await expect(authorize).toBeVisible();
+  expect(await rpc(page, "connections/list", {})).toEqual([
+    expect.objectContaining({ id: connectionId, status: "revoked" }),
+  ]);
+
+  const next = page.waitForResponse("**/rpc/connections/begin");
+  await authorize.click();
+  const { json: restarted } = await (await next).json();
+  expect(restarted.connectionId).not.toBe(connectionId);
 });
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({

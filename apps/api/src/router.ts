@@ -576,6 +576,17 @@ async function lockProviderConnectionScope(
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
 }
 
+function lacksProviderAuthorization(row: { providerRef: string | null; metadata?: unknown }) {
+  const { metadata } = row;
+  return (
+    !row.providerRef &&
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "authRevision" in metadata &&
+    typeof metadata.authRevision === "string"
+  );
+}
+
 async function lockMcpConnectionScope(
   tx: Prisma.TransactionClient,
   actor: Actor,
@@ -7326,8 +7337,14 @@ export function createRouter(deps: RouterDeps) {
                 });
               }
               if (current.status === "connected" || current.status === "error") return current;
+              // App-level readiness cannot vouch for an account while its own
+              // provider authorization is still being created.
+              const reserved = lacksProviderAuthorization(current);
               if (current.status === "revoked") {
-                if (input.card) return current;
+                if (reserved) {
+                  if (input.card) return current;
+                  throw new IsolationError();
+                }
                 // Authorization URLs from a revoke-win begin can still finish
                 // remotely. Cancel leftover Composio request ids / drop Pipedream
                 // remotes no active local row still references before rejecting.
@@ -7417,19 +7434,11 @@ export function createRouter(deps: RouterDeps) {
                     },
                   );
                 }
+                if (input.card) return current;
                 throw new IsolationError();
               }
 
-              // The local reservation exists before provider begin returns. App-level
-              // readiness cannot attest that this request authorized a particular account.
-              if (
-                !current.providerRef &&
-                current.metadata &&
-                typeof current.metadata === "object" &&
-                !Array.isArray(current.metadata) &&
-                typeof current.metadata.authRevision === "string"
-              )
-                return current;
+              if (reserved) return current;
 
               const adapterContext = connectionContext(
                 context.actor,
@@ -7652,6 +7661,7 @@ export function createRouter(deps: RouterDeps) {
         const needsProvider =
           snapshot &&
           ["connected", "pending", "error"].includes(snapshot.status) &&
+          !lacksProviderAuthorization(snapshot) &&
           (!snapshot.providerRef || snapshot.providerRef === snapshot.provider) &&
           (await deps.prisma.connection.count({
             where: {
@@ -7671,14 +7681,7 @@ export function createRouter(deps: RouterDeps) {
           : undefined;
         const outcome = await deps.prisma.$transaction(
           async (tx) => {
-            const row = await tx.connection.findFirst({
-              where: {
-                id: input.connectionId,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-              },
-            });
-            if (!row) {
+            if (!snapshot) {
               return {
                 remote: null as null | RemoteRevoke,
                 previousStatus: null as string | null,
@@ -7687,16 +7690,29 @@ export function createRouter(deps: RouterDeps) {
 
             // Advisory lock covers inserts as well as existing rows. SELECT FOR UPDATE
             // alone misses a concurrent begin that inserts after the lock query.
-            await lockProviderConnectionScope(tx, context.actor, row.connectorId, row.provider);
+            await lockProviderConnectionScope(
+              tx,
+              context.actor,
+              snapshot.connectorId,
+              snapshot.provider,
+            );
             await tx.$queryRaw`
               SELECT id
               FROM connections
               WHERE "spaceId" = ${context.actor.spaceId}
                 AND "userId" = ${context.actor.userId}
-                AND "connectorId" = ${row.connectorId}
-                AND provider = ${row.provider}
+                AND "connectorId" = ${snapshot.connectorId}
+                AND provider = ${snapshot.provider}
                 AND status IN ('connected', 'pending', 'error')
               FOR UPDATE`;
+            const row = await tx.connection.findFirst({
+              where: {
+                id: input.connectionId,
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+              },
+            });
+            if (!row) return { remote: null, previousStatus: null };
 
             const updated = await tx.connection.updateMany({
               where: {
@@ -7707,7 +7723,9 @@ export function createRouter(deps: RouterDeps) {
               },
               data: { status: "revoked" },
             });
-            if (updated.count === 0) {
+            // Before provider begin assigns a ref, disconnect is local. A
+            // late begin result is handled by the existing begin-race cleanup.
+            if (updated.count === 0 || lacksProviderAuthorization(row)) {
               return {
                 remote: null as null | RemoteRevoke,
                 previousStatus: null as string | null,

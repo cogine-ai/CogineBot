@@ -1695,6 +1695,65 @@ describe("connections.complete", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("disconnects a reserved grant without revoking an account by app name", async () => {
+    const current = {
+      id: "reserved-grant",
+      connectorId: "composio",
+      provider: "gmail",
+      providerRef: null,
+      status: "pending",
+      metadata: { authRevision: "reserved-authorization", chatAppGrant: true },
+    };
+    const revoke = vi.fn(async () => undefined);
+    const tx = {
+      $executeRaw: vi.fn(),
+      $queryRaw: vi.fn(async () => []),
+      connection: {
+        findFirst: vi.fn(async () => current),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        count: vi.fn(async () => 0),
+      },
+    };
+    const deps = {
+      prisma: {
+        ...tx,
+        $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+          callback(tx),
+        ),
+      },
+      connectors: { managed: vi.fn(() => ({ revoke })) },
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "http://127.0.0.1:5173",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@example.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    await expect(client.connections.revoke({ connectionId: current.id })).resolves.toEqual({
+      ok: true,
+    });
+    expect(tx.connection.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: current.id,
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+        }),
+        data: { status: "revoked" },
+      }),
+    );
+    expect(tx.connection.count).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
   it.each(["error", "connected", "pending"])(
     "handles an unresolved %s sibling without adopting its raw ref",
     async (siblingStatus) => {
