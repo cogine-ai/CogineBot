@@ -1,12 +1,12 @@
 import type { ConnectionCatalogItem, MessageBlock } from "@rakazo/contracts";
-import { featuredConnectorProvidersMatch } from "./featured-connectors.js";
+import { canonicalConnectionAppId } from "./connection-catalog.js";
 
 export type AppConnectBlock = Extract<MessageBlock, { kind: "app_connect" }>;
 
 const APP_DESCRIPTIONS: Record<string, string> = {
   slack: "Search, read, and send messages.",
   gmail: "Search, read, draft, and send email.",
-  googlecalendar: "Search events and schedule meetings.",
+  "google-calendar": "Search events and schedule meetings.",
   notion: "Search and edit pages and databases.",
   googledocs: "Draft and edit documents.",
   hackernews: "Search stories and discussions.",
@@ -14,18 +14,20 @@ const APP_DESCRIPTIONS: Record<string, string> = {
 
 export function matchAppCatalog(catalog: readonly ConnectionCatalogItem[], app: string) {
   const query = app.trim().toLowerCase();
+  const canonical = canonicalConnectionAppId(query);
   return (
     catalog.find(
       (entry) => entry.slug.toLowerCase() === query || entry.name.toLowerCase() === query,
-    ) ?? catalog.find((entry) => featuredConnectorProvidersMatch(entry.slug, query))
+    ) ??
+    (canonical
+      ? catalog.find((entry) => canonicalConnectionAppId(entry.slug) === canonical)
+      : undefined)
   );
 }
 
 export function appConnectCard(entry: ConnectionCatalogItem): AppConnectBlock {
   const description =
-    Object.entries(APP_DESCRIPTIONS).find(([slug]) =>
-      featuredConnectorProvidersMatch(entry.slug.toLowerCase(), slug),
-    )?.[1] ?? "";
+    APP_DESCRIPTIONS[canonicalConnectionAppId(entry.slug) ?? entry.slug.toLowerCase()] ?? "";
   return {
     kind: "app_connect",
     connectorId: entry.connectorId,

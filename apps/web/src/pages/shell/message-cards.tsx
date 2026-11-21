@@ -266,6 +266,20 @@ export function AppConnectCard({
   const connectionAttempt = useRef<AbortController | null>(null);
   const status = block.status === "connected" ? "connected" : localStatus;
   useEffect(() => () => connectionAttempt.current?.abort(), []);
+  useEffect(() => {
+    if (block.status === "connected") return;
+    const readback = new AbortController();
+    void rpc.onboarding
+      .appConnected(
+        { botId, messageId, provider: block.provider, connectorId: block.connectorId },
+        { signal: readback.signal },
+      )
+      .then(({ connected }) => {
+        if (connected && !readback.signal.aborted) setLocalStatus("connected");
+      })
+      .catch(() => undefined);
+    return () => readback.abort();
+  }, [block.status, block.provider, block.connectorId, botId, messageId]);
 
   async function authorize() {
     if (block.connectorId === "native") {
@@ -287,6 +301,7 @@ export function AppConnectCard({
         connectorId: block.connectorId,
         provider: block.provider,
         displayName: block.name,
+        reuseConnected: true,
       });
       if (started.authorizationUrl) {
         window.open(started.authorizationUrl, "rakazo-app-connect", "popup,width=560,height=720");
@@ -294,20 +309,15 @@ export function AppConnectCard({
       for (let i = 0; i < 60; i += 1) {
         if (controller.signal.aborted) return;
         const row = await rpc.connections
-          .complete({ connectionId: started.connectionId })
+          .complete(
+            { connectionId: started.connectionId, card: { botId, messageId } },
+            { signal: controller.signal },
+          )
           .catch(() => undefined);
         if (row?.status === "connected") {
           if (controller.signal.aborted) return;
           setLocalStatus("connected");
           onConnectionsChanged();
-          await rpc.onboarding
-            .appConnected({
-              botId,
-              messageId,
-              provider: block.provider,
-              connectorId: block.connectorId,
-            })
-            .catch(() => undefined);
           return;
         }
         await abortableDelay(2_000, controller.signal);

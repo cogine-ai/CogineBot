@@ -7430,7 +7430,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             ? loginGenerationEffectArgs(runId, loginGeneration)
             : args;
           const occurrence =
-            name === "request_secret" || name === "connect_app"
+            name === "request_secret"
               ? 0
               : nextMutatingEffectOccurrence(
                   replayEffectToolName,
@@ -8304,8 +8304,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 // An intended secret request resumes protected entry below, including
                 // recovery after action approval but before the card was committed.
               } else if (!needsApproval) {
-                // The Page transaction owns the intended write and its commit receipt.
-                if (name !== "request_takeover" && pageMode !== "write") {
+                // Page writes and app cards commit their receipts with the local change.
+                if (name !== "request_takeover" && name !== "connect_app" && pageMode !== "write") {
                   const early = await claimOrReturn("intended");
                   if (early !== undefined) return early;
                 }
@@ -8330,7 +8330,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else if (gate.action === "execute") {
               if (applied.effect.requiresPeerApprovalRecheck && viaConnector && deps.connector) {
                 pendingPeerConnectorClaim = true;
-              } else if (name !== "request_takeover" && !ownSettings) {
+              } else if (name !== "request_takeover" && name !== "connect_app" && !ownSettings) {
                 const early = await claimOrReturn("approved");
                 if (early !== undefined) return early;
                 if (isRoutinePromptTool(name) && claimedEffect) {
@@ -8345,6 +8345,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             bypassApproval &&
             applied &&
             name !== "request_takeover" &&
+            name !== "connect_app" &&
             pageMode !== "write"
           ) {
             const early = await claimOrReturn("intended");
@@ -8355,7 +8356,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               ? completeEffect(
                   deps,
                   applied.effect.id,
-                  claimedEffect ? "executing" : "intended",
+                  claimedEffect
+                    ? "executing"
+                    : name === "connect_app" && applied.effect.status === "approved"
+                      ? "approved"
+                      : "intended",
                   result,
                   claimedApproval && run.origin === "bot_peer"
                     ? approvedActionReceipt(result, outcome)
@@ -9590,14 +9595,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
           }
           if (name === "connect_app") {
-            if (!applied) throw new Error("Missing app connection effect.");
+            if (
+              !applied ||
+              (applied.effect.status !== "intended" && applied.effect.status !== "approved")
+            ) {
+              return uncertainEffectResult(name);
+            }
             const result = await connectApp(
               deps,
               deps.connectors?.managedProviders?.() ?? [],
               context,
               run,
               args,
-              { id: applied.effect.id, expectedStatus: claimedEffect ? "executing" : "intended" },
+              { id: applied.effect.id, expectedStatus: applied.effect.status },
+              async (tx) => ((await rulesBlockDispatch(tx)) ? policyBlock : undefined),
             );
             return result ?? uncertainEffectResult(name);
           }

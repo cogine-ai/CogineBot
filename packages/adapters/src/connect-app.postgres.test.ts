@@ -102,8 +102,20 @@ describePostgres("chat app connection cards (PostgreSQL)", () => {
       });
     }
     const messages = () => prisma.message.findMany({ where: { threadId: target.threadId } });
-    const execute = (id: string, app = "Google Mail") =>
-      connectApp(deps, providers, context, run, { app }, { id, expectedStatus: "intended" });
+    const execute = (
+      id: string,
+      app = "Google Mail",
+      options?: { signal?: AbortSignal; expectedStatus?: "intended" | "approved" },
+    ) =>
+      connectApp(
+        deps,
+        providers,
+        { ...context, signal: options?.signal ?? context.signal },
+        run,
+        { app },
+        { id, expectedStatus: options?.expectedStatus ?? "intended" },
+        async () => undefined,
+      );
     return { prisma, target, run, notify, effect, messages, execute };
   }
 
@@ -111,9 +123,9 @@ describePostgres("chat app connection cards (PostgreSQL)", () => {
     const { prisma, target, effect, execute, messages, notify } = await fixture();
     const calls = await Promise.all([effect(), effect()]);
     const results = await Promise.all(calls.map(({ id }) => execute(id)));
-    expect(results.map((result) => result && "status" in result && result.status)).toEqual([
-      "pending",
-      "pending",
+    expect(results).toEqual([
+      expect.objectContaining({ status: "pending" }),
+      expect.objectContaining({ status: "pending" }),
     ]);
     const cards = await messages();
     expect(cards).toHaveLength(1);
@@ -134,6 +146,50 @@ describePostgres("chat app connection cards (PostgreSQL)", () => {
         where: { id: { in: calls.map(({ id }) => id) }, status: "completed" },
       }),
     ).toBe(2);
+  });
+
+  it("reuses the stored receipt when two deliveries share an effect", async () => {
+    const { effect, execute, messages, notify } = await fixture();
+    const { id } = await effect();
+    const [original, replay] = await Promise.all([execute(id), execute(id)]);
+    expect(original).toHaveProperty("status", "pending");
+    expect(replay).toEqual(original);
+    expect(await messages()).toHaveLength(1);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["intended", "approved"] as const)("retries an interrupted %s card", async (status) => {
+    const source = provider("managed", [entry("managed")]);
+    const { prisma, effect, execute, messages } = await fixture([source]);
+    const { id } = await effect(status);
+    const controller = new AbortController();
+    let catalogEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      catalogEntered = resolve;
+    });
+    vi.mocked(source.catalog).mockImplementationOnce(
+      ({ signal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          catalogEntered();
+        }),
+    );
+    const interruption = expect(
+      execute(id, undefined, { signal: controller.signal, expectedStatus: status }),
+    ).rejects.toThrow("interrupted catalog");
+    await entered;
+    controller.abort(new Error("interrupted catalog"));
+    await interruption;
+    expect(await messages()).toEqual([]);
+    expect(await prisma.externalEffect.findUnique({ where: { id } })).toHaveProperty(
+      "status",
+      status,
+    );
+    await expect(execute(id, undefined, { expectedStatus: status })).resolves.toHaveProperty(
+      "status",
+      "pending",
+    );
+    expect(await messages()).toHaveLength(1);
   });
 
   it("keeps old cards but opens a new one outside the most recent fifty messages", async () => {
@@ -187,9 +243,7 @@ describePostgres("chat app connection cards (PostgreSQL)", () => {
 
   it("rolls back a card for a superseded effect and rejects an old worker fence", async () => {
     const { prisma, run, effect, execute, messages, notify } = await fixture();
-    await expect(execute((await effect("denied")).id)).rejects.toThrow(
-      "connection request changed",
-    );
+    await expect(execute((await effect("denied")).id)).resolves.toBeUndefined();
     await prisma.run.update({ where: { id: run.id }, data: { leaseFence: fence + 1 } });
     await expect(execute((await effect()).id)).resolves.toBeUndefined();
     expect(await messages()).toEqual([]);

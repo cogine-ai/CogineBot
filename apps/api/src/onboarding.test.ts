@@ -29,7 +29,7 @@ function fixture(catalog: unknown[]) {
       bot: { findFirst: vi.fn(async () => ({ id: "bot", thread: { id: "thread" } })) },
       $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
     },
-    events: { notify: vi.fn() },
+    events: { notify: vi.fn(async () => undefined) },
     connectors: { managedProviders: () => [{ catalog: async () => catalog }] },
   } as unknown as Parameters<typeof chooseFocus>[0];
   const actor = {
@@ -75,7 +75,9 @@ it("marks only the authorized connector when provider slugs collide", async () =
   }));
   tx.connection.findFirst.mockResolvedValue({ id: "connection" });
   tx.message.findMany.mockResolvedValue([{ id: "cards", seq: 7, blocks }] as never);
-  await markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards");
+  await expect(markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards")).resolves.toBe(
+    true,
+  );
   expect(tx.connection.findFirst).toHaveBeenCalledWith({
     where: {
       userId: actor.userId,
@@ -106,7 +108,9 @@ it("marks only the authorized connector when provider slugs collide", async () =
 
 it("does not change a card without a connected account in this Space", async () => {
   const { deps, actor, tx } = fixture([]);
-  await markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards");
+  await expect(markAppConnected(deps, actor, "bot", "slack", "pipedream", "cards")).resolves.toBe(
+    false,
+  );
   expect(tx.message.findMany).not.toHaveBeenCalled();
   expect(tx.message.update).not.toHaveBeenCalled();
 });

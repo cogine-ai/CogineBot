@@ -6748,7 +6748,7 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       appConnected: authed.onboarding.appConnected.handler(async ({ context, input }) => {
-        await markAppConnected(
+        const connected = await markAppConnected(
           onboardingDeps,
           context.actor,
           input.botId,
@@ -6756,7 +6756,7 @@ export function createRouter(deps: RouterDeps) {
           input.connectorId,
           input.messageId,
         );
-        return { ok: true as const };
+        return { ok: true as const, connected };
       }),
     },
     integrationSetup: {
@@ -7076,6 +7076,11 @@ export function createRouter(deps: RouterDeps) {
           const target = input.connectionId
             ? existing.find((entry) => entry.id === input.connectionId)
             : undefined;
+          const reusable =
+            input.reuseConnected && !input.connectionId
+              ? existing.find((entry) => entry.status === "connected")
+              : undefined;
+          if (reusable) return reusable;
           if (input.connectionId && !target) throw new IsolationError();
           if (target && target.status !== "error" && target.status !== "revoked") {
             throw new ORPCError("CONFLICT", {
@@ -7096,6 +7101,9 @@ export function createRouter(deps: RouterDeps) {
             },
           });
         });
+        if (row.status === "connected") {
+          return { connectionId: row.id, authorizationUrl: null };
+        }
         try {
           const auth = await connector.begin(
             { provider: input.provider, redirectUrl: `${deps.env.webOrigin}/app` },
@@ -7541,6 +7549,16 @@ export function createRouter(deps: RouterDeps) {
               });
             },
             { timeout: 60_000 },
+          );
+        }
+        if (row.status === "connected" && input.card) {
+          await markAppConnected(
+            onboardingDeps,
+            context.actor,
+            input.card.botId,
+            row.provider,
+            row.connectorId,
+            input.card.messageId,
           );
         }
         return {

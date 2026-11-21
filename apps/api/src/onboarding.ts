@@ -8,6 +8,7 @@ import {
   IsolationError,
   withTransactionRetry,
 } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { requireBotThread } from "./bot-thread.js";
 
 /**
@@ -286,9 +287,9 @@ export async function markAppConnected(
   provider: string,
   connectorId = "composio",
   messageId?: string,
-): Promise<void> {
+): Promise<boolean> {
   const { bot, thread } = await requireBotThread(deps, actor, botId);
-  const events = await withTransactionRetry(() =>
+  const { connected, updated } = await withTransactionRetry(() =>
     deps.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT id FROM threads WHERE id = ${thread.id} FOR UPDATE`;
       const connection = await tx.connection.findFirst({
@@ -301,7 +302,7 @@ export async function markAppConnected(
         },
         select: { id: true },
       });
-      if (!connection) return [];
+      if (!connection) return { connected: false, updated: [] };
       const where = { threadId: thread.id, role: "bot" } as const;
       const select = { id: true, seq: true, blocks: true } as const;
       // A card identifies its own message, even after it falls out of recent
@@ -314,13 +315,14 @@ export async function markAppConnected(
           ];
       const messages = new Map(matches.map((message) => [message.id, message]));
       const updated = [];
+      let connected = messageId === undefined;
       for (const message of messages.values()) {
         const blocks = message.blocks as MessageBlock[];
-        const next = blocks.map((block) =>
-          matchesAppConnection(block, connectorId, provider) && block.status === "pending"
-            ? { ...block, status: "connected" as const }
-            : block,
-        );
+        const next = blocks.map((block) => {
+          if (!matchesAppConnection(block, connectorId, provider)) return block;
+          connected = true;
+          return block.status === "pending" ? { ...block, status: "connected" as const } : block;
+        });
         if (!next.some((block, index) => block !== blocks[index])) continue;
         await tx.message.update({ where: { id: message.id }, data: { blocks: next } });
         updated.push(
@@ -333,10 +335,15 @@ export async function markAppConnected(
           }),
         );
       }
-      return updated;
+      return { connected, updated };
     }),
   );
-  for (const event of events) await deps.events.notify(thread.id, event.seq);
+  for (const event of updated) {
+    await deps.events
+      .notify(thread.id, event.seq)
+      .catch((error) => getLogger().error("connection card realtime notification", error));
+  }
+  return connected;
 }
 
 function capitalize(value: string): string {

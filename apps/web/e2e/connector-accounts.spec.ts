@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import type { Connection, ConnectionCatalogItem } from "@rakazo/contracts";
 import { captureScreenshot, completeOnboarding, openIntegrations, rpc, signup } from "./helpers";
 
@@ -23,9 +23,7 @@ function account(id: string, status: Connection["status"], connectorId = "compos
   };
 }
 
-test("a chat request opens one managed app card and keeps its verified status", async ({
-  page,
-}, testInfo) => {
+async function openGmailCardFromChat(page: Page) {
   await signup(page, `chat-app-${Date.now()}@example.test`, "password12", "Robin");
   await completeOnboarding(page);
   const composer = page.getByRole("combobox", { name: "Message Chief" });
@@ -35,8 +33,13 @@ test("a chat request opens one managed app card and keeps its verified status", 
   );
   await page.getByRole("button", { name: "Send", exact: true }).click();
   expect((await sent).ok()).toBe(true);
+  return page.getByRole("group", { name: "Gmail connection" });
+}
 
-  const card = page.getByRole("group", { name: "Gmail connection" });
+test("a chat request opens one managed app card and keeps its verified status", async ({
+  page,
+}, testInfo) => {
+  const card = await openGmailCardFromChat(page);
   const authorize = card.getByRole("button", { name: "Authorize" });
   await expect(authorize).toBeVisible();
   await captureScreenshot(page, testInfo, "chat-app-connection-pending");
@@ -55,14 +58,52 @@ test("a chat request opens one managed app card and keeps its verified status", 
       );
     })
     .toBe(true);
+  await captureScreenshot(page, testInfo, "chat-app-connection-connected");
   await page.reload();
   await expect(card.getByText("Connected", { exact: true })).toBeVisible();
   await expect(card).toHaveCount(1);
-  await captureScreenshot(page, testInfo, "chat-app-connection-connected");
   await openIntegrations(page);
   await expect(
     page.getByTestId("connection-tile-gmail").getByRole("button", { name: "Manage", exact: true }),
   ).toBeVisible();
+});
+
+test("a card recovers a completed authorization after the original update is interrupted", async ({
+  page,
+}) => {
+  const readback = "**/rpc/onboarding/appConnected";
+  const completion = "**/rpc/connections/complete";
+  await page.route(readback, (route) => route.abort());
+  const card = await openGmailCardFromChat(page);
+  let onCommitted!: (connectionId: string) => void;
+  const committed = new Promise<string>((resolve) => {
+    onCommitted = resolve;
+  });
+  await page.route(completion, async (route) => {
+    const { connectionId } = route.request().postDataJSON().json;
+    const response = await route.fetch({ postData: { json: { connectionId } } });
+    expect((await response.json()).json).toMatchObject({ id: connectionId, status: "connected" });
+    await route.abort();
+    onCommitted(connectionId);
+  });
+  await card.getByRole("button", { name: "Authorize", exact: true }).click();
+  const connectionId = await committed;
+  await page.unroute(readback);
+  await page.reload();
+  await expect(card.getByText("Connected", { exact: true })).toBeVisible();
+
+  const before = await rpc<Connection[]>(page, "connections/list", {});
+  const account = before.find((row) => row.id === connectionId);
+  if (!account) throw new Error("The verified connection is missing.");
+  expect(account).toMatchObject({ status: "connected" });
+  const reused = await rpc(page, "connections/begin", {
+    connectorId: account.connectorId,
+    provider: account.provider,
+    displayName: account.displayName,
+    reuseConnected: true,
+  });
+  expect(reused).toEqual({ connectionId, authorizationUrl: null });
+  expect(await rpc(page, "connections/list", {})).toEqual(before);
 });
 
 test("groups sources, preserves four account states and checks pending without restarting authorization", async ({

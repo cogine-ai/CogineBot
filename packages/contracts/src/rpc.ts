@@ -1083,7 +1083,7 @@ export const appContract = {
           messageId: Id.optional(),
         }),
       )
-      .output(z.object({ ok: z.literal(true) })),
+      .output(z.object({ ok: z.literal(true), connected: z.boolean() })),
   },
   integrationSetup: {
     get: oc.output(IntegrationSetupStateSchema),
@@ -1130,11 +1130,19 @@ export const appContract = {
           displayName: z.string(),
           /** Derive a new authorization from this unavailable connection; never replace its identity. */
           connectionId: Id.optional(),
+          /** A chat card can reuse an existing grant for this exact app. */
+          reuseConnected: z.boolean().optional(),
         }),
       )
       .output(z.object({ connectionId: Id, authorizationUrl: z.string().nullable() })),
     complete: oc
-      .input(z.object({ connectionId: Id, code: z.string().optional() }))
+      .input(
+        z.object({
+          connectionId: Id,
+          code: z.string().optional(),
+          card: z.object({ botId: Id, messageId: Id }).optional(),
+        }),
+      )
       .output(ConnectionSchema),
     rename: oc
       .input(z.object({ connectionId: Id, displayName: z.string().trim().min(1).max(80) }))

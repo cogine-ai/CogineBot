@@ -2,6 +2,7 @@ import type { AdapterContext, ManagedConnectorProvider } from "@rakazo/adapter-k
 import type { ConnectionCatalogItem } from "@rakazo/contracts";
 import { MessageBlock } from "@rakazo/contracts";
 import { appConnectCard, matchAppCatalog, matchesAppConnection } from "@rakazo/core";
+import type { Prisma } from "@rakazo/db";
 import { withTransactionRetry } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { z } from "zod";
@@ -16,7 +17,8 @@ export const ConnectAppInput = z.strictObject({
     .trim()
     .min(1)
     .max(100)
-    .regex(/^[^:/\\\p{Cc}]+$/u),
+    .regex(/^[^:/\\]+$/)
+    .refine((app) => !/\p{Cc}/u.test(app)),
 });
 
 const RECENT_MESSAGES = 50;
@@ -39,7 +41,7 @@ type ConnectAppRun = {
   botId: string;
   userId: string;
 };
-type CardEffect = { id: string; expectedStatus: "intended" | "executing" };
+type CardEffect = { id: string; expectedStatus: "intended" | "approved" };
 
 /** Catalog readers never receive model-supplied URLs or instructions. */
 async function readAppCatalog(
@@ -69,6 +71,7 @@ export async function connectApp(
   run: ConnectAppRun,
   input: Record<string, unknown>,
   effect: CardEffect,
+  readPolicyBlock: (tx: Prisma.TransactionClient) => Promise<{ error: string } | undefined>,
 ) {
   const parsed = ConnectAppInput.safeParse(input);
   const catalog = parsed.success ? await readAppCatalog(providers, context) : [];
@@ -81,6 +84,19 @@ export async function connectApp(
       if (!(await renewRunLease(deps, run.id, lease.owner, lease.fence, tx))) return undefined;
       context.signal.throwIfAborted();
 
+      const liveEffect = await tx.externalEffect.findUnique({
+        where: { id: effect.id, runId: run.id, spaceId: run.spaceId, kind: "connect_app" },
+        select: { status: true, result: true },
+      });
+      if (liveEffect?.status === "completed")
+        return { result: liveEffect.result, message: undefined };
+      if (liveEffect?.status !== effect.expectedStatus) return undefined;
+      const blocked = await readPolicyBlock(tx);
+      if (blocked) {
+        return (await completeExternalEffect(tx, effect.id, effect.expectedStatus, blocked))
+          ? { result: blocked, message: undefined }
+          : undefined;
+      }
       const nonce = `connect-app:${effect.id}`;
       const replayed = await tx.message.findFirst({
         where: { threadId: run.threadId, clientNonce: nonce, role: "bot", runId: run.id },

@@ -37,6 +37,20 @@ export function AppConnectCard({
   const view = appConnectPresentation({ ...block, status }, busy);
 
   useEffect(() => () => connectionAttempt.current?.abort(), []);
+  useEffect(() => {
+    if (readOnly || block.status === "connected") return;
+    const readback = new AbortController();
+    void rpc<{ connected: boolean }>(
+      "onboarding/appConnected",
+      { botId, messageId, provider: block.provider, connectorId: block.connectorId },
+      { signal: readback.signal },
+    )
+      .then(({ connected }) => {
+        if (connected && !readback.signal.aborted) setLocalStatus("connected");
+      })
+      .catch(() => undefined);
+    return () => readback.abort();
+  }, [block.status, block.provider, block.connectorId, botId, messageId, readOnly]);
 
   async function authorize() {
     if (readOnly) return;
@@ -65,6 +79,7 @@ export function AppConnectCard({
           connectorId: block.connectorId,
           provider: block.provider,
           displayName: block.name,
+          reuseConnected: true,
         },
         { signal: controller.signal },
       );
@@ -74,17 +89,10 @@ export function AppConnectCard({
         if (controller.signal.aborted) return;
         const row = await rpc<{ status: string }>(
           "connections/complete",
-          { connectionId: started.connectionId },
+          { connectionId: started.connectionId, card: { botId, messageId } },
           { signal: controller.signal },
         ).catch(() => undefined);
         if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
-          await rpc("onboarding/appConnected", {
-            botId,
-            messageId,
-            provider: block.provider,
-            connectorId: block.connectorId,
-          });
           if (controller.signal.aborted) return;
           setLocalStatus("connected");
           return;
