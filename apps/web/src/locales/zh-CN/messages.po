@@ -7746,3 +7746,51 @@ msgstr "下次执行：{nextRun}"
 #: src/components/integrations/PluginInstallsPanel.tsx
 msgid "Reference files"
 msgstr "附属文件"
+
+msgid "My default"
+msgstr "我的默认"
+
+msgid "This Space"
+msgstr "此 Space"
+
+msgid "System default"
+msgstr "系统默认"
+
+msgid "This Bot"
+msgstr "此 Bot"
+
+msgid "Use Space default"
+msgstr "使用 Space 默认值"
+
+msgid "Override in this Space"
+msgstr "在此 Space 中覆盖"
+
+msgid "Read replies aloud in this Space"
+msgstr "朗读此 Space 的回复"
+
+msgid "Settings changed elsewhere."
+msgstr "设置已在别处更改。"
+
+msgid "Could not load read-aloud settings."
+msgstr "无法加载朗读设置。"
+
+msgid "Could not save read-aloud settings."
+msgstr "无法保存朗读设置。"
+
+msgid "Change my read-aloud default?"
+msgstr "更改我的默认朗读设置？"
+
+msgid "This applies to new replies in Spaces that follow your default."
+msgstr "会在跟随你的默认设置的 Space 中对新回复生效。"
+
+msgid "On"
+msgstr "开启"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "Reload"
+msgstr "重新加载"
+
+msgid "Confirm"
+msgstr "确认"

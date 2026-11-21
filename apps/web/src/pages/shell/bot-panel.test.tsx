@@ -810,11 +810,39 @@ it.each(["failed", "ready", "refreshing"] as const)(
       expectedRevision: 9,
       computerMode: "dedicated",
       memoryScope: "isolated",
-      autoSpeak: true,
       voiceId: "voice-b",
     });
+    expect(onSave.mock.calls[2]?.[0]).not.toHaveProperty("autoSpeak");
   },
 );
+
+it("locks read-aloud changes until their saved revision is accepted", async () => {
+  await render("Billing", false, { readAloudRevision: 2 });
+  const pending = deferred<undefined>();
+  onSave.mockImplementationOnce(() => pending.promise);
+  const control = container.querySelector<HTMLButtonElement>('button[id$="-auto-speak"]')!;
+  await act(async () => control.click());
+  await clickSave();
+  expect(onSave.mock.calls[0]?.[0]).toMatchObject({
+    autoSpeak: true,
+    expectedReadAloudRevision: 2,
+  });
+  expect(control.disabled).toBe(true);
+  const useSpaceDefault = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Use Space default",
+  );
+  expect(useSpaceDefault?.disabled).toBe(true);
+  await act(async () => control.click());
+  await render("Billing", false, { readAloudRevision: 3, autoSpeak: true });
+  await act(async () => pending.resolve(undefined));
+  expect(control.disabled).toBe(false);
+  await act(async () => control.click());
+  await clickSave();
+  expect(onSave.mock.calls[1]?.[0]).toMatchObject({
+    autoSpeak: false,
+    expectedReadAloudRevision: 3,
+  });
+});
 
 it("does not replace a newer model draft or its revision when an older save conflicts and refreshes late", async () => {
   const initial = [pinnedCredential("connection-a", 7), pinnedCredential("connection-b", 4)];

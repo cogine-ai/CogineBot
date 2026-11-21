@@ -1292,6 +1292,8 @@ export type MobileBot = Pick<
   | "modelCredentialId"
   | "thinkingLevel"
   | "autoSpeak"
+  | "autoSpeakInherited"
+  | "readAloudRevision"
 > &
   Partial<Pick<Bot, "parentBotId" | "spaceId">>;
 

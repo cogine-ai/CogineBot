@@ -1,10 +1,11 @@
-import type { ComputerMode, ThinkingLevel } from "@rakazo/contracts";
+import type { ComputerMode, ReadAloudEffective, ThinkingLevel } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
   BOT_TITLE_MAX_LENGTH,
   isBotInstructionsConflict,
+  isReadAloudConflict,
   normalizeCreateBotProfile,
   parseBotAvatarValue,
 } from "@rakazo/contracts";
@@ -83,7 +84,29 @@ export default function BotSettingsScreen() {
   const [modelKey, setModelKey] = useState("");
   const [modelRevision, setModelRevision] = useState<number | undefined>();
   const [thinkingLevel, setThinkingLevel] = useState("");
-  const [autoSpeak, setAutoSpeak] = useState(false);
+  const [autoSpeak, setAutoSpeak] = useState<boolean | null>(false);
+  const wantsSpaceDefault = autoSpeak === null;
+  const [effectiveReadAloud, setEffectiveReadAloud] = useState<ReadAloudEffective | null>(null);
+  const [readAloudLoadError, setReadAloudLoadError] = useState(false);
+  const [readAloudLoadRevision, setReadAloudLoadRevision] = useState(0);
+  useEffect(() => {
+    setEffectiveReadAloud(null);
+    setReadAloudLoadError(false);
+    if (!botId || bot?.id !== botId || !wantsSpaceDefault) return;
+    const controller = new AbortController();
+    void rpc<ReadAloudEffective>(
+      "preferences/readAloudForBot",
+      { botId, previewSpaceDefault: true },
+      { signal: controller.signal },
+    )
+      .then((value) => {
+        if (!controller.signal.aborted) setEffectiveReadAloud(value);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setReadAloudLoadError(true);
+      });
+    return () => controller.abort();
+  }, [botId, bot?.id, wantsSpaceDefault, bot?.readAloudRevision, readAloudLoadRevision]);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [catalog, setCatalog] = useState<MobileModel[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
@@ -131,7 +154,7 @@ export default function BotSettingsScreen() {
             : "",
         );
         setThinkingLevel(next.thinkingLevel ?? "");
-        setAutoSpeak(next.autoSpeak);
+        setAutoSpeak(next.autoSpeakInherited ? null : next.autoSpeak);
       })
       .catch((err) => {
         if (!cancelled) setError(errorText(err, t("Could not load bot")));
@@ -357,6 +380,8 @@ export default function BotSettingsScreen() {
         expectedRevision?: number;
         thinkingLevel?: ThinkingLevel | null;
         autoSpeak?: boolean;
+        autoSpeakInherited?: true;
+        expectedReadAloudRevision?: number;
       } = { botId };
       if (profile.name !== bot.name) input.name = profile.name;
       if (profile.title !== bot.title) input.title = profile.title;
@@ -384,7 +409,11 @@ export default function BotSettingsScreen() {
           ? ((thinkingLevel || null) as ThinkingLevel | null)
           : null;
       }
-      if (autoSpeak !== bot.autoSpeak) input.autoSpeak = autoSpeak;
+      if (autoSpeak !== (bot.autoSpeakInherited ? null : bot.autoSpeak)) {
+        if (autoSpeak === null) input.autoSpeakInherited = true;
+        else input.autoSpeak = autoSpeak;
+        input.expectedReadAloudRevision = bot.readAloudRevision;
+      }
       if (computerMode !== bot.computerMode) {
         await rpc(
           "bots/setComputer",
@@ -412,8 +441,28 @@ export default function BotSettingsScreen() {
       if (current() && !instructionsConflict) router.back();
     } catch (err) {
       if (!current()) return;
-      setError(errorText(err, t("Could not save bot")));
+      setError(
+        isReadAloudConflict(err)
+          ? t("Settings changed elsewhere.")
+          : errorText(err, t("Could not save bot")),
+      );
       if (isBotInstructionsConflict(err)) setInstructionsConflict(true);
+      if (isReadAloudConflict(err)) {
+        const latest = await rpc<BotSettingsRecord>("bots/get", { botId }).catch(() => null);
+        if (current() && latest?.id === botId) {
+          setBot((baseline) =>
+            baseline?.id === botId
+              ? {
+                  ...baseline,
+                  autoSpeak: latest.autoSpeak,
+                  autoSpeakInherited: latest.autoSpeakInherited,
+                  readAloudRevision: latest.readAloudRevision,
+                }
+              : baseline,
+          );
+          setAutoSpeak(latest.autoSpeakInherited ? null : latest.autoSpeak);
+        }
+      }
     } finally {
       if (current()) setPending(false);
     }
@@ -600,9 +649,52 @@ export default function BotSettingsScreen() {
           <NativeSwitch
             accessibilityLabel={t("Read replies aloud")}
             onValueChange={setAutoSpeak}
-            value={autoSpeak}
+            value={autoSpeak ?? effectiveReadAloud?.enabled ?? false}
+            disabled={pending || (autoSpeak === null && !effectiveReadAloud)}
           />
         </View>
+        {bot?.readAloudRevision !== undefined ? (
+          <View style={styles.row}>
+            {wantsSpaceDefault && !bot.autoSpeakInherited ? (
+              <NativeActionButton
+                label={t("Cancel")}
+                prominence="plain"
+                disabled={pending}
+                onPress={() => setAutoSpeak(bot.autoSpeak)}
+              />
+            ) : null}
+            {readAloudLoadError && autoSpeak === null ? (
+              <NativeActionButton
+                label={t("Reload")}
+                prominence="plain"
+                disabled={pending}
+                onPress={() => setReadAloudLoadRevision((revision) => revision + 1)}
+              />
+            ) : autoSpeak === null ? (
+              <Text style={[styles.rowLabel, { color: tokens.mutedForeground }]}>
+                {effectiveReadAloud?.source === "account"
+                  ? t("My default")
+                  : effectiveReadAloud?.source === "system"
+                    ? t("System default")
+                    : effectiveReadAloud?.source === "space"
+                      ? t("This Space")
+                      : t("Space default")}
+              </Text>
+            ) : (
+              <>
+                <Text style={[styles.rowLabel, { color: tokens.mutedForeground }]}>
+                  {t("This Bot")}
+                </Text>
+                <NativeActionButton
+                  label={t("Use Space default")}
+                  prominence="plain"
+                  disabled={pending}
+                  onPress={() => setAutoSpeak(null)}
+                />
+              </>
+            )}
+          </View>
+        ) : null}
         {deviceVoiceEnabled ? (
           voiceError ? (
             <Pressable

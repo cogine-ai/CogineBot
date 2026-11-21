@@ -7674,3 +7674,51 @@ msgstr "Messages cleared. External memory cleanup could not be confirmed."
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "External memory cleanup could not be confirmed."
+
+msgid "My default"
+msgstr "My default"
+
+msgid "This Space"
+msgstr "This Space"
+
+msgid "System default"
+msgstr "System default"
+
+msgid "This Bot"
+msgstr "This Bot"
+
+msgid "Use Space default"
+msgstr "Use Space default"
+
+msgid "Override in this Space"
+msgstr "Override in this Space"
+
+msgid "Read replies aloud in this Space"
+msgstr "Read replies aloud in this Space"
+
+msgid "Settings changed elsewhere."
+msgstr "Settings changed elsewhere."
+
+msgid "Could not load read-aloud settings."
+msgstr "Could not load read-aloud settings."
+
+msgid "Could not save read-aloud settings."
+msgstr "Could not save read-aloud settings."
+
+msgid "Change my read-aloud default?"
+msgstr "Change my read-aloud default?"
+
+msgid "This applies to new replies in Spaces that follow your default."
+msgstr "This applies to new replies in Spaces that follow your default."
+
+msgid "On"
+msgstr "On"
+
+msgid "Off"
+msgstr "Off"
+
+msgid "Reload"
+msgstr "Reload"
+
+msgid "Confirm"
+msgstr "Confirm"

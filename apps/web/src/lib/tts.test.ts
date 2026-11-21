@@ -249,6 +249,23 @@ describe("Speaker", () => {
     },
   );
 
+  it("does not count automatic cleanup as new playback intent", async () => {
+    const audios = controlledAudio();
+    const speaker = new Speaker();
+    target.prepare.mockResolvedValue({ ready: true, utterances: ["First"] });
+    let current = true;
+    const first = speaker.speak("First", { isCurrent: () => current });
+    await vi.waitFor(() => expect(audios).toHaveLength(1));
+    const revision = speaker.playbackRevision;
+    current = false;
+    audios[0]?.ontimeupdate?.();
+    await first;
+    expect(speaker.state.status).toBe("idle");
+    expect(speaker.playbackRevision).toBe(revision);
+    speaker.stop();
+    expect(speaker.playbackRevision).not.toBe(revision);
+  });
+
   it("leaves a newer preparation untouched when an expired caller finishes late", async () => {
     const speaker = new Speaker();
     const old = deferred<{ ready: boolean; utterances: string[] }>();

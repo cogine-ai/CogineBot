@@ -9,6 +9,7 @@ import type {
   Me,
   ModelCatalogEntry,
   ModelCredential,
+  ReadAloudEffective,
   ThinkingLevel,
   VoiceInfo,
 } from "@rakazo/contracts";
@@ -21,6 +22,7 @@ import {
   botTemplateDraft,
   isBotInstructionsConflict,
   isBuiltinToolName,
+  isReadAloudConflict,
 } from "@rakazo/contracts";
 import type { BotCreationReceipt, createBotCreation } from "@rakazo/core";
 import {
@@ -373,6 +375,8 @@ export function BotSettings({
     computerMode?: ComputerMode;
     memoryScope?: "isolated" | "shared" | null;
     autoSpeak?: boolean;
+    autoSpeakInherited?: true;
+    expectedReadAloudRevision?: number;
     voiceId?: string | null;
     modelProvider?: string | null;
     modelId?: string | null;
@@ -424,7 +428,40 @@ export function BotSettings({
   }, [bot, spaceGeneration]);
   const [computerMode, setComputerMode] = useState(bot.computerMode);
   const [memoryScope, setMemoryScope] = useState(bot.memoryScope);
-  const [autoSpeak, setAutoSpeak] = useState(bot.autoSpeak);
+  const [readAloudDraft, setReadAloudDraft] = useState<{
+    value: boolean | null;
+    revision: number | undefined;
+  } | null>(null);
+  const autoSpeak = readAloudDraft
+    ? readAloudDraft.value
+    : bot.autoSpeakInherited
+      ? null
+      : bot.autoSpeak;
+  const wantsSpaceDefault = autoSpeak === null;
+  const [effectiveReadAloud, setEffectiveReadAloud] = useState<ReadAloudEffective | null>(null);
+  const [readAloudLoadError, setReadAloudLoadError] = useState(false);
+  const [readAloudLoadRevision, setReadAloudLoadRevision] = useState(0);
+  useEffect(() => {
+    setEffectiveReadAloud(null);
+    setReadAloudLoadError(false);
+    if (!wantsSpaceDefault) return;
+    const controller = new AbortController();
+    void rpc.preferences
+      .readAloudForBot({ botId: bot.id, previewSpaceDefault: true }, { signal: controller.signal })
+      .then((value) => {
+        if (!controller.signal.aborted) setEffectiveReadAloud(value);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setReadAloudLoadError(true);
+      });
+    return () => controller.abort();
+  }, [bot.id, wantsSpaceDefault, bot.readAloudRevision, readAloudLoadRevision]);
+  function setAutoSpeak(value: boolean | null) {
+    setReadAloudDraft({
+      value,
+      revision: readAloudDraft ? readAloudDraft.revision : bot.readAloudRevision,
+    });
+  }
   const [voiceId, setVoiceId] = useState(bot.voiceId ?? "");
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [modelKey, setModelKey] = useState(
@@ -470,6 +507,7 @@ export function BotSettings({
       description?: string;
       instructions?: string;
       color?: string;
+      readAloud?: NonNullable<typeof readAloudDraft>;
       disabledBuiltinTools?: string[];
       baseDisabledBuiltinTools?: string[];
     }) => Promise<void>
@@ -570,6 +608,7 @@ export function BotSettings({
     description?: string;
     instructions?: string;
     color?: string;
+    readAloud?: NonNullable<typeof readAloudDraft>;
     disabledBuiltinTools?: string[];
     baseDisabledBuiltinTools?: string[];
   }) {
@@ -617,7 +656,14 @@ export function BotSettings({
         ...(nextColor !== bot.color ? { color: nextColor } : {}),
         computerMode,
         memoryScope,
-        autoSpeak,
+        ...(patchOverrides?.readAloud
+          ? {
+              ...(patchOverrides.readAloud.value === null
+                ? { autoSpeakInherited: true as const }
+                : { autoSpeak: patchOverrides.readAloud.value }),
+              expectedReadAloudRevision: patchOverrides.readAloud.revision,
+            }
+          : {}),
         voiceId: voiceId || null,
         ...(saveModel
           ? {
@@ -667,6 +713,8 @@ export function BotSettings({
         persistedDisabledToolsRef.current = nextTools;
         break;
       }
+      if (patchOverrides?.readAloud)
+        setReadAloudDraft((draft) => (draft === patchOverrides.readAloud ? null : draft));
       savedProfileRef.current = {
         description: nextDescription,
         instructions: patch.instructions ?? savedProfileRef.current.instructions,
@@ -674,13 +722,19 @@ export function BotSettings({
       if (patch.instructions !== undefined) setInstructionsConflict(false);
     } catch (err) {
       if (!mountedRef.current || spaceGeneration !== currentSpaceSelectionGeneration()) return;
-      setError(errorText(err, t`Could not save`));
+      const readAloudConflict = isReadAloudConflict(err);
+      if (readAloudConflict)
+        setReadAloudDraft((draft) => (draft === patchOverrides?.readAloud ? null : draft));
+      setError(
+        readAloudConflict ? t`Settings changed elsewhere.` : errorText(err, t`Could not save`),
+      );
       const rulesConflict = isBotInstructionsConflict(err);
       if (nextInstructions !== savedProfileRef.current.instructions && rulesConflict)
         setInstructionsConflict(true);
       if (
         saveModel &&
         !rulesConflict &&
+        !readAloudConflict &&
         err &&
         typeof err === "object" &&
         "code" in err &&
@@ -718,12 +772,14 @@ export function BotSettings({
     description?: string;
     instructions?: string;
     color?: string;
+    readAloud?: NonNullable<typeof readAloudDraft>;
     disabledBuiltinTools?: string[];
   }) {
     // Serialize full-object auto-saves so an older in-flight request cannot
     // finish after a newer one and clobber fields. Always call through a ref so
     // queued work reads the latest field values, not a stale render closure.
     pendingSavesRef.current += 1;
+    if (patchOverrides?.readAloud) setSaving(true);
     const queuedPatch =
       patchOverrides?.disabledBuiltinTools === undefined
         ? patchOverrides
@@ -976,11 +1032,61 @@ export function BotSettings({
         >
           <Switch
             id={`${ids}-auto-speak`}
-            checked={autoSpeak}
-            onCheckedChange={(checked) => setAutoSpeak(checked)}
+            checked={autoSpeak ?? effectiveReadAloud?.enabled ?? false}
+            disabled={saving || (autoSpeak === null && !effectiveReadAloud)}
+            onCheckedChange={setAutoSpeak}
           />
           <Trans>Read replies aloud</Trans>
         </label>
+        {bot.readAloudRevision !== undefined ? (
+          <div className="mt-2 text-sm text-muted-foreground">
+            {wantsSpaceDefault && readAloudDraft && !bot.autoSpeakInherited ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={saving}
+                onClick={() => setReadAloudDraft(null)}
+              >
+                <Trans>Cancel</Trans>
+              </Button>
+            ) : null}
+            {readAloudLoadError && autoSpeak === null ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={saving}
+                onClick={() => setReadAloudLoadRevision((revision) => revision + 1)}
+              >
+                <Trans>Reload</Trans>
+              </Button>
+            ) : autoSpeak === null ? (
+              <span>
+                {effectiveReadAloud?.source === "account"
+                  ? t`My default`
+                  : effectiveReadAloud?.source === "system"
+                    ? t`System default`
+                    : effectiveReadAloud?.source === "space"
+                      ? t`This Space`
+                      : t`Space default`}
+              </span>
+            ) : (
+              <>
+                <Trans>This Bot</Trans>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={saving}
+                  onClick={() => setAutoSpeak(null)}
+                >
+                  <Trans>Use Space default</Trans>
+                </Button>
+              </>
+            )}
+          </div>
+        ) : null}
         {voices.length ? (
           <label htmlFor={`${ids}-voice`} className={fieldLabelClass}>
             <Trans>Voice</Trans>
@@ -1093,6 +1199,7 @@ export function BotSettings({
               description,
               ...(instructionsConflict ? {} : { instructions }),
               color,
+              readAloud: readAloudDraft ?? undefined,
             });
           }}
         >

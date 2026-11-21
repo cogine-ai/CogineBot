@@ -310,6 +310,13 @@ const threadSendResult = z.object({
 
 const spaceName = z.string().trim().min(1).max(60);
 
+import {
+  ReadAloudEffectiveSchema,
+  ReadAloudSettingsSchema,
+  UpdateReadAloudInput,
+  UpdateReadAloudResult,
+} from "./read-aloud.js";
+
 export const appContract = {
   aiConsent: {
     status: oc.input(AiConsentQuerySchema).output(AiConsentStatusSchema),
@@ -334,6 +341,11 @@ export const appContract = {
     portal: oc.output(z.object({ url: z.string().url() })),
   },
   preferences: {
+    readAloud: oc.output(ReadAloudSettingsSchema),
+    readAloudForBot: oc
+      .input(z.object({ botId: Id, previewSpaceDefault: z.literal(true).optional() }))
+      .output(ReadAloudEffectiveSchema),
+    updateReadAloud: oc.input(UpdateReadAloudInput).output(UpdateReadAloudResult),
     update: oc
       .input(
         z

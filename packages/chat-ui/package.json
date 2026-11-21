@@ -10,6 +10,7 @@
     "./announcement-visibility": "./src/announcement-visibility.ts",
     "./app-connect": "./src/app-connect.ts",
     "./bot-settings": "./src/bot-settings.ts",
+    "./read-aloud": "./src/read-aloud.ts",
     "./history-sources": "./src/history-sources.ts",
     "./delegated-approvals": "./src/delegated-approvals.ts"
   },

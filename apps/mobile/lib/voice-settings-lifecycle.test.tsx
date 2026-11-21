@@ -11,6 +11,7 @@ import { DEVICE_VOICE_KEY, loadDeviceVoiceEnabled, saveDeviceVoiceEnabled } from
 
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
+  alert: vi.fn(),
   store: new Map<string, string>(),
   params: {} as Record<string, string>,
   generation: 0,
@@ -57,10 +58,21 @@ vi.mock("./call-sounds", () => ({
 }));
 vi.mock("./voice", () => ({ speakText: vi.fn(async () => true) }));
 vi.mock("./appearance", () => ({ mobileTokens: () => ({}) }));
-vi.mock("./native", () => ({ native: {}, useThemedStyles: (factory: () => unknown) => factory() }));
+vi.mock("./native", () => ({
+  native: {},
+  useMobileTokens: () => ({}),
+  useThemedStyles: (factory: () => unknown) => factory(),
+}));
 vi.mock("./i18n", () => ({ t: (text: string) => text, useI18n: () => ({ t }) }));
 vi.mock("../components/row-accessories", () => ({
   Checkmark: () => <span data-testid="checkmark" />,
+}));
+vi.mock("../components/menu-picker", () => ({
+  MenuPicker: ({ label, onChange }: { label: string; onChange: (key: string) => void }) => (
+    <button type="button" onClick={() => onChange("true")}>
+      {label}
+    </button>
+  ),
 }));
 vi.mock("../components/native-switch", () => ({ NativeSwitch: () => null }));
 vi.mock("react-native-safe-area-context", () => ({
@@ -83,6 +95,7 @@ vi.mock("react-native", () => {
   const View = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   return {
     View,
+    Alert: { alert: state.alert },
     ScrollView: View,
     Text: ({ children }: { children: ReactNode }) => <span>{children}</span>,
     ActivityIndicator: () => null,
@@ -141,6 +154,7 @@ beforeEach(() => {
   activeProvider = "fish-audio";
   state.params = { spaceId: "space-b" };
   state.generation = 0;
+  state.alert.mockClear();
   state.store.clear();
   state.store.set(DEVICE_VOICE_KEY, "1");
   vi.mocked(SecureStore.getItemAsync).mockClear();
@@ -167,6 +181,18 @@ beforeEach(() => {
             userId: "user-1",
             spaceId: options?.requestContext?.headers["x-rakazo-space-id"] ?? "space-a",
           };
+        if (proc === "preferences/readAloud" || proc === "preferences/updateReadAloud") {
+          const writing = proc === "preferences/updateReadAloud";
+          const settings = {
+            account: { value: writing ? true : null, revision: writing ? 1 : 0 },
+            space: { value: null, revision: 0 },
+            effective: { enabled: writing, source: writing ? "account" : "system" },
+            followingSpaces: [
+              { id: options?.requestContext?.headers["x-rakazo-space-id"], name: "Support" },
+            ],
+          };
+          return writing ? { status: "updated", settings } : settings;
+        }
         if (proc === "voice/catalog") return catalog;
         if (proc === "voice/credentials") return credentials;
         if (proc === "voice/setVoice") activeProvider = args!.provider;
@@ -269,4 +295,32 @@ it("still restores device voice when the same current intent fails to activate",
   expect(await loadDeviceVoiceEnabled()).toBe(true);
   selected("This device");
   expect(container.textContent).toContain("Provider unavailable");
+});
+
+it("does not apply a read-aloud confirmation from an earlier Space visit", async () => {
+  await render();
+  await click("My default");
+  const initial = state.alert.mock.calls.at(-1)!;
+  expect(initial[1]).toContain("System default → On");
+  expect(initial[1]).toContain("Support");
+  const confirm = initial[2][1].onPress as () => void;
+  state.params = { spaceId: "space-c" };
+  await render();
+  state.params = { spaceId: "space-b" };
+  await render();
+  await act(async () => confirm());
+  const writes = () =>
+    state.rpc.mock.calls.filter(([name]) => name === "preferences/updateReadAloud");
+  expect(writes()).toHaveLength(0);
+
+  await click("My default");
+  const current = state.alert.mock.calls.at(-1)![2][1].onPress as () => void;
+  await act(async () => current());
+  expect(writes()).toHaveLength(1);
+  expect(writes()[0]?.[1]).toMatchObject({
+    scope: "account",
+    value: true,
+    expectedRevision: 0,
+    followingSpaceIds: ["space-b"],
+  });
 });

@@ -390,6 +390,57 @@ describe("bot settings device voice menu", () => {
     });
   });
 
+  it("refreshes the read-aloud revision without rebaselining concurrent instructions", async () => {
+    let hadConflict = false;
+    mocks.rpc.mockImplementation(async (procedure: string) => {
+      if (procedure === "bots/get")
+        return {
+          id: "bot-fixture",
+          name: "Fixture",
+          title: "",
+          description: "",
+          instructions: hadConflict ? "Concurrent instructions" : "Original instructions",
+          color: "#62A8EC",
+          computerMode: "team",
+          readAloudRevision: hadConflict ? 3 : 2,
+          autoSpeak: false,
+          autoSpeakInherited: false,
+        };
+      if (procedure === "preferences/readAloudForBot") return { enabled: true, source: "account" };
+      if (procedure === "bots/update" && !hadConflict) {
+        hadConflict = true;
+        throw Object.assign(new Error("Settings changed"), {
+          code: "CONFLICT",
+          data: { reason: "read_aloud_changed" },
+        });
+      }
+      if (procedure === "me") return {};
+      return [];
+    });
+    const click = async (label: string) => {
+      const found = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === label,
+      );
+      if (!found) throw new Error(`Missing button ${label}`);
+      await act(async () => found.click());
+    };
+    await render();
+    await click("Use Space default");
+    expect(container.textContent).toContain("My default");
+    await click("Save");
+    expect(container.textContent).toContain("Settings changed elsewhere.");
+    await click("Use Space default");
+    await click("Save");
+    const writes = mocks.rpc.mock.calls.filter(([procedure]) => procedure === "bots/update");
+    expect(writes).toHaveLength(2);
+    expect(writes[1]?.[1]).toMatchObject({
+      autoSpeakInherited: true,
+      expectedReadAloudRevision: 3,
+    });
+    expect(writes[1]?.[1]).not.toHaveProperty("instructions");
+    expect(writes[1]?.[1]).not.toHaveProperty("expectedInstructions");
+  });
+
   it("preserves Model/Thinking menus and their empty default choice", async () => {
     const onChange = vi.fn();
     const props: ComponentProps<typeof MenuPicker> = {

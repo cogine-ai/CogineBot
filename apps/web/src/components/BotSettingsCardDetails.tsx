@@ -98,6 +98,7 @@ export function BotSettingsCardDetails({
     bot: t`This Bot`,
     space: t`This Space`,
     model: t`Model default`,
+    account: t`My default`,
     system: t`System default`,
   };
   return (

@@ -975,7 +975,17 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
     });
   it("membership removal after a valid lease blocks the claim with actual member rows", async () => {
     const f = await fixture();
-    const member = await db.spaceMember.findUniqueOrThrow({ where: { spaceId_userId: scope } });
+    const member = await db.spaceMember.findUniqueOrThrow({
+      where: { spaceId_userId: scope },
+      select: {
+        id: true,
+        spaceId: true,
+        organizationId: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+      },
+    });
     await db.spaceMember.delete({ where: { id: member.id } });
     try {
       assert.equal(await claimNativeRoutineEvent(peer, scope, f.event, f.leaseId), undefined);
@@ -1092,7 +1102,17 @@ describePostgres("native event authorization and permanent receipts (PostgreSQL)
       listNativeRoutineTriggersBatch(peer, { userId: owner, spaceId: otherSpace }, ids),
       /Routine not found/,
     );
-    const member = await db.spaceMember.findUniqueOrThrow({ where: { spaceId_userId: scope } });
+    const member = await db.spaceMember.findUniqueOrThrow({
+      where: { spaceId_userId: scope },
+      select: {
+        id: true,
+        spaceId: true,
+        organizationId: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+      },
+    });
     await db.spaceMember.delete({ where: { id: member.id } });
     try {
       await assert.rejects(listNativeRoutineTriggersBatch(peer, actor, ids), /Routine not found/);

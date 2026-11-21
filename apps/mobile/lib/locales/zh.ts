@@ -1447,4 +1447,16 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Date: {value}": "日期：{value}",
   "Time: {value}": "时间：{value}",
   "Cron expression": "Cron 表达式",
+  "My default": "我的默认",
+  "Use Space default": "使用 Space 默认值",
+  "Override in this Space": "在此 Space 中覆盖",
+  "Read replies aloud in this Space": "朗读此 Space 的回复",
+  "Could not load read-aloud settings.": "无法加载朗读设置。",
+  "Could not save read-aloud settings.": "无法保存朗读设置。",
+  "Change my read-aloud default?": "更改我的默认朗读设置？",
+  "This applies to new replies in Spaces that follow your default.":
+    "会在跟随你的默认设置的 Space 中对新回复生效。",
+  On: "开启",
+  Off: "关闭",
+  Reload: "重新加载",
 };

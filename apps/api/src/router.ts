@@ -297,6 +297,8 @@ import {
   Prisma,
   parseComputerMode,
   pushSessionExpiresAt,
+  readAloudForBot,
+  readAloudSettings,
   readPluginCleanupRefs,
   releaseSpaceDeletionClaim,
   renameSpaceForMember,
@@ -318,6 +320,7 @@ import {
   toTicketDto,
   touchActionApprovalPolicy,
   touchGroupUpdatedAt,
+  updateReadAloud,
   updateSpaceCollaborationForMember,
   withTransactionRetry,
 } from "@rakazo/db";
@@ -342,7 +345,12 @@ import {
   getOwnedBotSettings,
   undoBotSettings,
 } from "./bot-settings-history.js";
-import { BotInstructionsConflictError, botProfileChanged, commitBotUpdate } from "./bot-update.js";
+import {
+  BotInstructionsConflictError,
+  BotReadAloudConflictError,
+  botProfileChanged,
+  commitBotUpdate,
+} from "./bot-update.js";
 import {
   applyChatGPTPlanCatalog,
   createChatGPTPlanLogin,
@@ -1569,6 +1577,15 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     preferences: {
+      readAloud: authed.preferences.readAloud.handler(({ context }) =>
+        readAloudSettings(deps.prisma, context.actor),
+      ),
+      readAloudForBot: authed.preferences.readAloudForBot.handler(({ context, input }) =>
+        readAloudForBot(deps.prisma, context.actor, input.botId, input.previewSpaceDefault),
+      ),
+      updateReadAloud: authed.preferences.updateReadAloud.handler(({ context, input }) =>
+        updateReadAloud(deps.prisma, context.actor, input),
+      ),
       adoptTimezone: authed.preferences.adoptTimezone.handler(
         async ({ context, input }): Promise<Me> => {
           await deps.prisma.user.updateMany({
@@ -2901,6 +2918,7 @@ export function createRouter(deps: RouterDeps) {
           threadId: existing.thread.id,
           botId: input.botId,
           expectedInstructions: input.expectedInstructions,
+          expectedReadAloudRevision: input.expectedReadAloudRevision,
           settingsOwnerId: context.actor.userId,
           emitBotUpdated: botProfileChanged(input),
           validate,
@@ -2915,7 +2933,9 @@ export function createRouter(deps: RouterDeps) {
             memoryScope: input.memoryScope,
             sectionId: input.sectionId,
             voiceId: input.voiceId,
-            autoSpeak: input.autoSpeak,
+            autoSpeak: input.autoSpeakInherited ? false : input.autoSpeak,
+            autoSpeakInherited:
+              input.autoSpeakInherited ?? (input.autoSpeak !== undefined ? false : undefined),
             ...(input.modelProvider !== undefined
               ? {
                   modelProvider: input.modelProvider,
@@ -2933,6 +2953,11 @@ export function createRouter(deps: RouterDeps) {
               : {}),
           },
         }).catch((error: unknown) => {
+          if (error instanceof BotReadAloudConflictError)
+            throw new ORPCError("CONFLICT", {
+              message: "Read-aloud settings changed. Refresh and try again.",
+              data: { reason: "read_aloud_changed" },
+            });
           if (error instanceof BotInstructionsConflictError)
             throw new ORPCError("CONFLICT", {
               message: "Instructions changed. Refresh and try again.",
@@ -9204,7 +9229,7 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
 }
 
 async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: BotSettingsRow) {
-  const [setup, voice, bound] = await Promise.all([
+  const [setup, voice, bound, readAloud] = await Promise.all([
     modelSetup(deps, actor),
     findDefaultVoiceCredential(deps.prisma, actor),
     bot.modelProvider && bot.modelId && bot.modelCredentialId
@@ -9214,6 +9239,7 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
           modelCredentialId: bot.modelCredentialId,
         })
       : null,
+    bot.autoSpeakInherited ? readAloudForBot(deps.prisma, actor, bot.id) : null,
   ]);
   const defaultProvider =
     setup.credential?.provider ??
@@ -9232,6 +9258,9 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
   const label = (bot.modelId ? bound : setup.credential)?.label;
   const inherited = bot.modelId ? bound : setup.credential;
   return botSettingsHistory(bot, {
+    ...(readAloud && {
+      readAloud: { after: readAloud.enabled ? "On" : "Off", source: readAloud.source },
+    }),
     model: {
       after:
         provider && modelId ? `${provider}/${modelId}${label ? ` · ${label}` : ""}` : "Unavailable",

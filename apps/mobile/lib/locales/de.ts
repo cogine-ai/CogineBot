@@ -1522,4 +1522,17 @@ export const DE_MESSAGES: Record<string, string> = {
   "Date: {value}": "Datum: {value}",
   "Time: {value}": "Uhrzeit: {value}",
   "Cron expression": "Cron-Ausdruck",
+  "My default": "Mein Standard",
+  "Use Space default": "Space-Standard verwenden",
+  "Override in this Space": "In diesem Space überschreiben",
+  "Read replies aloud in this Space": "Antworten in diesem Space vorlesen",
+  "Could not load read-aloud settings.": "Die Vorleseeinstellungen konnten nicht geladen werden.",
+  "Could not save read-aloud settings.":
+    "Die Vorleseeinstellungen konnten nicht gespeichert werden.",
+  "Change my read-aloud default?": "Meinen Vorlesestandard ändern?",
+  "This applies to new replies in Spaces that follow your default.":
+    "Das gilt für neue Antworten in Spaces, die Ihren Standard verwenden.",
+  On: "Ein",
+  Off: "Aus",
+  Reload: "Neu laden",
 };

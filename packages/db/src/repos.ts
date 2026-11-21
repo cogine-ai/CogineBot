@@ -128,6 +128,7 @@ export async function createBotRecordsInTransaction(
       modelCredentialId,
       thinkingLevel,
       disabledBuiltinTools,
+      autoSpeakInherited: true,
     },
   });
   const thread = await tx.thread.create({
@@ -252,6 +253,8 @@ function mapBot(
     computer: { scope: string } | null;
     voiceId?: string | null;
     autoSpeak?: boolean;
+    autoSpeakInherited?: boolean;
+    readAloudRevision?: number;
     modelProvider?: string | null;
     modelId?: string | null;
     modelCredentialId?: string | null;
@@ -295,6 +298,8 @@ function mapBot(
     updatedAt: bot.updatedAt.toISOString(),
     voiceId: bot.voiceId ?? null,
     autoSpeak: bot.autoSpeak ?? false,
+    autoSpeakInherited: bot.autoSpeakInherited,
+    readAloudRevision: bot.readAloudRevision,
     modelProvider: bot.modelProvider ?? null,
     modelId: bot.modelId ?? null,
     modelCredentialId: bot.modelCredentialId ?? null,

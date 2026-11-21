@@ -3,6 +3,10 @@ import type { Actor, BotSettingsChange, BotSettingsValues } from "@rakazo/contra
 import { BotSettingsStoredVersionSchema, BotSettingsValuesSchema } from "@rakazo/contracts";
 import type { Bot, Prisma } from "./client.js";
 
+const inheritedReadAloudLabel = "Space default";
+const readAloudLabel = (value: BotSettingsValues) =>
+  value.autoSpeakInherited ? inheritedReadAloudLabel : value.autoSpeak ? "On" : "Off";
+
 type SettingsVersion = ReturnType<typeof BotSettingsStoredVersionSchema.parse>;
 
 export const botSettingsValueSelect = {
@@ -15,6 +19,8 @@ export const botSettingsValueSelect = {
   thinkingLevel: true,
   voiceId: true,
   autoSpeak: true,
+  autoSpeakInherited: true,
+  readAloudRevision: true,
   settingsRevision: true,
 } as const satisfies Prisma.BotSelect;
 export const botSettingsSelect = { ...botSettingsValueSelect, settingsHistory: true } as const;
@@ -31,11 +37,25 @@ export function botSettingsValues(row: BotSettingsValuesRow): BotSettingsValues 
     thinkingLevel: row.thinkingLevel,
     voiceId: row.voiceId,
     autoSpeak: row.autoSpeak,
+    autoSpeakInherited: row.autoSpeakInherited ?? false,
   });
 }
 
 export function botSettingsVersions(row: BotSettingsRow) {
-  return BotSettingsStoredVersionSchema.array().parse(row.settingsHistory);
+  return BotSettingsStoredVersionSchema.array()
+    .parse(row.settingsHistory)
+    .map((version) => {
+      const change = version.changes?.find(({ field }) => field === "readAloud");
+      if (!change) return version;
+      const before = change.before === inheritedReadAloudLabel;
+      const after = change.after === inheritedReadAloudLabel;
+      if (!before && !after) return version;
+      return {
+        ...version,
+        before: { ...version.before, autoSpeakInherited: before },
+        after: { ...version.after, autoSpeakInherited: after },
+      };
+    });
 }
 
 export function describeBotSettingsChange(
@@ -67,11 +87,11 @@ export function describeBotSettingsChange(
       before: before.voiceId ?? "Space default",
       after: after.voiceId ?? "Space default",
     });
-  if (after.autoSpeak !== undefined)
+  if (after.autoSpeak !== undefined || after.autoSpeakInherited !== undefined)
     changes.push({
       field: "readAloud",
-      before: before.autoSpeak ? "On" : "Off",
-      after: after.autoSpeak ? "On" : "Off",
+      before: readAloudLabel(before),
+      after: readAloudLabel(after),
     });
   return changes;
 }
@@ -106,9 +126,9 @@ export function prepareBotSettingsVersion(
   const changed = keys.filter((key) => patch[key] !== undefined && patch[key] !== current[key]);
   if (!changed.length) return;
   const modelKeys = ["modelProvider", "modelId", "modelCredentialId"] as const;
-  const included = new Set<keyof BotSettingsValues>(
-    modelKeys.some((key) => changed.includes(key)) ? [...changed, ...modelKeys] : changed,
-  );
+  const included = new Set(changed);
+  if (modelKeys.some((key) => included.has(key))) for (const key of modelKeys) included.add(key);
+  if (included.has("autoSpeakInherited")) included.add("autoSpeak");
   const before = Object.fromEntries([...included].map((key) => [key, current[key]]));
   const after = Object.fromEntries(
     [...included].map((key) => [key, patch[key] === undefined ? current[key] : patch[key]]),
@@ -120,6 +140,27 @@ export function prepareBotSettingsVersion(
     before,
     after,
     ...(undo && { undo }),
+  };
+}
+
+// Older builds retain the displayed change while validating the boolean-only snapshots.
+function storedVersion(version: SettingsVersion): SettingsVersion {
+  const { autoSpeakInherited: before, ...beforeValues } = version.before;
+  const { autoSpeakInherited: after, ...afterValues } = version.after;
+  if (before === undefined || after === undefined) return version;
+  const readAloudChange = {
+    field: "readAloud" as const,
+    before: readAloudLabel(version.before),
+    after: readAloudLabel(version.after),
+  };
+  return {
+    ...version,
+    before: beforeValues,
+    after: afterValues,
+    changes: [
+      ...(version.changes?.filter(({ field }) => field !== "readAloud") ?? []),
+      readAloudChange,
+    ],
   };
 }
 
@@ -135,7 +176,10 @@ export async function writeBotSettingsVersion(
     data: {
       ...other,
       ...version.after,
-      settingsHistory: [version, ...botSettingsVersions(row)].slice(0, 20),
+      settingsHistory: [
+        storedVersion(version),
+        ...BotSettingsStoredVersionSchema.array().parse(row.settingsHistory),
+      ].slice(0, 20),
     },
     select: { id: true, name: true, title: true, description: true, settingsRevision: true },
   });

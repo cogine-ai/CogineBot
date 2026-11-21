@@ -24,6 +24,8 @@ export class BotInstructionsConflictError extends Error {
   }
 }
 
+export class BotReadAloudConflictError extends Error {}
+
 /**
  * Persist a bot row. When profile metadata changes, write `bot.updated` in the same
  * transaction so clients can refresh the accepted profile and notification setting.
@@ -39,12 +41,13 @@ export async function commitBotUpdate(
     data: Prisma.BotUncheckedUpdateInput;
     emitBotUpdated: boolean;
     expectedInstructions?: string;
+    expectedReadAloudRevision?: number;
     settingsOwnerId?: string;
     validate?: (tx: Prisma.TransactionClient) => Promise<void>;
   },
   appendEvent: AppendEvent = appendEventInTransaction,
 ): Promise<{ id: string; name: string; title: string; description: string }> {
-  const update = async (client: Pick<Prisma.TransactionClient, "bot">) => {
+  const update = async (client: Pick<Prisma.TransactionClient, "bot">, data = options.data) => {
     try {
       return await client.bot.update({
         where: {
@@ -54,7 +57,7 @@ export async function commitBotUpdate(
             ? { instructions: options.expectedInstructions }
             : {}),
         },
-        data: options.data,
+        data,
         select: { id: true, name: true, title: true, description: true },
       });
     } catch (error) {
@@ -84,6 +87,7 @@ export async function commitBotUpdate(
         thinkingLevel: options.data.thinkingLevel,
         voiceId: options.data.voiceId,
         autoSpeak: options.data.autoSpeak,
+        autoSpeakInherited: options.data.autoSpeakInherited,
       })
     : undefined;
   const tracksChange = tracked && Object.values(tracked).some((value) => value !== undefined);
@@ -112,11 +116,29 @@ export async function commitBotUpdate(
           row.instructions !== options.expectedInstructions
         )
           throw new BotInstructionsConflictError();
-        const version = row && tracked && prepareBotSettingsVersion(row, tracked);
+        if (
+          row &&
+          options.expectedReadAloudRevision !== undefined &&
+          row.readAloudRevision !== options.expectedReadAloudRevision
+        )
+          throw new BotReadAloudConflictError();
+        // Older clients include the displayed boolean in unrelated profile saves.
+        const preserveInheritance =
+          row?.autoSpeakInherited &&
+          options.expectedReadAloudRevision === undefined &&
+          tracked?.autoSpeakInherited === false &&
+          row.autoSpeak === tracked.autoSpeak;
+        const patch = preserveInheritance
+          ? { ...tracked, autoSpeak: undefined, autoSpeakInherited: undefined }
+          : tracked;
+        const data = preserveInheritance
+          ? { ...options.data, autoSpeak: undefined, autoSpeakInherited: undefined }
+          : options.data;
+        const version = row && patch && prepareBotSettingsVersion(row, patch);
         const updated =
           row && version
-            ? await writeBotSettingsVersion(tx, row, version, options.data)
-            : await update(tx);
+            ? await writeBotSettingsVersion(tx, row, version, data)
+            : await update(tx, data);
         const event =
           options.emitBotUpdated || version
             ? await appendEvent(tx, {

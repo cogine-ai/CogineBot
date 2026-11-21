@@ -17,6 +17,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
 
+import { ReadAloudSettings } from "./ReadAloudSettings";
+
 type VoiceSettingsProps = {
   onClose: () => void;
   /** Render panel body only for the shared Settings shell. */
@@ -315,6 +317,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
         </div>
 
         <div className="rk-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <ReadAloudSettings />
           {loading ? (
             <p className="text-sm text-muted-foreground">
               <Trans>Loading voice providers…</Trans>

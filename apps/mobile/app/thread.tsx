@@ -10,6 +10,7 @@ import type {
   ImageInputStatus,
   MessageBlock,
   MessageReaction,
+  ReadAloudEffective,
   Routine,
   WebsiteLoginAnswer,
 } from "@rakazo/contracts";
@@ -192,7 +193,12 @@ import { confirmDeleteBot, restoreArchivedBot } from "../lib/bot-lifecycle";
 import { retainUnchangedBotRoster } from "../lib/bot-roster";
 import { findSwitchTarget, ringOnArrival, takeRingOnArrival } from "../lib/bot-switch";
 import { insertMobileBotExample, readMobileBotExample } from "../lib/bot-template-examples";
-import { setCallProviderTranscribe, startCall, useCallSession } from "../lib/call-session";
+import {
+  getSnapshot as getCallSnapshot,
+  setCallProviderTranscribe,
+  startCall,
+  useCallSession,
+} from "../lib/call-session";
 import { transparentColor } from "../lib/color";
 import { loadDeviceVoiceEnabled } from "../lib/device-voice";
 import { available as dictationAvailable } from "../lib/dictation";
@@ -276,7 +282,7 @@ import { prepareUnsentSends } from "../lib/unsent-sends";
 import { useMessageSpeechAvailable } from "../lib/use-message-speech";
 import { useReplyAnnouncements } from "../lib/use-reply-announcements";
 import { errorText } from "../lib/user-error";
-import { speakQueue, speakText } from "../lib/voice";
+import { speakQueue, speakText, voicePlaybackRevision } from "../lib/voice";
 import {
   loadCallCallerName,
   probeProviderTranscribe,
@@ -1312,11 +1318,19 @@ function Thread({
     };
   }, [observeReplyEvent]);
 
+  const autoSpeakTarget = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    autoSpeakTarget.current = botId && !inGroup && !readOnly && !showingSaved ? {} : null;
+    return () => {
+      autoSpeakTarget.current = null;
+    };
+  }, [botId, inGroup, readOnly, showingSaved, call?.botId]);
   const speakFinishedReply = useCallback(() => {
-    if (!botId || inGroup || !currentBot) return;
+    if (!botId || inGroup || readOnly || !currentBot) return;
+    const legacyServer = currentBot.autoSpeakInherited === undefined;
     const decision = nextAutoSpeakAction({
       botId: currentBot.id,
-      autoSpeak: currentBot.autoSpeak,
+      autoSpeak: !getCallSnapshot() && (!legacyServer || currentBot.autoSpeak),
       focused: AppState.currentState === "active" && navigation.isFocused(),
       snapshotReady: snap?.botId === currentBot.id && !showingSaved,
       lastSpokenBotId: autoSpokenBotId.current,
@@ -1332,20 +1346,57 @@ function Thread({
     if (decision.action !== "speak") return;
     autoSpokenBotId.current = currentBot.id;
     autoSpoken.current = decision.messageId;
-    void speakText(decision.text, {
-      botId: currentBot.id,
-      speaker: {
-        name: currentBot.name,
-        color: resolvePersonaColorDef(currentBot.id, currentBot.color).light,
-      },
-    }).catch(() => undefined);
+    const owner = captureMobileScope();
+    const scope = autoSpeakTarget.current;
+    const playbackRevision = voicePlaybackRevision();
+    const current = () => {
+      const shown = snapRef.current;
+      return (
+        isMobileScopeCurrent(owner) &&
+        scope !== null &&
+        autoSpeakTarget.current === scope &&
+        shown?.threadId === snap?.threadId &&
+        shown?.messages.some(({ id }) => id === decision.messageId) === true &&
+        AppState.currentState === "active" &&
+        navigation.isFocused() &&
+        !getCallSnapshot()
+      );
+    };
+    const speak = () => {
+      if (
+        !current() ||
+        autoSpoken.current !== decision.messageId ||
+        voicePlaybackRevision() !== playbackRevision
+      )
+        return;
+      void speakText(decision.text, {
+        botId: currentBot.id,
+        isCurrent: current,
+        speaker: {
+          name: currentBot.name,
+          color: resolvePersonaColorDef(currentBot.id, currentBot.color).light,
+        },
+      }).catch(() => undefined);
+    };
+    if (legacyServer) {
+      speak();
+    } else {
+      void rpc<ReadAloudEffective>("preferences/readAloudForBot", { botId: currentBot.id })
+        .then(({ enabled }) => {
+          if (enabled) speak();
+        })
+        .catch(() => undefined);
+    }
   }, [
     botId,
     inGroup,
     currentBot,
     navigation,
     showingSaved,
+    readOnly,
+    onCall,
     snap?.botId,
+    snap?.threadId,
     snap?.messages,
     snap?.run?.status,
   ]);
@@ -1355,11 +1406,19 @@ function Thread({
     speakFinishedReplyRef.current = speakFinishedReply;
   }, [speakFinishedReply]);
 
+  const invalidatePendingSpeech = useCallback(() => {
+    if (autoSpeakTarget.current) autoSpeakTarget.current = {};
+  }, []);
+  useFocusEffect(useCallback(() => invalidatePendingSpeech, [invalidatePendingSpeech]));
   useEffect(() => {
-    speakFinishedReply();
-    const appState = AppState.addEventListener("change", speakFinishedReply);
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state === "active") speakFinishedReplyRef.current();
+      else invalidatePendingSpeech();
+    });
     return () => appState.remove();
-  }, [speakFinishedReply]);
+  }, [invalidatePendingSpeech]);
+
+  useEffect(() => speakFinishedReply(), [speakFinishedReply]);
 
   useEffect(() => {
     void rpc<AgentSkillCatalogEntry[]>("agentSkills/list")
