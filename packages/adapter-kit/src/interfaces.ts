@@ -39,6 +39,7 @@ import type {
   ConnectorTool,
   ControlLeaseRef,
   MemoryCapabilities,
+  MemoryCommitOutcome,
   MemoryCommitReceiptRequest,
   MemoryCommitRequest,
   MemoryExportRequest,
@@ -254,6 +255,11 @@ export interface MemoryStore {
   read(request: MemoryReadRequest, context: AdapterContext): Promise<MemorySnapshot>;
   search(request: MemorySearchRequest, context: AdapterContext): Promise<MemorySearchResult[]>;
   commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision>;
+  /** Distinguishes a new revision from a verified receipt replay. */
+  commitWithOutcome?(
+    request: MemoryCommitRequest,
+    context: AdapterContext,
+  ): Promise<MemoryCommitOutcome>;
   /** Reads the historical result of a scoped commit without rewriting the document. */
   readCommitReceipt(
     request: MemoryCommitReceiptRequest,
