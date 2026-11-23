@@ -113,7 +113,12 @@ import {
   TimeZoneSchema,
   UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
-import type { ActionApprovalRule, PlatformModelAllowlist, ToolStepOutcome } from "@rakazo/core";
+import type {
+  ActionApprovalRule,
+  AutoReviewJudgeDecision,
+  PlatformModelAllowlist,
+  ToolStepOutcome,
+} from "@rakazo/core";
 import {
   ACTIVE_RUN_STATUSES,
   AGENT_CONNECTION_RESPONSE_TOOL,
@@ -213,6 +218,7 @@ import {
   readRunTimingFields,
   recheckDelegatedApprovalDispatch,
   recheckDelegatedApprovalDispatchInTransaction,
+  recordAutomaticApprovalAudit,
   recordUsage,
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
@@ -7489,6 +7495,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             plan = "ask";
           }
           let reviewReason: string | undefined;
+          let appliedReviewDecision: AutoReviewJudgeDecision | undefined;
           // The URL-only reviewer is for an unauthenticated read. Other actions still
           // require their complete arguments, even when a destination is new.
           const newSite = siteGate === "new" && name === "web_fetch";
@@ -7878,6 +7885,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     reviewModel: judge.model,
                   },
                 });
+                if (applied.effect.status === "intended") appliedReviewDecision = judge.decision;
               }
             } catch {
               // Cancellation must not write a review the next attempt would reuse.
@@ -7899,6 +7907,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       : (injectedReview?.describe().id ?? "auto-review"),
                   },
                 });
+                if (applied.effect.status === "intended") appliedReviewDecision = "error";
               }
             }
           };
@@ -7915,6 +7924,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } else {
               const priorDecision = applied.effect.reviewDecision;
               if (priorDecision === "ask" || priorDecision === "error") {
+                if (applied.effect.status === "intended") appliedReviewDecision = priorDecision;
                 reviewReason =
                   typeof applied.effect.reviewReason === "string"
                     ? applied.effect.reviewReason
@@ -8178,6 +8188,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               throw new Error("Could not pause this run for approval; try sending again.");
             }
+            const happenedAt = new Date();
             await notifyRun(deps, run, {
               kind: "help",
               title: `${bot.name} needs approval`,
@@ -8185,6 +8196,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
               botId: bot.id,
               threadId: thread.id,
             });
+            if (applied && (appliedReviewDecision === "ask" || appliedReviewDecision === "error")) {
+              await recordAutomaticApprovalAudit(deps.prisma, {
+                spaceId: run.spaceId,
+                threadId: run.threadId,
+                runId,
+                effectId: applied.effect.id,
+                decision: appliedReviewDecision,
+                outcome: "paused",
+                happenedAt,
+              });
+            }
             return pauseForApproval();
           };
 
@@ -10976,6 +10998,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
             if (accountError !== undefined) return finish({ error: accountError });
             let blockedAtDispatch = false;
+            let autoReviewAdmittedAt: Date | undefined;
             const verifyDispatch = async (tx?: Prisma.TransactionClient) => {
               context.signal.throwIfAborted();
               if (pendingPeerConnectorClaim) {
@@ -10992,6 +11015,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 throw new ActionRuleDispatchError(policyBlock.error);
               }
               context.signal.throwIfAborted();
+              if (
+                viaConnector &&
+                claimedEffect &&
+                !claimedApproval &&
+                appliedReviewDecision === "pass"
+              )
+                autoReviewAdmittedAt ??= new Date();
             };
             const beforeDispatch = Object.assign(() => verifyDispatch(), {
               [dispatchTransaction]: verifyDispatch,
@@ -11081,7 +11111,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
               return changed.count === 1 ? result : uncertainEffectResult(name);
             }
-            return finish(result, connectorOutcome);
+            if (!(await persistEffectResult(result, connectorOutcome)))
+              return uncertainEffectResult(name);
+            if (
+              applied &&
+              autoReviewAdmittedAt &&
+              !blockedAtDispatch &&
+              !context.signal.aborted &&
+              approvedActionReceipt(result, connectorOutcome).state === "succeeded"
+            ) {
+              await recordAutomaticApprovalAudit(deps.prisma, {
+                spaceId: run.spaceId,
+                threadId: run.threadId,
+                runId,
+                effectId: applied.effect.id,
+                decision: "pass",
+                outcome: "success",
+                happenedAt: autoReviewAdmittedAt,
+                lease: { owner: workerId, fence },
+              });
+            }
+            return result;
           }
           return finish({ error: `unknown tool ${name}` });
         };

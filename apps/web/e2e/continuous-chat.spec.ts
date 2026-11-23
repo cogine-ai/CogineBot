@@ -128,14 +128,18 @@ async function expectInlineComposerLayout(page: Page, composer: Locator) {
   await expect(bar).toHaveAttribute("data-expanded", "false");
   await expectSingleLine(page, composer);
   await expect.poll(async () => (await bar.boundingBox())?.height).toBe(48);
-  const inputBox = await composer.boundingBox();
-  expect(inputBox).not.toBeNull();
   for (const name of ["Attach file", "Send"]) {
-    const controlBox = await bar.getByRole("button", { name, exact: true }).boundingBox();
-    expect(controlBox).not.toBeNull();
-    expect(
-      Math.abs(controlBox!.y + controlBox!.height / 2 - inputBox!.y - inputBox!.height / 2),
-    ).toBeLessThan(1);
+    const control = bar.getByRole("button", { name, exact: true });
+    await expect
+      .poll(async () => {
+        const [inputBox, controlBox] = await Promise.all([
+          composer.boundingBox(),
+          control.boundingBox(),
+        ]);
+        if (!inputBox || !controlBox) return Infinity;
+        return Math.abs(controlBox.y + controlBox.height / 2 - inputBox.y - inputBox.height / 2);
+      })
+      .toBeLessThan(1);
   }
 }
 
