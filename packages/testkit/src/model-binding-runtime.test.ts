@@ -24,6 +24,30 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
     endpoint,
   }));
   const retired = new Set<string>();
+  const local = new Map<string, string[]>();
+  let accountModel: string | undefined;
+  const findLocal = vi.fn(
+    async ({
+      where,
+    }: {
+      where: { userId: string; spaceId: string; modelId: string; credential: { provider: string } };
+    }) =>
+      rows
+        .filter(
+          (row) =>
+            row.userId === where.userId &&
+            row.provider === where.credential.provider &&
+            local.get(where.spaceId)?.includes(row.id) &&
+            !retired.has(row.id) &&
+            where.modelId === "same-model",
+        )
+        .map((credential) => ({
+          credential,
+          modelId: "same-model",
+          thinkingLevel: null,
+          isDefault: false,
+        })),
+  );
   const enabled = new Map(rows.map((row) => [row.id, ["same-model", "extra-model"]]));
   const findFirst = vi.fn(
     async ({ where }: { where: { id: string; userId: string; provider: string } }) => {
@@ -61,7 +85,27 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
       ),
     },
     userModelCredential: { findFirst },
-    spaceModelPreference: { findFirst: vi.fn(async () => null) },
+    spaceMember: {
+      findUnique: vi.fn(async () =>
+        accountModel
+          ? {
+              member: {
+                user: {
+                  modelDefaultHistory: [
+                    {
+                      value: { modelId: accountModel, provider: "openai-compatible" },
+                      revision: 1,
+                      receipt: { clientNonce: "fixture-nonce", requestHash: "fixture-hash" },
+                    },
+                  ],
+                },
+              },
+              modelOverrideHistory: [],
+            }
+          : null,
+      ),
+    },
+    spaceModelPreference: { findFirst: vi.fn(async () => null), findMany: findLocal },
     deploymentSettings: { findUnique: vi.fn(async () => null) },
     secret: {
       findFirst: vi.fn(
@@ -90,7 +134,17 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
     prisma,
     secretStore: { load: async (ciphertext: string) => ciphertext },
   } as Parameters<typeof createRunExecutor>[0]);
-  return { executor, prisma, retired, enabled, findFirst };
+  return {
+    executor,
+    prisma,
+    retired,
+    enabled,
+    findFirst,
+    local,
+    accountDefault: (modelId: string) => {
+      accountModel = modelId;
+    },
+  };
 }
 
 async function collect(
@@ -122,6 +176,47 @@ async function collect(
 }
 
 describe("bound model execution through real HTTP and SSE", () => {
+  it("uses the target Space endpoint for an inherited default and fails closed without a unique binding", async () => {
+    const a = await startModelEmulator({
+      modelId: "same-model",
+      apiKey: "fake-key-a",
+      steps: [{ expect: () => undefined, response: { type: "text", text: "Account source" } }],
+    });
+    const b = await startModelEmulator({
+      modelId: "same-model",
+      apiKey: "fake-key-b",
+      steps: [{ expect: () => undefined, response: { type: "text", text: "Target Space" } }],
+    });
+    cleanups.push(
+      () => a.close(),
+      () => b.close(),
+    );
+    const { executor, local, accountDefault } = fixture([
+      { baseUrl: a.baseUrl, apiKey: "fake-key-a" },
+      { baseUrl: b.baseUrl, apiKey: "fake-key-b" },
+    ]);
+    const actor = { userId: "fixture-user", spaceId: "space-a" };
+    const target = { ...actor, spaceId: "space-b" };
+    local.set(actor.spaceId, ["connection-0"]);
+    accountDefault("same-model");
+    await expect(executor.resolveModel(target)).rejects.toThrow("Choose a model connection");
+    local.set(target.spaceId, ["connection-0", "connection-1"]);
+    await expect(executor.resolveModel(target)).rejects.toThrow("Choose a model connection");
+
+    try {
+      local.set(target.spaceId, ["connection-1"]);
+      const modelA = await executor.resolveModel(actor);
+      const modelB = await executor.resolveModel(target);
+      expect(modelA.modelCredentialId).toBe("connection-0");
+      expect(modelB.modelCredentialId).toBe("connection-1");
+      expect(await collect(modelA)).toContainEqual({ type: "done", text: "Account source" });
+      expect(await collect(modelB)).toContainEqual({ type: "done", text: "Target Space" });
+    } finally {
+      a.assertComplete();
+      b.assertComplete();
+    }
+  });
+
   it("keeps two spaces on their selected endpoints when both serve the same model id", async () => {
     const a = await startModelEmulator({
       modelId: "same-model",

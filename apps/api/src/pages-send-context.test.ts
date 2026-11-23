@@ -56,6 +56,7 @@ function fixture(
         thinkingLevel: null,
       }),
     },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
     deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
     page: {

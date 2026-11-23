@@ -57,6 +57,7 @@ it.each([false, true])("includes the board capability in me (%s)", async (ticket
         avatarStyle: "robot",
       })),
     },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     deploymentSettings: { findUnique: vi.fn(async () => null) },
   };

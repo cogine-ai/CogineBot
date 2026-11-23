@@ -45,6 +45,7 @@ export * from "./messaging.js";
 export * from "./messaging-delivery-status.js";
 export * from "./model-backups.js";
 export * from "./model-credentials.js";
+export * from "./model-defaults.js";
 export * from "./page-shares.js";
 export { lockPersonalSettings } from "./personal-settings.js";
 export * from "./plugin-installs.js";

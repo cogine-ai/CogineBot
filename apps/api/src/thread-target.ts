@@ -847,6 +847,7 @@ const imageAdmissionRunSelect = {
   modelCredentialId: true,
   thinkingLevel: true,
   modelPinned: true,
+  requiresSpaceModelBinding: true,
   leaseFence: true,
   attemptModel: true,
   botSettingsSnapshot: true,

@@ -2934,6 +2934,7 @@ function continuationModelPin(
     modelProvider?: string | null;
     modelId?: string | null;
     modelCredentialId?: string | null;
+    requiresSpaceModelBinding?: boolean;
     thinkingLevel?: string | null;
   }>,
 ) {
@@ -2953,6 +2954,9 @@ function continuationModelPin(
     modelCredentialId: first.modelCredentialId ?? null,
     thinkingLevel: first.thinkingLevel ?? null,
     modelPinned: true,
+    ...(batch.some((item) => item.requiresSpaceModelBinding) && {
+      requiresSpaceModelBinding: true,
+    }),
   };
 }
 

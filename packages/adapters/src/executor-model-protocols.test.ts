@@ -55,6 +55,7 @@ function fixture(protocol: ModelApiProtocol) {
   const prisma = {
     userModelCredential: { findFirst: findCredential },
     secret: { findFirst: findSecret },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: {
       findFirst: vi.fn(async () => ({
         credential: rows[1],

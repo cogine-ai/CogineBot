@@ -15,6 +15,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const models = vi.hoisted(() => ({
   list: vi.fn(),
+  defaults: vi.fn(),
   references: vi.fn<() => Promise<{ references: ModelCredentialReference[] }>>(async () => ({
     references: [],
   })),
@@ -216,13 +217,15 @@ async function typeInto(input: HTMLInputElement, value: string) {
   });
 }
 
-async function renderSettings() {
+async function renderSettings(localOwner = false) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<ModelSettingsOverlay embedded onClose={() => undefined} />);
+    root.render(
+      <ModelSettingsOverlay embedded localOwner={localOwner} onClose={() => undefined} />,
+    );
   });
   await act(async () => {
     await Promise.resolve();
@@ -245,6 +248,7 @@ beforeEach(() => {
   scope.generation = 0;
   scope.spaceId = "space-1";
   vi.mocked(rpc.me).mockResolvedValue(account("deepseek", "deepseek-chat"));
+  models.defaults.mockReset();
   models.references.mockResolvedValue({ references: [] });
   models.probeOpenAiCompatible.mockReset().mockResolvedValue({ models: [] });
   models.setDefault.mockReset().mockResolvedValue(undefined);
@@ -257,6 +261,21 @@ beforeEach(() => {
   models.disconnect.mockResolvedValue(undefined);
   models.cancelOAuth.mockResolvedValue({ ok: true });
   models.chatgptProfiles.mockResolvedValue([]);
+});
+
+it("keeps account defaults out of host-authorized desktop model settings", async () => {
+  vi.mocked(rpc.me).mockResolvedValue({
+    ...account("deepseek", "deepseek-chat"),
+    defaultModelCredentialId: null,
+    defaultModelUnavailable: null,
+  });
+  const { container, unmount } = await renderSettings(true);
+  try {
+    expect(container.querySelector('[aria-label="Model defaults"]')).toBeNull();
+    expect(models.defaults).not.toHaveBeenCalled();
+  } finally {
+    await unmount();
+  }
 });
 
 it.each([

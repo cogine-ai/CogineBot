@@ -58,6 +58,7 @@ describe("account preferences", () => {
           avatarStyle,
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
       deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
@@ -282,6 +283,7 @@ describe("billing", () => {
           avatarStyle: "robot",
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
       deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
@@ -339,6 +341,7 @@ describe("model setup gate", () => {
           avatarStyle: "robot",
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
       deploymentSettings: {
         findUnique: vi
@@ -677,6 +680,7 @@ describe("platform model target send authorization", () => {
     const prisma = {
       user: { findUnique: vi.fn(async () => ({ email: actor.email, emailVerified: true })) },
       deploymentSettings: { findUnique: vi.fn(async () => ({ ownerUserId: "owner" })) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
       userModelCredential: {
         findFirst: vi.fn(
@@ -2139,6 +2143,7 @@ describe("updater owner gate", () => {
           avatarStyle: "robot",
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(null) },
       deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
@@ -3063,7 +3068,7 @@ describe("model credential persistence", () => {
     });
     const response = await call(handler, "models/beginOAuth", { provider: "chatgpt-plan" });
     expect(response.status).toBe(200);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(4);
     expect(assertSaving).toHaveBeenCalledWith(tx, claim);
     expect(recordConnected).toHaveBeenCalledWith(
       tx,
@@ -3071,18 +3076,21 @@ describe("model credential persistence", () => {
       expect.objectContaining({ provider: "chatgpt-plan" }),
     );
     expect(tx.$queryRaw.mock.calls[0]![1]).toBe(
+      JSON.stringify(["account-model-selection", actor.userId]),
+    );
+    expect(tx.$queryRaw.mock.calls[1]![1]).toBe(
       JSON.stringify(["space-model-selection", actor.spaceId, actor.userId]),
     );
-    expect(tx.$queryRaw.mock.calls[1]![0]).toMatchObject({
+    expect(tx.$queryRaw.mock.calls[2]![0]).toMatchObject({
       values: [actor.userId],
       strings: expect.arrayContaining([
         expect.stringContaining("coginebot-chatgpt-plan-connection"),
       ]),
     });
-    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(tx.$queryRaw.mock.invocationCallOrder[2]).toBeLessThan(
       tx.userModelCredential.findFirst.mock.invocationCallOrder[0]!,
     );
-    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(tx.$queryRaw.mock.invocationCallOrder[2]).toBeLessThan(
       tx.userModelCredential.create.mock.invocationCallOrder[0]!,
     );
   });
@@ -3220,7 +3228,9 @@ describe("bot intro run", () => {
   } satisfies Actor;
   const bot = { id: "bot-1", threadId: "thread-1" } as unknown as Bot;
 
-  function introDeps(options: { agentRuntime?: string; hasCredential?: boolean } = {}) {
+  function introDeps(
+    options: { agentRuntime?: string; hasCredential?: boolean; missingDefault?: boolean } = {},
+  ) {
     let calls = 0;
     const create = vi.fn(({ data }: { data: object }) => {
       calls += 1;
@@ -3232,10 +3242,33 @@ describe("bot intro run", () => {
       (options.hasCredential ?? true)
         ? { isDefault: true, modelId: "model-1", credential: { id: "cred-1", provider: "test" } }
         : null;
-    const spaceModelPreference = { findFirst: vi.fn().mockResolvedValue(preference) };
+    const spaceModelPreference = {
+      findFirst: vi.fn().mockResolvedValue(preference),
+      findMany: vi.fn(async () => []),
+    };
     const deps = {
       prisma: {
         $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+        spaceMember: {
+          findUnique: vi.fn(async () =>
+            options.missingDefault
+              ? {
+                  member: {
+                    user: {
+                      modelDefaultHistory: [
+                        {
+                          value: { provider: "openai-compatible", modelId: "same-model" },
+                          revision: 1,
+                          receipt: { clientNonce: "fixture-nonce", requestHash: "fixture-hash" },
+                        },
+                      ],
+                    },
+                  },
+                  modelOverrideHistory: [],
+                }
+              : null,
+          ),
+        },
         spaceModelPreference,
         deploymentSettings: { findUnique: vi.fn().mockResolvedValue(null) },
       },
@@ -3300,6 +3333,13 @@ describe("bot intro run", () => {
     expect(create).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
   });
+  it("does not queue a failing intro when the inherited model has no Space binding", async () => {
+    const { create, enqueue, deps } = introDeps({ missingDefault: true });
+    await enqueueBotIntroRun(deps, actor, bot);
+    expect(create).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it("does not awaken or recreate an archived Bot creation intent", async () => {
     const { deps, create, enqueue } = introDeps();
     await enqueueBotIntroRun(deps, actor, {
@@ -3422,6 +3462,11 @@ describe("codex catalog auth", () => {
           { provider: "openai-codex", secretId: "secret-api" },
           { provider: "openai-codex", secretId: "secret-oauth" },
         ]),
+      },
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
       },
       spaceModelPreference: {
         findMany: vi
@@ -3561,6 +3606,11 @@ describe("codex live catalog", () => {
                 { provider: "openai-codex", secretId: "secret-oauth" },
               ]),
             },
+            spaceMember: {
+              findUnique: vi.fn(async () => null),
+              findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+              update: vi.fn(),
+            },
             spaceModelPreference: {
               findMany: vi
                 .fn()
@@ -3672,6 +3722,11 @@ describe("codex live catalog", () => {
     const credentialB = { ...credentialA, id: "cred-b", secretId: "secret-b" };
     const prisma = {
       userModelCredential: { findMany: vi.fn().mockResolvedValue([credentialA, credentialB]) },
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -3803,6 +3858,11 @@ describe("codex live catalog", () => {
         query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
       ),
       userModelCredential: explicitCredentialFixture([oauthCredential]),
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -3861,6 +3921,11 @@ describe("codex live catalog", () => {
     };
     const tx = {
       userModelCredential: explicitCredentialFixture([oauthCredential]),
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([]),
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -3919,6 +3984,11 @@ describe("codex live catalog", () => {
           query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
         ),
         userModelCredential: explicitCredentialFixture([oauthCredential]),
+        spaceMember: {
+          findUnique: vi.fn(async () => null),
+          findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+          update: vi.fn(),
+        },
         spaceModelPreference: {
           findMany: vi.fn().mockResolvedValue([]),
           updateMany: vi.fn(async () => ({ count: 0 })),
@@ -4069,6 +4139,11 @@ describe("model set default auth", () => {
         query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
       ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -4174,6 +4249,11 @@ describe("model set default auth", () => {
         query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
       ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -4269,6 +4349,11 @@ describe("model set default auth", () => {
         query?.sql?.includes("FROM user_model_credentials") ? [{ id: query.values?.[0] }] : [],
       ),
       userModelCredential: explicitCredentialFixture([oauthCredential, apiCredential]),
+      spaceMember: {
+        findUnique: vi.fn(async () => null),
+        findUniqueOrThrow: vi.fn(async () => ({ modelOverrideHistory: [] })),
+        update: vi.fn(),
+      },
       spaceModelPreference: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -4467,6 +4552,7 @@ describe("bot model auth on save", () => {
         findMany: vi.fn(async () => [{ ...bot, name: "Ada renamed" }]),
         update: botUpdate,
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: preferenceFindFirst },
       thread: { findMany: vi.fn(async () => []) },
       userModelCredential: { findFirst: credentialFindFirst },

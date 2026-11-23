@@ -7746,3 +7746,30 @@ msgstr "Voice for this Space"
 
 msgid "Choose a voice"
 msgstr "Choose a voice"
+
+msgid "Model defaults"
+msgstr "Model defaults"
+
+msgid "My default model"
+msgstr "My default model"
+
+msgid "No account default"
+msgstr "No account default"
+
+msgid "Override model in this Space"
+msgstr "Override model in this Space"
+
+msgid "Choose a model connection in this Space."
+msgstr "Choose a model connection in this Space."
+
+msgid "Could not load model defaults"
+msgstr "Could not load model defaults"
+
+msgid "Could not save model defaults"
+msgstr "Could not save model defaults"
+
+msgid "Change my default model?"
+msgstr "Change my default model?"
+
+msgid "Following Spaces use their own connection for new runs."
+msgstr "Following Spaces use their own connection for new runs."

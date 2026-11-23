@@ -12,6 +12,7 @@ import {
 import {
   connectedModelChoices,
   credentialForModel,
+  effectiveDefaultModelCredential,
   GAZE_BOT_COLORS,
   modelOptionKey,
   parseModelOptionKey,
@@ -219,7 +220,7 @@ export default function BotSettingsScreen() {
         effectiveModelId,
         selectedModel.modelCredentialId,
       )
-    : credentials.find((entry) => entry.isDefault);
+    : effectiveDefaultModelCredential(credentials, me?.defaultModelCredentialId);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??

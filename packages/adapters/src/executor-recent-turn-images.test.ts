@@ -89,6 +89,7 @@ async function runWithModel(
     answeredSteering?: boolean;
     computerMode?: ComputerMode;
     pinned?: boolean;
+    inheritedAccount?: boolean;
     modelSettings?: ModelSettings;
     accountTimezone?: string | null;
     timezoneReadFails?: boolean;
@@ -113,10 +114,28 @@ async function runWithModel(
     ...(attachmentOptions.externalImageTrigger && { sourceMessageId: "current" }),
     leaseFence: attachmentOptions.answeredSteering ? 1 : 0,
     scriptedState: null,
+    requiresSpaceModelBinding: false,
     modelPinned: attachmentOptions.pinned ?? false,
     modelProvider: attachmentOptions.pinned ? "openrouter" : null,
     modelId: attachmentOptions.pinned ? modelId : null,
     modelCredentialId: attachmentOptions.pinned ? "primary-credential" : null,
+  };
+  const primaryCredential = {
+    id: "primary-credential",
+    userId: run.userId,
+    provider: "openrouter",
+    label: "Primary",
+    secretId: "primary-secret",
+    connectionRevision: 1,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+  const backupCredential = switchModel && {
+    ...primaryCredential,
+    id: switchModel.modelCredentialId ?? "backup-credential",
+    provider: switchModel.provider,
+    secretId: "backup-secret",
+    preferences: [],
   };
   const get = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
   const writeFile = vi.fn(async (..._args: unknown[]) => undefined);
@@ -129,7 +148,13 @@ async function runWithModel(
   const runtimeRun = vi.fn(async function* (next: AgentRunRequest) {
     request = next;
     if (attachmentOptions.currentSteeringImage) steering = await next.claimSteering?.([]);
-    if (switchModel) {
+    if (switchModel && next.model.modelCredentialId !== backupCredential?.id) {
+      if (attachmentOptions.inheritedAccount)
+        await next.resolveFallbackModel?.(
+          switchModel.provider,
+          switchModel.modelId,
+          backupCredential?.id,
+        );
       await next.onModelChange?.(
         switchModel.provider,
         switchModel.modelId,
@@ -174,6 +199,7 @@ async function runWithModel(
         name: "Assistant",
         title: "Assistant",
         description: "Test assistant",
+        ...(attachmentOptions.inheritedAccount && { instructions: "Fixture", settingsRevision: 0 }),
         modelProvider: null,
         modelId: null,
         thinkingLevel: null,
@@ -246,7 +272,30 @@ async function runWithModel(
     task: { findUniqueOrThrow: vi.fn(async () => ({ id: run.taskId, prompt: "Look again" })) },
     computer: { updateMany: vi.fn(async () => ({ count: 1 })) },
     connection: { findMany: vi.fn(async () => []) },
+    spaceMember: {
+      findUnique: vi.fn(async () =>
+        attachmentOptions.inheritedAccount
+          ? {
+              member: {
+                user: {
+                  modelDefaultHistory: [
+                    {
+                      value: { provider: primaryCredential.provider, modelId },
+                      revision: 1,
+                      receipt: { clientNonce: "fixture-nonce", requestHash: "fixture-hash" },
+                    },
+                  ],
+                },
+              },
+              modelOverrideHistory: [],
+            }
+          : null,
+      ),
+    },
     spaceModelPreference: {
+      findMany: vi.fn(async () => [
+        { credential: primaryCredential, modelId, isDefault: true, thinkingLevel: null },
+      ]),
       findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(
         async () => null,
       ),
@@ -266,25 +315,25 @@ async function runWithModel(
                   })
                 : "fake-primary-key",
             }
-          : null,
+          : where.id === "backup-secret" && attachmentOptions.inheritedAccount
+            ? { id: where.id, ciphertext: "fake-backup-key" }
+            : null,
       ),
     },
     userModelCredential: {
       findMany: vi.fn(async () => []),
-      findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(async () =>
-        attachmentOptions.pinned
-          ? {
-              id: "primary-credential",
-              userId: "user-1",
-              provider: "openrouter",
-              label: "Primary",
-              secretId: "primary-secret",
-              connectionRevision: 1,
-              createdAt: new Date(0),
-              updatedAt: new Date(0),
-              preferences: [{ modelId, isDefault: false, thinkingLevel: null }],
-            }
-          : null,
+      findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(
+        async (query: unknown) => {
+          const id = (query as { where: { id?: string } }).where.id;
+          if (attachmentOptions.inheritedAccount && id === backupCredential?.id)
+            return backupCredential ?? null;
+          return attachmentOptions.pinned
+            ? {
+                ...primaryCredential,
+                preferences: [{ modelId, isDefault: false, thinkingLevel: null }],
+              }
+            : null;
+        },
       ),
     },
     spaceBackupModel: {
@@ -409,7 +458,18 @@ async function runWithModel(
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
   if (!request) throw new Error("runtime was not called");
-  return { request, steering, get, prisma, run, writeFile, listFiles, exportWorkspace };
+  return {
+    request,
+    steering,
+    get,
+    prisma,
+    run,
+    writeFile,
+    listFiles,
+    exportWorkspace,
+    executor,
+    runtimeRun,
+  };
 }
 
 describe("recent turn images follow model vision", () => {
@@ -734,6 +794,44 @@ describe("recent turn images follow model vision", () => {
         },
       },
     });
+  });
+
+  it("resumes an inherited Run on its explicitly selected backup without requiring a primary model binding", async () => {
+    const backup = {
+      provider: "openrouter",
+      modelId: VISION_MODEL,
+      modelCredentialId: "backup-credential",
+    };
+    const { request, prisma, run, executor, runtimeRun } = await runWithModel(
+      TEXT_ONLY_MODEL,
+      backup,
+      false,
+      false,
+      { inheritedAccount: true },
+    );
+    expect(request.model.modelCredentialId).toBe("primary-credential");
+    expect(prisma.run.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ requiresSpaceModelBinding: true }),
+      }),
+    );
+    expect(run).toMatchObject({
+      requiresSpaceModelBinding: false,
+      botSettingsSnapshot: expect.objectContaining({
+        modelCredentialId: "backup-credential",
+        modelId: VISION_MODEL,
+        connectionRevision: 1,
+      }),
+    });
+    Object.assign(run, { status: "queued", leaseFence: 1, leaseOwner: null, leaseExpiresAt: null });
+    await executor.continueRun(run.id, "worker-2");
+    expect(runtimeRun.mock.calls).toHaveLength(2);
+    expect(runtimeRun.mock.calls[1]?.[0].model).toMatchObject({
+      modelCredentialId: "backup-credential",
+      id: VISION_MODEL,
+      apiKey: "fake-backup-key",
+    });
+    expect(prisma.spaceModelPreference.findFirst).not.toHaveBeenCalled();
   });
 
   it("persists the switched model against the current run lease", async () => {

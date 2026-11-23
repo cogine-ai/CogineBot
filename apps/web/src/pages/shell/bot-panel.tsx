@@ -29,6 +29,7 @@ import {
   BotCreationError,
   connectedModelChoices,
   credentialForModel,
+  effectiveDefaultModelCredential,
   modelOptionKey,
   parseModelOptionKey,
   resolveSelectableModelId,
@@ -572,7 +573,7 @@ export function BotSettings({
         effectiveModelId,
         selectedModel.modelCredentialId,
       )
-    : credentials.find((entry) => entry.isDefault);
+    : effectiveDefaultModelCredential(credentials, me?.defaultModelCredentialId);
   const thinkingOptions = (
     effectiveCredential?.thinkingLevels ??
     effectiveEntry?.thinkingLevels ??

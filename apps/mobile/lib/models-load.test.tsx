@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import type { ModelDefaults, UpdateModelDefaultsInput } from "@rakazo/contracts";
+import { defaultModelChoiceKey } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
@@ -16,6 +18,7 @@ import { useSpaceSettings } from "./space-settings";
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   push: vi.fn(),
+  alert: vi.fn(),
   params: { botId: "bot-1", routineId: "routine-1" } as Record<string, string>,
   apiBase: "https://api.example.test",
   spaceGeneration: 0,
@@ -192,7 +195,7 @@ vi.mock("react-native", () => {
     AccessibilityInfo: { announceForAccessibility: vi.fn() },
     Keyboard: { dismiss: vi.fn() },
     Linking: { openURL: vi.fn() },
-    Alert: { alert: vi.fn() },
+    Alert: { alert: state.alert },
     Pressable: ({
       children,
       onPress,
@@ -305,6 +308,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   resetI18nForTests("en");
   state.push.mockReset();
+  state.alert.mockReset();
   state.params = { botId: "bot-1", routineId: "routine-1" };
   state.apiBase = "https://api.example.test";
   state.spaceGeneration = 0;
@@ -353,6 +357,96 @@ afterEach(async () => {
   container.remove();
   resetI18nForTests("en");
   vi.unstubAllGlobals();
+});
+
+it("discards an old account model confirmation and saves only through the current Space", async () => {
+  const choice = { provider: "openai-compatible", modelId: "model-a" };
+  const snapshot: ModelDefaults = {
+    account: { value: null, revision: 0 },
+    space: { value: false, revision: 0 },
+    effective: { choice, source: "space", unavailable: null },
+    choices: [choice],
+    followingSpaces: [{ id: "space-settings", name: "Settings Space" }],
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  let remoteRevision = credential.connectionRevision;
+  state.rpc.mockImplementation(
+    (
+      procedure: string,
+      input: UpdateModelDefaultsInput,
+      options?: { requestContext?: { headers: Record<string, string> } },
+    ) => {
+      if (procedure === "me")
+        return Promise.resolve({
+          userId: "user-1",
+          spaceId: options?.requestContext?.headers["x-rakazo-space-id"] ?? state.spaceId,
+          defaultProvider: choice.provider,
+          defaultModel: choice.modelId,
+          defaultModelCredentialId: credential.id,
+          defaultModelUnavailable: null,
+        });
+      if (procedure === "models/credentials")
+        return Promise.resolve([{ ...credential, connectionRevision: remoteRevision }]);
+      if (procedure === "models/defaults") return Promise.resolve(snapshot);
+      if (procedure === "models/updateDefaults")
+        return Promise.resolve({
+          status: "updated",
+          settings: {
+            ...snapshot,
+            account: { revision: 1, value: choice },
+            effective: { ...snapshot.effective, source: "account" },
+          },
+        });
+      return normal(procedure, input, options);
+    },
+  );
+  const render = () => act(async () => root.render(<Models />));
+  async function choose() {
+    const control = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="My default model"]',
+    );
+    if (!control) throw new Error("Model default picker is missing");
+    await act(async () => {
+      control.value = defaultModelChoiceKey(choice);
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const [title, message, actions] = state.alert.mock.calls.at(-1)!;
+    expect(title).toBe("Change my default model?");
+    expect(message).toContain("Settings Space");
+    return actions[1].onPress as () => void;
+  }
+  const writes = () => state.rpc.mock.calls.filter(([name]) => name === "models/updateDefaults");
+  state.params.spaceId = "space-settings";
+  await render();
+  const oldConfirm = await choose();
+  state.params.spaceId = "space-other";
+  await render();
+  state.params.spaceId = "space-settings";
+  await render();
+  await act(async () => oldConfirm());
+  expect(writes()).toHaveLength(0);
+  await edit(baseUrl(), "https://draft.example.test/v1");
+  remoteRevision = credential.connectionRevision + 1;
+  const confirm = await choose();
+  await act(async () => {
+    confirm();
+    confirm();
+  });
+  expect(writes()).toHaveLength(1);
+  expect(writes()[0]?.[1]).toMatchObject({
+    scope: "account",
+    value: choice,
+    expectedRevision: 0,
+    followingSpaceIds: ["space-settings"],
+  });
+  expect(writes()[0]?.[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-settings");
+  expect(container.textContent).toContain("My default");
+  expect(baseUrl().value).toBe("https://draft.example.test/v1");
+  await act(async () => button("Save").click());
+  expect(state.rpc.mock.calls.find(([name]) => name === "models/connect")?.[1]).toMatchObject({
+    baseUrl: "https://draft.example.test/v1",
+    expectedRevision: credential.connectionRevision,
+  });
 });
 
 it("finishes backup loading after refocus metadata arrives behind an endpoint draft edit", async () => {

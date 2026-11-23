@@ -1307,6 +1307,8 @@ export type MobileMe = Pick<
   | "spaceId"
   | "defaultProvider"
   | "defaultModel"
+  | "defaultModelCredentialId"
+  | "defaultModelUnavailable"
   | "hostCredentialProvider"
   | "hostCredentialSource"
   | "needsModel"

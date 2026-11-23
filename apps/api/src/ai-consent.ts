@@ -15,8 +15,8 @@ import type { Actor, AiConsentQuery, AiConsentStatus, AiRecipient } from "@rakaz
 import { AI_DISCLOSURE_VERSION, AI_PRIVACY_URL } from "@rakazo/contracts";
 import {
   findBoundModelCredential,
-  findDefaultModelCredential,
   findDefaultVoiceCredential,
+  findEffectiveModelDefault,
   findModelCredential,
   runAsSystem,
 } from "@rakazo/db";
@@ -40,7 +40,7 @@ export async function aiConsentStatus(
   const [
     preferences,
     backups,
-    defaultCredential,
+    defaultSelection,
     helperChoices,
     bots,
     routines,
@@ -61,7 +61,7 @@ export async function aiConsentStatus(
           orderBy: { position: "asc" },
         })
       : [],
-    modelsEnabled ? findDefaultModelCredential(deps.prisma, actor) : null,
+    modelsEnabled ? findEffectiveModelDefault(deps.prisma, actor) : null,
     modelsEnabled
       ? listHelperModelConnections(deps.prisma, deps.secrets, actor).catch((error) => {
           if (error instanceof SecretStoreUnavailableError)
@@ -158,7 +158,8 @@ export async function aiConsentStatus(
         return selectConfiguredModel({
           override,
           overrideCredential,
-          defaultCredential,
+          defaultCredential: defaultSelection?.credential ?? null,
+          defaultUnavailable: Boolean(defaultSelection?.unavailable),
           settings,
           deployment,
         });

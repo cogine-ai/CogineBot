@@ -5,12 +5,14 @@ import type {
   Bot,
   Me,
   ModelCredential,
+  ModelDefaults,
   ReadAloudSettings,
   Space,
   SpaceNavigation,
   ThreadSnapshot,
   VoiceDefaults,
 } from "@rakazo/contracts";
+import { defaultModelChoiceKey } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -20,6 +22,96 @@ import {
   rpc,
   signup,
 } from "./helpers";
+
+test("personal model defaults use each Space's connection and keep explicit overrides", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `model-default-${Date.now()}@example.test`, "password12", "Model Defaults");
+  await completeOnboarding(page);
+  const personal = await rpc<Me>(page, "me", {});
+  const lab = await rpc<Space>(page, "spaces/create", { name: "Model Lab" });
+  const choice = { provider: "openai-compatible", modelId: "first-model" };
+  const nextChoice = { ...choice, modelId: "another-model" };
+  const connect = (spaceId: string, data: typeof choice, port: number) =>
+    inSpace<ModelCredential>(page, spaceId, "models/connect", {
+      ...data,
+      reasoning: true,
+      apiKey: "fake-offline-key",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+  const first = await connect(personal.spaceId, choice, 8090);
+  await connect(personal.spaceId, nextChoice, 8091);
+  await page.reload();
+  const settings = await openUserSettings(page, "models");
+  const defaults = settings.getByRole("region", { name: "Model defaults" });
+  const account = defaults.getByLabel("My default model");
+  const override = defaults.getByRole("switch", { name: "Override model in this Space" });
+  const confirm = page.getByRole("alertdialog", { name: "Change my default model?" });
+
+  await expect(account).toHaveValue("");
+  await account.selectOption(defaultModelChoiceKey(choice));
+  await expect(confirm).toContainText("Model Lab");
+  await captureScreenshot(page, testInfo, "space-model-default-confirm");
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(await rpc<ModelDefaults>(page, "models/defaults", {})).toMatchObject({
+    account: { revision: 0, value: null },
+  });
+
+  await account.selectOption(defaultModelChoiceKey(choice));
+  await confirm.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(account).toHaveValue(defaultModelChoiceKey(choice));
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  expect(await inSpace<Me>(page, personal.spaceId, "me")).toMatchObject({
+    defaultModel: choice.modelId,
+    defaultModelCredentialId: first.id,
+  });
+  expect(await inSpace<Me>(page, lab.id, "me")).toMatchObject({
+    defaultModel: null,
+    defaultModelCredentialId: null,
+    defaultModelUnavailable: "missing",
+  });
+
+  const savedThinking = await rpc<{ ok: boolean }>(page, "models/setDefault", {
+    provider: choice.provider,
+    modelId: choice.modelId,
+    modelCredentialId: first.id,
+    expectedRevision: first.connectionRevision,
+    thinkingLevel: "low",
+    updateThinkingLevelOnly: true,
+  });
+  expect(savedThinking.ok).toBe(true);
+  expect(await rpc<ModelDefaults>(page, "models/defaults", {})).toMatchObject({
+    space: { revision: 0, value: false },
+    effective: { source: "account", choice },
+  });
+  expect(await rpc<ModelCredential[]>(page, "models/credentials", {})).toContainEqual(
+    expect.objectContaining({ id: first.id, thinkingLevel: "low", isDefault: false }),
+  );
+
+  const local = await connect(lab.id, choice, 8092);
+  expect(await inSpace<Me>(page, lab.id, "me")).toMatchObject({
+    defaultModel: choice.modelId,
+    defaultModelCredentialId: local.id,
+  });
+  await override.click();
+  await expect(defaults.getByText("This Space", { exact: true })).toBeVisible();
+  await expect(override).toBeChecked();
+  await expect(override).toBeEnabled();
+  await captureScreenshot(page, testInfo, "space-model-default-override");
+  await account.selectOption(defaultModelChoiceKey(nextChoice));
+  await expect(confirm).not.toContainText("Personal");
+  await confirm.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(account).toHaveValue(defaultModelChoiceKey(nextChoice));
+  expect(await inSpace<Me>(page, personal.spaceId, "me")).toMatchObject({
+    defaultModelCredentialId: first.id,
+  });
+  await override.click();
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  expect(await inSpace<Me>(page, personal.spaceId, "me")).toMatchObject({
+    defaultModel: nextChoice.modelId,
+    defaultModelUnavailable: null,
+  });
+});
 
 test("uses personal voice defaults for new playback and keeps Space and Bot choices", async ({
   page,

@@ -110,6 +110,7 @@ import {
   SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
   TimeZoneSchema,
+  UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
 import type { ActionApprovalRule, PlatformModelAllowlist, ToolStepOutcome } from "@rakazo/core";
 import {
@@ -189,7 +190,8 @@ import {
   createSpaceForMember,
   effectiveMemoryScope,
   failScriptedRunPreservingSteering,
-  findDefaultModelCredential,
+  findAuthorizedSpaceModelCredential,
+  findEffectiveModelDefault,
   findModelCredential,
   hasRunHistoryGrant,
   historyGrantWhere,
@@ -3654,7 +3656,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           })
         : null;
       const hasOverride = Boolean(override?.modelProvider && override.modelId);
-      const [overrideCredential, defaultCredential, settings] = await Promise.all([
+      const [overrideCredential, defaultSelection, settings] = await Promise.all([
         hasOverride
           ? findConnectedModelCredential(
               deps.prisma,
@@ -3664,7 +3666,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               override!.modelCredentialId ?? null,
             )
           : Promise.resolve(null),
-        findDefaultModelCredential(deps.prisma, scope),
+        hasOverride ? null : findEffectiveModelDefault(deps.prisma, scope),
         runAsSystem("resolve deployment defaults for a model request", () =>
           deps.prisma.deploymentSettings.findUnique({
             where: { id: "default" },
@@ -3676,10 +3678,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const error = pinnedModelCredentialError(override, overrideCredential);
         if (error) throw new UnavailableModelForAuthError(error);
       }
+      if (defaultSelection?.unavailable)
+        throw new UnavailableModelForAuthError(UNAVAILABLE_PERSONAL_MODEL);
       const selected = selectConfiguredModel({
         override,
         overrideCredential,
-        defaultCredential,
+        defaultCredential: defaultSelection?.credential ?? null,
         settings,
         deployment: deps.deploymentModelConfigured ? resolveDeploymentModel() : null,
       });
@@ -3700,7 +3704,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         provider,
         id,
         undefined,
-        hasOverride,
+        hasOverride || defaultSelection?.source === "account",
       );
       return {
         provider,
@@ -4584,7 +4588,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           peerMessage,
           task,
           storedConnections,
-          defaultCredential,
           settings,
           configuredMemory,
           savedSkills,
@@ -4617,7 +4620,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
               updatedAt: true,
             },
           }),
-          findDefaultModelCredential(deps.prisma, run),
           runAsSystem("read deployment defaults for a run", () =>
             deps.prisma.deploymentSettings.findUnique({
               where: { id: "default" },
@@ -4717,19 +4719,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }
           : preferredModel;
         const hasModelOverride = Boolean(modelChoice.modelProvider && modelChoice.modelId);
-        const overrideCredential =
+        const needsSpaceModelBinding =
+          run.requiresSpaceModelBinding &&
+          (!quotaTarget ||
+            (quotaTarget.provider === preferredModel.modelProvider &&
+              quotaTarget.modelId === preferredModel.modelId &&
+              quotaTarget.modelCredentialId === preferredModel.modelCredentialId));
+        let overrideCredential: Awaited<ReturnType<typeof findConnectedModelCredential>> = null;
+        if (
           hasModelOverride &&
           modelChoice.modelProvider &&
           quotaTarget?.modelCredentialId !== null &&
           !(settingsSystemModel && !quotaTarget)
-            ? await findConnectedModelCredential(
+        ) {
+          overrideCredential = needsSpaceModelBinding
+            ? await findAuthorizedSpaceModelCredential(
+                deps.prisma,
+                run,
+                modelChoice.modelProvider,
+                modelChoice.modelCredentialId,
+              )
+            : await findConnectedModelCredential(
                 deps.prisma,
                 run,
                 modelChoice.modelProvider,
                 modelChoice.modelId,
                 modelChoice.modelCredentialId ?? null,
-              )
-            : null;
+              );
+        }
+        const defaultSelection = hasModelOverride
+          ? null
+          : await findEffectiveModelDefault(deps.prisma, run);
+        const usesAccountModel = defaultSelection?.source === "account";
         runAbortController = new AbortController();
         const ownerSignal = runAbortController.signal;
         const runtimeAbortController = new AbortController();
@@ -5004,7 +5025,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const selected = selectConfiguredModel({
           override: modelChoice,
           overrideCredential,
-          defaultCredential,
+          defaultCredential: defaultSelection?.credential ?? null,
+          defaultUnavailable: Boolean(defaultSelection?.unavailable),
           settings,
           deployment: runDeployment,
         });
@@ -5075,6 +5097,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(pinError);
           return;
         }
+        if (usesAccountModel && defaultSelection?.unavailable) {
+          await failRunBeforeModel(UNAVAILABLE_PERSONAL_MODEL);
+          return;
+        }
         if (
           (run.modelPinned || settingsSnapshot || quotaTarget) &&
           (selected.provider !== modelChoice.modelProvider || selected.id !== modelChoice.modelId)
@@ -5100,7 +5126,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (values) => runSecrets.push(...values),
             quotaTarget
               ? quotaTarget.modelCredentialId !== null
-              : hasModelOverride && !settingsSystemModel,
+              : usesAccountModel || (hasModelOverride && !settingsSystemModel),
           );
         } catch (error) {
           // A dead or account-switched credential is already deleted. Retrying
@@ -5152,7 +5178,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const settingsDefaultModel = selectConfiguredModel({
           override: null,
           overrideCredential: null,
-          defaultCredential,
+          defaultCredential: defaultSelection?.credential ?? null,
+          defaultUnavailable: Boolean(defaultSelection?.unavailable),
           settings,
           deployment: runDeployment,
         });
@@ -5162,6 +5189,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
           data: {
             ...(initialSettingsSnapshot ? { botSettingsSnapshot: initialSettingsSnapshot } : {}),
+            ...(initialSettingsSnapshot && usesAccountModel
+              ? { requiresSpaceModelBinding: true }
+              : {}),
             attemptModel: {
               leaseFence: fence,
               provider: runModelProvider,
@@ -11483,8 +11513,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     leaseOwner: workerId,
                     leaseFence: fence,
                   },
-                  // A backup is an attempt choice, not a replacement for a captured pin.
+                  // An explicitly selected backup has its own Space authorization.
                   data: {
+                    ...((usesAccountModel || run.requiresSpaceModelBinding) && {
+                      requiresSpaceModelBinding: false,
+                    }),
                     ...(settingsBaseline
                       ? {
                           botSettingsSnapshot: {

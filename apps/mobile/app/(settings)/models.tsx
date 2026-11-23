@@ -38,6 +38,7 @@ import {
   connectionFormModelId,
   createModelProbe,
   credentialModelSettings,
+  effectiveDefaultModelCredential,
   featuredModelProviders,
   filterModelCatalog,
   initialModelProbeState,
@@ -49,7 +50,15 @@ import {
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -66,6 +75,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HeaderRowsEditor } from "../../components/header-rows-editor";
 import { MenuPicker } from "../../components/menu-picker";
+import { ModelDefaultSettingsRows } from "../../components/model-default-settings";
 import { ModelSettingsPanel } from "../../components/model-settings-panel";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
@@ -80,6 +90,7 @@ import { currentApiBase, currentSpaceSelectionGeneration, selectedSpaceId } from
 import { mobileTokens } from "../../lib/appearance";
 import { useI18n } from "../../lib/i18n";
 import { presentMessageActionSheet } from "../../lib/message-action-sheet";
+import { mobileScopeKey, subscribeMobileScope } from "../../lib/mobile-scope";
 import {
   cancelModelOAuthAttempt,
   finishModelOAuthAttempt,
@@ -90,7 +101,7 @@ import { mobileBackupScopeIsCurrent } from "../../lib/model-backups";
 import { thinkingLevelLabel } from "../../lib/model-catalog";
 import { native, useResolvedAppearance, useThemedStyles } from "../../lib/native";
 import { currentSessionGeneration } from "../../lib/session";
-import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
+import { useSpaceSettings } from "../../lib/space-settings";
 import { errorText } from "../../lib/user-error";
 
 /** Providers with more models than this get a search field. */
@@ -101,6 +112,7 @@ type ModelLoadOptions = {
   modelId?: string;
   connectionId?: string;
   keepForm?: boolean;
+  keepConnectionState?: boolean;
 };
 
 type FeedbackAnchor = "probe" | "model" | "connection";
@@ -108,10 +120,10 @@ type FeedbackAnchor = "probe" | "model" | "connection";
 export default function Models() {
   const { spaceId, name } = useLocalSearchParams<{ spaceId?: string; name?: string }>();
   const target = typeof spaceId === "string" ? spaceId : undefined;
-  const key = useSpaceSettingsKey(target);
+  const scope = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
   return (
     <ModelsForm
-      key={key}
+      key={`${target ?? ""}:${scope}`}
       targetSpaceId={target}
       targetName={typeof name === "string" ? name : target}
     />
@@ -135,6 +147,8 @@ function ModelsForm({
   const [catalog, setCatalog] = useState<MobileModel[]>([]);
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
+  const [defaultsRevision, setDefaultsRevision] = useState(0);
+  const preferenceWriteOwner = useRef<number | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [connectionRevision, setConnectionRevision] = useState<number | undefined>();
@@ -335,6 +349,10 @@ function ModelsForm({
       requestContext.sessionGeneration !== currentSessionGeneration()
     )
       return;
+    meRef.current = nextMe;
+    setMe(nextMe);
+    if (preferred.keepConnectionState) return nextMe;
+    setDefaultsRevision((revision) => revision + 1);
     setReferences(nextReferences.references);
     backupOptionsSnapshotRef.current = new Map(
       connectedBackupOptions(nextCatalog, nextCredentials).map((option) => [
@@ -342,8 +360,6 @@ function ModelsForm({
         option,
       ]),
     );
-    meRef.current = nextMe;
-    setMe(nextMe);
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
     if (selectionRevision !== selectionRevisionRef.current) return nextMe;
@@ -624,7 +640,10 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(me?.defaultProvider ?? "") &&
       entry.id === me?.defaultModel,
   );
-  const activeCredential = credentials.find((entry) => entry.isDefault);
+  const activeCredential = effectiveDefaultModelCredential(
+    credentials,
+    me?.defaultModelCredentialId,
+  );
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
   const activeThinkingLabel = modelThinkingLevels(
@@ -643,7 +662,8 @@ function ModelsForm({
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
     me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
-    (!isOpenAiCompatible || credential?.isDefault === true);
+    credential !== undefined &&
+    credential.id === activeCredential?.id;
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials =
     canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
@@ -896,6 +916,9 @@ function ModelsForm({
           // openai-compatible still owns its level inside the stored endpoint config.
           ...(!isOpenAiCompatible
             ? {
+                ...(isActive && !usingServerCredentials
+                  ? { updateThinkingLevelOnly: true as const }
+                  : {}),
                 thinkingLevel: clampCatalogThinkingLevel(
                   thinkingLevel,
                   selected.thinkingLevels,
@@ -1057,12 +1080,16 @@ function ModelsForm({
       acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
-      await load({ provider, modelId, connectionId: savedConnection.id });
+      const effective = await load({ provider, modelId, connectionId: savedConnection.id });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
       publishFeedback("connection", {
         notice:
-          isOpenAiCompatible || savingLimitOnly
+          isOpenAiCompatible ||
+          savingLimitOnly ||
+          (effective?.defaultModelCredentialId !== undefined &&
+            (effective.defaultModelCredentialId !== savedConnection.id ||
+              effective.defaultModel !== selected.id))
             ? t("Saved.")
             : t("Connected and using {label}.", { label: selected.label }),
       });
@@ -1097,10 +1124,15 @@ function ModelsForm({
     oauthLoginIdRef.current = null;
     setOauth(null);
     acceptSavedBackupConnection(savedConnection, catalog);
-    await load({ provider, modelId, connectionId: savedConnection.id });
+    const effective = await load({ provider, modelId, connectionId: savedConnection.id });
     if (!isCurrent()) return;
     publishFeedback("connection", {
-      notice: t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
+      notice:
+        effective?.defaultModelCredentialId !== undefined &&
+        (effective.defaultModelCredentialId !== savedConnection.id ||
+          (savedConnection.modelId && effective.defaultModel !== savedConnection.modelId))
+          ? t("Saved.")
+          : t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
     });
   }
 
@@ -2185,15 +2217,53 @@ function ModelsForm({
         <View style={styles.activeCard}>
           <Text style={styles.eyebrow}>{t("Active model")}</Text>
           <Text style={styles.activeModel}>
-            {currentEntry?.label ?? me?.defaultModel ?? t("Deployment default")}
+            {me?.defaultModelUnavailable
+              ? t("Unavailable")
+              : (currentEntry?.label ?? me?.defaultModel ?? t("Deployment default"))}
           </Text>
           <Text style={styles.secondary}>
-            {currentEntry?.providerName ?? me?.defaultProvider ?? t("Configured by deployment")}
+            {me?.defaultModelUnavailable
+              ? null
+              : (currentEntry?.providerName ??
+                me?.defaultProvider ??
+                t("Configured by deployment"))}
             {activeThinkingLabel
               ? ` · ${t("Thinking: {level}", { level: activeThinkingLabel })}`
               : ""}
           </Text>
         </View>
+        {me?.defaultModelUnavailable !== undefined ? (
+          <ModelDefaultSettingsRows
+            key={defaultsRevision}
+            target={settings}
+            busy={busy}
+            label={({ provider, modelId }) => {
+              const entry = catalog.find(
+                (candidate) => candidate.id === modelId && candidate.provider === provider,
+              );
+              return `${entry?.label ?? modelId} · ${entry?.providerName ?? provider}`;
+            }}
+            begin={() => {
+              if (busyRef.current || preferenceWriteOwner.current !== null || !settingsCurrent())
+                return null;
+              const owner = beginPending("default");
+              preferenceWriteOwner.current = owner;
+              busyRef.current = true;
+              return owner;
+            }}
+            finish={(owner) => {
+              if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
+              finishPending(owner);
+            }}
+            onChange={async () => {
+              try {
+                await load({ keepConnectionState: true });
+              } catch (err) {
+                if (settingsCurrent()) setError(errorText(err, t("Could not load model defaults")));
+              }
+            }}
+          />
+        ) : null}
 
         <Text style={styles.sectionTitle}>{t("Providers")}</Text>
         <View style={styles.card}>

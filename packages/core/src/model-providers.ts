@@ -205,6 +205,15 @@ function canonicalApiModelId(provider: string, modelId: string): string | undefi
   return canonical;
 }
 
+export function effectiveDefaultModelCredential<T extends { id: string; isDefault: boolean }>(
+  credentials: readonly T[],
+  effectiveId: string | null | undefined,
+) {
+  return credentials.find((entry) =>
+    effectiveId === undefined ? entry.isDefault : entry.id === effectiveId,
+  );
+}
+
 export function modelOptionKey(
   provider: string,
   modelId: string,
