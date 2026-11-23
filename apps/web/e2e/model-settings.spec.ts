@@ -604,7 +604,8 @@ test("model settings connect, replace, and cancel provider authentication", asyn
     .first()
     .click();
   await page.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
-  await expect(page.getByText(/Connected and using/)).toBeVisible();
+  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Connected and using/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign in again", exact: true })).toBeVisible();
 
   // Disconnect removes the credential and its Connected marker.

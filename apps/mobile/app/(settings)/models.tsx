@@ -1087,7 +1087,8 @@ function ModelsForm({
         notice:
           isOpenAiCompatible ||
           savingLimitOnly ||
-          (effective?.defaultModelCredentialId !== undefined &&
+          !effective ||
+          (effective.defaultModelCredentialId !== undefined &&
             (effective.defaultModelCredentialId !== savedConnection.id ||
               effective.defaultModel !== selected.id))
             ? t("Saved.")
@@ -1128,9 +1129,10 @@ function ModelsForm({
     if (!isCurrent()) return;
     publishFeedback("connection", {
       notice:
-        effective?.defaultModelCredentialId !== undefined &&
-        (effective.defaultModelCredentialId !== savedConnection.id ||
-          (savedConnection.modelId && effective.defaultModel !== savedConnection.modelId))
+        !effective ||
+        (effective.defaultModelCredentialId !== undefined &&
+          (effective.defaultModelCredentialId !== savedConnection.id ||
+            (savedConnection.modelId && effective.defaultModel !== savedConnection.modelId)))
           ? t("Saved.")
           : t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
     });

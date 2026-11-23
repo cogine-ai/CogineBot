@@ -230,9 +230,10 @@ export function ModelSettingsOverlay({
       )
         return;
       setNotice(
-        effective?.defaultModelCredentialId !== undefined &&
-          (effective.defaultModelCredentialId !== credential.id ||
-            (credential.modelId && effective.defaultModel !== credential.modelId))
+        !effective ||
+          (effective.defaultModelCredentialId !== undefined &&
+            (effective.defaultModelCredentialId !== credential.id ||
+              (credential.modelId && effective.defaultModel !== credential.modelId)))
           ? t`Saved.`
           : t`Connected and using ${selectedLabelRef.current ?? "this model"}.`,
       );
@@ -947,7 +948,8 @@ export function ModelSettingsOverlay({
       setNotice(
         isOpenAiCompatible ||
           savingLimitOnly ||
-          (effective?.defaultModelCredentialId !== undefined &&
+          !effective ||
+          (effective.defaultModelCredentialId !== undefined &&
             (effective.defaultModelCredentialId !== savedConnection.id ||
               effective.defaultModel !== selected.id))
           ? t`Saved.`
