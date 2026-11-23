@@ -14,6 +14,7 @@ import {
   IntegrationProviderSettings,
   LocalAgentHomeStore,
   screenLeaseIdForRun,
+  serializeModelSecret,
 } from "@rakazo/adapters";
 import type { Actor, Bot, ProductEvent } from "@rakazo/contracts";
 import { REPLY_QUOTE_MAX_LENGTH } from "@rakazo/contracts";
@@ -467,6 +468,93 @@ describe("model setup gate", () => {
       });
     },
   );
+
+  it("uses the router's default live catalog for thinking shown in Bot history", async () => {
+    const { actor, deps, handler } = modelGateDeps({ agentRuntime: "pi" });
+    const choice = { provider: "openai-codex", modelId: "live-only-thinking-fixture" };
+    const credential = {
+      id: "connection-1",
+      userId: actor.userId,
+      provider: choice.provider,
+      label: "Fixture",
+      secretId: "secret-1",
+    };
+    Object.assign(deps.prisma, {
+      bot: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "bot-1",
+          name: "Bot",
+          instructions: "",
+          modelProvider: choice.provider,
+          modelId: choice.modelId,
+          modelCredentialId: credential.id,
+          thinkingLevel: null,
+          voiceId: null,
+          autoSpeak: false,
+          settingsRevision: 0,
+          settingsHistory: [],
+        }),
+      },
+      spaceVoicePreference: { findFirst: vi.fn().mockResolvedValue(null) },
+      userModelCredential: explicitCredentialFixture([credential]),
+      spaceMember: {
+        findUnique: vi.fn().mockResolvedValue({
+          member: {
+            user: {
+              thinkingDefaultHistory: [
+                {
+                  value: { model: choice, level: "minimal" },
+                  revision: 1,
+                  receipt: { clientNonce: "fixture", requestHash: "fixture" },
+                },
+              ],
+            },
+          },
+          thinkingOverrideHistory: [],
+        }),
+      },
+      secret: {
+        findFirst: vi.fn().mockResolvedValue({ id: credential.secretId, ciphertext: "fixture" }),
+      },
+    });
+    Object.assign(deps, {
+      secrets: {
+        load: vi.fn().mockResolvedValue(
+          serializeModelSecret({
+            kind: "oauth",
+            credential: {
+              type: "oauth",
+              access: "fake-oauth-access",
+              refresh: "fake-oauth-refresh",
+              expires: Date.now() + 3_600_000,
+              accountId: "fixture-account",
+            },
+          }),
+        ),
+      },
+    });
+    const read = vi.spyOn(CodexCatalogCache.prototype, "read").mockResolvedValue([
+      {
+        slug: choice.modelId,
+        reasoningEfforts: ["minimal", "medium"],
+        supportsImages: false,
+        supportsFastTier: false,
+      },
+    ]);
+    try {
+      const response = await call(handler, actor, "bots/settingsHistory", { botId: "bot-1" });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        json: {
+          current: expect.arrayContaining([
+            { field: "thinkingLevel", source: "account", after: "minimal" },
+          ]),
+        },
+      });
+    } finally {
+      read.mockRestore();
+    }
+  });
 
   it("names the provider the deployment default runs on with host credentials", async () => {
     const hostCredentials = modelGateDeps({

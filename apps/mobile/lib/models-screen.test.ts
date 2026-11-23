@@ -43,9 +43,11 @@ describe("Models settings form", () => {
   it("exposes the shown thinking value on the effort rows", () => {
     const effort = sliceBetween(
       screen,
-      'accessibilityLabel={t("Reasoning effort")}',
-      't("Supports images")',
+      "accessibilityLabel={connectionEffortLabel}",
+      "function selectThinkingLevel",
     );
+    expect(screen).toContain('t("Reasoning effort")');
+    expect(screen).toContain('t("Connection reasoning effort")');
     expect(effort).toContain("accessibilityValue={{ text: reasoningEffortValue }}");
     expect(effort).toContain("{reasoningEffortValue}");
     const thinking = sliceBetween(

@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRunRequest, AgentSteeringMessage } from "@rakazo/adapter-kit";
-import type { ComputerMode, MessageBlock, ModelSettings } from "@rakazo/contracts";
+import type { ComputerMode, MessageBlock, ModelSettings, ThinkingLevel } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import type * as ComputerWorkspaceModule from "./computer-workspace.js";
@@ -90,6 +90,11 @@ async function runWithModel(
     computerMode?: ComputerMode;
     pinned?: boolean;
     inheritedAccount?: boolean;
+    thinkingDefault?: ThinkingLevel;
+    pinnedThinking?: { level: ThinkingLevel; copiedDefault: boolean };
+    connectionThinking?: ThinkingLevel;
+    followsPersonalThinking?: boolean;
+    codexLevels?: ThinkingLevel[];
     modelSettings?: ModelSettings;
     accountTimezone?: string | null;
     timezoneReadFails?: boolean;
@@ -100,6 +105,21 @@ async function runWithModel(
   } = {},
 ) {
   provisionComputer.mockClear();
+  const provider = attachmentOptions.codexLevels ? "openai-codex" : "openrouter";
+  let codexLevels = attachmentOptions.codexLevels;
+  const readCodex = vi.fn(
+    async (_userId: string, _account: unknown, _options: { waitMs?: number } = {}) =>
+      codexLevels
+        ? [
+            {
+              slug: modelId,
+              reasoningEfforts: codexLevels,
+              supportsImages: true,
+              supportsFastTier: false,
+            },
+          ]
+        : undefined,
+  );
   const run = {
     id: "run-1",
     botId: "bot-1",
@@ -115,15 +135,20 @@ async function runWithModel(
     leaseFence: attachmentOptions.answeredSteering ? 1 : 0,
     scriptedState: null,
     requiresSpaceModelBinding: false,
+    ...(attachmentOptions.pinnedThinking && {
+      thinkingLevel: attachmentOptions.pinnedThinking.level,
+      usesDefaultThinkingLevel: attachmentOptions.pinnedThinking.copiedDefault,
+    }),
     modelPinned: attachmentOptions.pinned ?? false,
-    modelProvider: attachmentOptions.pinned ? "openrouter" : null,
+    modelProvider: attachmentOptions.pinned ? provider : null,
     modelId: attachmentOptions.pinned ? modelId : null,
     modelCredentialId: attachmentOptions.pinned ? "primary-credential" : null,
   };
+  let thinkingDefault = attachmentOptions.thinkingDefault;
   const primaryCredential = {
     id: "primary-credential",
     userId: run.userId,
-    provider: "openrouter",
+    provider,
     label: "Primary",
     secretId: "primary-secret",
     connectionRevision: 1,
@@ -278,6 +303,21 @@ async function runWithModel(
           ? {
               member: {
                 user: {
+                  thinkingDefaultHistory: thinkingDefault
+                    ? [
+                        {
+                          value: {
+                            model: { provider: primaryCredential.provider, modelId },
+                            level: thinkingDefault,
+                          },
+                          revision: 1,
+                          receipt: {
+                            clientNonce: "fixture-thinking-nonce",
+                            requestHash: "fixture-thinking-hash",
+                          },
+                        },
+                      ]
+                    : [],
                   modelDefaultHistory: [
                     {
                       value: { provider: primaryCredential.provider, modelId },
@@ -288,6 +328,17 @@ async function runWithModel(
                 },
               },
               modelOverrideHistory: [],
+              thinkingOverrideHistory: attachmentOptions.followsPersonalThinking
+                ? [
+                    {
+                      value: {
+                        model: { provider: primaryCredential.provider, modelId },
+                        mode: "inherit",
+                      },
+                      revision: 1,
+                    },
+                  ]
+                : [],
             }
           : null,
       ),
@@ -297,7 +348,12 @@ async function runWithModel(
         { credential: primaryCredential, modelId, isDefault: true, thinkingLevel: null },
       ]),
       findFirst: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(
-        async () => null,
+        async (query) => {
+          const where = (query as { where: { credentialId?: string } }).where;
+          return attachmentOptions.inheritedAccount && where.credentialId === primaryCredential.id
+            ? { credential: primaryCredential, modelId, isDefault: true, thinkingLevel: null }
+            : null;
+        },
       ),
     },
     secret: {
@@ -306,14 +362,25 @@ async function runWithModel(
         where.id === "primary-secret"
           ? {
               id: where.id,
-              ciphertext: attachmentOptions.modelSettings
+              ciphertext: attachmentOptions.codexLevels
                 ? serializeModelSecret({
-                    kind: "api_key",
-                    key: "fake-primary-key",
-                    maxTokens: 512,
-                    models: { [modelId]: attachmentOptions.modelSettings },
+                    kind: "oauth",
+                    credential: {
+                      type: "oauth",
+                      access: "fake-oauth-access",
+                      refresh: "fake-oauth-refresh",
+                      expires: Date.now() + 3_600_000,
+                      accountId: "fixture-account",
+                    },
                   })
-                : "fake-primary-key",
+                : attachmentOptions.modelSettings
+                  ? serializeModelSecret({
+                      kind: "api_key",
+                      key: "fake-primary-key",
+                      maxTokens: 512,
+                      models: { [modelId]: attachmentOptions.modelSettings },
+                    })
+                  : "fake-primary-key",
             }
           : where.id === "backup-secret" && attachmentOptions.inheritedAccount
             ? { id: where.id, ciphertext: "fake-backup-key" }
@@ -330,7 +397,13 @@ async function runWithModel(
           return attachmentOptions.pinned
             ? {
                 ...primaryCredential,
-                preferences: [{ modelId, isDefault: false, thinkingLevel: null }],
+                preferences: [
+                  {
+                    modelId,
+                    isDefault: false,
+                    thinkingLevel: attachmentOptions.connectionThinking ?? null,
+                  },
+                ],
               }
             : null;
         },
@@ -419,6 +492,7 @@ async function runWithModel(
   const executor = createRunExecutor({
     prisma,
     deploymentModelKey: "fake-deployment-key",
+    ...(attachmentOptions.codexLevels && { codexCatalog: { read: readCodex } }),
     secretStore: { load: async (ciphertext: string) => ciphertext },
     runtime: { describe: () => ({ capabilities: { scripted } }), run: runtimeRun },
     sandbox: {
@@ -469,6 +543,13 @@ async function runWithModel(
     exportWorkspace,
     executor,
     runtimeRun,
+    readCodex,
+    setCodexLevels: (levels?: ThinkingLevel[]) => {
+      codexLevels = levels;
+    },
+    setThinkingDefault: (level: ThinkingLevel) => {
+      thinkingDefault = level;
+    },
   };
 }
 
@@ -833,6 +914,114 @@ describe("recent turn images follow model vision", () => {
     });
     expect(prisma.spaceModelPreference.findFirst).not.toHaveBeenCalled();
   });
+
+  it("preserves the captured thinking level across another lease of the same Run", async () => {
+    const { request, run, executor, runtimeRun, setThinkingDefault } = await runWithModel(
+      TEXT_ONLY_MODEL,
+      undefined,
+      false,
+      false,
+      { inheritedAccount: true, thinkingDefault: "high" },
+    );
+    expect(request.model.thinkingLevel).toBe("high");
+    expect(run).toMatchObject({
+      botSettingsSnapshot: expect.objectContaining({
+        thinkingLevel: "high",
+        thinkingPreferenceCaptured: true,
+      }),
+    });
+    setThinkingDefault("low");
+    Object.assign(run, { status: "queued", leaseFence: 1, leaseOwner: null, leaseExpiresAt: null });
+    await executor.continueRun(run.id, "worker-2");
+    expect(runtimeRun.mock.calls).toHaveLength(2);
+    expect(runtimeRun.mock.calls[1]?.[0].model.thinkingLevel).toBe("high");
+  });
+
+  it.each([
+    {
+      copiedDefault: true,
+      connectionThinking: undefined,
+      accountThinking: "high",
+      expected: "high",
+    },
+    {
+      copiedDefault: true,
+      connectionThinking: "medium",
+      accountThinking: "high",
+      expected: "medium",
+    },
+    {
+      copiedDefault: true,
+      connectionThinking: undefined,
+      accountThinking: undefined,
+      expected: "low",
+    },
+    {
+      copiedDefault: false,
+      connectionThinking: undefined,
+      accountThinking: "high",
+      expected: "low",
+    },
+  ] satisfies Array<{
+    copiedDefault: boolean;
+    connectionThinking?: ThinkingLevel;
+    accountThinking?: ThinkingLevel;
+    expected: ThinkingLevel;
+  }>)(
+    "interprets a pinned image's effort ($copiedDefault, $connectionThinking, $accountThinking)",
+    async ({ copiedDefault, connectionThinking, accountThinking, expected }) => {
+      const { request } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
+        pinned: true,
+        inheritedAccount: true,
+        thinkingDefault: accountThinking,
+        connectionThinking,
+        pinnedThinking: { level: "low", copiedDefault },
+      });
+      expect(request.model.thinkingLevel).toBe(expected);
+    },
+  );
+
+  it.each([{ nextLevels: undefined }, { nextLevels: ["low", "high"] satisfies ThinkingLevel[] }])(
+    "keeps the captured OAuth thinking pair when the next lease sees $nextLevels",
+    async ({ nextLevels }) => {
+      const levels = ["minimal", "medium"] as ThinkingLevel[];
+      const { request, run, executor, runtimeRun, readCodex, setCodexLevels } = await runWithModel(
+        "gpt-6-luna",
+        undefined,
+        false,
+        false,
+        { inheritedAccount: true, thinkingDefault: "minimal", codexLevels: levels },
+      );
+      expect(request.model).toMatchObject({
+        thinkingLevel: "minimal",
+        supportedThinkingLevels: levels,
+      });
+      expect(readCodex).toHaveBeenCalledWith(run.userId, expect.anything(), {
+        waitMs: expect.any(Number),
+      });
+      expect(readCodex.mock.calls[0]?.[2]?.waitMs).toBeGreaterThan(0);
+      expect(run).toMatchObject({
+        botSettingsSnapshot: expect.objectContaining({
+          thinkingLevel: "minimal",
+          thinkingPreferenceCaptured: true,
+          thinkingLevels: levels,
+        }),
+      });
+      setCodexLevels(nextLevels);
+      Object.assign(run, {
+        status: "queued",
+        leaseFence: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      });
+      await executor.continueRun(run.id, "worker-2");
+      expect(readCodex.mock.calls.at(-1)?.[2]?.waitMs).toBe(0);
+      expect(runtimeRun.mock.calls[1]?.[0].model).toMatchObject({
+        thinkingLevel: "minimal",
+        supportedThinkingLevels: levels,
+      });
+    },
+  );
 
   it("persists the switched model against the current run lease", async () => {
     const backup = { provider: "openrouter", modelId: "openai/gpt-4o" };

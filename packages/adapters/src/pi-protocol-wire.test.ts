@@ -1,11 +1,74 @@
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
+import { zstdDecompressSync } from "node:zlib";
+import type { AgentRunRequest, AgentRuntimeEvent, ConnectorTool } from "@rakazo/adapter-kit";
 import type { ModelApiProtocol } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
+
+describe("OAuth model effort on the wire", () => {
+  it.each([
+    { supported: ["minimal", "medium"], preferred: "minimal", expected: "minimal" },
+    { supported: ["low"], preferred: null, expected: "low" },
+    { supported: ["max"], preferred: "max", expected: "max" },
+  ] as const)(
+    "sends $expected from the connection's advertised levels",
+    async ({ supported, preferred, expected }) => {
+      const body: unknown[] = [];
+      const modelFetch: typeof fetch = async (input, init) => {
+        const wire = new Request(input, init);
+        const bytes = Buffer.from(await wire.arrayBuffer());
+        const decoded =
+          wire.headers.get("content-encoding") === "zstd" ? zstdDecompressSync(bytes) : bytes;
+        body.push(JSON.parse(decoded.toString("utf8")));
+        return new Response(reply("responses", false), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      };
+      vi.stubGlobal("fetch", () => {
+        throw new Error("Unexpected real fetch");
+      });
+      try {
+        const input: AgentRunRequest = {
+          ...request("responses"),
+          tools: [],
+          model: {
+            id: "gpt-5.3-codex-spark",
+            provider: "openai-codex",
+            supportedThinkingLevels: supported,
+            thinkingLevel: preferred,
+            oauth: {
+              credential: {
+                type: "oauth",
+                access: `fixture.${Buffer.from(
+                  JSON.stringify({
+                    "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" },
+                  }),
+                ).toString("base64url")}.fixture`,
+                refresh: "fake-oauth-refresh",
+                expires: Date.now() + 3_600_000,
+                accountId: "fixture-account",
+              },
+            },
+          },
+        };
+        const events: AgentRuntimeEvent[] = [];
+        for await (const event of new PiAgentRuntime({ modelFetch }).run(input, {
+          signal: AbortSignal.timeout(5_000),
+        }))
+          events.push(event);
+        expect(body).toEqual([
+          expect.objectContaining({ reasoning: expect.objectContaining({ effort: expected }) }),
+        ]);
+        expect(events.at(-1)).toMatchObject({ type: "done", text: "Done: evidence 1 en xy9" });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+});
 
 const protocols = ["chat-completions", "responses", "anthropic-messages"] as const;
 const frame = (value: object) => `data: ${JSON.stringify(value)}\n\n`;

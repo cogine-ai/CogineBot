@@ -1309,6 +1309,7 @@ export type MobileMe = Pick<
   | "defaultModel"
   | "defaultModelCredentialId"
   | "defaultModelUnavailable"
+  | "thinkingDefaultsAvailable"
   | "hostCredentialProvider"
   | "hostCredentialSource"
   | "needsModel"

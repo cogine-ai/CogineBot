@@ -226,6 +226,10 @@ export async function resolveThreadImageInput(
             modelId: id,
             modelCredentialId: credential.id,
             thinkingLevel: selected.thinkingLevel,
+            ...(selected.thinkingLevel &&
+              !override.thinkingLevel && {
+                usesDefaultThinkingLevel: true as const,
+              }),
             ...(selected.inheritsAccountModel && { requiresSpaceModelBinding: true as const }),
           }
         : undefined,

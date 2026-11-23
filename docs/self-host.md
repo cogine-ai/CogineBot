@@ -1070,6 +1070,20 @@ checks local bindings and recorded revisions. If it raises an error, issue
 `ROLLBACK` in the same session, resolve the indicated state on the current release,
 and verify the choices again before retrying.
 
+#### Downgrade from personal thinking defaults
+
+Use the current release to record the effective thinking level and source for
+each affected Space model and Bot. Settle active Runs before downgrading.
+Materialize the verified values through the existing per-model and per-Bot
+settings using each Space's authorized connection. Keep the additive history
+columns. After freezing the model defaults, confirm that the older runtime's
+same per-model or per-Bot setting will use the recorded level.
+
+A model's own default may be different from a saved connection-level setting,
+and some explicitly selected Bots may have no existing Space model preference.
+If the older settings cannot express a recorded value on the same connection,
+keep the current release until the affected settings are reconciled.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

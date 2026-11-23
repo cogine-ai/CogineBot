@@ -9,6 +9,7 @@ import type {
   ReadAloudSettings,
   Space,
   SpaceNavigation,
+  ThinkingDefaults,
   ThreadSnapshot,
   VoiceDefaults,
 } from "@rakazo/contracts";
@@ -110,6 +111,92 @@ test("personal model defaults use each Space's connection and keep explicit over
   expect(await inSpace<Me>(page, personal.spaceId, "me")).toMatchObject({
     defaultModel: nextChoice.modelId,
     defaultModelUnavailable: null,
+  });
+});
+
+test("personal thinking applies only to the matching model and preserves Space overrides", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `thinking-default-${Date.now()}@example.test`,
+    "password12",
+    "Thinking Defaults",
+  );
+  await completeOnboarding(page);
+  const personal = await rpc<Me>(page, "me", {});
+  const lab = await rpc<Space>(page, "spaces/create", { name: "Thinking Lab" });
+  const choice = { provider: "openai-compatible", modelId: "reasoning-fixture" };
+  const connect = (spaceId: string, port: number, reasoning: boolean) =>
+    inSpace<ModelCredential>(page, spaceId, "models/connect", {
+      ...choice,
+      reasoning,
+      apiKey: "fake-offline-key",
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+    });
+  const connection = await connect(personal.spaceId, 8090, true);
+  await connect(lab.id, 8091, false);
+  await page.reload();
+  const settings = await openUserSettings(page, "models");
+  const defaults = settings.getByRole("region", { name: "Thinking defaults" });
+  const account = defaults.getByLabel("My default thinking");
+  const local = defaults.getByLabel("Thinking in this Space");
+  const dialog = page.getByRole("alertdialog", { name: "Change my default thinking?" });
+  const button = (name: string) => dialog.getByRole("button", { name, exact: true });
+
+  await expect(local).toHaveValue("inherit");
+  await account.selectOption("high");
+  await expect(dialog).toContainText("Thinking Lab");
+  await captureScreenshot(page, testInfo, "space-thinking-default-confirm");
+  await button("Cancel").click();
+  expect(await rpc<ThinkingDefaults>(page, "models/thinkingDefaults", {})).toMatchObject({
+    account: { value: null, revision: 0 },
+  });
+
+  await account.selectOption("high");
+  await button("Confirm").click();
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Thinking: High", { exact: true })).toBeVisible();
+  expect(await inSpace<ThinkingDefaults>(page, lab.id, "models/thinkingDefaults")).toMatchObject({
+    binding: { model: choice },
+    effective: { level: null, source: "system", unsupported: true },
+  });
+
+  await local.selectOption("copy");
+  await expect(local).toHaveValue("high");
+  await expect(defaults.getByText("This Space", { exact: true })).toBeVisible();
+  await expect(local).toBeEnabled();
+  await captureScreenshot(page, testInfo, "space-thinking-default-override");
+
+  await account.selectOption("low");
+  await expect(dialog).not.toContainText("Personal");
+  await button("Confirm").click();
+  await expect(account).toHaveValue("low");
+  await expect(local).toHaveValue("high");
+  await expect(settings.getByText("Thinking: High", { exact: true })).toBeVisible();
+  await local.selectOption("inherit");
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Thinking: Low", { exact: true })).toBeVisible();
+
+  await local.selectOption("copy");
+  await expect(local).toHaveValue("low");
+  await inSpace(page, personal.spaceId, "models/connect", {
+    ...choice,
+    credentialId: connection.id,
+    expectedRevision: connection.connectionRevision,
+    reasoning: false,
+    baseUrl: "http://127.0.0.1:8090/v1",
+  });
+  await page.reload();
+  await openUserSettings(page, "models");
+  await expect(local).toHaveValue("saved");
+  await expect(local.locator('option[value="saved"]')).toHaveText("Low");
+  await expect(defaults.getByText("Thinking level is unavailable for this model.")).toBeVisible();
+  await local.selectOption("modelDefault");
+  await expect(defaults.getByText("This Space", { exact: true })).toBeVisible();
+  expect(await rpc<ThinkingDefaults>(page, "models/thinkingDefaults", {})).toMatchObject({
+    space: { value: { model: choice, mode: "fixed", level: null } },
+    effective: { level: null, source: "space", unsupported: false },
   });
 });
 

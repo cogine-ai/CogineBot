@@ -4666,6 +4666,7 @@ describe("steering connection selection metadata", () => {
       modelCredentialId: "vision-credential",
       thinkingLevel: null,
       requiresSpaceModelBinding: true,
+      usesDefaultThinkingLevel: true,
     };
     const text = steering("text", 2);
     const { tx, client } = continuationFixture([Object.assign(image, model), text]);

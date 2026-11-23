@@ -109,6 +109,7 @@ import {
   runQuotaWaitStateSchema,
   SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
+  ThinkingLevelSchema,
   TimeZoneSchema,
   UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
@@ -501,7 +502,7 @@ import {
   savePageFromTool,
 } from "./page-tools.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
-import { codexLiveModel } from "./pi-codex-catalog.js";
+import { codexLiveModel, liveThinkingLevels } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -637,6 +638,7 @@ import {
 } from "./takeover-resume.js";
 import { TASK_CATALOG_GUIDANCE, taskCatalogFromTool } from "./task-catalog.js";
 import { getActiveTeachingSession, parsePlaybook } from "./teaching-session.js";
+import { applyThinkingDefault, thinkingPreferencesForModel } from "./thinking-defaults.js";
 import {
   attachWorkspaceFileToThread,
   currentTurnFilesInstruction,
@@ -3614,6 +3616,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       maxTokens: resolved.maxTokens,
       acceptsImages: resolved.acceptsImages,
       maxImagesPerPrompt: resolved.maxImagesPerPrompt,
+      supportedThinkingLevels: resolved.thinkingLevels,
       thinkingLevel:
         ((credential.defaultModel === modelId
           ? credential.thinkingLevel
@@ -3695,6 +3698,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         id ??= runtimeFallback?.id ?? null;
       }
       if (!provider || !id) throw new Error(MISSING_MODEL_MESSAGE);
+      const preferences = await thinkingPreferencesForModel(
+        deps.prisma,
+        scope,
+        credential && !override?.thinkingLevel ? { provider, modelId: id } : null,
+      );
       // The key is resolved for the provider that won above, not before it is known.
       const resolved = await resolveModelKey(
         deps,
@@ -3705,6 +3713,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
         id,
         undefined,
         hasOverride || defaultSelection?.source === "account",
+        Boolean(preferences),
+      );
+      const effort = applyThinkingDefault(
+        effortModelFromResolved(provider, id, resolved),
+        preferences,
+        thinkingLevel ?? resolved.thinkingLevel ?? null,
+        resolved.thinkingLevels,
       );
       return {
         provider,
@@ -3723,7 +3738,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         maxTokens: resolved.maxTokens,
         acceptsImages: resolved.acceptsImages,
         maxImagesPerPrompt: resolved.maxImagesPerPrompt,
-        thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
+        thinkingLevel: effort.level,
+        supportedThinkingLevels: resolved.thinkingLevels,
         oauth: resolved.oauth
           ? {
               credential: resolved.oauth,
@@ -5112,6 +5128,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           await failRunBeforeModel(MISSING_MODEL_MESSAGE);
           return;
         }
+        const firstSettingsModelAttempt =
+          fence === 1 ||
+          (run.attemptModel === null &&
+            run.firstResponseAt === null &&
+            run.checkpoint === null &&
+            run.scriptedState === null);
+        const preferences = await thinkingPreferencesForModel(
+          deps.prisma,
+          run,
+          firstSettingsModelAttempt &&
+            !settingsSnapshot &&
+            !quotaTarget &&
+            credential &&
+            (run.usesDefaultThinkingLevel || !modelChoice.thinkingLevel)
+            ? { provider: runModelProvider, modelId: runModelId }
+            : null,
+        );
         // An incompatible saved model is a configuration error. Record it on the run.
         // Leaving it for the setup catch would retry and replace the message.
         let resolved: Awaited<ReturnType<typeof resolveModelKey>>;
@@ -5127,6 +5160,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             quotaTarget
               ? quotaTarget.modelCredentialId !== null
               : usesAccountModel || (hasModelOverride && !settingsSystemModel),
+            Boolean(preferences),
           );
         } catch (error) {
           // A dead or account-switched credential is already deleted. Retrying
@@ -5156,12 +5190,31 @@ export function createRunExecutor(deps: ExecutorDeps) {
             sourceMessage,
             Boolean(thread.externalConversationId || messagingChannelRun || channelId),
           );
-        const firstSettingsModelAttempt =
-          fence === 1 ||
-          (run.attemptModel === null &&
-            run.firstResponseAt === null &&
-            run.checkpoint === null &&
-            run.scriptedState === null);
+        // Image admission pins the model. A copied effort must not mask a newer default.
+        const selectedEffort =
+          run.usesDefaultThinkingLevel && preferences
+            ? credential?.defaultModel === runModelId
+              ? ThinkingLevelSchema.safeParse(credential.thinkingLevel).data
+              : null
+            : thinkingLevel;
+        const legacyEffort = selectedEffort ?? resolved.thinkingLevel ?? null;
+        const capturedEffort =
+          settingsSnapshot?.thinkingPreferenceCaptured &&
+          (!quotaTarget ||
+            (quotaTarget.provider === settingsSnapshot.modelProvider &&
+              quotaTarget.modelId === settingsSnapshot.modelId &&
+              quotaTarget.modelCredentialId === settingsSnapshot.modelCredentialId));
+        const thinkingLevels = capturedEffort
+          ? settingsSnapshot!.thinkingLevels
+          : resolved.thinkingLevels;
+        const effort = capturedEffort
+          ? { level: settingsSnapshot!.thinkingLevel, captured: false }
+          : applyThinkingDefault(
+              effortModelFromResolved(runModelProvider, runModelId, resolved),
+              preferences,
+              legacyEffort,
+              thinkingLevels,
+            );
         const initialSettingsSnapshot =
           !settingsSnapshot && firstSettingsModelAttempt && typeof bot.settingsRevision === "number"
             ? {
@@ -5171,7 +5224,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 modelId: runModelId,
                 modelCredentialId: resolved.modelCredentialId,
                 connectionRevision: credential?.connectionRevision ?? null,
-                thinkingLevel: thinkingLevel ?? null,
+                thinkingLevel: effort.captured ? effort.level : (thinkingLevel ?? null),
+                ...(effort.captured && {
+                  thinkingPreferenceCaptured: true as const,
+                  ...(thinkingLevels && { thinkingLevels }),
+                }),
               }
             : undefined;
         const settingsBaseline = settingsSnapshot ?? initialSettingsSnapshot;
@@ -11462,7 +11519,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 maxTokens: resolved.maxTokens,
                 acceptsImages: resolved.acceptsImages,
                 maxImagesPerPrompt: resolved.maxImagesPerPrompt,
-                thinkingLevel: thinkingLevel ?? resolved.thinkingLevel ?? null,
+                thinkingLevel: effort.level,
+                supportedThinkingLevels: thinkingLevels,
                 oauth: resolved.oauth
                   ? {
                       credential: resolved.oauth,
@@ -11521,7 +11579,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     ...(settingsBaseline
                       ? {
                           botSettingsSnapshot: {
-                            ...settingsBaseline,
+                            instructions: settingsBaseline.instructions,
+                            revision: settingsBaseline.revision,
                             modelProvider: provider,
                             modelId,
                             modelCredentialId: modelCredentialId ?? null,
@@ -13742,6 +13801,23 @@ function assertCompatibleModelEnabled(
   }
 }
 
+function effortModelFromResolved(
+  provider: string,
+  id: string,
+  resolved: Awaited<ReturnType<typeof resolveModelKey>>,
+): AgentRunRequest["model"] {
+  return {
+    provider,
+    id,
+    modelCredentialId: resolved.modelCredentialId,
+    baseUrl: resolved.baseUrl,
+    apiProtocol: resolved.apiProtocol,
+    contextWindow: resolved.contextWindow,
+    reasoning: resolved.reasoning,
+    ...(resolved.oauth ? { oauth: { credential: resolved.oauth } } : {}),
+  };
+}
+
 async function resolveModelKey(
   deps: ExecutorDeps,
   userId: string,
@@ -13757,6 +13833,7 @@ async function resolveModelKey(
   modelId: string,
   registerSecrets?: (values: string[]) => void,
   requireStoredSecret = false,
+  waitForThinkingCapabilities = false,
 ): Promise<{
   authorize?: () => Promise<void>;
   modelCredentialId: string | null;
@@ -13771,6 +13848,7 @@ async function resolveModelKey(
   reasoning?: boolean;
   maxTokens?: number;
   thinkingLevel?: AgentRunRequest["model"]["thinkingLevel"];
+  thinkingLevels?: NonNullable<AgentRunRequest["model"]["thinkingLevel"]>[];
   acceptsImages?: boolean;
   maxImagesPerPrompt?: number;
   oauth?: AgentModelOAuthCredential;
@@ -13867,7 +13945,7 @@ async function resolveModelKey(
         resolved ??= await resolveAuth();
         if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
           liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
-            waitMs: 0,
+            waitMs: waitForThinkingCapabilities ? CODEX_LIVE_RUN_WAIT_MS : 0,
           });
         }
         assertCompatibleModelEnabled(credential, resolved.secret, modelId);
@@ -13897,6 +13975,7 @@ async function resolveModelKey(
             resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
           contextWindow: settings.contextWindow,
           reasoning: settings.reasoning,
+          thinkingLevels: liveCodex && liveThinkingLevels(liveCodex),
           maxTokens: settings.maxTokens,
           thinkingLevel:
             resolved.secret.kind === "openai_compatible"

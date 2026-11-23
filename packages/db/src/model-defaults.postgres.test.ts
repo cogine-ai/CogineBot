@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { DefaultModelChoice, UpdateModelDefaultsInput } from "@rakazo/contracts";
+import type {
+  DefaultModelChoice,
+  ThinkingLevel,
+  UpdateModelDefaultsInput,
+} from "@rakazo/contracts";
 import { ModelDefaultsSchema } from "@rakazo/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb } from "./client.js";
@@ -12,6 +16,12 @@ import {
   updateModelDefaults,
 } from "./model-defaults.js";
 import { runAsTenant } from "./row-security.js";
+
+import {
+  readThinkingDefaults,
+  thinkingModelBinding,
+  updateThinkingDefaults,
+} from "./thinking-defaults.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const postgres =
@@ -248,6 +258,173 @@ postgres("personal model defaults", () => {
       expect(entry.value).toEqual({ provider: model.provider, modelId: expect.any(String) });
     }
   });
+  it("inherits thinking only for a supported local model, keeps legacy and explicit values, and rejects stale writes", async () => {
+    await connect(actor, model, true);
+    const local = await connect(follower, model, true);
+    await db.prisma.spaceModelPreference.updateMany({
+      where: follower,
+      data: { thinkingLevel: "low" },
+    });
+    const prepare = async (scope: typeof actor, levels: ThinkingLevel[] = ["low", "high"]) => {
+      const selection = await resolve(scope);
+      return {
+        binding: thinkingModelBinding(selection)!,
+        secretId: selection.credential!.secretId,
+        ciphertext: "fixture-ciphertext",
+        levels,
+        connectionLevel: null,
+      };
+    };
+    const view = async (scope: typeof actor, levels?: ThinkingLevel[]) => {
+      const prepared = await prepare(scope, levels);
+      return runAsTenant(scope, () => readThinkingDefaults(db.prisma, scope, prepared));
+    };
+    const source = await prepare(actor);
+    const target = await prepare(follower);
+    const accountWrite = async (level: ThinkingLevel, expectedRevision: number) => {
+      const current = await view(actor);
+      const input = {
+        scope: "account" as const,
+        level,
+        expectedRevision,
+        binding: current.binding,
+        followingSpaceIds: current.followingSpaces.map(({ id }) => id),
+        clientNonce: randomUUID(),
+      };
+      const write = () =>
+        runAsTenant(actor, () => updateThinkingDefaults(db.prisma, actor, input, source));
+      const result = await write();
+      expect(result.status).toBe("updated");
+      expect(await write()).toEqual(result);
+      return result;
+    };
+    const spaceWrite = async (value: "inherit" | "copy" | "modelDefault") => {
+      const current = await view(follower);
+      return runAsTenant(follower, () =>
+        updateThinkingDefaults(
+          db.prisma,
+          follower,
+          {
+            scope: "space",
+            value,
+            binding: current.binding,
+            expectedRevision: current.space.revision,
+            expectedAccountRevision: current.account.revision,
+            expectedLevel: current.effective.level,
+            clientNonce: randomUUID(),
+          },
+          target,
+        ),
+      );
+    };
+    await accountWrite("high", 0);
+    expect((await view(actor)).effective).toMatchObject({ level: "high", source: "account" });
+    expect((await view(follower)).effective).toMatchObject({ level: "low", source: "space" });
+    expect((await spaceWrite("inherit")).settings.effective).toMatchObject({
+      level: "high",
+      source: "account",
+    });
+    expect((await view(follower, ["low"])).effective).toEqual({
+      level: null,
+      source: "system",
+      unsupported: true,
+    });
+    expect((await spaceWrite("copy")).status).toBe("updated");
+    await accountWrite("low", 1);
+    expect((await view(follower)).effective).toMatchObject({ level: "high", source: "space" });
+    expect((await spaceWrite("modelDefault")).settings.effective).toEqual({
+      level: null,
+      source: "space",
+      unsupported: false,
+    });
+    expect(
+      await db.prisma.spaceModelPreference.findFirst({
+        where: { ...follower, credentialId: local.id },
+      }),
+    ).toMatchObject({ thinkingLevel: "low" });
+    const current = await view(actor);
+    await db.prisma.secret.update({
+      where: { id: source.secretId },
+      data: { ciphertext: "changed-ciphertext" },
+    });
+    expect(
+      await runAsTenant(actor, () =>
+        updateThinkingDefaults(
+          db.prisma,
+          actor,
+          {
+            scope: "account",
+            level: "high",
+            expectedRevision: current.account.revision,
+            binding: current.binding,
+            followingSpaceIds: current.followingSpaces.map(({ id }) => id),
+            clientNonce: randomUUID(),
+          },
+          source,
+        ),
+      ),
+    ).toMatchObject({ status: "unavailable" });
+  });
+
+  it("serializes changing account effort against copying the Space's visible value", async () => {
+    await connect(actor, model, true);
+    await connect(follower, model, true);
+    const setup = async (scope: typeof actor) => {
+      const selection = await resolve(scope);
+      const prepared = {
+        binding: thinkingModelBinding(selection)!,
+        secretId: selection.credential!.secretId,
+        ciphertext: "fixture-ciphertext",
+        levels: ["low", "high"] as ThinkingLevel[],
+        connectionLevel: null,
+      };
+      const settings = await runAsTenant(scope, () =>
+        readThinkingDefaults(db.prisma, scope, prepared),
+      );
+      return { prepared, settings };
+    };
+    const [first, second] = await Promise.all([setup(actor), setup(follower)]);
+    const [changed, copied] = await Promise.all([
+      runAsTenant(actor, () =>
+        updateThinkingDefaults(
+          db.prisma,
+          actor,
+          {
+            scope: "account",
+            expectedRevision: 0,
+            level: "high",
+            binding: first.settings.binding,
+            followingSpaceIds: first.settings.followingSpaces.map(({ id }) => id),
+            clientNonce: randomUUID(),
+          },
+          first.prepared,
+        ),
+      ),
+      runAsTenant(follower, () =>
+        updateThinkingDefaults(
+          db.prisma,
+          follower,
+          {
+            scope: "space",
+            value: "copy",
+            expectedRevision: 0,
+            expectedAccountRevision: 0,
+            expectedLevel: null,
+            binding: second.settings.binding,
+            clientNonce: randomUUID(),
+          },
+          second.prepared,
+        ),
+      ),
+    ]);
+    expect([changed.status, copied.status].sort()).toEqual(["conflict", "updated"]);
+    expect((await setup(follower)).settings.effective).toEqual(
+      changed.status === "updated"
+        ? { level: "high", source: "account", unsupported: false }
+        : { level: null, source: "space", unsupported: false },
+    );
+  });
+
   it("freezes exact verified connections for downgrade and aborts on ambiguity before any writes", async () => {
     const previous = await connect(actor, alternate, true);
     const source = await connect(actor, model);

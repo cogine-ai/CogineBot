@@ -3,6 +3,7 @@ import type { BotSettingsValues, VoiceInfo } from "@rakazo/contracts";
 import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BotSettingsValuesSchema,
+  resolveThinkingDefault,
   ThinkingLevelSchema,
   UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
@@ -21,6 +22,7 @@ import {
   lockPersonalSettings,
   prepareBotSettingsVersion,
   readAloudForBot,
+  readThinkingPreferences,
 } from "@rakazo/db";
 import { z } from "zod";
 import { modelCredentialDto } from "./model-connect.js";
@@ -32,7 +34,7 @@ import {
   loadStoredModelSecret,
 } from "./model-selection.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
-import { codexLiveModel } from "./pi-codex-catalog.js";
+import { codexLiveModel, liveThinkingLevels } from "./pi-codex-catalog.js";
 import { listPiCatalog } from "./pi-models.js";
 import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
@@ -274,9 +276,7 @@ async function thinkingSettings(
           model,
         )
       : undefined;
-  const levels = live?.reasoningEfforts.filter(
-    (level) => ThinkingLevelSchema.safeParse(level).success,
-  );
+  const levels = live && liveThinkingLevels(live);
   return {
     allowed: levels?.length ? levels : (catalogLevels ?? ["off"]),
     connectionDefault: undefined,
@@ -327,6 +327,16 @@ export async function readOwnBotSettings(
     (active.id && active.credential?.defaultModel === active.id
       ? active.credential.thinkingLevel
       : null) ?? thinking.connectionDefault;
+  const effort =
+    active.provider && active.id && active.credential
+      ? resolveThinkingDefault({
+          model: { provider: active.provider, modelId: active.id },
+          allowed: ThinkingLevelSchema.array().safeParse(thinking.allowed).data ?? [],
+          explicit: ThinkingLevelSchema.safeParse(bot.thinkingLevel).data ?? null,
+          legacy: ThinkingLevelSchema.safeParse(connectionThinking).data ?? null,
+          ...(await readThinkingPreferences(deps.prisma, scope)),
+        })
+      : null;
   return {
     name: bot.name,
     title: bot.title,
@@ -351,12 +361,18 @@ export async function readOwnBotSettings(
             ),
     },
     thinkingLevel: {
-      value:
-        bot.thinkingLevel ??
-        connectionThinking ??
-        (active.source === "system" ? fallback.thinkingLevel : null) ??
-        "default",
-      source: bot.thinkingLevel !== null ? "bot" : connectionThinking ? "space" : "model",
+      value: effort
+        ? (effort.level ?? "default")
+        : (bot.thinkingLevel ??
+          (active.source === "system" ? fallback.thinkingLevel : null) ??
+          "default"),
+      source: effort
+        ? effort.source === "system"
+          ? "model"
+          : effort.source
+        : bot.thinkingLevel !== null
+          ? "bot"
+          : "model",
       allowed: thinking.allowed,
     },
     models,
@@ -496,7 +512,7 @@ export async function prepareOwnBotSettings(
       args.thinkingLevel === "default" ||
       (args.model !== undefined &&
         bot.thinkingLevel !== null &&
-        !allowed.includes(bot.thinkingLevel))
+        !allowed.some((level) => level === bot.thinkingLevel))
     )
       patch.thinkingLevel = null;
   }

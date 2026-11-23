@@ -322,6 +322,11 @@ import {
   UpdateReadAloudResult,
 } from "./read-aloud.js";
 import {
+  ThinkingDefaultsSchema,
+  UpdateThinkingDefaultsInput,
+  UpdateThinkingDefaultsResult,
+} from "./thinking-defaults.js";
+import {
   UpdateVoiceDefaultsInput,
   UpdateVoiceDefaultsResult,
   VoiceChoiceSchema,
@@ -414,6 +419,10 @@ export const appContract = {
     apply: oc.input(ServerUpdateRequestSchema).output(ServerUpdateRunSchema),
   },
   models: {
+    thinkingDefaults: oc.input(z.object({})).output(ThinkingDefaultsSchema),
+    updateThinkingDefaults: oc
+      .input(UpdateThinkingDefaultsInput)
+      .output(UpdateThinkingDefaultsResult),
     defaults: oc.output(ModelDefaultsSchema),
     updateDefaults: oc.input(UpdateModelDefaultsInput).output(UpdateModelDefaultsResult),
     list: oc.output(z.array(ModelCatalogEntrySchema)),

@@ -5,6 +5,7 @@ import type {
   ModelApiProtocol,
   ModelCredentialReference,
   ModelHeaderRow,
+  ThinkingDefaults,
   ThinkingLevel,
 } from "@rakazo/contracts";
 import {
@@ -94,6 +95,7 @@ import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
 import { ModelDefaultSettings } from "./ModelDefaultSettings";
 import { ModelSettingsPanel } from "./model-settings-panel";
+import { ThinkingDefaultSettings } from "./ThinkingDefaultSettings";
 
 export function ModelSettingsOverlay({
   onClose,
@@ -119,6 +121,8 @@ export function ModelSettingsOverlay({
   const [chatgptProfilesError, setChatgptProfilesError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [defaultsRevision, setDefaultsRevision] = useState(0);
+  const [thinkingRevision, setThinkingRevision] = useState(0);
+  const [thinkingDefaults, setThinkingDefaults] = useState<ThinkingDefaults | null>(null);
   const preferenceWriteOwner = useRef<number | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -166,6 +170,18 @@ export function ModelSettingsOverlay({
     setPending(next);
     return owner;
   }
+  function beginPreferenceWrite() {
+    if (busy || preferenceWriteOwner.current !== null || !contextCurrent()) return null;
+    const owner = beginPending("default");
+    preferenceWriteOwner.current = owner;
+    return owner;
+  }
+
+  function finishPreferenceWrite(owner: number) {
+    if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
+    finishPending(owner);
+  }
+
   function finishPending(owner: number) {
     if (owner === pendingOwnerRef.current) setPending(null);
   }
@@ -473,13 +489,32 @@ export function ModelSettingsOverlay({
   );
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel = modelThinkingLevels(
-    activeCredential,
-    currentEntry,
-    me?.defaultModel,
-  ).some((level) => level !== "off")
-    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium")
-    : null;
+  const activeThinking =
+    thinkingDefaults?.binding?.credentialId === activeCredential?.id &&
+    thinkingDefaults?.binding?.model.modelId === me?.defaultModel
+      ? thinkingDefaults
+      : null;
+  const effectiveThinkingLevel = activeThinking
+    ? activeThinking.effective.level
+    : activeCredential?.thinkingLevel;
+  const connectionEffortLabel =
+    activeThinking && (activeThinking.account.value || activeThinking.space.value)
+      ? t`Connection reasoning effort`
+      : t`Reasoning effort`;
+  const activeLevels =
+    activeThinking?.levels ?? modelThinkingLevels(activeCredential, currentEntry, me?.defaultModel);
+  const preferredEffort = effectiveThinkingLevel ?? "medium";
+  const displayedEffort =
+    !activeThinking || activeThinking.levels.includes(preferredEffort)
+      ? preferredEffort
+      : ((clampCatalogThinkingLevel(
+          preferredEffort === "off" ? "minimal" : preferredEffort,
+          activeThinking.levels,
+        ) as ThinkingLevel | null) ?? (activeThinking.levels.includes("off") ? "off" : null));
+  const activeThinkingLabel =
+    displayedEffort && activeLevels.some((level) => level !== "off")
+      ? thinkingLevelLabel(displayedEffort)
+      : null;
   const isActive =
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
@@ -1628,23 +1663,25 @@ export function ModelSettingsOverlay({
               );
               return `${entry?.label ?? modelId} · ${entry?.providerName ?? provider}`;
             }}
-            begin={() => {
-              if (busy || preferenceWriteOwner.current !== null || !contextCurrent()) return null;
-              const owner = beginPending("default");
-              preferenceWriteOwner.current = owner;
-              return owner;
-            }}
-            finish={(owner) => {
-              if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
-              finishPending(owner);
-            }}
+            begin={beginPreferenceWrite}
+            finish={finishPreferenceWrite}
             onChange={async () => {
               try {
-                await refresh(undefined, { keepConnectionState: true });
+                if (await refresh(undefined, { keepConnectionState: true }))
+                  setThinkingRevision((value) => value + 1);
               } catch (err) {
                 if (contextCurrent()) setError(errorText(err, t`Could not load model defaults`));
               }
             }}
+          />
+        ) : null}
+        {!localOwner && me?.thinkingDefaultsAvailable ? (
+          <ThinkingDefaultSettings
+            key={`${defaultsRevision}:${thinkingRevision}`}
+            busy={busy}
+            begin={beginPreferenceWrite}
+            finish={finishPreferenceWrite}
+            onRead={setThinkingDefaults}
           />
         ) : null}
       </div>
@@ -1958,7 +1995,7 @@ export function ModelSettingsOverlay({
                       value,
                       label: thinkingLevelLabel(value as ThinkingLevel),
                     }))}
-                    thinkingLevelLabel={t`Reasoning effort`}
+                    thinkingLevelLabel={connectionEffortLabel}
                     thinkingLevelDefaultLabel={t`Default`}
                     maxTokens={maxTokens}
                     onMaxTokensChange={

@@ -97,4 +97,6 @@ export const BotSettingsRunSnapshot = z.object({
   modelCredentialId: Id.nullable(),
   connectionRevision: z.number().int().nullable(),
   thinkingLevel: ThinkingLevelSchema.nullable(),
+  thinkingPreferenceCaptured: z.literal(true).optional(),
+  thinkingLevels: ThinkingLevelSchema.array().nonempty().optional(),
 });

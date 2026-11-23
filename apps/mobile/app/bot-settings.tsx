@@ -247,13 +247,13 @@ export default function BotSettingsScreen() {
 
   const thinkingChoices: MenuPickerChoice[] = useMemo(
     () => [
-      { key: "", label: t("Default (medium)") },
+      { key: "", label: me?.thinkingDefaultsAvailable ? t("Default") : t("Default (medium)") },
       ...thinkingOptions.map((level) => ({
         key: level,
         label: thinkingLevelLabel(level, t),
       })),
     ],
-    [t, thinkingOptions],
+    [t, thinkingOptions, me?.thinkingDefaultsAvailable],
   );
 
   function selectModel(key: string) {

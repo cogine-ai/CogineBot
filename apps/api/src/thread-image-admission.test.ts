@@ -113,6 +113,28 @@ function fixture(group = false) {
 }
 
 describe("current image send admission", () => {
+  it("pins an admitted image's model without elevating a copied Space level into a Bot choice", async () => {
+    const { tx, send } = fixture();
+    tx.bot.findFirst.mockResolvedValue({ id: "bot-1", modelProvider: null, modelId: null });
+    tx.spaceModelPreference.findFirst.mockResolvedValue({
+      modelId: "openai/gpt-4o",
+      thinkingLevel: "low",
+      isDefault: true,
+      credential: { id: "local-credential", provider: "openrouter", secretId: "fixture-secret" },
+    });
+    await send();
+    expect(tx.run.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modelProvider: "openrouter",
+        modelId: "openai/gpt-4o",
+        modelCredentialId: "local-credential",
+        thinkingLevel: "low",
+        modelPinned: true,
+        usesDefaultThinkingLevel: true,
+      }),
+    });
+  });
+
   it("uses the operator's model default for both image admission and runtime after reset", async () => {
     vi.stubEnv("RAKAZO_OPENAI_COMPATIBLE_VISION_MODELS", "receiver");
     try {
