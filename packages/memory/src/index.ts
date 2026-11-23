@@ -90,8 +90,9 @@ export class MarkdownMemoryStore implements MemoryStore {
         : memoryCommitReceiptId(request.idempotencyKey, context);
     // A save replaces the current content and appends its history atomically.
     // Conflicts retry the whole transaction so revision numbers use fresh state.
+    let result: { revision: MemoryRevision; written: boolean };
     try {
-      return await withTransactionRetry(() =>
+      result = await withTransactionRetry(() =>
         this.prisma.$transaction(
           async (tx) => {
             if (receiptId) {
@@ -102,7 +103,7 @@ export class MarkdownMemoryStore implements MemoryStore {
                 context,
                 request.content,
               );
-              if (committed) return committed;
+              if (committed) return { revision: committed, written: false };
             }
             if (request.runLease) {
               context.signal.throwIfAborted();
@@ -180,7 +181,15 @@ export class MarkdownMemoryStore implements MemoryStore {
                 sourceThreadId: request.sourceThreadId,
               },
             });
-            return { id: doc.id, path: doc.path, revision: doc.revision, content: doc.content };
+            return {
+              revision: {
+                id: doc.id,
+                path: doc.path,
+                revision: doc.revision,
+                content: doc.content,
+              },
+              written: true,
+            };
           },
           { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
         ),
@@ -206,6 +215,8 @@ export class MarkdownMemoryStore implements MemoryStore {
       }
       throw error;
     }
+    if (result.written) request.onRevisionCommitted?.();
+    return result.revision;
   }
 
   async readCommitReceipt(

@@ -222,7 +222,12 @@ function fixture({
     revision: initialMemory === undefined ? 0 : 1,
   };
   const commit = vi.fn(
-    async (request: { path: string; content: string; expectedRevision?: number }) => {
+    async (request: {
+      path: string;
+      content: string;
+      expectedRevision?: number;
+      onRevisionCommitted?: () => void;
+    }) => {
       if (
         request.expectedRevision !== undefined &&
         request.expectedRevision !== sharedMemoryState.revision
@@ -231,6 +236,7 @@ function fixture({
       }
       sharedMemoryState.content = request.content;
       sharedMemoryState.revision = (sharedMemoryState.revision || 0) + 1;
+      request.onRevisionCommitted?.();
       return {
         id: "doc-1",
         path: request.path,
@@ -6446,6 +6452,7 @@ describe("connector read-only metadata and approval enforcement", () => {
           outcome === "denied" ? "Old rule\nPreserve this line" : "Old rule\nConcurrent detail",
         );
       }
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
     },
   );
 
@@ -6877,27 +6884,123 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it("allows an owner's Routine to save a record the checker confirms", async () => {
-    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
-    const instructions = "Remember each report you completed.";
-    const f = fixture({
-      name: "save_shared_memory",
-      builtin: true,
-      autoReview: true,
-      trigger: "routine",
-      prompt: "External event plus Routine prompt",
-      routineInstructions: instructions,
-    });
-    const args = { path: "MEMORY.md", content: "The report was completed." };
-    f.setCalls([{ args, executionId: "save" }]);
-    await f.run();
-    expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ args, memoryWrite: true, userTask: instructions }),
-      expect.anything(),
-    );
-    expect(f.commit).toHaveBeenCalledOnce();
-    expect(f.pauseRunForInput).not.toHaveBeenCalled();
-  });
+  it.each(["new revision", "replayed receipt", "lost effect settlement"] as const)(
+    "audits a Routine's automatic shared memory approval only for a %s",
+    async (receipt) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const instructions = "Remember each report you completed.";
+      const f = fixture({
+        name: "save_shared_memory",
+        builtin: true,
+        autoReview: true,
+        trigger: "routine",
+        prompt: "External event plus Routine prompt",
+        routineInstructions: instructions,
+      });
+      const args = { path: "MEMORY.md", content: "The report was completed." };
+      if (receipt === "replayed receipt") {
+        f.commit.mockResolvedValueOnce({ id: "doc-1", ...args, revision: 1 });
+      }
+      if (receipt === "lost effect settlement") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "completed" ? { count: 0 } : update(input),
+        );
+      }
+      f.setCalls([{ args, executionId: "save" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ args, memoryWrite: true, userTask: instructions }),
+        expect.anything(),
+      );
+      expect(f.commit).toHaveBeenCalledOnce();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      if (receipt === "lost effect settlement") {
+        expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+      } else {
+        expect(f.effects[0]?.status).toBe("completed");
+      }
+      if (receipt !== "new revision") {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      } else {
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              id: `approval.auto_reviewed:${f.effects[0]?.id}`,
+              outcome: "success",
+              metadata: { decision: "pass" },
+            }),
+          ],
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "audits automatic Bot memory append only on change (unchanged: %s)",
+    async (unchanged) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const content = "Synthetic Bot memory";
+      const f = fixture({
+        name: "remember",
+        builtin: true,
+        autoReview: true,
+        trigger: "routine",
+        routineInstructions: "Remember the result of this report.",
+        existingBotMemory: unchanged ? content : "An older synthetic fact",
+      });
+      f.setCalls([{ args: { content }, executionId: "append" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledOnce();
+      expect(f.commit).toHaveBeenCalledTimes(unchanged ? 0 : 1);
+      expect(f.effects[0]?.status).toBe("completed");
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(unchanged ? 0 : 1);
+    },
+  );
+
+  it.each([
+    { scenario: "confirmed", value: { id: "fact-1", expired: true, reason: null }, audit: 1 },
+    { scenario: "different fact", value: { id: "fact-2", expired: true, reason: null }, audit: 0 },
+    { scenario: "not expired", value: { id: "fact-1", expired: false, reason: null }, audit: 0 },
+  ])(
+    "audits only a confirmed automatic forget for the requested fact ($scenario)",
+    async ({ value, audit }) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const forget = vi
+        .fn<NonNullable<SemanticMemoryProvider["forget"]>>()
+        .mockResolvedValue({ ok: true, value });
+      const f = fixture({
+        name: "forget_memory",
+        builtin: true,
+        autoReview: true,
+        semanticTarget: { scope: "isolated", connectionId: "synthetic-connection" },
+        semanticMemory: {
+          describe: () => ({
+            id: "synthetic-memory",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: {
+              recall: true,
+              save: true,
+              purgeHistory: true,
+              sharedScope: true,
+              forget: true,
+            },
+          }),
+          save: async () => ({ ok: true, value: undefined }),
+          forget,
+          recall: async () => ({ ok: true, value: [] }),
+          purgeHistory: async () => ({ ok: true, value: undefined }),
+        },
+      });
+      f.setCalls([{ args: { id: "fact-1" }, executionId: "forget" }]);
+      await f.run();
+      expect(forget).toHaveBeenCalledOnce();
+      expect(f.effects[0]).toMatchObject({ status: "completed", result: { ok: true, value } });
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(audit);
+    },
+  );
 
   it("honors a deny added after a memory request was approved but before dispatch", async () => {
     const name = "save_shared_memory";
@@ -6945,6 +7048,7 @@ describe("connector read-only metadata and approval enforcement", () => {
     );
     expect(f.commit.mock.calls[0]![0]).not.toHaveProperty("botId");
     expect(f.results.at(-1)).toEqual({ ok: true, path: "MEMORY.md", revision: 1 });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it("replaces an existing shared document at the revision it just read", async () => {
@@ -6963,21 +7067,27 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.results.at(-1)).toEqual({ ok: true, path: "MEMORY.md", revision: 2 });
   });
 
-  it("does not overwrite shared memory that changed after it was read", async () => {
+  it("does not overwrite or audit shared memory that changed after it was read", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
     const f = fixture({
       name: "save_shared_memory",
       builtin: true,
+      autoReview: true,
+      trigger: "routine",
+      routineInstructions: "Remember the result of this report.",
       existingSharedMemory: "Old rule",
       advanceRevisionAfterRead: true,
     });
     f.setCalls([{ args: { path: "MEMORY.md", content: "New rule" }, executionId: "call-1" }]);
     await f.run();
+    expect(reviewMock).toHaveBeenCalledOnce();
     expect(f.commit).toHaveBeenCalledWith(
       expect.objectContaining({ expectedRevision: 1 }),
       expect.anything(),
     );
     expect(f.sharedMemoryState.content).toBe("Someone else edited");
     expect(f.results.at(-1)).toEqual({ error: MEMORY_REVISION_CONFLICT_ERROR });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it("rejects shared memory content over the size limit", async () => {
