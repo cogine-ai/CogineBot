@@ -11,7 +11,7 @@ import type { MessageBlock } from "@rakazo/contracts";
 import { runQuotaWaitStateSchema } from "@rakazo/contracts";
 import { normalizeRunError, stuckWorkStatusMessages } from "@rakazo/core";
 import type { Pool, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { BOT_COLLABORATION_ORIGINS } from "@rakazo/db";
+import { AUDIT_PRUNE_BATCH_SIZE, BOT_COLLABORATION_ORIGINS, pruneAuditEvents } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { PoolClient } from "pg";
 import { returnBotMessageOutcome } from "./bot-messages.js";
@@ -24,6 +24,7 @@ import { isUserProgressClientNonce } from "./user-progress.js";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 100;
+const AUDIT_PRUNE_INTERVAL_MS = 60 * 60_000;
 const ROUTINE_LOOKAHEAD_MS = 60_000;
 const CONTROL_LOOKAHEAD_MS = 60_000;
 /** A queued job lock older than a run lease belongs to an abandoned worker. */
@@ -122,6 +123,7 @@ export function createJobReconciler(
     reconcileGroupRunTeardowns?: () => Promise<void>;
     reconcileCloudAgents?: () => Promise<void>;
     reconcileNativeEvents?: () => Promise<void>;
+    auditRetentionDays?: number;
   },
   options: { intervalMs?: number; batchSize?: number; maxPagesPerPass?: number } = {},
 ) {
@@ -138,6 +140,7 @@ export function createJobReconciler(
   let reconcilingGroupRunTeardowns: Promise<void> | undefined;
   let reconcilingActiveLimits: Promise<void> | undefined;
   let lastCompletedAt = Date.now();
+  let nextAuditPruneAt = 0;
   let stuckCursor: Cursor | undefined;
   let runCursor: Cursor | undefined;
   let routineRetryCursor: Cursor | undefined;
@@ -223,9 +226,22 @@ export function createJobReconciler(
           });
       }
       const auxiliary = await Promise.allSettled(
-        [deps.reconcileCloudAgents, deps.reconcileComputerUpdates, deps.reconcileNativeEvents].map(
-          async (reconcile) => reconcile?.(),
-        ),
+        [
+          deps.reconcileCloudAgents,
+          deps.reconcileComputerUpdates,
+          deps.reconcileNativeEvents,
+          async () => {
+            const now = Date.now();
+            if (deps.auditRetentionDays === undefined || now < nextAuditPruneAt) return;
+            nextAuditPruneAt = now + AUDIT_PRUNE_INTERVAL_MS;
+            const removed = await pruneAuditEvents(
+              deps.prisma,
+              deps.auditRetentionDays,
+              new Date(now),
+            );
+            if (removed === AUDIT_PRUNE_BATCH_SIZE) nextAuditPruneAt = 0;
+          },
+        ].map(async (reconcile) => reconcile?.()),
       );
       for (const result of auxiliary) {
         if (result.status === "rejected")

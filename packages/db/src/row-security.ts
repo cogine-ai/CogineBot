@@ -194,6 +194,7 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "BillingAccount",
   "ActionApprovalRule",
   "ActionAutoReviewPreference",
+  "AuditEvent",
   "Member",
   "Space",
   "SpaceMember",

@@ -329,7 +329,7 @@ postgres("custom archive recovery into a different cluster and database identity
     await migrateJobQueue(target.url);
     await provisionRuntimeRole(target.url, targetRuntimeUrl);
     const status = await verify();
-    expect(status).toMatchObject({ expectedTables: 90, connectionEnforced: true });
+    expect(status).toMatchObject({ expectedTables: 91, connectionEnforced: true });
     expect(status.problems).toEqual([]);
     restored = true;
   }
@@ -531,10 +531,24 @@ postgres("custom archive recovery into a different cluster and database identity
       });
     }
     expect(sourceIdentity.user).not.toBe(sourceLogin);
+    await sourceOwner.prisma.auditEvent.create({
+      data: {
+        id: id("approval-audit"),
+        organizationId: organization,
+        spaceId: actor.spaceId,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "approval.rule.created",
+        targetType: "approval_rule",
+        targetId: id("approval-rule"),
+        outcome: "success",
+        metadata: { effect: "require_approval", matchKind: "site" },
+      },
+    });
     await migrateJobQueue(source.url);
     await provisionRuntimeRole(source.url, sourceRuntimeUrl);
     expect(await applyRowSecurityPolicies(source.url, sourceRuntimeUrl)).toMatchObject({
-      expectedTables: 90,
+      expectedTables: 91,
       connectionEnforced: true,
     });
     const sourceRuntime = createDb(sourceRuntimeUrl, { rowSecurity: true });
@@ -856,6 +870,19 @@ postgres("custom archive recovery into a different cluster and database identity
     try {
       const targetShare = sharing(runtime.prisma);
       expect((await targetShare.read(archivedShareToken)).status).toBe(404);
+      await expect(
+        runAsSystem("read restored approval audit fixture", () =>
+          runtime.prisma.auditEvent.findUnique({ where: { id: id("approval-audit") } }),
+        ),
+      ).resolves.toMatchObject({
+        organizationId: id("organization"),
+        spaceId: actor.spaceId,
+        actorId: actor.userId,
+        metadata: { effect: "require_approval", matchKind: "site" },
+      });
+      await expect(runAsTenant(actor, () => runtime.prisma.auditEvent.findMany())).resolves.toEqual(
+        [],
+      );
       for (const name of ["a", "b"])
         await runAsTenant(
           { userId: id(`user-${name}`), spaceId: id(`space-${name}`) },
@@ -965,7 +992,7 @@ postgres("custom archive recovery into a different cluster and database identity
       await runtime.prisma.$disconnect();
       await runtime.pool.end();
     }
-    expect(await verify()).toMatchObject({ expectedTables: 90, connectionEnforced: true });
+    expect(await verify()).toMatchObject({ expectedTables: 91, connectionEnforced: true });
   }, 120_000);
 
   it("rejects an extra system key without deleting it or the selected credential", async () => {
@@ -1009,7 +1036,7 @@ postgres("custom archive recovery into a different cluster and database identity
         /outside the selected (owner and runtime roles|credential inventory)/,
       );
       expect(await verify([targetRuntimeUrl, alternateUrl])).toMatchObject({
-        expectedTables: 90,
+        expectedTables: 91,
         connectionEnforced: true,
       });
     } finally {

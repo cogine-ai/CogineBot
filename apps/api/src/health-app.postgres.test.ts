@@ -364,7 +364,7 @@ describePostgres("protected database app composition", () => {
     owner = database.createDb(ownerUrl);
     await legacyCatalog();
     await adapters.migrateJobQueue(ownerUrl);
-    expect(ROW_SECURITY_POLICIES).toHaveLength(90);
+    expect(ROW_SECURITY_POLICIES).toHaveLength(91);
     grantRole = (
       await owner.pool.query<{ role: string }>(
         "SELECT 'coginebot_app_' || oid::text AS role FROM pg_database WHERE datname=current_database()",
@@ -396,7 +396,7 @@ describePostgres("protected database app composition", () => {
     }
     policiesOwned = true;
     expect(await database.applyRowSecurityPolicies(ownerUrl, runtimeUrl)).toMatchObject({
-      expectedTables: 90,
+      expectedTables: 91,
       connectionEnforced: true,
     });
     previousSecretStore = process.env.SECRET_STORE;
@@ -598,7 +598,7 @@ describePostgres("protected database app composition", () => {
     };
     try {
       expect(await database.verifyRuntimeDatabase(jobsDatabase.prisma)).toMatchObject({
-        expectedTables: 90,
+        expectedTables: 91,
         connectionEnforced: true,
       });
       await owner!.prisma.deploymentSettings.upsert({
@@ -1115,7 +1115,7 @@ describePostgres("protected database app composition", () => {
     let handles: Awaited<ReturnType<typeof createApp>> | undefined;
     try {
       expect(await database.verifyRuntimeDatabase(trusted.prisma)).toMatchObject({
-        expectedTables: 90,
+        expectedTables: 91,
         connectionEnforced: true,
       });
       const settings = await owner!.prisma.deploymentSettings.findMany({ orderBy: { id: "asc" } });

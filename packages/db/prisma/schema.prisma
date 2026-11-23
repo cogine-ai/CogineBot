@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  schemas = ["public", "cogine_pages", "cogine_model_auth"]
+  schemas = ["public", "cogine_pages", "cogine_model_auth", "cogine_audit"]
 }
 
 model AiDataConsent {
@@ -325,6 +325,25 @@ model SpaceCollaborationChange {
   @@unique([spaceId, revision])
   @@map("space_collaboration_changes")
   @@schema("public")
+}
+
+model AuditEvent {
+  id             String   @id
+  createdAt      DateTime @default(now())
+  organizationId String
+  spaceId        String
+  actorType      String
+  actorId        String
+  action         String
+  targetType     String
+  targetId       String
+  outcome        String
+  metadata       Json
+
+  @@index([organizationId, createdAt, id])
+  @@index([createdAt, id])
+  @@map("audit_events")
+  @@schema("cogine_audit")
 }
 
 model Invitation {

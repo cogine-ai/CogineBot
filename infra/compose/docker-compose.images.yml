@@ -17,6 +17,7 @@ x-app-environment: &app-environment
   DATABASE_URL: postgres://${POSTGRES_APP_USER:-rakazo_app}:${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
   REALTIME_DATABASE_URL:
   DB_POOL_MAX:
+  AUDIT_EVENT_RETENTION_DAYS:
   DATA_DIR: /data
   API_URL:
   ENCRYPTION_KEY:

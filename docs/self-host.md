@@ -543,6 +543,12 @@ regional hostname; `AXIOM_EDGE_URL` must be https and wins when both are set.
 Compose passes these into the API, worker, supervisor, and updater. Computer containers and updater
 child commands do not receive them.
 
+The server records rules created or deleted in approval settings in its audit table. Entries
+include the organization, Space, actor, rule ID, action, and rule categories. Site patterns and
+request content are excluded. The background reconciler removes expired entries in batches.
+`AUDIT_EVENT_RETENTION_DAYS` accepts a whole number from 1 to 3650 and defaults to 365.
+`audit.event.write_failed` signals an audit gap after the operation has committed.
+
 Optional:
 
 ```env

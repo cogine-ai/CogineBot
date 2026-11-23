@@ -68,6 +68,7 @@ import {
 } from "@rakazo/adapters";
 import { resolveEncryptionKey, resolveSupervisorToken } from "@rakazo/core";
 import {
+  auditEventRetentionDays,
   createBoardEvents,
   createDb,
   createThreadEvents,
@@ -339,6 +340,7 @@ async function main() {
     reconcileComputerActiveLimits: createComputerActiveLimitRecovery({ prisma, sandbox, jobs }),
     reconcileGroupRunTeardowns: createGroupRunTeardownRecovery({ prisma, sandbox }).reconcile,
     reconcileNativeEvents: () => nativeEvents.reconcile(),
+    auditRetentionDays: auditEventRetentionDays(process.env.AUDIT_EVENT_RETENTION_DAYS),
   });
   let stopping = false;
   let stopPromise: Promise<void> | undefined;

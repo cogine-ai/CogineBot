@@ -130,6 +130,16 @@ describe("row-security maintenance command", () => {
     expect(mocks.verify).toHaveBeenCalledWith(prisma, {
       allowPrePages: true,
       allowPreModelAuth: true,
+      allowPreAudit: true,
+    });
+  });
+
+  it("requires the audit schema during regular runtime verification", async () => {
+    await run("verify");
+    expect(mocks.verify).toHaveBeenCalledExactlyOnceWith(prisma, {
+      allowPrePages: true,
+      allowPreModelAuth: false,
+      allowPreAudit: false,
     });
   });
 

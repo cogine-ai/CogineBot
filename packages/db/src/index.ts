@@ -1,4 +1,10 @@
 export * from "./artifact-versions.js";
+export {
+  AUDIT_PRUNE_BATCH_SIZE,
+  auditEventRetentionDays,
+  pruneAuditEvents,
+  recordApprovalRuleAudit,
+} from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";
 export * from "./board-live.js";

@@ -16,9 +16,10 @@ const runtimeGrantRole = Prisma.sql`${RUNTIME_ROLE} || '_' || ${databaseOid}::te
 const isolatedGrantCatalog = Prisma.sql`SELECT n.oid, n.nspname,
     (SELECT pg_catalog.count(*) = CASE WHEN n.nspname = 'cogine_pages' THEN 2 ELSE 1 END
       AND pg_catalog.bool_and(c.relkind = 'r' AND NOT c.relispartition
-        AND CASE WHEN n.nspname = 'cogine_pages'
-          THEN c.relname IN ('pages', 'page_versions')
-          ELSE c.relname = 'model_oauth_sessions' END)
+        AND CASE n.nspname
+          WHEN 'cogine_pages' THEN c.relname IN ('pages', 'page_versions')
+          WHEN 'cogine_model_auth' THEN c.relname = 'model_oauth_sessions'
+          ELSE c.relname = 'audit_events' END)
       FROM pg_catalog.pg_class c WHERE c.relnamespace = n.oid AND c.relkind <> 'i')
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc f WHERE f.pronamespace = n.oid)
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(
@@ -30,7 +31,8 @@ const isolatedGrantCatalog = Prisma.sql`SELECT n.oid, n.nspname,
         CASE WHEN pg_catalog.cardinality(c.relacl) > 0 THEN c.relacl END) a
       WHERE c.relnamespace = n.oid AND a.grantee <> c.relowner AND (
         a.grantee IS DISTINCT FROM g.oid
-        OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE') OR a.is_grantable))
+        OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+        OR (n.nspname = 'cogine_audit' AND a.privilege_type = 'UPDATE') OR a.is_grantable))
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_attribute col ON col.attrelid = c.oid
       CROSS JOIN LATERAL pg_catalog.aclexplode(
@@ -43,7 +45,7 @@ const isolatedGrantCatalog = Prisma.sql`SELECT n.oid, n.nspname,
       WHERE d.defaclnamespace = n.oid AND a.grantee <> d.defaclrole) AS "grantsSafe"
   FROM pg_catalog.pg_namespace n
   LEFT JOIN pg_catalog.pg_roles g ON g.rolname = ${runtimeGrantRole}
-  WHERE n.nspname IN ('cogine_pages', 'cogine_model_auth')`;
+  WHERE n.nspname IN ('cogine_pages', 'cogine_model_auth', 'cogine_audit')`;
 
 function foreignGrantDependencies(role: Prisma.Sql, currentDatabase: Prisma.Sql = databaseOid) {
   return Prisma.sql`EXISTS (SELECT 1 FROM pg_catalog.pg_shdepend d
@@ -158,13 +160,13 @@ function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
     SELECT r.rolname AS role, session_user AS "sessionRole", r.rolsuper, r.rolbypassrls,
     r.rolcreatedb, r.rolcreaterole, r.rolreplication,
     (EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
+      WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'cogine_audit', 'graphile_worker', 'pg_catalog')
         AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER'))
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
-        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
+        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'cogine_audit', 'graphile_worker', 'pg_catalog')
           AND pg_catalog.pg_has_role(r.oid, n.nspowner, 'MEMBER'))
       OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc f JOIN pg_catalog.pg_namespace n ON n.oid = f.pronamespace
-        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'graphile_worker', 'pg_catalog')
+        WHERE n.nspname IN ('public', 'cogine_private', 'cogine_pages', 'cogine_model_auth', 'cogine_audit', 'graphile_worker', 'pg_catalog')
           AND pg_catalog.pg_has_role(r.oid, f.proowner, 'MEMBER'))) AS owns,
     (CASE WHEN r.rolname ~ ${`^${RUNTIME_ROLE}_[1-9][0-9]{0,9}$`}
       THEN pg_catalog.substr(r.rolname, ${RUNTIME_ROLE.length + 2})::pg_catalog.numeric <= 4294967295
@@ -268,6 +270,7 @@ function rolePrivileges(targetRole?: string, runtimeLogin?: string) {
           OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
             CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) v(privilege)
             WHERE c.relnamespace = p.oid AND c.relkind = 'r'
+              AND (p.nspname <> 'cogine_audit' OR v.privilege <> 'UPDATE')
               AND NOT pg_catalog.has_table_privilege(r.oid, c.oid, v.privilege))) AS "hasRuntimeGrants"
   FROM pg_catalog.pg_roles r
   WHERE r.rolname = ${targetRole === undefined ? Prisma.sql`current_user` : targetRole}`;
@@ -381,7 +384,9 @@ async function provisionWith(
     throw new Error(
       unsafeSchema.nspname === "cogine_pages"
         ? "The Pages database schema does not match its required tables and restricted grants"
-        : "The model sign-in schema does not match its required table and restricted grants",
+        : unsafeSchema.nspname === "cogine_model_auth"
+          ? "The model sign-in schema does not match its required table and restricted grants"
+          : "The audit schema does not match its required table and restricted grants",
     );
   const runtimeStatement = rolePrivileges(login, login);
   let {
@@ -452,6 +457,11 @@ async function provisionWith(
       GRANT USAGE ON SCHEMA cogine_model_auth TO ${groupName};
       GRANT SELECT, INSERT, UPDATE, DELETE
         ON TABLE cogine_model_auth.model_oauth_sessions TO ${groupName};
+    `);
+  if (isolatedSchemas.some((schema) => schema.nspname === "cogine_audit"))
+    await owner.query(`
+      GRANT USAGE ON SCHEMA cogine_audit TO ${groupName};
+      GRANT SELECT, INSERT, DELETE ON TABLE cogine_audit.audit_events TO ${groupName};
     `);
   await owner.query(`
     GRANT USAGE ON SCHEMA public TO ${groupName};
