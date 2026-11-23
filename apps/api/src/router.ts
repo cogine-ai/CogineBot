@@ -307,6 +307,7 @@ import {
   readThinkingDefaults,
   readThinkingPreferences,
   readVoiceDefaults,
+  recordApprovalRuleAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -8519,28 +8520,32 @@ export function createRouter(deps: RouterDeps) {
           input.matchKind === "site" ? canonicalApprovalSite(input.matchValue) : input.matchValue;
         if (!matchValue)
           throw new ORPCError("BAD_REQUEST", { message: "Enter an HTTP(S) site or hostname." });
-        const row = await deps.prisma.$transaction(async (tx) => {
-          await touchActionApprovalPolicy(tx, context.actor.spaceId, context.actor.userId);
-          return tx.actionApprovalRule.upsert({
-            where: {
-              spaceId_createdByUserId_effect_matchKind_matchValue: {
-                spaceId: context.actor.spaceId,
-                createdByUserId: context.actor.userId,
-                effect: input.effect,
-                matchKind: input.matchKind,
-                matchValue,
-              },
-            },
-            create: {
-              spaceId: context.actor.spaceId,
-              createdByUserId: context.actor.userId,
-              effect: input.effect,
-              matchKind: input.matchKind,
-              matchValue,
-            },
-            update: {},
+        const { actor } = context;
+        const data = {
+          spaceId: actor.spaceId,
+          createdByUserId: actor.userId,
+          effect: input.effect,
+          matchKind: input.matchKind,
+          matchValue,
+        };
+        const { row, created } = await deps.prisma.$transaction(async (tx) => {
+          await touchActionApprovalPolicy(tx, actor.spaceId, actor.userId);
+          const [inserted] = await tx.actionApprovalRule.createManyAndReturn({
+            data,
+            skipDuplicates: true,
           });
+          if (inserted) return { row: inserted, created: true };
+          const existing = await tx.actionApprovalRule.findUniqueOrThrow({
+            where: { spaceId_createdByUserId_effect_matchKind_matchValue: data },
+          });
+          return { row: existing, created: false };
         });
+        if (created)
+          await recordApprovalRuleAudit(deps.prisma, actor, row.id, row.createdAt, {
+            action: "approval.rule.created",
+            effect: input.effect,
+            matchKind: input.matchKind,
+          });
         return {
           id: row.id,
           effect: row.effect as ActionApprovalRule["effect"],
@@ -8550,16 +8555,22 @@ export function createRouter(deps: RouterDeps) {
         };
       }),
       remove: authed.approvalRules.remove.handler(async ({ context, input }) => {
-        await deps.prisma.$transaction(async (tx) => {
-          await touchActionApprovalPolicy(tx, context.actor.spaceId, context.actor.userId);
-          await tx.actionApprovalRule.deleteMany({
+        const { actor } = context;
+        const removedAt = await deps.prisma.$transaction(async (tx) => {
+          await touchActionApprovalPolicy(tx, actor.spaceId, actor.userId);
+          const { count } = await tx.actionApprovalRule.deleteMany({
             where: {
               id: input.id,
-              spaceId: context.actor.spaceId,
-              createdByUserId: context.actor.userId,
+              spaceId: actor.spaceId,
+              createdByUserId: actor.userId,
             },
           });
+          return count ? new Date() : null;
         });
+        if (removedAt)
+          await recordApprovalRuleAudit(deps.prisma, actor, input.id, removedAt, {
+            action: "approval.rule.deleted",
+          });
         return { ok: true as const };
       }),
     },

@@ -94,6 +94,7 @@ import { WEBSITE_LOGIN_CARD_HEADER } from "@rakazo/contracts";
 import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
+  auditEventRetentionDays,
   createBoardEvents,
   createDb,
   createPool,
@@ -665,6 +666,7 @@ async function buildApp(
         reconcileComputerActiveLimits: createComputerActiveLimitRecovery({ prisma, sandbox, jobs }),
         reconcileGroupRunTeardowns: groupRunTeardowns.reconcile,
         reconcileNativeEvents: () => nativeEvents.reconcile(),
+        auditRetentionDays: auditEventRetentionDays(process.env.AUDIT_EVENT_RETENTION_DAYS),
       })
     : undefined;
   reconciler?.start();

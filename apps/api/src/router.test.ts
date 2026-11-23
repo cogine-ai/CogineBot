@@ -87,22 +87,27 @@ describe("account preferences", () => {
     "persists and returns a canonical site rule with the actor's scope (%s)",
     async (effect) => {
       const { deps, actor } = preferencesDeps("robot");
-      const upsert = vi.fn(
+      const createManyAndReturn = vi.fn(
         async ({
-          create,
+          data,
         }: {
-          create: {
+          data: {
             effect: typeof effect;
             matchKind: "site";
             matchValue: string;
             spaceId: string;
             createdByUserId: string;
           };
-        }) => ({ id: "rule-1", ...create, createdAt: new Date("2026-11-01T00:00:00Z") }),
+        }) => [{ id: "rule-1", ...data, createdAt: new Date("2026-11-01T00:00:00Z") }],
       );
-      const findMany = vi.fn(async () => [await upsert.mock.results[0]!.value]);
+      const findMany = vi.fn(async () => await createManyAndReturn.mock.results[0]!.value);
       const executeRaw = vi.fn(async () => 1);
-      const tx = { $executeRaw: executeRaw, actionApprovalRule: { upsert } };
+      const tx = {
+        $executeRaw: executeRaw,
+        actionApprovalRule: { createManyAndReturn },
+        space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "organization-1" })) },
+        auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
+      };
       Object.assign(deps.prisma, {
         $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
         actionApprovalRule: { findMany },
@@ -120,32 +125,23 @@ describe("account preferences", () => {
         where: { spaceId: actor.spaceId, createdByUserId: actor.userId },
         orderBy: { createdAt: "asc" },
       });
-      expect(upsert).toHaveBeenCalledWith({
-        where: {
-          spaceId_createdByUserId_effect_matchKind_matchValue: {
-            spaceId: actor.spaceId,
-            createdByUserId: actor.userId,
-            effect,
-            matchKind: "site",
-            matchValue: "example.com",
-          },
-        },
-        create: {
+      expect(createManyAndReturn).toHaveBeenCalledWith({
+        data: {
           spaceId: actor.spaceId,
           createdByUserId: actor.userId,
           effect,
           matchKind: "site",
           matchValue: "example.com",
         },
-        update: {},
+        skipDuplicates: true,
       });
     },
   );
 
   it("leaves the rule writer closed to blocks during the worker compatibility phase", async () => {
     const { deps, actor } = preferencesDeps("robot");
-    const upsert = vi.fn();
-    Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+    const transaction = vi.fn();
+    Object.assign(deps.prisma, { $transaction: transaction });
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     await expect(
       client.approvalRules.set({
@@ -154,13 +150,13 @@ describe("account preferences", () => {
         matchValue: "demo_write",
       } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(upsert).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid site before writing any rule", async () => {
     const { deps, actor } = preferencesDeps("robot");
-    const upsert = vi.fn();
-    Object.assign(deps.prisma, { actionApprovalRule: { upsert } });
+    const transaction = vi.fn();
+    Object.assign(deps.prisma, { $transaction: transaction });
     const client = createRouterClient(createRouter(deps), { context: { actor } as never });
     await expect(
       client.approvalRules.set({
@@ -169,7 +165,7 @@ describe("account preferences", () => {
         matchValue: "ftp://example.com/file",
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(upsert).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("reports model credential store outages as service unavailable", async () => {

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Prisma, RowSecurityPolicyStatus } from "@rakazo/db";
@@ -12,6 +13,7 @@ import {
   issueMessagingLinkCode,
   listTicketComments,
   provisionRuntimeRole,
+  pruneAuditEvents,
   redeemMessagingLinkCode,
   renameSpaceForMember,
   runAsSystem,
@@ -19,6 +21,7 @@ import {
   runAsTenant,
   scramSha256Verifier,
   toTicketCommentDto,
+  verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
@@ -82,6 +85,196 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     runtime!.prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM public.${escapeIdentifier(table)} ORDER BY id`,
     );
+  async function approvalRulesFor(userId: string, spaceId: string, prisma = runtime!.prisma) {
+    const { createRouterClient } = await import("@orpc/server");
+    const { createRouter } = await import("./router.js");
+    return createRouterClient(
+      createRouter({
+        prisma,
+        env: {
+          defaultProvider: "fake",
+          defaultModel: "fake-model",
+          webOrigin: "http://127.0.0.1:5173",
+          screenProxySecret: "synthetic-audit-secret",
+          sandboxProvider: "fake",
+        },
+        dataDir: "unused-policy-audit-fixture",
+      } as unknown as Parameters<typeof createRouter>[0]),
+      {
+        context: {
+          actor: { userId, spaceId, email: "member@example.test", isDeploymentOwner: false },
+        },
+      },
+    ).approvalRules;
+  }
+
+  it("records a saved approval rule under its organization with metadata only", async () => {
+    const rules = await approvalRulesFor(userA, spaceA);
+    const rule = await inA(() =>
+      rules.set({
+        effect: "require_approval",
+        matchKind: "site",
+        matchValue: "https://audit-fixture.example.test/path?key=synthetic-secret",
+      }),
+    );
+    expect(rule.matchValue).toBe("example.test");
+    const { rows } = await owner.pool.query(
+      'SELECT "organizationId", "spaceId", "actorId", action, "targetId", outcome, metadata FROM cogine_audit.audit_events WHERE "targetId" = $1',
+      [rule.id],
+    );
+    expect(rows).toEqual([
+      {
+        organizationId: orgA,
+        spaceId: spaceA,
+        actorId: userA,
+        action: "approval.rule.created",
+        targetId: rule.id,
+        outcome: "success",
+        metadata: { effect: "require_approval", matchKind: "site" },
+      },
+    ]);
+    expect(await inA(() => runtime!.prisma.auditEvent.findMany())).toEqual([]);
+    await rejectedByPolicy(
+      inA(() =>
+        runtime!.prisma.auditEvent.create({
+          data: {
+            id: "forged-rule-audit",
+            organizationId: orgA,
+            spaceId: spaceA,
+            actorType: "user",
+            actorId: userA,
+            action: "approval.rule.deleted",
+            targetType: "approval_rule",
+            targetId: rule.id,
+            outcome: "success",
+            metadata: {},
+          },
+        }),
+      ),
+    );
+  });
+
+  it("records one create and one delete across retries, races and foreign removes", async () => {
+    const rules = await approvalRulesFor(userA, spaceA);
+    const sharedMember = await approvalRulesFor(userB, spaceA);
+    const otherSpace = await approvalRulesFor(userA, spaceC);
+    const secondRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+    try {
+      const secondClient = await approvalRulesFor(userA, spaceA, secondRuntime.prisma);
+      const input = {
+        effect: "always_allow" as const,
+        matchKind: "site" as const,
+        matchValue: "https://audit-retry.example.invalid",
+      };
+      const [first, retry] = await Promise.all([
+        inA(() => rules.set(input)),
+        inA(() => secondClient.set(input)),
+      ]);
+      expect(retry).toEqual(first);
+      const remove = { id: first.id };
+      await runAsTenant({ spaceId: spaceA, userId: userB }, () => sharedMember.remove(remove));
+      await runAsTenant({ spaceId: spaceC, userId: userA }, () => otherSpace.remove(remove));
+      expect(await inA(() => rules.list())).toContainEqual(first);
+      await Promise.all([inA(() => rules.remove(remove)), inA(() => secondClient.remove(remove))]);
+      expect(await inA(() => rules.list())).not.toContainEqual(first);
+      const { rows } = await owner.pool.query(
+        'SELECT "organizationId", "spaceId", "actorId", action FROM cogine_audit.audit_events WHERE "targetId" = $1 ORDER BY action',
+        [first.id],
+      );
+      expect(rows).toEqual([
+        { organizationId: orgA, spaceId: spaceA, actorId: userA, action: "approval.rule.created" },
+        { organizationId: orgA, spaceId: spaceA, actorId: userA, action: "approval.rule.deleted" },
+      ]);
+    } finally {
+      await secondRuntime.prisma.$disconnect();
+      await secondRuntime.pool.end();
+    }
+  });
+
+  it("keeps a committed approval rule when the restricted audit write fails", async () => {
+    const rules = await approvalRulesFor(userA, spaceA);
+    const grant = escapeIdentifier(groupRole!);
+    await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+    try {
+      const rule = await inA(() =>
+        rules.set({
+          effect: "always_allow",
+          matchKind: "tool",
+          matchValue: "offline_audit_fixture",
+        }),
+      );
+      expect(await inA(() => rules.list())).toContainEqual(rule);
+      expect(await owner.prisma.auditEvent.count({ where: { targetId: rule.id } })).toBe(0);
+    } finally {
+      await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+    }
+  });
+
+  it("prunes a bounded batch of expired entries while preserving the cutoff", async () => {
+    const atCutoff = new Date("2026-11-01T00:00:00Z");
+    await owner.prisma.auditEvent.createMany({
+      data: Array.from({ length: 502 }, (_, index) => ({
+        id: id(`audit-retention-${index}`),
+        createdAt: index === 501 ? atCutoff : new Date(atCutoff.getTime() - 1000),
+        organizationId: orgA,
+        spaceId: spaceA,
+        actorType: "user",
+        actorId: userA,
+        action: "approval.rule.created",
+        targetType: "approval_rule",
+        targetId: "audit-retention-rule-fixture",
+        outcome: "success",
+        metadata: {},
+      })),
+    });
+    const now = new Date("2026-11-02T00:00:00Z");
+    const privileges = await runtime!.prisma.$queryRaw<Array<{ canUpdate: boolean }>>`
+      SELECT has_table_privilege(current_user, 'cogine_audit.audit_events', 'UPDATE') AS "canUpdate"
+    `;
+    expect(privileges).toEqual([{ canUpdate: false }]);
+    await expect(pruneAuditEvents(runtime!.prisma, 1, now)).resolves.toBe(500);
+    await expect(pruneAuditEvents(runtime!.prisma, 1, now)).resolves.toBe(1);
+    await expect(pruneAuditEvents(runtime!.prisma, 1, now)).resolves.toBe(0);
+    expect(
+      await owner.prisma.auditEvent.findMany({
+        where: { targetId: "audit-retention-rule-fixture" },
+        select: { createdAt: true },
+      }),
+    ).toEqual([{ createdAt: atCutoff }]);
+  });
+
+  it("accepts an absent audit schema only for rollback and upgrades an enforced database", async () => {
+    const migration = await readFile(
+      new URL(
+        "../../../packages/db/prisma/migrations/20261123160000_audit_events/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const prisma = runtime!.prisma;
+    await owner.pool.query("ALTER SCHEMA cogine_audit RENAME TO previous_audit_fixture");
+    try {
+      await expect(verifyRuntimeDatabase(prisma)).rejects.toThrow("policies");
+      await expect(verifyRuntimeDatabase(prisma, { allowPreAudit: true })).resolves.toMatchObject({
+        connectionEnforced: true,
+      });
+      await owner.pool.query("CREATE SCHEMA cogine_audit");
+      await expect(verifyRuntimeDatabase(prisma, { allowPreAudit: true })).rejects.toThrow(
+        "policies",
+      );
+      await owner.pool.query("DROP SCHEMA cogine_audit");
+      await owner.pool.query(migration);
+      await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
+        connectionEnforced: true,
+      });
+      expect(await inA(() => prisma.auditEvent.findMany())).toEqual([]);
+    } finally {
+      await owner.pool.query("DROP TABLE IF EXISTS cogine_audit.audit_events");
+      await owner.pool.query("DROP SCHEMA IF EXISTS cogine_audit");
+      await owner.pool.query("ALTER SCHEMA previous_audit_fixture RENAME TO cogine_audit");
+    }
+  });
+
   const catalog = async () =>
     (
       await owner.pool.query(
@@ -589,7 +782,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(163);
+    expect(snapshot).toHaveLength(164);
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -1603,7 +1796,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(163);
+        expect((await catalog()).length).toBe(164);
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -1896,7 +2089,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(163);
+        expect(committed).toHaveLength(164);
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -1942,7 +2135,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(163);
+      expect(committed).toHaveLength(164);
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);
