@@ -85,7 +85,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
     onBusyChangeRef.current?.(next !== null);
   }
 
-  async function refresh(nextProvider?: string): Promise<boolean> {
+  async function refresh(nextProvider?: string, reloadDefaults = true): Promise<boolean> {
     const generation = ++refreshGeneration.current;
     const live = () => current() && generation === refreshGeneration.current;
     try {
@@ -106,7 +106,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
       setVoiceId(cred?.voiceId || listed[0]?.id || "");
       setSpeechModel(cred?.speechModel ?? "");
       setVoices(listed);
-      setDefaultsRevision((revision) => revision + 1);
+      if (reloadDefaults) setDefaultsRevision((revision) => revision + 1);
       setLoadFailed(false);
       return true;
     } catch (error) {
@@ -332,7 +332,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
               key={defaultsRevision}
               busy={busy}
               catalog={provider && status.provider === provider ? { provider, voices } : null}
-              onChange={() => refresh(provider)}
+              onChange={() => refresh(provider, false)}
               beginWrite={() => {
                 if (!current() || pendingRef.current !== null) return false;
                 markPending("voice");

@@ -131,7 +131,7 @@ function VoiceSettingsForm({
   }
 
   const load = useCallback(
-    async (nextProvider?: string) => {
+    async (nextProvider?: string, reloadDefaults = true) => {
       const generation = ++refreshGeneration.current;
       const ownerCurrent = captureDeviceVoiceOwner();
       const live = () => ownerCurrent() && generation === refreshGeneration.current;
@@ -152,7 +152,7 @@ function VoiceSettingsForm({
       setVoiceId(cred?.voiceId ?? "");
       setSpeechModel(cred?.speechModel ?? "");
       setVoices(listed);
-      setDefaultsRevision((revision) => revision + 1);
+      if (reloadDefaults) setDefaultsRevision((revision) => revision + 1);
     },
     [rpc],
   );
@@ -447,7 +447,7 @@ function VoiceSettingsForm({
             busy={pending !== null}
             catalog={provider && status.provider === provider ? { provider, voices } : null}
             onChange={() =>
-              load(provider).catch((error) => {
+              load(provider, false).catch((error) => {
                 if (settings.isCurrent())
                   setError(errorText(error, t("Could not load voice settings")));
               })

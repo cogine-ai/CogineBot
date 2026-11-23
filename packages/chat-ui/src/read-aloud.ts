@@ -60,16 +60,16 @@ export function usePreferenceSettings<Settings, Input, Problem extends string>(
 
   async function save(input: Input) {
     const request = binding.current;
-    if (request?.transport !== transport || busy.current || !transport.isCurrent()) return false;
+    if (request?.transport !== transport || busy.current || !transport.isCurrent()) return null;
     busy.current = true;
     setPending(true);
     setProblem(null);
     try {
       const result = await transport.write(input, request.controller.signal);
-      if (request !== binding.current || !transport.isCurrent()) return false;
+      if (request !== binding.current || !transport.isCurrent()) return null;
       setAccepted({ transport, settings: result.settings });
-      if (result.status === "updated") return true;
-      setProblem(result.status);
+      if (result.status !== "updated") setProblem(result.status);
+      return result;
     } catch {
       if (request === binding.current && transport.isCurrent()) setProblem("save");
     } finally {
@@ -78,7 +78,7 @@ export function usePreferenceSettings<Settings, Input, Problem extends string>(
         setPending(false);
       }
     }
-    return false;
+    return null;
   }
 
   return { settings, pending, problem, load, save };

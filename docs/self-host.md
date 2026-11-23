@@ -1036,11 +1036,13 @@ CREATE TEMPORARY TABLE voice_freeze_verified (
 ```
 
 Load the verified rows in that session and apply [the voice freeze SQL](../packages/db/prisma/operations/freeze-voice-defaults.sql)
-with the database migration role. The script aborts if a following Space has an
-unavailable voice, a changed connection, or a missing verification. Resolve that
-Space's selection before retrying. The script writes only the voice ID into the
-active Space configuration. It retains explicit choices, preference history, and
-credentials.
+with the database migration role. The script aborts if a following Space with an
+active connection has an unavailable voice, a changed connection, or a missing
+verification. If the client stops at that error, issue `ROLLBACK` in the same
+session first. Resolve and verify the choice again, stop writers again if needed,
+refresh the temporary verification table, and rerun the script. The script
+writes only the voice ID into the active Space configuration. It retains explicit
+choices, preference history, and credentials.
 
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.

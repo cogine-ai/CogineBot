@@ -81,10 +81,15 @@ export function VoiceDefaultSettings({
       ? (choices.find(({ id }) => id === choice.voiceId)?.label ?? choice.voiceId)
       : choice.voiceId;
   };
-  async function write(input: UpdateVoiceDefaultsInput) {
+  async function sync(input?: UpdateVoiceDefaultsInput) {
     if (!beginWrite()) return;
     try {
-      if (await save(input)) await onChange();
+      if (input) {
+        if (!(await save(input))) return;
+      } else {
+        await load();
+      }
+      await onChange();
     } finally {
       endWrite();
     }
@@ -105,7 +110,7 @@ export function VoiceDefaultSettings({
             variant="ghost"
             size="sm"
             disabled={pending || busy}
-            onClick={() => void load()}
+            onClick={() => void sync()}
           >
             <Trans>Reload</Trans>
           </Button>
@@ -159,7 +164,7 @@ export function VoiceDefaultSettings({
                 busy || pending || (!settings.space.value && (!effective?.choice || unavailable))
               }
               onCheckedChange={(enabled) =>
-                void write({
+                void sync({
                   scope: "space",
                   enabled,
                   expectedRevision: settings.space.revision,
@@ -208,7 +213,7 @@ export function VoiceDefaultSettings({
               onClick={() => {
                 if (!confirm) return;
                 setIntent(null);
-                void write({
+                void sync({
                   scope: "account",
                   value: confirm.value,
                   expectedRevision: confirm.snapshot.account.revision,

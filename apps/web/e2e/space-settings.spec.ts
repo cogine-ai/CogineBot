@@ -29,6 +29,20 @@ test("uses personal voice defaults for new playback and keeps Space and Bot choi
   const botId = activeBotId(page);
   const second = await rpc<Space>(page, "spaces/create", { name: "Voice Lab" });
   await rpc(page, "voice/connect", { provider: "scripted", apiKey: "offline-voice-key" });
+  const statusRoute = "**/rpc/voice/status";
+  await page.route(statusRoute, (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          configured: true,
+          ready: false,
+          transcribe: true,
+          provider: "scripted",
+          voiceId: "",
+        },
+      },
+    }),
+  );
   await openUserSettings(page, "voice");
   const defaults = page.getByRole("region", { name: "Voice defaults" });
   const account = defaults.getByLabel("My default voice");
@@ -36,6 +50,7 @@ test("uses personal voice defaults for new playback and keeps Space and Bot choi
   const prepare = (botId?: string) =>
     rpc(page, "voice/prepare", { text: "A new playback.", botId });
   const dialog = page.getByRole("alertdialog", { name: "Change my default voice?" });
+  const sample = page.getByRole("button", { name: "Hear a sample" });
   await expect(account).toHaveValue("");
   await account.selectOption({ label: "Scripted Ember" });
   await expect(dialog).toContainText("Voice Lab");
@@ -43,6 +58,24 @@ test("uses personal voice defaults for new playback and keeps Space and Bot choi
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(account).toHaveValue("");
   expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "alloy-test" } });
+  await expect(sample).toBeDisabled();
+  await account.selectOption({ label: "Scripted Ember" });
+  const snapshot = await rpc<VoiceDefaults>(page, "voice/defaults", {});
+  expect(
+    await rpc(page, "voice/updateDefaults", {
+      scope: "account",
+      value: { provider: "scripted", voiceId: "alloy-test" },
+      expectedRevision: snapshot.account.revision,
+      followingSpaceIds: snapshot.followingSpaces.map(({ id }) => id),
+      clientNonce: "updated-from-another-client",
+    }),
+  ).toMatchObject({ status: "updated" });
+  await page.unroute(statusRoute);
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(defaults.getByRole("alert")).toContainText("Settings changed elsewhere.");
+  await expect(account).toHaveValue("voice:alloy-test");
+  await expect(sample).toBeEnabled();
+  await expect(defaults.getByRole("alert")).toContainText("Settings changed elsewhere.");
   await account.selectOption({ label: "Scripted Ember" });
   await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
   await expect(account).toHaveValue("voice:ember-test");

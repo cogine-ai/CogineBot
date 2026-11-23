@@ -80,10 +80,15 @@ export function VoiceDefaultSettingsRows({
       ? (choices.find(({ id }) => id === choice.voiceId)?.label ?? choice.voiceId)
       : choice.voiceId;
   }
-  async function write(input: UpdateVoiceDefaultsInput) {
+  async function sync(input?: UpdateVoiceDefaultsInput) {
     if (!transport.isCurrent() || !beginWrite()) return;
     try {
-      if (await save(input)) await onChange();
+      if (input) {
+        if (!(await save(input))) return;
+      } else {
+        await load();
+      }
+      if (transport.isCurrent()) await onChange();
     } finally {
       if (transport.isCurrent()) endWrite();
     }
@@ -110,7 +115,7 @@ export function VoiceDefaultSettingsRows({
           <NativeActionButton
             label={t("Reload")}
             disabled={pending || busy}
-            onPress={() => void load()}
+            onPress={() => void sync()}
           />
         </View>
       ) : null}
@@ -145,7 +150,7 @@ export function VoiceDefaultSettingsRows({
                     {
                       text: t("Confirm"),
                       onPress: () =>
-                        void write({
+                        void sync({
                           scope: "account",
                           value,
                           expectedRevision: settings.account.revision,
@@ -169,7 +174,7 @@ export function VoiceDefaultSettingsRows({
                 pending || busy || (!settings.space.value && (!effective?.choice || unavailable))
               }
               onValueChange={(enabled) =>
-                void write({
+                void sync({
                   scope: "space",
                   enabled,
                   expectedRevision: settings.space.revision,
