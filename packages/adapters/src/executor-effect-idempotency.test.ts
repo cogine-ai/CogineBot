@@ -374,6 +374,11 @@ function fixture(
       read: memoryRead,
       search: async () => [],
       commit: memoryCommit,
+      commitWithOutcome: async (request: MemoryCommitRequest, context: AdapterContext) => {
+        const before = memoryHistory.length;
+        const revision = await memoryCommit(request, context);
+        return { revision, written: memoryHistory.length !== before };
+      },
       readCommitReceipt,
       exportMarkdown: async function* () {},
     },

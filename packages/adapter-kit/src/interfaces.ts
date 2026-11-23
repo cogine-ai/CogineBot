@@ -256,7 +256,7 @@ export interface MemoryStore {
   search(request: MemorySearchRequest, context: AdapterContext): Promise<MemorySearchResult[]>;
   commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision>;
   /** Distinguishes a new revision from a verified receipt replay. */
-  commitWithOutcome?(
+  commitWithOutcome(
     request: MemoryCommitRequest,
     context: AdapterContext,
   ): Promise<MemoryCommitOutcome>;

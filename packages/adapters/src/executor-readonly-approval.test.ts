@@ -135,7 +135,6 @@ function fixture({
   disabledBuiltinTools = [],
   existingSharedMemory,
   existingBotMemory,
-  memoryCommitOutcome = true,
   semanticMemory,
   semanticTarget,
   memoryConnected = () => true,
@@ -165,7 +164,6 @@ function fixture({
   disabledBuiltinTools?: string[];
   existingSharedMemory?: string;
   existingBotMemory?: string;
-  memoryCommitOutcome?: boolean;
   semanticMemory?: SemanticMemoryProvider;
   semanticTarget?: { scope: "isolated" | "shared"; connectionId: string };
   memoryConnected?: () => boolean;
@@ -610,13 +608,11 @@ function fixture({
         return { documents };
       },
       commit,
-      ...(memoryCommitOutcome && {
-        commitWithOutcome: async (request: MemoryCommitRequest, context: AdapterContext) => {
-          const before = sharedMemoryState.revision;
-          const revision = await commit(request, context);
-          return { revision, written: sharedMemoryState.revision !== before };
-        },
-      }),
+      commitWithOutcome: async (request: MemoryCommitRequest, context: AdapterContext) => {
+        const before = sharedMemoryState.revision;
+        const revision = await commit(request, context);
+        return { revision, written: sharedMemoryState.revision !== before };
+      },
       readCommitReceipt: async () => undefined,
     },
     memoryProviders: {
@@ -6887,12 +6883,7 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it.each([
-    "new revision",
-    "replayed receipt",
-    "lost effect settlement",
-    "store without commit outcome",
-  ] as const)(
+  it.each(["new revision", "replayed receipt", "lost effect settlement"] as const)(
     "audits a Routine's automatic shared memory approval only for a %s",
     async (receipt) => {
       reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
@@ -6904,7 +6895,6 @@ describe("connector read-only metadata and approval enforcement", () => {
         trigger: "routine",
         prompt: "External event plus Routine prompt",
         routineInstructions: instructions,
-        memoryCommitOutcome: receipt !== "store without commit outcome",
       });
       const args = { path: "MEMORY.md", content: "The report was completed." };
       if (receipt === "replayed receipt") {
