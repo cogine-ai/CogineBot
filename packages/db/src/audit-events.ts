@@ -1,6 +1,7 @@
 import { ActionApprovalRuleSchema } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import type { Prisma, PrismaClient } from "./client.js";
+import type { RunLease } from "./messages.js";
 import { runAsSystem } from "./row-security.js";
 
 type ApprovalRuleChange = {
@@ -38,11 +39,28 @@ async function appendAuditEvents(
   prisma: Pick<PrismaClient, "$transaction">,
   spaceId: string,
   rows: AuditRow[],
+  liveRun?: { runId: string; threadId: string; lease: RunLease },
 ): Promise<void> {
   try {
     await runAsSystem("append committed audit events", () =>
       prisma.$transaction(
         async (tx) => {
+          if (liveRun) {
+            // A dispatch receipt from a superseded worker cannot establish an automatic grant.
+            const current = await tx.run.findFirst({
+              where: {
+                id: liveRun.runId,
+                spaceId,
+                threadId: liveRun.threadId,
+                status: "running",
+                leaseOwner: liveRun.lease.owner,
+                leaseFence: liveRun.lease.fence,
+                leaseExpiresAt: { gt: new Date() },
+              },
+              select: { id: true },
+            });
+            if (!current) return;
+          }
           const { organizationId } = await tx.space.findUniqueOrThrow({
             where: { id: spaceId },
             select: { organizationId: true },
@@ -110,6 +128,41 @@ export function recordManualApprovalAudit(
       ...run,
     })),
   ]);
+}
+
+export function recordAutomaticApprovalAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  input: {
+    spaceId: string;
+    runId: string;
+    threadId: string;
+    effectId: string;
+    happenedAt: Date;
+  } & (
+    | { decision: "pass"; outcome: "success"; lease: RunLease }
+    | { decision: "ask" | "error"; outcome: "paused" }
+  ),
+): Promise<void> {
+  return appendAuditEvents(
+    prisma,
+    input.spaceId,
+    [
+      {
+        id: `approval.auto_reviewed:${input.effectId}`,
+        createdAt: input.happenedAt,
+        runId: input.runId,
+        threadId: input.threadId,
+        actorType: "system",
+        actorId: "auto_review",
+        action: "approval.auto_reviewed",
+        targetType: "external_effect",
+        targetId: input.effectId,
+        outcome: input.outcome,
+        metadata: { decision: input.decision },
+      },
+    ],
+    input.outcome === "success" ? input : undefined,
+  );
 }
 
 export function auditEventRetentionDays(value: string | undefined): number {

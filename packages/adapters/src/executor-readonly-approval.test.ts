@@ -385,6 +385,11 @@ function fixture({
     run: {
       findUnique: vi.fn(async () => run),
       findUniqueOrThrow: vi.fn(async () => run),
+      findFirst: vi.fn(
+        async (_query: {
+          where: { leaseExpiresAt?: { gt: Date } };
+        }): Promise<{ id: string } | null> => ({ id: run.id }),
+      ),
       updateMany: vi.fn(
         async ({
           where,
@@ -459,6 +464,8 @@ function fixture({
       }),
     },
     spaceMember: { findUnique: vi.fn(async () => null) },
+    space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "org-1" })) },
+    auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: {
       findFirst: vi.fn(async () => null),
@@ -7354,10 +7361,16 @@ describe("connector read-only metadata and approval enforcement", () => {
       async (decision) => {
         reviewMock.mockResolvedValue({
           decision,
-          reason: "Review result",
-          model: "scripted/checker",
+          reason: "Synthetic private review rationale",
+          model: "synthetic-checker",
         });
         const f = fixture({ catalog, name: "demo_send_message", autoReview: true });
+        f.execute.mockImplementation(async function* (call) {
+          await call.beforeDispatch?.();
+          await call.beforeDispatch?.();
+          expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+          yield { type: "result", data: { body: "Synthetic private connector result" } };
+        });
         await f.run();
         expect(reviewMock).toHaveBeenCalledOnce();
         expect(reviewMock).toHaveBeenCalledWith(
@@ -7367,6 +7380,87 @@ describe("connector read-only metadata and approval enforcement", () => {
         expect(f.effects[0]?.reviewDecision).toBe(decision);
         expect(f.execute).toHaveBeenCalledTimes(decision === "pass" ? 1 : 0);
         expect(f.pauseRunForInput).toHaveBeenCalledTimes(decision === "pass" ? 0 : 1);
+        const effectId = f.effects[0]?.id;
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              id: `approval.auto_reviewed:${effectId}`,
+              actorType: "system",
+              actorId: "auto_review",
+              targetType: "external_effect",
+              targetId: effectId,
+              runId: "run-1",
+              threadId: "thread-1",
+              action: "approval.auto_reviewed",
+              outcome: decision === "pass" ? "success" : "paused",
+              metadata: { decision },
+            }),
+          ],
+        });
+      },
+    );
+
+    it.each([
+      { scenario: "no admission" },
+      { scenario: "provider error", result: { error: "Synthetic provider denial" } },
+      { scenario: "MCP result error", result: { isError: true, content: [] } },
+      { scenario: "partial result", result: { write_outcome: "partial" } },
+      { scenario: "unverified delivery", result: { deliveryVerified: false } },
+      { scenario: "expired worker lease" },
+      { scenario: "audit failure" },
+      { scenario: "replay" },
+    ])(
+      "records a connector approval only for a confirmed admission ($scenario)",
+      async ({ scenario, result = { item: "item-1" } }) => {
+        reviewMock.mockResolvedValue({ decision: "pass", model: "synthetic-checker" });
+        const f = fixture({
+          catalog,
+          name: "demo_send_message",
+          autoReview: true,
+          attemptCount: 2,
+        });
+        f.execute.mockImplementation(async function* (call) {
+          if (scenario !== "no admission") await call.beforeDispatch?.();
+          if (scenario === "provider error") {
+            yield { type: "error", message: "Synthetic provider denial" };
+            return;
+          }
+          yield { type: "result", data: result };
+        });
+        if (scenario === "expired worker lease") {
+          f.prisma.run.findFirst.mockImplementation(async ({ where }) =>
+            where.leaseExpiresAt ? null : { id: "run-1" },
+          );
+        }
+        if (scenario === "audit failure")
+          f.prisma.auditEvent.createMany.mockRejectedValueOnce(
+            new Error("Synthetic storage error"),
+          );
+        await f.run();
+        if (scenario === "replay") await f.run();
+
+        expect(f.execute).toHaveBeenCalledTimes(1);
+        expect(f.effects).toHaveLength(1);
+        expect(f.effects[0]?.status).toBe("completed");
+        expect(f.results.at(-1)).toEqual(result);
+        if (scenario === "expired worker lease") {
+          expect(f.prisma.run.findFirst).toHaveBeenCalledWith({
+            where: {
+              id: "run-1",
+              spaceId: "space-1",
+              threadId: "thread-1",
+              status: "running",
+              leaseOwner: "worker-1",
+              leaseFence: expect.any(Number),
+              leaseExpiresAt: { gt: expect.any(Date) },
+            },
+            select: { id: true },
+          });
+        }
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(
+          scenario === "audit failure" || scenario === "replay" ? 1 : 0,
+        );
       },
     );
 
@@ -7513,6 +7607,7 @@ describe("connector read-only metadata and approval enforcement", () => {
       });
       await f.run();
       expect(f.effects[0]?.reviewDecision).toBeUndefined();
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
       expect(f.execute).not.toHaveBeenCalled();
       expect(f.pauseRunForInput).not.toHaveBeenCalled();
     });
@@ -7744,7 +7839,8 @@ describe("connector batch approval", () => {
 
   it("rechecks a connector rule at the actual dispatch after provider preparation", async () => {
     const rules: ActionApprovalRule[] = [];
-    const f = batchFixture({ rules });
+    const f = batchFixture({ rules, autoReview: true });
+    reviewMock.mockResolvedValueOnce({ decision: "pass", model: "mock" });
     const sendToProvider = vi.fn();
     f.execute.mockImplementationOnce(async function* (call) {
       rules.push(rule("deny", send));
@@ -7767,6 +7863,8 @@ describe("connector batch approval", () => {
       result: { code: "action_rule_blocked" },
     });
     expect(sendToProvider).not.toHaveBeenCalled();
+    expect(f.effects[0]?.reviewDecision).toBe("pass");
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -7839,6 +7937,7 @@ describe("connector batch approval", () => {
     expect(reviewMock).toHaveBeenCalledOnce();
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
     expect(f.effects[0]).toMatchObject({
       status: "completed",
       result: { code: "action_rule_blocked" },
