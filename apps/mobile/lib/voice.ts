@@ -1,3 +1,4 @@
+import type { VoiceChoice } from "@rakazo/contracts";
 import { ensureAiDataConsent, readBoundedResponseBytes, toUtterances } from "@rakazo/core";
 import { File, Paths } from "expo-file-system";
 import type * as ExpoSpeech from "expo-speech";
@@ -19,6 +20,7 @@ import { errorText } from "./user-error";
 export type PlaybackSpeaker = { name?: string; color?: string };
 type SpeechOptions = {
   voiceId?: string;
+  voiceProvider?: string;
   botId?: string;
   messageId?: string;
   speaker?: PlaybackSpeaker;
@@ -200,7 +202,7 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
     }
     const requestContext = opts.requestContext ?? (await captureApiRequestContext());
     if (!live()) return false;
-    const prepared = await rpc<{ ready: boolean; utterances: string[] }>(
+    const prepared = await rpc<{ ready: boolean; utterances: string[]; voice?: VoiceChoice }>(
       "voice/prepare",
       { text, voiceId: opts.voiceId, botId: opts.botId },
       { requestContext, ...(opts.signal ? { signal: opts.signal } : {}) },
@@ -242,9 +244,13 @@ async function speakPrepared(text: string, opts: SpeechOptions, epoch: number): 
     );
     let finished = false;
     try {
+      const choice = prepared.voice;
+      const options = choice
+        ? { ...opts, voiceId: choice.voiceId, voiceProvider: choice.provider }
+        : opts;
       for (const utterance of prepared.utterances) {
         if (session.isStopped || !live()) break;
-        const audio = await renderUtterance(utterance, opts, requestContext);
+        const audio = await renderUtterance(utterance, options, requestContext);
         if (session.isStopped || !live()) break;
         await playMpeg(audio, session);
       }
@@ -410,7 +416,12 @@ async function renderUtterance(
           origin: "coginebot://",
           ...requestContext.headers,
         },
-        body: JSON.stringify({ text, voiceId: opts.voiceId, botId: opts.botId }),
+        body: JSON.stringify({
+          text,
+          voiceId: opts.voiceId,
+          voiceProvider: opts.voiceProvider,
+          botId: opts.botId,
+        }),
         signal: deadline.signal,
       }),
       deadline.signal,

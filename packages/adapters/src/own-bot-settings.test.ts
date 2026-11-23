@@ -116,6 +116,7 @@ function fixture(
           },
           voiceId: "one",
           isDefault: true,
+          spaceMember: { voiceOverrideHistory: [{ value: true, revision: 0 }] },
         }),
       },
       secret: {

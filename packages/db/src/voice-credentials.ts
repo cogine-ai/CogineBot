@@ -1,3 +1,8 @@
+import {
+  resolveVoiceDefault,
+  VoiceDefaultHistorySchema,
+  VoiceOverrideHistorySchema,
+} from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
 import { newestCredentialOrder } from "./model-credentials.js";
 
@@ -71,10 +76,34 @@ export async function findDefaultVoiceCredential(
 ) {
   const preference = await prisma.spaceVoicePreference.findFirst({
     where: { spaceId: scope.spaceId, userId: scope.userId, isDefault: true },
-    include: { credential: true },
+    include: {
+      credential: true,
+      spaceMember: {
+        select: {
+          voiceOverrideHistory: true,
+          member: { select: { user: { select: { voiceDefaultHistory: true } } } },
+        },
+      },
+    },
     orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
   });
-  return preference ? withVoicePreference(preference) : null;
+  if (!preference) return null;
+  const provider = preference.credential.provider;
+  const local = preference.voiceId ? { provider, voiceId: preference.voiceId } : null;
+  const membership = preference.spaceMember;
+  const override = VoiceOverrideHistorySchema.parse(membership?.voiceOverrideHistory ?? [])[0];
+  const account = VoiceDefaultHistorySchema.parse(
+    membership?.member?.user.voiceDefaultHistory ?? [],
+  )[0];
+  return {
+    ...withVoicePreference(preference),
+    effectiveVoice: resolveVoiceDefault(
+      local,
+      provider,
+      override?.value ?? false,
+      account?.value ?? null,
+    ),
+  };
 }
 
 /** Hold the exact active Space connection through a dependent settings write. */

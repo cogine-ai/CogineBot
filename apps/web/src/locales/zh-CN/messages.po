@@ -7794,3 +7794,27 @@ msgstr "重新加载"
 
 msgid "Confirm"
 msgstr "确认"
+
+msgid "Voice defaults"
+msgstr "音色默认设置"
+
+msgid "My default voice"
+msgstr "我的默认音色"
+
+msgid "Override voice in this Space"
+msgstr "为此 Space 单独设置音色"
+
+msgid "Choose a voice available in this Space."
+msgstr "请选择此 Space 中可用的音色。"
+
+msgid "Change my default voice?"
+msgstr "更改我的默认音色？"
+
+msgid "Applies to new playback in following Spaces where the voice is available."
+msgstr "仅影响采用此默认设置且支持该音色的 Space 中的新播放。"
+
+msgid "Voice for this Space"
+msgstr "此 Space 的音色"
+
+msgid "Choose a voice"
+msgstr "选择音色"

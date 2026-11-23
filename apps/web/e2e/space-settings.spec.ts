@@ -9,6 +9,7 @@ import type {
   Space,
   SpaceNavigation,
   ThreadSnapshot,
+  VoiceDefaults,
 } from "@rakazo/contracts";
 import {
   activeBotId,
@@ -19,6 +20,93 @@ import {
   rpc,
   signup,
 } from "./helpers";
+
+test("uses personal voice defaults for new playback and keeps Space and Bot choices", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `voice-default-${Date.now()}@example.test`, "password12", "Voice Settings");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const second = await rpc<Space>(page, "spaces/create", { name: "Voice Lab" });
+  await rpc(page, "voice/connect", { provider: "scripted", apiKey: "offline-voice-key" });
+  const statusRoute = "**/rpc/voice/status";
+  await page.route(statusRoute, (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          configured: true,
+          ready: false,
+          transcribe: true,
+          provider: "scripted",
+          voiceId: "",
+        },
+      },
+    }),
+  );
+  await openUserSettings(page, "voice");
+  const defaults = page.getByRole("region", { name: "Voice defaults" });
+  const account = defaults.getByLabel("My default voice");
+  const override = defaults.getByRole("switch", { name: "Override voice in this Space" });
+  const prepare = (botId?: string) =>
+    rpc(page, "voice/prepare", { text: "A new playback.", botId });
+  const dialog = page.getByRole("alertdialog", { name: "Change my default voice?" });
+  const sample = page.getByRole("button", { name: "Hear a sample" });
+  await expect(account).toHaveValue("");
+  await account.selectOption({ label: "Scripted Ember" });
+  await expect(dialog).toContainText("Voice Lab");
+  await captureScreenshot(page, testInfo, "space-voice-default-confirm");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(account).toHaveValue("");
+  expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "alloy-test" } });
+  await expect(sample).toBeDisabled();
+  await account.selectOption({ label: "Scripted Ember" });
+  const snapshot = await rpc<VoiceDefaults>(page, "voice/defaults", {});
+  expect(
+    await rpc(page, "voice/updateDefaults", {
+      scope: "account",
+      value: { provider: "scripted", voiceId: "alloy-test" },
+      expectedRevision: snapshot.account.revision,
+      followingSpaceIds: snapshot.followingSpaces.map(({ id }) => id),
+      clientNonce: "updated-from-another-client",
+    }),
+  ).toMatchObject({ status: "updated" });
+  await page.unroute(statusRoute);
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(defaults.getByRole("alert")).toContainText("Settings changed elsewhere.");
+  await expect(account).toHaveValue("voice:alloy-test");
+  await expect(sample).toBeEnabled();
+  await expect(defaults.getByRole("alert")).toContainText("Settings changed elsewhere.");
+  await account.selectOption({ label: "Scripted Ember" });
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(account).toHaveValue("voice:ember-test");
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "ember-test" } });
+  expect(
+    await inSpace(page, second.id, "voice/prepare", { text: "No local provider." }),
+  ).toMatchObject({ ready: false });
+
+  await override.click();
+  await expect(override).toBeChecked();
+  await expect(defaults.getByText("This Space", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "space-voice-override");
+  await account.selectOption({ label: "Scripted" });
+  await expect(dialog).not.toContainText("Personal");
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(account).toHaveValue("voice:alloy-test");
+  expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "ember-test" } });
+  await rpc(page, "bots/update", { botId, voiceId: "alloy-test" });
+  expect(await prepare(botId)).toMatchObject({ ready: true, voice: { voiceId: "alloy-test" } });
+  await override.click();
+  await expect(override).not.toBeChecked();
+  await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
+  expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "alloy-test" } });
+  expect((await rpc<VoiceDefaults>(page, "voice/defaults", {})).space.revision).toBe(2);
+  const spaceVoice = page.getByLabel("Voice for this Space");
+  await expect(spaceVoice).toHaveValue("");
+  await spaceVoice.selectOption("ember-test");
+  await expect(override).toBeChecked();
+  expect(await prepare()).toMatchObject({ ready: true, voice: { voiceId: "ember-test" } });
+});
 
 async function inSpace<T>(
   page: Page,
@@ -1002,7 +1090,11 @@ test("applies personal read-aloud settings only to new replies and respects a Sp
       .locator(`[data-roster-bot-id="${botId}"]`)
       .click({ button: "right" });
     await page.getByRole("menuitem", { name: "Clear conversation", exact: true }).click();
+    const cleared = page.waitForResponse((response) =>
+      response.url().endsWith("/rpc/threads/clear"),
+    );
     await page.getByRole("alertdialog").getByRole("button", { name: "Clear", exact: true }).click();
+    expect((await cleared).ok()).toBe(true);
     await expect(page.getByRole("button", { name: "Speak this reply", exact: true })).toHaveCount(
       0,
     );

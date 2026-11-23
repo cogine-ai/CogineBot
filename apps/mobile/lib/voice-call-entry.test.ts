@@ -65,6 +65,26 @@ describe("mobile voice call entry", () => {
     expect(fakes.dictationAvailable).not.toHaveBeenCalled();
   });
 
+  it("reads the arriving Bot's explicit voice even when the roster is not hydrated", async () => {
+    const fakes = {
+      ...deps({
+        deviceVoice: false,
+        dictation: false,
+        status: { configured: true, ready: false, transcribe: true },
+      }),
+      loadBotVoice: vi
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValueOnce("target-voice")
+        .mockResolvedValueOnce(null),
+    };
+    await expect(resolveVoiceCallPlan(fakes)).resolves.toEqual({
+      kind: "provider",
+      transcribe: true,
+    });
+    await expect(resolveVoiceCallPlan(fakes)).resolves.toEqual({ kind: "settings" });
+    expect(fakes.loadBotVoice).toHaveBeenCalledTimes(2);
+  });
+
   it("falls back to provider transcription when local dictation is unavailable", async () => {
     const fakes = deps({
       deviceVoice: true,
@@ -76,6 +96,22 @@ describe("mobile voice call entry", () => {
       kind: "provider",
       transcribe: true,
     });
+  });
+
+  it("uses the configured transcriber with device speech even when hosted speech is unavailable", async () => {
+    const fakes = {
+      ...deps({
+        deviceVoice: true,
+        dictation: false,
+        status: { configured: true, ready: false, transcribe: true },
+      }),
+      loadBotVoice: vi.fn(),
+    };
+    await expect(resolveVoiceCallPlan(fakes)).resolves.toEqual({
+      kind: "provider",
+      transcribe: true,
+    });
+    expect(fakes.loadBotVoice).not.toHaveBeenCalled();
   });
 
   it("uses on-device dictation with a configured speak-only provider", async () => {
@@ -113,6 +149,16 @@ describe("probeProviderTranscribe", () => {
     const loadVoiceStatus = vi.fn(async () => ({ ready: true, transcribe: true }));
 
     await expect(probeProviderTranscribe(loadVoiceStatus)).resolves.toBe(true);
+  });
+
+  it("keeps a configured provider's transcription available to device speech", async () => {
+    await expect(
+      probeProviderTranscribe(async () => ({
+        configured: true,
+        ready: false,
+        transcribe: true,
+      })),
+    ).resolves.toBe(true);
   });
 
   it("is false when the provider is not ready", async () => {

@@ -58,6 +58,7 @@ vi.mock("../components/row-accessories", () => ({
   Checkmark: () => <span data-testid="checkmark" />,
 }));
 vi.mock("../components/read-aloud-settings", () => ({ ReadAloudSettingsRows: () => null }));
+vi.mock("../components/voice-default-settings", () => ({ VoiceDefaultSettingsRows: () => null }));
 vi.mock("../components/native-switch", () => ({ NativeSwitch: () => null }));
 vi.mock("react-native-safe-area-context", () => ({
   SafeAreaView: ({ children }: { children: ReactNode }) => <div>{children}</div>,

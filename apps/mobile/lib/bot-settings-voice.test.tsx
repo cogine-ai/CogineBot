@@ -12,6 +12,7 @@ import { MenuPicker } from "../components/menu-picker";
 const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
   botId: "bot-fixture",
+  deviceEnabled: true,
   deviceVoices: vi.fn(),
   voiceForBot: vi.fn(),
   setVoiceForBot: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock("./bot-voices", () => ({
   voiceForBot: mocks.voiceForBot,
   setVoiceForBot: mocks.setVoiceForBot,
 }));
-vi.mock("./device-voice", () => ({ loadDeviceVoiceEnabled: async () => true }));
+vi.mock("./device-voice", () => ({ loadDeviceVoiceEnabled: async () => mocks.deviceEnabled }));
 vi.mock("./voice", () => ({ stopVoicePlayback: mocks.stopVoicePlayback }));
 vi.mock("expo-speech", () => ({ stop: mocks.stop, speak: mocks.speak }));
 vi.mock("./api", () => ({ rpc: mocks.rpc }));
@@ -160,6 +161,7 @@ describe("bot settings device voice menu", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.botId = "bot-fixture";
+    mocks.deviceEnabled = true;
     mocks.rpc.mockReset().mockImplementation(async (procedure: string) => {
       if (procedure === "bots/get")
         return {
@@ -187,8 +189,33 @@ describe("bot settings device voice menu", () => {
   const render = async () => act(async () => root.render(<BotSettingsScreen />));
   const menu = () => container.querySelector('[data-menu="Device voice"]');
 
+  it("clears a hosted voice through the Bot save while preserving device settings", async () => {
+    mocks.deviceEnabled = false;
+    const normal = mocks.rpc.getMockImplementation();
+    mocks.rpc.mockImplementation(async (proc: string, input?: unknown) => {
+      if (proc === "bots/get")
+        return { ...(await normal?.(proc, input)), voiceId: "missing-local" };
+      if (proc === "voice/voices") return [{ id: "hosted-fixture", label: "Hosted voice" }];
+      return normal?.(proc, input);
+    });
+    await render();
+    expect(menu()).toBeNull();
+    expect(mocks.deviceVoices).not.toHaveBeenCalled();
+    const hosted = container.querySelector('[data-menu="Voice"]')!;
+    expect(hosted.querySelector("[data-state=on]")?.textContent).toBe("missing-local");
+    const inherit = hosted.querySelector<HTMLButtonElement>('[data-choice="choice:"]')!;
+    await act(async () => inherit.click());
+    const save = [...container.querySelectorAll("button")].find(
+      ({ textContent }) => textContent === "Save",
+    );
+    await act(async () => save?.click());
+    expect(mocks.rpc).toHaveBeenCalledWith("bots/update", { botId: "bot-fixture", voiceId: null });
+    expect(mocks.setVoiceForBot).not.toHaveBeenCalled();
+  });
+
   it("marks the current voice, keeps the plain row, and saves before playing a sample", async () => {
     await render();
+    expect(mocks.rpc.mock.calls.some(([proc]) => proc === "voice/voices")).toBe(false);
     const actions = menu()!.querySelectorAll("button");
     expect([...actions].map((action) => [action.textContent, action.dataset.state])).toEqual([
       ["en-US · Alice", "on"],

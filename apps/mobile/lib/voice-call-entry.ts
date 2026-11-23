@@ -1,4 +1,4 @@
-export type VoiceCallStatus = { ready: boolean; transcribe: boolean };
+export type VoiceCallStatus = { configured?: boolean; ready: boolean; transcribe: boolean };
 
 export type VoiceCallPlan =
   | { kind: "device"; transcribe: false }
@@ -10,6 +10,7 @@ export type VoiceCallPlanDeps = {
   loadDeviceVoiceEnabled: () => Promise<boolean>;
   dictationAvailable: () => Promise<boolean>;
   loadVoiceStatus: () => Promise<VoiceCallStatus>;
+  loadBotVoice?: () => Promise<string | null | undefined>;
 };
 
 /**
@@ -25,24 +26,24 @@ export async function resolveVoiceCallPlan(deps: VoiceCallPlanDeps): Promise<Voi
     deviceVoiceEnabled = true;
   }
 
-  const deviceDictationAvailable = deviceVoiceEnabled ? await deps.dictationAvailable() : false;
-  if (deviceVoiceEnabled && deviceDictationAvailable) {
+  if (deviceVoiceEnabled && (await deps.dictationAvailable())) {
     return { kind: "device", transcribe: false };
   }
 
   const status = await deps.loadVoiceStatus();
-  if (!status.ready) {
-    return deviceVoiceEnabled ? { kind: "dictation" } : { kind: "settings" };
+  if (deviceVoiceEnabled) {
+    return canTranscribe(status) ? { kind: "provider", transcribe: true } : { kind: "dictation" };
   }
+  const ready = status.ready || (status.configured && Boolean(await deps.loadBotVoice?.()));
+  if (!ready) return { kind: "settings" };
 
-  if (!status.transcribe) {
-    const canDictate = deviceVoiceEnabled
-      ? deviceDictationAvailable
-      : await deps.dictationAvailable();
-    if (!canDictate) return { kind: "dictation" };
-  }
+  if (!status.transcribe && !(await deps.dictationAvailable())) return { kind: "dictation" };
 
   return { kind: "provider", transcribe: status.transcribe };
+}
+
+function canTranscribe(status: VoiceCallStatus) {
+  return (status.ready || status.configured === true) && status.transcribe;
 }
 
 /** True only when the provider is ready to transcribe. Any other outcome is false. */
@@ -51,7 +52,7 @@ export async function probeProviderTranscribe(
 ): Promise<boolean> {
   try {
     const status = await loadVoiceStatus();
-    return status.ready && status.transcribe;
+    return canTranscribe(status);
   } catch {
     return false;
   }

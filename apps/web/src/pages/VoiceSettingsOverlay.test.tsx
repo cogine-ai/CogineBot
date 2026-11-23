@@ -1,4 +1,5 @@
 vi.mock("./ReadAloudSettings", () => ({ ReadAloudSettings: () => null }));
+vi.mock("./VoiceDefaultSettings", () => ({ VoiceDefaultSettings: () => null }));
 
 // @vitest-environment jsdom
 

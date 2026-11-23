@@ -1295,7 +1295,7 @@ export type MobileBot = Pick<
   | "autoSpeakInherited"
   | "readAloudRevision"
 > &
-  Partial<Pick<Bot, "parentBotId" | "spaceId">>;
+  Partial<Pick<Bot, "parentBotId" | "spaceId" | "voiceId">>;
 
 export type MobileBotSection = BotSection;
 

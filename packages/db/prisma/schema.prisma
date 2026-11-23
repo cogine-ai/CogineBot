@@ -38,6 +38,7 @@ model User {
   avatarStyle                 String                       @default("robot")
   timezone                    String?
   readAloudHistory            Json                         @default("[]")
+  voiceDefaultHistory         Json                         @default("[]")
   sessions                    Session[]
   accounts                    Account[]
   members                     Member[]
@@ -296,6 +297,7 @@ model SpaceMember {
   modelOAuthSessions ModelOAuthSession[]
   voicePreferences SpaceVoicePreference[]
   readAloudHistory Json                   @default("[]")
+  voiceOverrideHistory Json              @default("[]")
   aiDataConsents AiDataConsent[]
   backupModels SpaceBackupModel[]
 

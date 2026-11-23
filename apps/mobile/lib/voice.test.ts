@@ -302,6 +302,38 @@ describe("hosted voice playback controls", () => {
     expect(() => resumeVoicePlayback()).not.toThrow();
   });
 
+  it("uses the prepared hosted choice for every chunk of a playback", async () => {
+    vi.mocked(rpc).mockImplementation(async (proc) => {
+      if (proc === "aiConsent/status") return { version: "2026-09-14", recipients: [] } as never;
+      return {
+        ready: true,
+        utterances: ["First", "Second"],
+        voice: { provider: "scripted", voiceId: "ember-test" },
+      } as never;
+    });
+    const playback = speakText("Several parts", { botId: "bot-fixture" });
+    try {
+      for (const i of [0, 1]) {
+        await waitFor(() => ControllableAudio.instances.length > i);
+        await waitFor(() => !ControllableAudio.instances[i]!.paused);
+        ControllableAudio.instances[i]!.onended?.();
+      }
+      await expect(playback).resolves.toBe(true);
+      const sent = vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+      expect(sent).toEqual(
+        ["First", "Second"].map((text) => ({
+          text,
+          voiceId: "ember-test",
+          voiceProvider: "scripted",
+          botId: "bot-fixture",
+        })),
+      );
+    } finally {
+      stopVoicePlayback();
+      await playback;
+    }
+  });
+
   it("refuses an expired sample before it can interrupt current thread playback", async () => {
     const thread = speakText("Current thread reply", { botId: "current-bot" });
     await waitFor(() => ControllableAudio.instances.length === 1);

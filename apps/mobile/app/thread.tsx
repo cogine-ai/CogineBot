@@ -760,7 +760,16 @@ function Thread({
   const inGroup = Boolean(groupId);
   const call = useCallSession();
   const onCall = Boolean(botId) && call?.botId === botId;
-  const voiceCallStarting = useRef(false);
+  const voiceCallEntry = useRef<{ controller: AbortController; starting: boolean } | null>(null);
+  useLayoutEffect(() => {
+    if (!focused || !botId || readOnly) return;
+    const controller = new AbortController();
+    voiceCallEntry.current = { controller, starting: false };
+    return () => {
+      controller.abort();
+      voiceCallEntry.current = null;
+    };
+  }, [focused, botId, readOnly]);
   const replyEventObserver = useRef<(event: AnnouncementEvent) => void>(() => {});
   const refreshDelegatedApprovals = useRef<() => void>(() => {});
   const scroll = useRef<FlatList<ThreadItem<MobileMessage>>>(null);
@@ -2835,19 +2844,33 @@ function Thread({
   async function startVoiceCall(switchedHere = false) {
     if (readOnly) return;
     const targetBotId = botId;
-    if (!targetBotId || voiceCallStarting.current) return;
-    voiceCallStarting.current = true;
-    const loadVoiceStatus = () => rpc<{ ready: boolean; transcribe: boolean }>("voice/status");
+    const entry = voiceCallEntry.current;
+    if (!targetBotId || !entry || entry.starting) return;
+    entry.starting = true;
+    const { signal } = entry.controller;
+    const owner = captureMobileScope();
+    const current = () =>
+      !signal.aborted && activeBotId.current === targetBotId && isMobileScopeCurrent(owner);
+    const loadVoiceStatus = () =>
+      rpc<{ configured?: boolean; ready: boolean; transcribe: boolean }>(
+        "voice/status",
+        {},
+        { signal },
+      );
     try {
       const [plan, callerName] = await Promise.all([
         resolveVoiceCallPlan({
           loadDeviceVoiceEnabled,
           dictationAvailable,
           loadVoiceStatus,
+          loadBotVoice: async () =>
+            current()
+              ? (await rpc<MobileBot>("bots/get", { botId: targetBotId }, { signal })).voiceId
+              : undefined,
         }),
-        loadCallCallerName(() => rpc<MobileMe>("me")),
+        loadCallCallerName(() => rpc<MobileMe>("me", {}, { signal })),
       ]);
-      if (activeBotId.current !== targetBotId) return;
+      if (!current()) return;
       if (plan.kind === "settings") {
         router.push("/voice");
         return;
@@ -2884,9 +2907,9 @@ function Thread({
           .catch(() => undefined);
       }
     } catch {
-      if (activeBotId.current === targetBotId) router.push("/voice");
+      if (current()) router.push("/voice");
     } finally {
-      voiceCallStarting.current = false;
+      entry.starting = false;
     }
   }
 
@@ -2897,8 +2920,8 @@ function Thread({
   }
 
   useEffect(() => {
-    if (botId && takeRingOnArrival(botId)) void startVoiceCall(true);
-  }, [botId]);
+    if (focused && !readOnly && botId && takeRingOnArrival(botId)) void startVoiceCall(true);
+  }, [focused, readOnly, botId]);
 
   const attachActions: MenuAction[] = [
     { id: "library", title: t("Photo library"), image: "photo.on.rectangle" },
@@ -3299,6 +3322,10 @@ function Thread({
         ? (snap?.activeRuns?.find((run) => run.botId === activityBotId)?.status ??
           (snap?.run?.botId === activityBotId ? snap.run.status : currentBotStatus))
         : undefined;
+      const speaker =
+        !message.botId || message.botId === currentBot?.id
+          ? currentBot
+          : mentionBots.find(({ id }) => id === message.botId);
       return (
         <MessageRow
           pageCards={pageCards}
@@ -3314,7 +3341,7 @@ function Thread({
           members={snap?.members}
           readOnly={readOnly}
           onCall={onCall}
-          canSpeak={canSpeak}
+          canSpeak={canSpeak(speaker?.voiceId)}
           canAnswer={!readOnly && message.id === answerableAskMessageId}
           delegatedApprovals={delegatedApprovals.get(message.id)}
           onAnswerDelegated={answerDelegated}

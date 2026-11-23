@@ -289,6 +289,7 @@ import {
   lockBotCreationIntro,
   lockDefaultVoiceCredential,
   lockOwnedGroup,
+  lockPersonalSettings,
   lockPluginInstall,
   lockSpaceModelSelection,
   newestModelCredentialOrder,
@@ -300,6 +301,8 @@ import {
   readAloudForBot,
   readAloudSettings,
   readPluginCleanupRefs,
+  readVoiceDefaults,
+  recordSpaceVoiceChoice,
   releaseSpaceDeletionClaim,
   renameSpaceForMember,
   renewSpaceDeletionClaim,
@@ -460,6 +463,8 @@ import {
   loadVoiceCredential,
   persistVoiceCredential,
   prepareVoice,
+  readVoiceStatus,
+  saveVoiceDefaults,
   toVoiceCredential,
   toVoiceStatus,
   updateVoiceSpeechModel,
@@ -8769,10 +8774,15 @@ export function createRouter(deps: RouterDeps) {
     },
     voice: {
       catalog: authed.voice.catalog.handler(async () => listVoiceCatalog()),
-      status: authed.voice.status.handler(async ({ context }) => {
-        const cred = await findDefaultVoiceCredential(deps.prisma, context.actor);
-        return toVoiceStatus(cred);
-      }),
+      status: authed.voice.status.handler(async ({ context }) =>
+        readVoiceStatus(deps, context.actor, context.signal),
+      ),
+      defaults: authed.voice.defaults.handler(async ({ context }) =>
+        readVoiceDefaults(deps.prisma, context.actor),
+      ),
+      updateDefaults: authed.voice.updateDefaults.handler(async ({ context, input }) =>
+        saveVoiceDefaults(deps, context.actor, input, context.signal),
+      ),
       credentials: authed.voice.credentials.handler(async ({ context }) => {
         const rows = await deps.prisma.userVoiceCredential.findMany({
           where: { userId: context.actor.userId },
@@ -8809,6 +8819,7 @@ export function createRouter(deps: RouterDeps) {
         const cred = await withSerializableRetry(() =>
           deps.prisma.$transaction(
             async (tx) => {
+              await lockPersonalSettings(tx, context.actor);
               const found = input.provider
                 ? await tx.userVoiceCredential.findFirst({
                     where: { userId: context.actor.userId, provider: input.provider },
@@ -8830,6 +8841,10 @@ export function createRouter(deps: RouterDeps) {
               }
               // Picking a voice also makes its provider the one speak/transcribe use.
               await selectSpaceVoicePreference(tx, context.actor, found.id, input.voiceId);
+              await recordSpaceVoiceChoice(tx, context.actor, {
+                provider: found.provider,
+                voiceId: input.voiceId,
+              });
               return { ...found, voiceId: input.voiceId, isDefault: true };
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -8855,7 +8870,7 @@ export function createRouter(deps: RouterDeps) {
         );
       }),
       prepare: authed.voice.prepare.handler(async ({ context, input }) =>
-        prepareVoice(deps, context.actor, input),
+        prepareVoice(deps, context.actor, { ...input, signal: context.signal }),
       ),
     },
   });
@@ -9278,8 +9293,8 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
           : "model",
     },
     voice: {
-      after: bot.voiceId ?? voice?.voiceId ?? "Unavailable",
-      source: bot.voiceId ? "bot" : voice ? "space" : "system",
+      after: bot.voiceId ?? voice?.effectiveVoice.choice?.voiceId ?? "Unavailable",
+      source: bot.voiceId ? "bot" : (voice?.effectiveVoice.source ?? "system"),
     },
   });
 }

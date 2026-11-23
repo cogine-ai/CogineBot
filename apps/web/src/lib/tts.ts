@@ -1,3 +1,4 @@
+import type { VoiceChoice } from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
 import type { RpcRecoveryScope } from "./rpc.js";
 import {
@@ -25,6 +26,7 @@ interface SpeakOptions {
   signal?: AbortSignal;
   isCurrent?: () => boolean;
   voiceId?: string;
+  voiceProvider?: string;
   botId?: string;
   messageId?: string;
 }
@@ -122,9 +124,9 @@ export class Speaker {
     const recoveryScope = captureRpcRecoveryScope(spaceId);
     try {
       this.set({ status: "preparing", botId: opts.botId, messageId: opts.messageId });
-      let utterances: string[];
+      let prepared: { utterances: string[]; voice?: VoiceChoice };
       try {
-        utterances = await withAbort(controller.signal, () =>
+        prepared = await withAbort(controller.signal, () =>
           this.prepare(text, opts, controller.signal, spaceId),
         );
       } catch (error) {
@@ -135,6 +137,7 @@ export class Speaker {
         return;
       }
       if (!live()) return;
+      const { utterances, voice } = prepared;
       if (!utterances.length) {
         this.set(IDLE);
         if (this.request === controller) this.request = null;
@@ -142,8 +145,11 @@ export class Speaker {
       }
 
       type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
+      const playback = voice
+        ? { ...opts, voiceId: voice.voiceId, voiceProvider: voice.provider }
+        : opts;
       const render = (utterance: string): Promise<Rendered> =>
-        this.render(utterance, opts, controller.signal, spaceId, recoveryScope).then(
+        this.render(utterance, playback, controller.signal, spaceId, recoveryScope).then(
           (blob) => ({ blob }),
           (error: unknown) => ({ error }),
         );
@@ -189,7 +195,7 @@ export class Speaker {
     opts: SpeakOptions,
     signal: AbortSignal,
     spaceId: string | null,
-  ): Promise<string[]> {
+  ): Promise<{ utterances: string[]; voice?: VoiceChoice }> {
     const body = await rpc.voice.prepare(
       { text, voiceId: opts.voiceId, botId: opts.botId },
       { signal, context: { spaceId, ...(opts.isCurrent ? { isCurrent: opts.isCurrent } : {}) } },
@@ -197,7 +203,7 @@ export class Speaker {
     if (!body.ready) {
       throw new Error("Add a voice provider key and pick a voice in Voice settings.");
     }
-    return body.utterances ?? [];
+    return { utterances: body.utterances ?? [], voice: body.voice };
   }
 
   private async render(
@@ -214,7 +220,12 @@ export class Speaker {
           method: "POST",
           headers: withSpaceHeaders({ "content-type": "application/json" }, spaceId),
           credentials: "include",
-          body: JSON.stringify({ text, voiceId: opts.voiceId, botId: opts.botId }),
+          body: JSON.stringify({
+            text,
+            voiceId: opts.voiceId,
+            voiceProvider: opts.voiceProvider,
+            botId: opts.botId,
+          }),
           signal: deadline.signal,
         }),
       );

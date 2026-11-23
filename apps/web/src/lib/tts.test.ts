@@ -293,9 +293,14 @@ describe("Speaker", () => {
     const audios = controlledAudio();
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
-    ).mockResolvedValue(["Sample"]);
+    ).mockResolvedValue({ utterances: ["Sample"] });
     const lifetime = new AbortController();
     const sample = speaker.speak("Sample", { spaceId: "space-b", signal: lifetime.signal });
     await vi.waitFor(() => expect(audios).toHaveLength(1));
@@ -310,9 +315,14 @@ describe("Speaker", () => {
     const audios = controlledAudio();
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
-    ).mockResolvedValue(["Sample"]);
+    ).mockResolvedValue({ utterances: ["Sample"] });
     const lifetime = new AbortController();
     const sample = speaker.speak("Sample", { spaceId: "space-b", signal: lifetime.signal });
     await vi.waitFor(() => expect(audios).toHaveLength(1));
@@ -329,9 +339,14 @@ describe("Speaker", () => {
     const audios = controlledAudio();
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
-    ).mockResolvedValue(["Sample"]);
+    ).mockResolvedValue({ utterances: ["Sample"] });
     const thread = speaker.speak("Thread reply", { messageId: "current" });
     await vi.waitFor(() => expect(audios).toHaveLength(1));
     const expired = new AbortController();
@@ -374,7 +389,12 @@ describe("Speaker", () => {
   it("interrupting before audio arrives leaves the speaker idle", async () => {
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
     ).mockImplementation(() => new Promise(() => undefined));
     const pending = speaker.speak("Hello there.", { messageId: "m1" });
@@ -386,14 +406,19 @@ describe("Speaker", () => {
   it("resolves with an error snapshot instead of rejecting", async () => {
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
     ).mockRejectedValue(new Error("ElevenLabs rejected that key."));
     await expect(speaker.speak("Hi there.")).resolves.toBeUndefined();
     expect(speaker.state.error).toBe("ElevenLabs rejected that key.");
   });
 
-  it("keeps speak requests in the space where playback started", async () => {
+  it("keeps the Space and voice selected at prepare for every utterance", async () => {
     const changeSelectedSpace = stubSelectedSpace("space-support");
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
       ok: true,
@@ -426,13 +451,16 @@ describe("Speaker", () => {
             opts: unknown,
             signal: AbortSignal,
             spaceId: string | null,
-          ) => Promise<string[]>;
+          ) => Promise<{ utterances: string[]; voice?: { voiceId: string; provider: string } }>;
         },
         "prepare",
       )
       .mockImplementation(async () => {
         changeSelectedSpace("space-other");
-        return ["Hello."];
+        return {
+          utterances: ["Hello.", "Again."],
+          voice: { provider: "openai", voiceId: "alloy" },
+        };
       });
     await speaker.speak("Hello.", { messageId: "m1" });
 
@@ -444,6 +472,10 @@ describe("Speaker", () => {
     expect(headers.get("x-rakazo-space-id")).toBe("space-support");
     expect(headers.get("content-type")).toBe("application/json");
     expect(prepare.mock.calls[0]?.[3]).toBe("space-support");
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { text: "Hello.", voiceId: "alloy", voiceProvider: "openai" },
+      { text: "Again.", voiceId: "alloy", voiceProvider: "openai" },
+    ]);
   });
 
   it("rejects oversized audio without waiting for response cancellation", async () => {
@@ -459,9 +491,14 @@ describe("Speaker", () => {
     );
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
-    ).mockResolvedValue(["Hello."]);
+    ).mockResolvedValue({ utterances: ["Hello."] });
 
     await expect(speaker.speak("Hello.")).resolves.toBeUndefined();
 
@@ -484,9 +521,14 @@ describe("Speaker", () => {
     );
     const speaker = new Speaker();
     vi.spyOn(
-      speaker as unknown as { prepare: () => Promise<string[]> },
+      speaker as unknown as {
+        prepare: () => Promise<{
+          utterances: string[];
+          voice?: { voiceId: string; provider: string };
+        }>;
+      },
       "prepare",
-    ).mockResolvedValue(["Hello."]);
+    ).mockResolvedValue({ utterances: ["Hello."] });
 
     const pending = speaker.speak("Hello.");
     await vi.advanceTimersByTimeAsync(VOICE_RESPONSE_TIMEOUT_MS);
