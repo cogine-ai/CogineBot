@@ -109,6 +109,7 @@ import {
   runQuotaWaitStateSchema,
   SecretHttpRequest,
   SHARED_PAGE_UPDATE_REQUEST_KIND,
+  ThinkingLevelSchema,
   TimeZoneSchema,
   UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
@@ -5189,16 +5190,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
             sourceMessage,
             Boolean(thread.externalConversationId || messagingChannelRun || channelId),
           );
-        const legacyEffort = thinkingLevel ?? resolved.thinkingLevel ?? null;
+        // Image admission pins the model. A copied effort must not mask a newer default.
+        const selectedEffort =
+          run.usesDefaultThinkingLevel && preferences
+            ? credential?.defaultModel === runModelId
+              ? ThinkingLevelSchema.safeParse(credential.thinkingLevel).data
+              : null
+            : thinkingLevel;
+        const legacyEffort = selectedEffort ?? resolved.thinkingLevel ?? null;
         const capturedEffort =
           settingsSnapshot?.thinkingPreferenceCaptured &&
           (!quotaTarget ||
             (quotaTarget.provider === settingsSnapshot.modelProvider &&
               quotaTarget.modelId === settingsSnapshot.modelId &&
               quotaTarget.modelCredentialId === settingsSnapshot.modelCredentialId));
-        const thinkingLevels =
-          resolved.thinkingLevels ??
-          (capturedEffort ? settingsSnapshot?.thinkingLevels : undefined);
+        const thinkingLevels = capturedEffort
+          ? settingsSnapshot!.thinkingLevels
+          : resolved.thinkingLevels;
         const effort = capturedEffort
           ? { level: settingsSnapshot!.thinkingLevel, captured: false }
           : applyThinkingDefault(

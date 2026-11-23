@@ -516,6 +516,12 @@ it("ignores an earlier Space's thinking confirmation and writes only the current
     state.rpc.mock.calls.filter(([name]) => name === "models/updateThinkingDefaults");
   state.params.spaceId = "space-settings";
   await render();
+  const local = container.querySelector<HTMLSelectElement>(
+    'select[aria-label="Thinking in this Space"]',
+  );
+  expect(local?.value).toBe("inherit");
+  await act(async () => local?.dispatchEvent(new Event("change", { bubbles: true })));
+  expect(writes()).toHaveLength(0);
   const earlier = await choose();
   state.params.spaceId = "space-other";
   await render();

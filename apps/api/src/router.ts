@@ -2733,6 +2733,7 @@ export function createRouter(deps: RouterDeps) {
           deps,
           context.actor,
           await getOwnedBotSettings(deps.prisma, context.actor, input.botId),
+          codexCatalog,
         ),
       ),
       undoSettings: authed.bots.undoSettings.handler(async ({ context, input }) => {
@@ -2864,6 +2865,7 @@ export function createRouter(deps: RouterDeps) {
             deps,
             actor,
             await getOwnedBotSettings(deps.prisma, actor, input.botId),
+            codexCatalog,
           ),
         };
       }),
@@ -9324,7 +9326,12 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
   };
 }
 
-async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: BotSettingsRow) {
+async function effectiveBotSettingsHistory(
+  deps: RouterDeps,
+  actor: Actor,
+  bot: BotSettingsRow,
+  catalog: CodexLiveCatalog,
+) {
   const [setup, voice, bound, readAloud] = await Promise.all([
     modelSetup(deps, actor),
     findDefaultVoiceCredential(deps.prisma, actor),
@@ -9364,7 +9371,7 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
       actor,
       model,
       inherited,
-      deps.codexCatalog,
+      catalog,
     );
     if (!capability) return null;
     const legacy =

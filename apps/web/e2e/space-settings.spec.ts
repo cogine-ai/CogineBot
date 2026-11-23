@@ -134,7 +134,7 @@ test("personal thinking applies only to the matching model and preserves Space o
       apiKey: "fake-offline-key",
       baseUrl: `http://127.0.0.1:${port}/v1`,
     });
-  await connect(personal.spaceId, 8090, true);
+  const connection = await connect(personal.spaceId, 8090, true);
   await connect(lab.id, 8091, false);
   await page.reload();
   const settings = await openUserSettings(page, "models");
@@ -177,6 +177,27 @@ test("personal thinking applies only to the matching model and preserves Space o
   await local.selectOption("inherit");
   await expect(defaults.getByText("My default", { exact: true })).toBeVisible();
   await expect(settings.getByText("Thinking: Low", { exact: true })).toBeVisible();
+
+  await local.selectOption("copy");
+  await expect(local).toHaveValue("low");
+  await inSpace(page, personal.spaceId, "models/connect", {
+    ...choice,
+    credentialId: connection.id,
+    expectedRevision: connection.connectionRevision,
+    reasoning: false,
+    baseUrl: "http://127.0.0.1:8090/v1",
+  });
+  await page.reload();
+  await openUserSettings(page, "models");
+  await expect(local).toHaveValue("saved");
+  await expect(local.locator('option[value="saved"]')).toHaveText("Low");
+  await expect(defaults.getByText("Thinking level is unavailable for this model.")).toBeVisible();
+  await local.selectOption("modelDefault");
+  await expect(defaults.getByText("This Space", { exact: true })).toBeVisible();
+  expect(await rpc<ThinkingDefaults>(page, "models/thinkingDefaults", {})).toMatchObject({
+    space: { value: { model: choice, mode: "fixed", level: null } },
+    effective: { level: null, source: "space", unsupported: false },
+  });
 });
 
 test("uses personal voice defaults for new playback and keeps Space and Bot choices", async ({

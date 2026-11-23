@@ -5,7 +5,11 @@ import type {
   UpdateThinkingDefaultsInput,
   UpdateThinkingDefaultsResult,
 } from "@rakazo/contracts";
-import { sameDefaultModel, ThinkingLevelSchema } from "@rakazo/contracts";
+import {
+  sameDefaultModel,
+  ThinkingLevelSchema,
+  unavailableSpaceThinkingLevel,
+} from "@rakazo/contracts";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { Alert, Text, View } from "react-native";
 import { useI18n } from "../lib/i18n";
@@ -58,12 +62,21 @@ export function ThinkingDefaultSettingsRows({
   useEffect(() => onRead(settings), [settings, onRead]);
   const account = settings?.account.value;
   const effective = settings?.effective;
+  const unavailableSpaceLevel = unavailableSpaceThinkingLevel(settings);
   const levels: ThinkingLevel[] = settings?.levels.filter((level) => level !== "off") ?? [];
   const selected =
     account &&
     sameDefaultModel(account.model, settings?.binding?.model ?? null) &&
     levels.includes(account.level);
   const disabled = pending || busy;
+  const accountValue = account ? (selected ? account.level : "saved") : "";
+  const spaceValue = settings?.followsAccount
+    ? "inherit"
+    : unavailableSpaceLevel
+      ? "saved"
+      : effective?.level === "off" || (effective?.level && levels.includes(effective.level))
+        ? effective.level
+        : "modelDefault";
   const levelLabel = (level: ThinkingLevel | null | undefined) =>
     level ? thinkingLevelLabel(level, t) : t("Model default");
   const describeChoice = (level: ThinkingLevel | null | undefined, modelId?: string) =>
@@ -87,7 +100,7 @@ export function ThinkingDefaultSettingsRows({
     }
   }
 
-  if (!problem && !account && levels.length === 0) return null;
+  if (!problem && !account && !unavailableSpaceLevel && levels.length === 0) return null;
   return (
     <View style={{ gap: 10 }}>
       {problem ? (
@@ -108,7 +121,7 @@ export function ThinkingDefaultSettingsRows({
         <>
           <MenuPicker
             label={t("My default thinking")}
-            value={account ? (selected ? account.level : "saved") : ""}
+            value={accountValue}
             choices={[
               { key: "", label: t("Model default") },
               ...(account && !selected
@@ -122,7 +135,7 @@ export function ThinkingDefaultSettingsRows({
               ...levelChoices,
             ]}
             onChange={(next) => {
-              if (disabled) return;
+              if (disabled || next === accountValue) return;
               const level = ThinkingLevelSchema.safeParse(next);
               if (next && !level.success) return;
               const value = level.data ?? null;
@@ -155,22 +168,17 @@ export function ThinkingDefaultSettingsRows({
               );
             }}
           />
-          {levels.length ? (
+          {levels.length || unavailableSpaceLevel ? (
             <MenuPicker
               label={t("Thinking in this Space")}
-              value={
-                settings.followsAccount
-                  ? "inherit"
-                  : effective?.level === "off"
-                    ? "off"
-                    : effective?.level && levels.includes(effective.level)
-                      ? effective.level
-                      : "modelDefault"
-              }
+              value={spaceValue}
               choices={[
                 { key: "inherit", label: t("Follow my default") },
                 ...(settings.followsAccount
                   ? [{ key: "copy", label: t("Keep the current level in this Space") }]
+                  : []),
+                ...(unavailableSpaceLevel
+                  ? [{ key: "saved", label: levelLabel(unavailableSpaceLevel) }]
                   : []),
                 ...(!settings.followsAccount && effective?.level === "off"
                   ? [{ key: "off", label: levelLabel("off") }]
@@ -179,7 +187,7 @@ export function ThinkingDefaultSettingsRows({
                 ...levelChoices,
               ]}
               onChange={(next) => {
-                if (disabled) return;
+                if (disabled || next === spaceValue) return;
                 const value =
                   next === "inherit" || next === "copy" || next === "modelDefault"
                     ? next

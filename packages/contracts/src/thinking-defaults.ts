@@ -52,6 +52,13 @@ export const ThinkingDefaultsSchema = z.object({
 });
 export type ThinkingDefaults = z.infer<typeof ThinkingDefaultsSchema>;
 
+export function unavailableSpaceThinkingLevel(settings: ThinkingDefaults | null) {
+  const saved = settings?.space.value;
+  return settings?.effective.unsupported && !settings.followsAccount && saved?.mode === "fixed"
+    ? saved.level
+    : null;
+}
+
 const write = {
   expectedRevision: revision,
   binding: binding.nullable(),

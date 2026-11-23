@@ -92,6 +92,7 @@ async function runWithModel(
     inheritedAccount?: boolean;
     thinkingDefault?: ThinkingLevel;
     pinnedThinking?: { level: ThinkingLevel; copiedDefault: boolean };
+    connectionThinking?: ThinkingLevel;
     followsPersonalThinking?: boolean;
     codexLevels?: ThinkingLevel[];
     modelSettings?: ModelSettings;
@@ -106,17 +107,18 @@ async function runWithModel(
   provisionComputer.mockClear();
   const provider = attachmentOptions.codexLevels ? "openai-codex" : "openrouter";
   let codexLevels = attachmentOptions.codexLevels;
-  const readCodex = vi.fn(async (_userId: string, _account: unknown, { waitMs = 0 } = {}) =>
-    waitMs > 0 && codexLevels
-      ? [
-          {
-            slug: modelId,
-            reasoningEfforts: codexLevels,
-            supportsImages: true,
-            supportsFastTier: false,
-          },
-        ]
-      : undefined,
+  const readCodex = vi.fn(
+    async (_userId: string, _account: unknown, _options: { waitMs?: number } = {}) =>
+      codexLevels
+        ? [
+            {
+              slug: modelId,
+              reasoningEfforts: codexLevels,
+              supportsImages: true,
+              supportsFastTier: false,
+            },
+          ]
+        : undefined,
   );
   const run = {
     id: "run-1",
@@ -395,7 +397,13 @@ async function runWithModel(
           return attachmentOptions.pinned
             ? {
                 ...primaryCredential,
-                preferences: [{ modelId, isDefault: false, thinkingLevel: null }],
+                preferences: [
+                  {
+                    modelId,
+                    isDefault: false,
+                    thinkingLevel: attachmentOptions.connectionThinking ?? null,
+                  },
+                ],
               }
             : null;
         },
@@ -536,8 +544,8 @@ async function runWithModel(
     executor,
     runtimeRun,
     readCodex,
-    clearCodex: () => {
-      codexLevels = undefined;
+    setCodexLevels: (levels?: ThinkingLevel[]) => {
+      codexLevels = levels;
     },
     setThinkingDefault: (level: ThinkingLevel) => {
       thinkingDefault = level;
@@ -930,55 +938,90 @@ describe("recent turn images follow model vision", () => {
   });
 
   it.each([
-    { copiedDefault: true, expected: "high" },
-    { copiedDefault: false, expected: "low" },
-  ])(
-    "interprets a pinned image's effort by its source ($copiedDefault)",
-    async ({ copiedDefault, expected }) => {
+    {
+      copiedDefault: true,
+      connectionThinking: undefined,
+      accountThinking: "high",
+      expected: "high",
+    },
+    {
+      copiedDefault: true,
+      connectionThinking: "medium",
+      accountThinking: "high",
+      expected: "medium",
+    },
+    {
+      copiedDefault: true,
+      connectionThinking: undefined,
+      accountThinking: undefined,
+      expected: "low",
+    },
+    {
+      copiedDefault: false,
+      connectionThinking: undefined,
+      accountThinking: "high",
+      expected: "low",
+    },
+  ] satisfies Array<{
+    copiedDefault: boolean;
+    connectionThinking?: ThinkingLevel;
+    accountThinking?: ThinkingLevel;
+    expected: ThinkingLevel;
+  }>)(
+    "interprets a pinned image's effort ($copiedDefault, $connectionThinking, $accountThinking)",
+    async ({ copiedDefault, connectionThinking, accountThinking, expected }) => {
       const { request } = await runWithModel(TEXT_ONLY_MODEL, undefined, false, false, {
         pinned: true,
         inheritedAccount: true,
-        thinkingDefault: "high",
-        followsPersonalThinking: true,
+        thinkingDefault: accountThinking,
+        connectionThinking,
         pinnedThinking: { level: "low", copiedDefault },
       });
       expect(request.model.thinkingLevel).toBe(expected);
     },
   );
 
-  it("keeps live OAuth thinking levels when the next lease has a cold catalog", async () => {
-    const levels = ["minimal", "medium"] as ThinkingLevel[];
-    const { request, run, executor, runtimeRun, readCodex, clearCodex } = await runWithModel(
-      "gpt-6-luna",
-      undefined,
-      false,
-      false,
-      { inheritedAccount: true, thinkingDefault: "minimal", codexLevels: levels },
-    );
-    expect(request.model).toMatchObject({
-      thinkingLevel: "minimal",
-      supportedThinkingLevels: levels,
-    });
-    expect(readCodex).toHaveBeenCalledWith(run.userId, expect.anything(), {
-      waitMs: expect.any(Number),
-    });
-    expect(readCodex.mock.calls[0]?.[2]?.waitMs).toBeGreaterThan(0);
-    expect(run).toMatchObject({
-      botSettingsSnapshot: expect.objectContaining({
+  it.each([{ nextLevels: undefined }, { nextLevels: ["low", "high"] satisfies ThinkingLevel[] }])(
+    "keeps the captured OAuth thinking pair when the next lease sees $nextLevels",
+    async ({ nextLevels }) => {
+      const levels = ["minimal", "medium"] as ThinkingLevel[];
+      const { request, run, executor, runtimeRun, readCodex, setCodexLevels } = await runWithModel(
+        "gpt-6-luna",
+        undefined,
+        false,
+        false,
+        { inheritedAccount: true, thinkingDefault: "minimal", codexLevels: levels },
+      );
+      expect(request.model).toMatchObject({
         thinkingLevel: "minimal",
-        thinkingPreferenceCaptured: true,
-        thinkingLevels: levels,
-      }),
-    });
-    clearCodex();
-    Object.assign(run, { status: "queued", leaseFence: 1, leaseOwner: null, leaseExpiresAt: null });
-    await executor.continueRun(run.id, "worker-2");
-    expect(readCodex.mock.calls.at(-1)?.[2]?.waitMs).toBe(0);
-    expect(runtimeRun.mock.calls[1]?.[0].model).toMatchObject({
-      thinkingLevel: "minimal",
-      supportedThinkingLevels: levels,
-    });
-  });
+        supportedThinkingLevels: levels,
+      });
+      expect(readCodex).toHaveBeenCalledWith(run.userId, expect.anything(), {
+        waitMs: expect.any(Number),
+      });
+      expect(readCodex.mock.calls[0]?.[2]?.waitMs).toBeGreaterThan(0);
+      expect(run).toMatchObject({
+        botSettingsSnapshot: expect.objectContaining({
+          thinkingLevel: "minimal",
+          thinkingPreferenceCaptured: true,
+          thinkingLevels: levels,
+        }),
+      });
+      setCodexLevels(nextLevels);
+      Object.assign(run, {
+        status: "queued",
+        leaseFence: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+      });
+      await executor.continueRun(run.id, "worker-2");
+      expect(readCodex.mock.calls.at(-1)?.[2]?.waitMs).toBe(0);
+      expect(runtimeRun.mock.calls[1]?.[0].model).toMatchObject({
+        thinkingLevel: "minimal",
+        supportedThinkingLevels: levels,
+      });
+    },
+  );
 
   it("persists the switched model against the current run lease", async () => {
     const backup = { provider: "openrouter", modelId: "openai/gpt-4o" };

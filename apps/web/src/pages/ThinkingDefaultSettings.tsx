@@ -5,7 +5,7 @@ import type {
   ThinkingLevel,
   UpdateThinkingDefaultsInput,
 } from "@rakazo/contracts";
-import { ThinkingLevelSchema } from "@rakazo/contracts";
+import { ThinkingLevelSchema, unavailableSpaceThinkingLevel } from "@rakazo/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -59,6 +59,7 @@ export function ThinkingDefaultSettings({
   const model = settings?.binding?.model;
   const account = settings?.account.value;
   const effective = settings?.effective;
+  const unavailableSpaceLevel = unavailableSpaceThinkingLevel(settings);
   const allLevels: ThinkingLevel[] = settings?.levels.filter((level) => level !== "off") ?? [];
   const accountMatches =
     account?.model.provider === model?.provider && account?.model.modelId === model?.modelId;
@@ -85,7 +86,7 @@ export function ThinkingDefaultSettings({
     }
   }
 
-  if (!problem && !account && allLevels.length === 0) return null;
+  if (!problem && !account && !unavailableSpaceLevel && allLevels.length === 0) return null;
   return (
     <section aria-label={t`Thinking defaults`} className="mt-3 space-y-2">
       {problem ? (
@@ -141,7 +142,7 @@ export function ThinkingDefaultSettings({
               ))}
             </NativeSelect>
           </label>
-          {allLevels.length > 0 ? (
+          {allLevels.length > 0 || unavailableSpaceLevel ? (
             <label htmlFor={`${id}-space`} className="flex items-center gap-2">
               <Trans>Thinking in this Space</Trans>
               <NativeSelect
@@ -149,11 +150,13 @@ export function ThinkingDefaultSettings({
                 value={
                   settings.followsAccount
                     ? "inherit"
-                    : effective?.level === "off"
-                      ? "off"
-                      : effective?.level && allLevels.includes(effective.level)
-                        ? effective.level
-                        : "modelDefault"
+                    : unavailableSpaceLevel
+                      ? "saved"
+                      : effective?.level === "off"
+                        ? "off"
+                        : effective?.level && allLevels.includes(effective.level)
+                          ? effective.level
+                          : "modelDefault"
                 }
                 disabled={disabled}
                 onChange={(event) => {
@@ -182,6 +185,11 @@ export function ThinkingDefaultSettings({
                 <NativeSelectOption value="inherit">{t`Follow my default`}</NativeSelectOption>
                 {settings.followsAccount ? (
                   <NativeSelectOption value="copy">{t`Keep the current level in this Space`}</NativeSelectOption>
+                ) : null}
+                {unavailableSpaceLevel ? (
+                  <NativeSelectOption value="saved" disabled>
+                    {label(unavailableSpaceLevel)}
+                  </NativeSelectOption>
                 ) : null}
                 {!settings.followsAccount && effective?.level === "off" ? (
                   <NativeSelectOption value="off" disabled>
