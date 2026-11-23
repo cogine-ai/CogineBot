@@ -99,6 +99,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
   afterAll(async () => {
     if (!prisma) return;
     try {
+      await prisma.auditEvent.deleteMany({ where: { spaceId } });
       await prisma.organization.deleteMany({ where: { id: organizationId } });
       await prisma.user.deleteMany({ where: { id: { in: [userId, otherUserId] } } });
     } finally {
@@ -152,6 +153,15 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
   it("commits a batch approval and its action rules once under concurrent answers", async () => {
     const f = await seed();
     const actions = ["GMAIL_ARCHIVE_THREAD", "GMAIL_SEND_EMAIL"];
+    const existing = await prisma.actionApprovalRule.create({
+      data: {
+        spaceId,
+        createdByUserId: userId,
+        effect: "always_allow",
+        matchKind: "tool",
+        matchValue: actions[0]!,
+      },
+    });
     const args = { tools: actions.map((tool_slug) => ({ tool_slug, arguments: {} })) };
     const effect = await prisma.externalEffect.create({
       data: {
@@ -222,10 +232,48 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     });
     const rules = await prisma.actionApprovalRule.findMany({
       where: { spaceId, createdByUserId: userId, effect: "always_allow" },
-      select: { matchKind: true, matchValue: true },
+      select: { id: true, matchKind: true, matchValue: true, createdAt: true },
       orderBy: { matchValue: "asc" },
     });
-    expect(rules).toEqual(actions.map((matchValue) => ({ matchKind: "tool", matchValue })));
+    expect(rules).toMatchObject(actions.map((matchValue) => ({ matchKind: "tool", matchValue })));
+    expect(rules[0]?.id).toBe(existing.id);
+    const inserted = rules[1]!;
+    expect(
+      await prisma.auditEvent.findMany({
+        where: { targetId: { in: [effect.id, existing.id, inserted.id] } },
+        orderBy: { action: "asc" },
+      }),
+    ).toMatchObject([
+      {
+        id: `approval.decided:${effect.id}`,
+        organizationId,
+        spaceId,
+        runId: f.run.id,
+        threadId: f.thread.id,
+        actorType: "user",
+        actorId: userId,
+        action: "approval.decided",
+        targetType: "external_effect",
+        targetId: effect.id,
+        outcome: "success",
+        metadata: { decision: "always" },
+      },
+      {
+        id: `approval.rule.created:${inserted.id}`,
+        createdAt: inserted.createdAt,
+        organizationId,
+        spaceId,
+        runId: f.run.id,
+        threadId: f.thread.id,
+        actorType: "user",
+        actorId: userId,
+        action: "approval.rule.created",
+        targetType: "approval_rule",
+        targetId: inserted.id,
+        outcome: "success",
+        metadata: { effect: "always_allow", matchKind: "tool" },
+      },
+    ]);
   });
 
   it("accepts a pending Routine change only from the Run owner", async () => {

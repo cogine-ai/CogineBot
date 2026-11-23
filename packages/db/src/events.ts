@@ -41,6 +41,8 @@ import {
 import { urlSite } from "@rakazo/core/egress";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import { getLogger } from "@rakazo/logging";
+import type { CommittedApprovalDecision } from "./audit-events.js";
+import { recordManualApprovalAudit } from "./audit-events.js";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
@@ -1280,7 +1282,12 @@ async function commitAnswerRunInput(
   runSecretWriter?: RunSecretWriter,
   resolveApprovalBatch?: ResolveApprovalBatch,
   delegation?: { effectId: string; nonceDigest: string },
-): Promise<{ threadId: string; seq: number; ordinaryApproval?: true } | null> {
+): Promise<{
+  threadId: string;
+  seq: number;
+  ordinaryApproval?: true;
+  approvalDecision?: CommittedApprovalDecision;
+} | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
@@ -1352,7 +1359,6 @@ async function commitAnswerRunInput(
     request: Prisma.JsonValue;
     idempotencyKey: string;
   } | null = null;
-  let approvalUserId: string | null = null;
   let approvalSite: string | undefined;
   let approvalTools: string[] = [];
 
@@ -1461,7 +1467,6 @@ async function commitAnswerRunInput(
         if (requiredSites.some((rule) => canonicalApprovalSite(rule.matchValue) === approvalSite))
           return null;
       }
-      approvalUserId = input.answeredByUserId;
     }
   }
 
@@ -1516,7 +1521,8 @@ async function commitAnswerRunInput(
     approvalEffect &&
     ordinaryApprovalCard(pendingAsk) &&
     !PROTECTED_APPROVAL_TOOLS.includes(approvalEffect.kind);
-  if (approvalAsk) {
+  let createdRules: CommittedApprovalDecision["createdRules"] = [];
+  if (approvalEffect) {
     const allowed = input.answer === "allow" || input.answer === "always";
     const requiresPeerApprovalRecheck =
       allowed &&
@@ -1545,14 +1551,14 @@ async function commitAnswerRunInput(
             }))),
       );
     await tx.externalEffect.update({
-      where: { id: approvalEffect!.id },
+      where: { id: approvalEffect.id },
       data: {
         status: allowed ? "approved" : "denied",
         ...(delegation ? { delegatedApprovalNonce: delegation.nonceDigest } : {}),
         ...(requiresPeerApprovalRecheck ? { requiresPeerApprovalRecheck } : {}),
       },
     });
-    if (!allowed && approvalEffect?.kind === "generate_secret") {
+    if (!allowed && approvalEffect.kind === "generate_secret") {
       const request = approvalEffect.request;
       if (
         request &&
@@ -1572,25 +1578,18 @@ async function commitAnswerRunInput(
       }
     }
     // Save the approved destination or individual actions in the same transaction.
-    for (const matchValue of approvalSite ? [approvalSite] : approvalTools) {
-      await tx.actionApprovalRule.upsert({
-        where: {
-          spaceId_createdByUserId_effect_matchKind_matchValue: {
-            spaceId: input.spaceId,
-            createdByUserId: approvalUserId!,
-            effect: "always_allow",
-            matchKind: approvalSite ? "site" : "tool",
-            matchValue,
-          },
-        },
-        create: {
+    const ruleValues = approvalSite ? [approvalSite] : approvalTools;
+    if (ruleValues.length > 0) {
+      createdRules = await tx.actionApprovalRule.createManyAndReturn({
+        data: ruleValues.map((matchValue) => ({
           spaceId: input.spaceId,
-          createdByUserId: approvalUserId!,
+          createdByUserId: input.answeredByUserId,
           effect: "always_allow",
           matchKind: approvalSite ? "site" : "tool",
           matchValue,
-        },
-        update: {},
+        })),
+        skipDuplicates: true,
+        select: { id: true, createdAt: true, effect: true, matchKind: true },
       });
     }
   } else if (secretAsk) {
@@ -1676,6 +1675,17 @@ async function commitAnswerRunInput(
     threadId: updated.threadId,
     seq: updated.seq,
     ...(ordinaryApproval ? { ordinaryApproval: true } : {}),
+    ...(approvalEffect
+      ? {
+          approvalDecision: {
+            effectId: approvalEffect.id,
+            decision:
+              input.answer === "always" ? "always" : input.answer === "allow" ? "allow" : "deny",
+            happenedAt: updated.createdAt,
+            createdRules,
+          },
+        }
+      : {}),
   };
 }
 
@@ -1698,6 +1708,14 @@ export async function answerRunInput(
   await notifyRealtime(realtime, committed.threadId, committed.seq);
   if (committed.ordinaryApproval)
     await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
+  if (committed.approvalDecision) {
+    await recordManualApprovalAudit(
+      prisma,
+      { spaceId: input.spaceId, userId: input.answeredByUserId },
+      { runId: input.runId, threadId: committed.threadId },
+      committed.approvalDecision,
+    );
+  }
   return true;
 }
 
@@ -1772,6 +1790,14 @@ export async function answerDelegatedApproval(
   if (typeof result === "string") return result;
   await notifyRealtime(realtime, result.threadId, result.seq);
   await notifyDelegatedApprovalParent(prisma, realtime, input.runId);
+  if (result.approvalDecision) {
+    await recordManualApprovalAudit(
+      prisma,
+      { spaceId: input.spaceId, userId: input.userId },
+      { runId: input.runId, threadId: result.threadId },
+      result.approvalDecision,
+    );
+  }
   return "accepted";
 }
 
