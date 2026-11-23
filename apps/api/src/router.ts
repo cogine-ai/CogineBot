@@ -8556,20 +8556,24 @@ export function createRouter(deps: RouterDeps) {
       }),
       remove: authed.approvalRules.remove.handler(async ({ context, input }) => {
         const { actor } = context;
-        const removedAt = await deps.prisma.$transaction(async (tx) => {
+        const removed = await deps.prisma.$transaction(async (tx) => {
           await touchActionApprovalPolicy(tx, actor.spaceId, actor.userId);
-          const { count } = await tx.actionApprovalRule.deleteMany({
-            where: {
-              id: input.id,
-              spaceId: actor.spaceId,
-              createdByUserId: actor.userId,
-            },
-          });
-          return count ? new Date() : null;
+          const row = await tx.actionApprovalRule
+            .delete({
+              where: { id: input.id, spaceId: actor.spaceId, createdByUserId: actor.userId },
+              select: { effect: true, matchKind: true },
+            })
+            .catch((error: unknown) => {
+              if (isRecordNotFound(error)) return null;
+              throw error;
+            });
+          return row && { ...row, happenedAt: new Date() };
         });
-        if (removedAt)
-          await recordApprovalRuleAudit(deps.prisma, actor, input.id, removedAt, {
+        if (removed)
+          await recordApprovalRuleAudit(deps.prisma, actor, input.id, removed.happenedAt, {
             action: "approval.rule.deleted",
+            effect: removed.effect,
+            matchKind: removed.matchKind,
           });
         return { ok: true as const };
       }),

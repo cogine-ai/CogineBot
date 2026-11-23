@@ -1,11 +1,15 @@
-import type { ActionApprovalRule } from "@rakazo/contracts";
+import { ActionApprovalRuleSchema } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import type { PrismaClient } from "./client.js";
 import { runAsSystem } from "./row-security.js";
 
-type ApprovalRuleChange =
-  | ({ action: "approval.rule.created" } & Pick<ActionApprovalRule, "effect" | "matchKind">)
-  | { action: "approval.rule.deleted" };
+type ApprovalRuleChange = {
+  action: "approval.rule.created" | "approval.rule.deleted";
+  effect: string;
+  matchKind: string;
+};
+
+const approvalRuleAuditMetadata = ActionApprovalRuleSchema.pick({ effect: true, matchKind: true });
 
 /** The rule transaction has committed. An audit failure leaves the change in place. */
 export async function recordApprovalRuleAudit(
@@ -36,10 +40,7 @@ export async function recordApprovalRuleAudit(
               targetType: "approval_rule",
               targetId: ruleId,
               outcome: "success",
-              metadata:
-                change.action === "approval.rule.created"
-                  ? { effect: change.effect, matchKind: change.matchKind }
-                  : {},
+              metadata: approvalRuleAuditMetadata.safeParse(change).data ?? {},
             },
           });
         },

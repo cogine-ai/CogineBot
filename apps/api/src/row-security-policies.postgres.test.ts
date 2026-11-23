@@ -178,18 +178,56 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       await Promise.all([inA(() => rules.remove(remove)), inA(() => secondClient.remove(remove))]);
       expect(await inA(() => rules.list())).not.toContainEqual(first);
       const { rows } = await owner.pool.query(
-        'SELECT "organizationId", "spaceId", "actorId", action FROM cogine_audit.audit_events WHERE "targetId" = $1 ORDER BY action',
+        'SELECT "organizationId", "spaceId", "actorId", action, metadata FROM cogine_audit.audit_events WHERE "targetId" = $1 ORDER BY action',
         [first.id],
       );
       expect(rows).toEqual([
-        { organizationId: orgA, spaceId: spaceA, actorId: userA, action: "approval.rule.created" },
-        { organizationId: orgA, spaceId: spaceA, actorId: userA, action: "approval.rule.deleted" },
+        {
+          organizationId: orgA,
+          spaceId: spaceA,
+          actorId: userA,
+          action: "approval.rule.created",
+          metadata: { effect: "always_allow", matchKind: "site" },
+        },
+        {
+          organizationId: orgA,
+          spaceId: spaceA,
+          actorId: userA,
+          action: "approval.rule.deleted",
+          metadata: { effect: "always_allow", matchKind: "site" },
+        },
       ]);
     } finally {
       await secondRuntime.prisma.$disconnect();
       await secondRuntime.pool.end();
     }
   });
+
+  it.each([
+    { effect: "deny", metadata: { effect: "deny", matchKind: "tool" } },
+    { effect: "invalid-fixture-category", metadata: {} },
+  ])(
+    "records only validated categories when deleting a stored rule ($effect)",
+    async ({ effect, metadata }) => {
+      const stored = await owner.prisma.actionApprovalRule.create({
+        data: {
+          spaceId: spaceA,
+          createdByUserId: userA,
+          effect,
+          matchKind: "tool",
+          matchValue: "legacy_tool_fixture",
+        },
+      });
+      const rules = await approvalRulesFor(userA, spaceA);
+      await expect(inA(() => rules.remove({ id: stored.id }))).resolves.toEqual({ ok: true });
+      expect(
+        await owner.prisma.auditEvent.findUnique({
+          where: { id: `approval.rule.deleted:${stored.id}` },
+          select: { metadata: true },
+        }),
+      ).toEqual({ metadata });
+    },
+  );
 
   it("keeps a committed approval rule when the restricted audit write fails", async () => {
     const rules = await approvalRulesFor(userA, spaceA);
