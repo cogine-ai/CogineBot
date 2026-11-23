@@ -811,6 +811,7 @@ export function getBotSecretMetadata(
   });
 }
 
+/** Reports whether this transaction removed a credential. */
 export async function forgetBotSecret(
   prisma: PrismaClient,
   scope: BotSecretScope,
@@ -818,7 +819,7 @@ export async function forgetBotSecret(
   options?: { expectedRevision?: string; requireBotOwner?: boolean },
 ) {
   const expectedRevision = options?.expectedRevision;
-  await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     if (!(await lockBotSecretScope(tx, scope, options?.requireBotOwner ?? false)))
       throw credentialChanged();
     const where = { ...scopeFields(scope), name };
@@ -826,7 +827,7 @@ export async function forgetBotSecret(
       where,
       select: { id: true, revision: true, auth: true },
     });
-    if (!current && expectedRevision === undefined) return;
+    if (!current && expectedRevision === undefined) return { removed: false };
     if (
       !current ||
       (expectedRevision !== undefined && current.revision !== expectedRevision) ||
@@ -837,8 +838,8 @@ export async function forgetBotSecret(
       where: { ...where, id: current.id, revision: current.revision },
     });
     if (removed.count !== 1) throw credentialChanged();
+    return { removed: true };
   });
-  return { removed: true };
 }
 
 type BotSecretHttpBinding = Pick<

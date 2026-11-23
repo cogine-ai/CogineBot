@@ -373,16 +373,17 @@ function fixture({
   let connectionReadCount = 0;
   const prisma = {
     chatGroup: { findMany: vi.fn(async () => []) },
-    $queryRaw: vi.fn(async () =>
-      semanticTarget && semanticMemory
-        ? [
-            {
-              provider: semanticMemory.describe().id,
-              secretId: semanticTarget.connectionId,
-              scope: semanticTarget.scope,
-            },
-          ]
-        : [],
+    $queryRaw: vi.fn(
+      async (): Promise<unknown[]> =>
+        semanticTarget && semanticMemory
+          ? [
+              {
+                provider: semanticMemory.describe().id,
+                secretId: semanticTarget.connectionId,
+                scope: semanticTarget.scope,
+              },
+            ]
+          : [],
     ),
     run: {
       findUnique: vi.fn(async () => run),
@@ -490,7 +491,11 @@ function fixture({
     },
     taughtSkill: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
     agentSecret: { findMany: vi.fn(async () => []) },
-    botSecret: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
+    botSecret: {
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async (): Promise<unknown> => null),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
     agentSkill: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     scratchpadItem: { findMany: vi.fn(async () => []) },
     actionApprovalRule: { findMany: vi.fn(async (_query?: unknown) => rules) },
@@ -4513,6 +4518,61 @@ describe("authenticated request destination policy", () => {
     expect(f.effects[0]).toMatchObject({ status: "completed", result: { status: 204 } });
     expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
   });
+
+  it.each(["removed", "already absent", "lost effect settlement"] as const)(
+    "audits automatic credential removal only after both writes settle (%s)",
+    async (outcome) => {
+      const name = "synthetic-credential";
+      const f = fixture({ name: "forget_secret", builtin: true, autoReview: true });
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      f.prisma.$queryRaw.mockResolvedValueOnce([{ id: f.runRecord.botId }]);
+      if (outcome !== "already absent") {
+        f.prisma.botSecret.findFirst.mockResolvedValueOnce({
+          id: "credential-1",
+          revision: "revision-1",
+          auth: { type: "command" },
+        });
+        f.prisma.botSecret.deleteMany.mockResolvedValueOnce({ count: 1 });
+      }
+      if (outcome === "lost effect settlement") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "completed" ? { count: 0 } : update(input),
+        );
+      }
+      f.setCalls([{ args: { name }, executionId: "forget-credential" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledOnce();
+      expect(f.prisma.botSecret.deleteMany).toHaveBeenCalledTimes(
+        outcome === "already absent" ? 0 : 1,
+      );
+      if (outcome === "lost effect settlement") {
+        expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+      } else {
+        expect(f.results.at(-1)).toEqual({ removed: true });
+      }
+      if (outcome === "removed") {
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              id: `approval.auto_reviewed:${f.effects[0]?.id}`,
+              outcome: "success",
+              metadata: { decision: "pass" },
+            }),
+          ],
+        });
+        expect(JSON.stringify(f.prisma.auditEvent.createMany.mock.calls)).not.toContain(name);
+
+        await f.run();
+        expect(f.results.at(-1)).toEqual({ removed: true });
+        expect(f.prisma.botSecret.deleteMany).toHaveBeenCalledOnce();
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
+      } else {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("refuses a URL that cannot fit in a human approval card without truncation", async () => {
     const f = authFixture({ rules: [toolAllow] });
