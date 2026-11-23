@@ -166,6 +166,7 @@ async function runDiscovery(
     },
     computer: { findUniqueOrThrow: vi.fn(async () => computer) },
     connection: { findMany: vi.fn(async () => []) },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     secret: { findFirst: vi.fn(async () => null) },
     userModelCredential: { findFirst: vi.fn(async () => null) },

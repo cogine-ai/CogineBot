@@ -24,13 +24,18 @@ import {
 } from "@rakazo/contracts";
 import { MODEL_IMAGE_INPUT_ERROR, MODEL_IMAGE_INPUT_UNKNOWN } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
-import { findDefaultModelCredential, runAsSystem } from "@rakazo/db";
+import {
+  findAuthorizedSpaceModelCredential,
+  findEffectiveModelDefault,
+  runAsSystem,
+} from "@rakazo/db";
 
 export type ImageAdmissionRun = ModelChoice & {
   id: string;
   status: string;
   trigger: string;
   modelPinned?: boolean;
+  requiresSpaceModelBinding?: boolean;
   leaseFence?: number;
   attemptModel?: unknown;
   botSettingsSnapshot?: unknown;
@@ -76,6 +81,7 @@ export async function resolveThreadImageInput(
   ) {
     return { status: "unknown" as const };
   }
+  const pinned = run ? runModelChoice(run, bot) : bot;
   const override = activeAttempt
     ? {
         modelProvider: activeAttempt.provider,
@@ -90,29 +96,48 @@ export async function resolveThreadImageInput(
           modelCredentialId: quota.modelCredentialId,
           thinkingLevel: null,
         }
-      : run
-        ? runModelChoice(run, bot)
-        : bot;
+      : pinned;
+  const inheritsPinnedConnection =
+    run?.requiresSpaceModelBinding &&
+    override.modelProvider === pinned.modelProvider &&
+    override.modelId === pinned.modelId &&
+    override.modelCredentialId === pinned.modelCredentialId;
   const readSelection = async () => {
-    const overrideCredential =
-      override.modelProvider && override.modelId
-        ? await findConnectedModelCredential(
+    const hasOverride = Boolean(override.modelProvider && override.modelId);
+    let overrideCredential: Awaited<ReturnType<typeof findConnectedModelCredential>> = null;
+    if (override.modelProvider && override.modelId) {
+      overrideCredential = inheritsPinnedConnection
+        ? await findAuthorizedSpaceModelCredential(
+            prisma,
+            actor,
+            override.modelProvider,
+            override.modelCredentialId,
+          )
+        : await findConnectedModelCredential(
             prisma,
             actor,
             override.modelProvider,
             override.modelId,
             override.modelCredentialId ?? null,
-          )
-        : null;
-    return selectConfiguredModel({
+          );
+    }
+    const chosen = hasOverride ? null : await findEffectiveModelDefault(prisma, actor);
+    const selection = selectConfiguredModel({
       override,
       overrideCredential,
-      defaultCredential: await findDefaultModelCredential(prisma, actor),
+      defaultCredential: chosen?.credential ?? null,
+      defaultUnavailable: Boolean(chosen?.unavailable),
       settings: await runAsSystem("read deployment defaults for image admission", () =>
         prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
       ),
       deployment: configuration?.deployment ?? null,
     });
+    return {
+      ...selection,
+      inheritsAccountModel: chosen?.source === "account",
+      blocked:
+        Boolean(chosen?.unavailable) || (Boolean(inheritsPinnedConnection) && !overrideCredential),
+    };
   };
   let selected = await readSelection();
   if (lockConnection && selected.credential) {
@@ -128,6 +153,7 @@ export async function resolveThreadImageInput(
     selected = await readSelection();
     if (selected.credential?.id !== id) return { status: "unknown" as const };
   }
+  if (selected.blocked) return { status: "unknown" as const };
   if (
     snapshot &&
     snapshot.modelCredentialId === selected.credential?.id &&
@@ -148,6 +174,8 @@ export async function resolveThreadImageInput(
     supportsImages = true;
   if (
     (supportsImages === undefined ||
+      selected.inheritsAccountModel ||
+      inheritsPinnedConnection ||
       [CHATGPT_PLAN_PROVIDER_ID, CHATGPT_OAUTH_PROVIDER].includes(provider)) &&
     credential &&
     configuration
@@ -198,6 +226,7 @@ export async function resolveThreadImageInput(
             modelId: id,
             modelCredentialId: credential.id,
             thinkingLevel: selected.thinkingLevel,
+            ...(selected.inheritsAccountModel && { requiresSpaceModelBinding: true as const }),
           }
         : undefined,
   };

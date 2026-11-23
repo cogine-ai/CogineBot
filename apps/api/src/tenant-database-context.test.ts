@@ -25,6 +25,7 @@ describe("trusted request database context", () => {
           return { email: actor.email, name: "Request", avatarStyle: "robot" };
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: {
         findFirst: vi.fn(async () => {
           observed.push(currentDbContext());
@@ -66,6 +67,7 @@ describe("trusted request database context", () => {
           return { email: actor.email, name: "Request", avatarStyle: "robot" };
         }),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
       deploymentSettings: { findUnique: vi.fn(async () => null) },
     };

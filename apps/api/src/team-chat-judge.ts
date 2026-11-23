@@ -25,7 +25,7 @@ import type { PlatformModelAllowlist } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import {
   findBoundModelCredential,
-  findDefaultModelCredential,
+  findEffectiveModelDefault,
   findModelCredential,
   recordUsage,
   retireModelCredential,
@@ -253,7 +253,9 @@ export class ModelTeamChatEngagementJudge implements TeamChatEngagementJudge {
           select: { defaultModelProvider: true, defaultModelId: true },
         }),
       );
-      credential = await findDefaultModelCredential(this.deps.prisma, scope);
+      const chosen = await findEffectiveModelDefault(this.deps.prisma, scope);
+      if (chosen.unavailable) return null;
+      credential = chosen.credential;
       provider =
         credential?.provider ?? settings?.defaultModelProvider ?? this.deps.deploymentProvider;
       modelId = credential?.defaultModel ?? settings?.defaultModelId ?? this.deps.deploymentModel;

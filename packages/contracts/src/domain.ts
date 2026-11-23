@@ -1690,6 +1690,8 @@ export const MeSchema = z.object({
   needsModel: z.boolean(),
   defaultProvider: z.string().nullable(),
   defaultModel: z.string().nullable(),
+  defaultModelCredentialId: Id.nullable().optional(),
+  defaultModelUnavailable: z.enum(["missing", "ambiguous"]).nullable().optional(),
   /** Provider the active default runs on with the server's own credentials, without a key. */
   hostCredentialProvider: z.string().nullable(),
   /** Kind of those credentials, e.g. "AWS IAM"; set with hostCredentialProvider. */

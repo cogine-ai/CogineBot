@@ -266,8 +266,8 @@ import {
   deleteUnreferencedCredentialSecret,
   ensureBoard,
   findBoundModelCredential,
-  findDefaultModelCredential,
   findDefaultVoiceCredential,
+  findEffectiveModelDefault,
   findModelCredential,
   findNewestUserModelCredential,
   findSpaceMemoryConfig,
@@ -300,8 +300,10 @@ import {
   pushSessionExpiresAt,
   readAloudForBot,
   readAloudSettings,
+  readModelDefaults,
   readPluginCleanupRefs,
   readVoiceDefaults,
+  recordSpaceModelChoice,
   recordSpaceVoiceChoice,
   releaseSpaceDeletionClaim,
   renameSpaceForMember,
@@ -323,6 +325,7 @@ import {
   toTicketDto,
   touchActionApprovalPolicy,
   touchGroupUpdatedAt,
+  updateModelDefaults,
   updateReadAloud,
   updateSpaceCollaborationForMember,
   withTransactionRetry,
@@ -1052,7 +1055,12 @@ export async function enqueueBotIntroRun(deps: RouterDeps, actor: Actor, bot: Bo
   // extra automatic run there competes with whatever response a test or eval
   // harness queued next, for a bot it doesn't otherwise get to opt out of.
   if (deps.env.agentRuntime === "scripted") return;
-  if ((await modelSetup(deps, actor)).needsModel) return;
+  const setup = await modelSetup(deps, actor);
+  if (
+    setup.needsModel ||
+    (setup.defaultUnavailable && !(bot.modelProvider && usableModelId(bot.modelId)))
+  )
+    return;
   const select = {
     id: true,
     status: true,
@@ -1930,6 +1938,12 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     models: {
+      defaults: authed.models.defaults.handler(async ({ context }) =>
+        readModelDefaults(deps.prisma, context.actor),
+      ),
+      updateDefaults: authed.models.updateDefaults.handler(async ({ context, input }) =>
+        updateModelDefaults(deps.prisma, context.actor, input),
+      ),
       list: authed.models.list.handler(async ({ context }) => {
         const auth = await modelCredentialAuthKindsForSpace(
           deps.prisma,
@@ -2443,6 +2457,28 @@ export function createRouter(deps: RouterDeps) {
                     allowed?.every((level) => level === "off") === true;
                   if (!dormant) thinkingLevel = clampCatalogThinkingLevel(thinkingLevel, allowed);
                 }
+                if (input.updateThinkingLevelOnly) {
+                  const current = await findEffectiveModelDefault(tx, context.actor);
+                  if (
+                    input.thinkingLevel === undefined ||
+                    current.credential?.id !== checked.credential.id ||
+                    current.credential.defaultModel !== input.modelId
+                  )
+                    throw new ORPCError("CONFLICT", {
+                      message: "Model selection changed. Reload and try again.",
+                    });
+                  await tx.spaceModelPreference.update({
+                    where: {
+                      spaceId_userId_credentialId: {
+                        spaceId: context.actor.spaceId,
+                        userId: context.actor.userId,
+                        credentialId: checked.credential.id,
+                      },
+                    },
+                    data: { thinkingLevel },
+                  });
+                  return;
+                }
                 await selectSpaceModelPreference(
                   tx,
                   context.actor,
@@ -2450,6 +2486,10 @@ export function createRouter(deps: RouterDeps) {
                   input.modelId,
                   thinkingLevel,
                 );
+                await recordSpaceModelChoice(tx, context.actor, {
+                  provider: input.provider,
+                  modelId: input.modelId.trim(),
+                });
               },
               { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
             ),
@@ -2734,7 +2774,7 @@ export function createRouter(deps: RouterDeps) {
                 if (!allowed.includes(patch.thinkingLevel)) return false;
               }
             } else if (patch.thinkingLevel) {
-              const defaultConnection = await findDefaultModelCredential(tx, actor);
+              const defaultConnection = (await findEffectiveModelDefault(tx, actor)).credential;
               if (defaultConnection) {
                 const [locked] = await tx.$queryRaw<{ id: string }[]>`
                   SELECT id FROM user_model_credentials WHERE id = ${defaultConnection.id}
@@ -2825,7 +2865,7 @@ export function createRouter(deps: RouterDeps) {
         const thinkingLevel = input.thinkingLevel;
         const defaultCredential =
           thinkingLevel && (!existing.modelProvider || (settingModel && !input.modelProvider))
-            ? await findDefaultModelCredential(deps.prisma, context.actor)
+            ? (await findEffectiveModelDefault(deps.prisma, context.actor)).credential
             : null;
         const preparedDefault = defaultCredential?.defaultModel
           ? await prepareExistingModelAuth(
@@ -2876,7 +2916,8 @@ export function createRouter(deps: RouterDeps) {
                 assertPreparedModelAuth(checked, preparedAuth);
                 if (thinkingLevel) {
                   const selected =
-                    checked?.credential ?? (await findDefaultModelCredential(tx, context.actor));
+                    checked?.credential ??
+                    (await findEffectiveModelDefault(tx, context.actor)).credential;
                   let provider = binding.modelProvider ?? selected?.provider;
                   let modelId = binding.modelId ?? selected?.defaultModel;
                   if (!provider || !modelId) {
@@ -9128,14 +9169,16 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     spaceId: actor.spaceId,
     isDeploymentOwner: actor.isDeploymentOwner,
     needsModel: setup.needsModel,
+    defaultModelCredentialId: setup.credential?.id ?? null,
+    defaultModelUnavailable: setup.defaultUnavailable,
     defaultProvider:
-      setup.credential || setup.platformAllowed || setup.hasLocal
+      !setup.defaultUnavailable && (setup.credential || setup.platformAllowed || setup.hasLocal)
         ? (setup.credential?.provider ??
           setup.settings?.defaultModelProvider ??
           deps.env.defaultProvider)
         : null,
     defaultModel:
-      setup.credential || setup.platformAllowed || setup.hasLocal
+      !setup.defaultUnavailable && (setup.credential || setup.platformAllowed || setup.hasLocal)
         ? (setup.credential?.defaultModel ??
           setup.settings?.defaultModelId ??
           deps.env.defaultModel)
@@ -9143,6 +9186,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     // Set only while the active default is the deployment's own, running on host credentials.
     ...hostCredentials(
       !setup.credential &&
+        !setup.defaultUnavailable &&
         !setup.settings?.defaultModelProvider &&
         setup.hasDeployment &&
         Boolean(deps.env.deploymentModelHostCredentials),
@@ -9214,8 +9258,8 @@ async function requireTargetModelAccess(
 }
 
 async function modelSetup(deps: RouterDeps, actor: Actor) {
-  const [credential, settings] = await Promise.all([
-    findDefaultModelCredential(deps.prisma, actor),
+  const [chosen, settings] = await Promise.all([
+    findEffectiveModelDefault(deps.prisma, actor),
     runAsSystem("read deployment model settings", () =>
       deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
     ),
@@ -9233,13 +9277,16 @@ async function modelSetup(deps: RouterDeps, actor: Actor) {
     hasDeployment ||
     (hasLocal && Boolean(deps.env.deploymentModelConfigured));
   return {
-    credential,
+    credential: chosen.credential,
+    defaultSource: chosen.source,
+    defaultUnavailable: chosen.unavailable,
     settings,
     platformAllowed,
     hasDeployment,
     hasLocal,
     hasSystemModel,
-    needsModel: !credential && !hasSystemModel,
+    // An unavailable account default does not block explicit Bots or an existing Run.
+    needsModel: !chosen.credential && !chosen.unavailable && !hasSystemModel,
   };
 }
 
@@ -9258,14 +9305,14 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
   ]);
   const defaultProvider =
     setup.credential?.provider ??
-    (setup.hasSystemModel
+    (setup.hasSystemModel && !setup.defaultUnavailable
       ? (setup.settings?.defaultModelProvider ?? deps.env.defaultProvider)
       : null);
   const defaultModel =
     setup.credential?.defaultModel ??
     (setup.credential
       ? defaultCatalogModelId(setup.credential.provider)
-      : setup.hasSystemModel
+      : setup.hasSystemModel && !setup.defaultUnavailable
         ? (setup.settings?.defaultModelId ?? deps.env.defaultModel)
         : null);
   const provider = bot.modelProvider ?? defaultProvider;
@@ -9279,7 +9326,7 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
     model: {
       after:
         provider && modelId ? `${provider}/${modelId}${label ? ` · ${label}` : ""}` : "Unavailable",
-      source: bot.modelId ? "bot" : setup.credential ? "space" : "system",
+      source: bot.modelId ? "bot" : setup.defaultSource,
     },
     thinkingLevel: {
       after:

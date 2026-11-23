@@ -1045,6 +1045,31 @@ if needed, refresh the temporary verification table, and rerun the script. The
 script writes only the voice ID into the active Space configuration. It retains
 explicit choices, preference history, and credentials.
 
+#### Downgrade from personal model defaults
+
+While running the current release, verify that each following Space has one usable
+connection for the displayed account model. Resolve missing or duplicate matches
+in Models. Record each exact model and connection revision. Settle inherited Runs
+and pending image messages, then stop all application writers. Keep the additive
+preference columns and their history.
+
+In a session with the migration role, create and populate this temporary table
+with the verified choices.
+
+```sql
+CREATE TEMPORARY TABLE model_freeze_verified (
+  space_id text, user_id text, provider text, model_id text,
+  credential_id text, connection_revision integer
+);
+```
+
+Run [the model freeze SQL](../packages/db/prisma/operations/freeze-model-defaults.sql)
+in that session. It makes each verified local model the Space's explicit default
+for the older runtime, keeping other connections and model history. The script
+checks local bindings and recorded revisions. If it raises an error, issue
+`ROLLBACK` in the same session, resolve the indicated state on the current release,
+and verify the choices again before retrying.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

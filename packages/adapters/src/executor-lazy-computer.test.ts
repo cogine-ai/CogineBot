@@ -317,6 +317,7 @@ async function runRoutine(
       }),
     },
     connection: { findMany: vi.fn(async () => []) },
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     secret: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
     userModelCredential: { findFirst: vi.fn(async () => null) },

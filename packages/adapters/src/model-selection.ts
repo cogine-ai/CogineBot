@@ -717,11 +717,14 @@ export function selectConfiguredModel(input: {
   override: ModelChoice | null;
   overrideCredential: ModelCredential;
   defaultCredential: ModelCredential;
+  defaultUnavailable?: boolean;
   settings: { defaultModelProvider: string | null; defaultModelId: string | null } | null;
   deployment: { provider: string; model: string } | null;
 }) {
   const { override: bot, overrideCredential, defaultCredential, settings, deployment } = input;
   const hasOverride = Boolean(bot?.modelProvider && usableModelId(bot.modelId));
+  if (!hasOverride && input.defaultUnavailable)
+    return { provider: undefined, id: null, credential: null, thinkingLevel: null };
   // The override provider, model and credential must win together.
   const useOverride = hasOverride;
   const credential = hasOverride ? overrideCredential : defaultCredential;

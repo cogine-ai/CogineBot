@@ -4665,6 +4665,7 @@ describe("steering connection selection metadata", () => {
       modelId: "openai/gpt-4o",
       modelCredentialId: "vision-credential",
       thinkingLevel: null,
+      requiresSpaceModelBinding: true,
     };
     const text = steering("text", 2);
     const { tx, client } = continuationFixture([Object.assign(image, model), text]);

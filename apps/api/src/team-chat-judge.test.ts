@@ -60,6 +60,7 @@ describe("team chat engagement judge", () => {
         prisma: {
           user: { findUnique },
           deploymentSettings: { findUnique: async () => null },
+          spaceMember: { findUnique: vi.fn(async () => null) },
           spaceModelPreference: { findFirst: async () => null },
         } as never,
         runtime: {
@@ -93,6 +94,7 @@ describe("team chat engagement judge", () => {
     const create = vi.fn(async () => ({ id: "usage-1" }));
     const prisma = {
       deploymentSettings: { findUnique: vi.fn(async () => null) },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn(async () => null) },
       usageRecord: { create },
     };
@@ -301,6 +303,7 @@ function bindingFixture() {
       async (operation: (tx: unknown) => Promise<unknown>): Promise<unknown> => operation(prisma),
     ),
     userModelCredential,
+    spaceMember: { findUnique: vi.fn(async () => null) },
     spaceModelPreference,
     deploymentSettings: {
       findUnique: vi.fn(async () => ({

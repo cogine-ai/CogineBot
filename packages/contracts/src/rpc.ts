@@ -311,6 +311,11 @@ const threadSendResult = z.object({
 const spaceName = z.string().trim().min(1).max(60);
 
 import {
+  ModelDefaultsSchema,
+  UpdateModelDefaultsInput,
+  UpdateModelDefaultsResult,
+} from "./model-defaults.js";
+import {
   ReadAloudEffectiveSchema,
   ReadAloudSettingsSchema,
   UpdateReadAloudInput,
@@ -409,6 +414,8 @@ export const appContract = {
     apply: oc.input(ServerUpdateRequestSchema).output(ServerUpdateRunSchema),
   },
   models: {
+    defaults: oc.output(ModelDefaultsSchema),
+    updateDefaults: oc.input(UpdateModelDefaultsInput).output(UpdateModelDefaultsResult),
     list: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
     references: oc
@@ -484,6 +491,7 @@ export const appContract = {
           modelCredentialId: Id,
           expectedRevision: z.number().int().positive(),
           thinkingLevel: ThinkingLevelSchema.nullable().optional(),
+          updateThinkingLevelOnly: z.literal(true).optional(),
         }),
       )
       .output(z.object({ ok: z.literal(true) })),

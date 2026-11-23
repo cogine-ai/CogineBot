@@ -105,6 +105,7 @@ function fixture(
           Promise.resolve(credentials.find((row) => row.id === where.id)),
         ),
       },
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findFirst: vi.fn().mockResolvedValue(modelPreference) },
       spaceVoicePreference: {
         findFirst: vi.fn().mockResolvedValue({

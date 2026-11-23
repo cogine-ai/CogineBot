@@ -7818,3 +7818,30 @@ msgstr "此 Space 的音色"
 
 msgid "Choose a voice"
 msgstr "选择音色"
+
+msgid "Model defaults"
+msgstr "模型默认设置"
+
+msgid "My default model"
+msgstr "我的默认模型"
+
+msgid "No account default"
+msgstr "未设账户默认模型"
+
+msgid "Override model in this Space"
+msgstr "为此 Space 单独设置模型"
+
+msgid "Choose a model connection in this Space."
+msgstr "请在此 Space 选择模型连接。"
+
+msgid "Could not load model defaults"
+msgstr "无法加载模型默认设置"
+
+msgid "Could not save model defaults"
+msgstr "无法保存模型默认设置"
+
+msgid "Change my default model?"
+msgstr "更改我的默认模型？"
+
+msgid "Following Spaces use their own connection for new runs."
+msgstr "跟随此设置的 Space 会用各自的连接开始新任务。"

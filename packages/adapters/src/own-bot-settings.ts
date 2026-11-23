@@ -4,13 +4,19 @@ import {
   BOT_INSTRUCTIONS_MAX_LENGTH,
   BotSettingsValuesSchema,
   ThinkingLevelSchema,
+  UNAVAILABLE_PERSONAL_MODEL,
 } from "@rakazo/contracts";
 import { containsSecret } from "@rakazo/core";
-import type { BotSettingsValuesRow, Prisma, PrismaClient } from "@rakazo/db";
+import type {
+  BotSettingsValuesRow,
+  findDefaultModelCredential,
+  Prisma,
+  PrismaClient,
+} from "@rakazo/db";
 import {
   botSettingsValueSelect,
-  findDefaultModelCredential,
   findDefaultVoiceCredential,
+  findEffectiveModelDefault,
   lockDefaultVoiceCredential,
   lockPersonalSettings,
   prepareBotSettingsVersion,
@@ -68,6 +74,7 @@ const modelBinding = z.object({
   label: z.string(),
   usesSpaceDefault: z.boolean(),
   spaceDefaultModel: z.string().nullable().optional(),
+  defaultRevisions: z.object({ account: z.number(), space: z.number() }).optional(),
   requiredSpacePreferenceModel: z.string().optional(),
 });
 
@@ -196,6 +203,7 @@ async function effectiveModel(
   fallback: DefaultModel,
 ) {
   const overridden = Boolean(bot.modelProvider && bot.modelId);
+  const defaults = overridden ? null : await findEffectiveModelDefault(deps.prisma, scope);
   const credential = overridden
     ? await findConnectedModelCredential(
         deps.prisma,
@@ -204,17 +212,22 @@ async function effectiveModel(
         bot.modelId,
         bot.modelCredentialId,
       )
-    : await findDefaultModelCredential(deps.prisma, scope);
+    : (defaults?.credential ?? null);
   const id = overridden
     ? bot.modelId
-    : credential
-      ? (credential.defaultModel ?? defaultCatalogModelId(credential.provider))
-      : fallback.id;
+    : defaults?.unavailable
+      ? defaults.choice?.modelId
+      : credential
+        ? (credential.defaultModel ?? defaultCatalogModelId(credential.provider))
+        : fallback.id;
   return {
-    provider: overridden ? bot.modelProvider : (credential?.provider ?? fallback.provider),
+    provider: overridden
+      ? bot.modelProvider
+      : (credential?.provider ?? defaults?.choice?.provider ?? fallback.provider),
     id,
     credential,
-    source: overridden ? "bot" : credential ? "space" : "system",
+    source: overridden ? "bot" : (defaults?.source ?? "system"),
+    defaults,
   };
 }
 
@@ -441,7 +454,8 @@ export async function prepareOwnBotSettings(
       if (active.credential?.connectionRevision !== choice.connection.connectionRevision)
         return { error: "The model connection changed. Read the available choices again." };
     }
-    expectsNoSpaceModel = active.source === "system";
+    if (active.defaults?.unavailable) return { error: UNAVAILABLE_PERSONAL_MODEL };
+    expectsNoSpaceModel = !active.credential && active.source !== "bot";
     const { allowed, compatibleAvailable, requiresSpacePreference } = await thinkingSettings(
       deps,
       scope,
@@ -461,8 +475,11 @@ export async function prepareOwnBotSettings(
         id: active.credential.id,
         revision: active.credential.connectionRevision,
         label: active.credential.label,
-        usesSpaceDefault: active.source === "space",
-        ...(active.source === "space" && { spaceDefaultModel: active.credential.defaultModel }),
+        usesSpaceDefault: active.defaults !== null,
+        ...(active.defaults && {
+          spaceDefaultModel: active.credential.defaultModel,
+          defaultRevisions: active.defaults.revisions,
+        }),
         ...(active.source === "bot" &&
           requiresSpacePreference &&
           active.id && { requiredSpacePreferenceModel: active.id }),
@@ -549,12 +566,18 @@ export async function ownSettingsBindingsCurrent(
   request: OwnSettingsRequest,
 ) {
   const { modelConnection, voiceConnection } = request;
-  if (request.expectsNoSpaceModel && (await findDefaultModelCredential(tx, request))) return false;
+  if (request.expectsNoSpaceModel) {
+    const defaults = await findEffectiveModelDefault(tx, request);
+    if (defaults.credential || defaults.unavailable) return false;
+  }
   if (modelConnection) {
     await tx.$queryRaw`SELECT id FROM user_model_credentials
       WHERE id = ${modelConnection.id} AND "userId" = ${request.userId} FOR SHARE`;
+    const defaults = modelConnection.usesSpaceDefault
+      ? await findEffectiveModelDefault(tx, request)
+      : null;
     const model = modelConnection.usesSpaceDefault
-      ? await findDefaultModelCredential(tx, request)
+      ? (defaults?.credential ?? null)
       : modelConnection.requiredSpacePreferenceModel
         ? await findConnectedModelCredential(
             tx,
@@ -570,6 +593,9 @@ export async function ownSettingsBindingsCurrent(
       model?.id !== modelConnection.id ||
       model.connectionRevision !== modelConnection.revision ||
       model.label !== modelConnection.label ||
+      (modelConnection.defaultRevisions &&
+        (modelConnection.defaultRevisions.account !== defaults?.revisions.account ||
+          modelConnection.defaultRevisions.space !== defaults?.revisions.space)) ||
       (modelConnection.requiredSpacePreferenceModel &&
         (!("defaultModel" in model) ||
           model.defaultModel !== modelConnection.requiredSpacePreferenceModel)) ||

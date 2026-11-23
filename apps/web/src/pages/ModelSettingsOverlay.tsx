@@ -34,6 +34,7 @@ import {
   connectionFormModelId,
   createModelProbe,
   credentialModelSettings,
+  effectiveDefaultModelCredential,
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
@@ -91,6 +92,7 @@ import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
+import { ModelDefaultSettings } from "./ModelDefaultSettings";
 import { ModelSettingsPanel } from "./model-settings-panel";
 
 export function ModelSettingsOverlay({
@@ -116,6 +118,8 @@ export function ModelSettingsOverlay({
   const [chatgptRegistrationId, setChatgptRegistrationId] = useState("");
   const [chatgptProfilesError, setChatgptProfilesError] = useState<string | null>(null);
   const [me, setMe] = useState<Me | null>(null);
+  const [defaultsRevision, setDefaultsRevision] = useState(0);
+  const preferenceWriteOwner = useRef<number | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [connectionRevision, setConnectionRevision] = useState<number | undefined>();
@@ -219,19 +223,29 @@ export function ModelSettingsOverlay({
         !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
       )
         return;
-      await refresh(credential.id);
+      const effective = await refresh(credential.id);
       if (
         controller.signal.aborted ||
         !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
       )
         return;
-      setNotice(t`Connected and using ${selectedLabelRef.current ?? "this model"}.`);
+      setNotice(
+        !effective ||
+          (effective.defaultModelCredentialId !== undefined &&
+            (effective.defaultModelCredentialId !== credential.id ||
+              (credential.modelId && effective.defaultModel !== credential.modelId)))
+          ? t`Saved.`
+          : t`Connected and using ${selectedLabelRef.current ?? "this model"}.`,
+      );
     },
   });
 
   async function refresh(
     preferredConnectionId?: string,
-    { keepForm = false }: { keepForm?: boolean } = {},
+    {
+      keepForm = false,
+      keepConnectionState = false,
+    }: { keepForm?: boolean; keepConnectionState?: boolean } = {},
   ) {
     const refreshRevision = ++refreshRevisionRef.current;
     const selectionRevision = selectionRevisionRef.current;
@@ -256,6 +270,9 @@ export function ModelSettingsOverlay({
     )
       return;
     if (boundSpaceId && nextMe.spaceId !== boundSpaceId) return;
+    setMe(nextMe);
+    if (keepConnectionState) return nextMe;
+    setDefaultsRevision((revision) => revision + 1);
     const nextProvider =
       provider &&
       nextCatalog.some(
@@ -296,12 +313,11 @@ export function ModelSettingsOverlay({
           nextProfiles[0]?.id ??
           ""),
     );
-    setMe(nextMe);
     if (selectionRevision === selectionRevisionRef.current) {
       if (keepForm) {
         setConnectionRevision(nextCredential?.connectionRevision);
         setSavedBaseUrl(nextCredential?.baseUrl);
-        return true;
+        return nextMe;
       }
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
@@ -319,7 +335,7 @@ export function ModelSettingsOverlay({
       applyConnectionFields(fields);
       setHeaderRows(null);
       setCompatibleQuery("");
-      return true;
+      return nextMe;
     }
   }
 
@@ -451,7 +467,10 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(me?.defaultProvider ?? "") &&
       entry.id === me?.defaultModel,
   );
-  const activeCredential = credentials.find((entry) => entry.isDefault);
+  const activeCredential = effectiveDefaultModelCredential(
+    credentials,
+    me?.defaultModelCredentialId,
+  );
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
   const activeThinkingLabel = modelThinkingLevels(
@@ -465,7 +484,8 @@ export function ModelSettingsOverlay({
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
     me?.defaultModel === (isOpenAiCompatible ? modelId.trim() : selected?.id) &&
-    (!isOpenAiCompatible || credential?.isDefault === true);
+    credential !== undefined &&
+    credential.id === activeCredential?.id;
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials =
     canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
@@ -833,6 +853,9 @@ export function ModelSettingsOverlay({
           // openai-compatible still owns its level inside the stored endpoint config.
           ...(!isOpenAiCompatible
             ? {
+                ...(isActive && !usingServerCredentials
+                  ? { updateThinkingLevelOnly: true as const }
+                  : {}),
                 thinkingLevel: clampCatalogThinkingLevel(
                   thinkingLevel,
                   selected.thinkingLevels,
@@ -919,11 +942,16 @@ export function ModelSettingsOverlay({
         });
       setApiKey("");
       setHeaderRows(null);
-      await refresh(savedConnection.id);
+      const effective = await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
       setNotice(
-        isOpenAiCompatible || savingLimitOnly
+        isOpenAiCompatible ||
+          savingLimitOnly ||
+          !effective ||
+          (effective.defaultModelCredentialId !== undefined &&
+            (effective.defaultModelCredentialId !== savedConnection.id ||
+              effective.defaultModel !== selected.id))
           ? t`Saved.`
           : t`Connected and using ${selected.label}.`,
       );
@@ -1574,12 +1602,15 @@ export function ModelSettingsOverlay({
             <Trans>Active model</Trans>
           </span>
           <span className="truncate text-[15px] text-foreground">
-            {currentEntry?.label ?? me?.defaultModel ?? t`Deployment default`}
+            {me?.defaultModelUnavailable
+              ? t`Unavailable`
+              : (currentEntry?.label ?? me?.defaultModel ?? t`Deployment default`)}
           </span>
           <span className="truncate text-[13px] text-muted-foreground">
-            {currentEntry?.providerName ?? me?.defaultProvider ?? (
-              <Trans>Configured by deployment</Trans>
-            )}
+            {me?.defaultModelUnavailable
+              ? null
+              : (currentEntry?.providerName ??
+                me?.defaultProvider ?? <Trans>Configured by deployment</Trans>)}
           </span>
           {activeThinkingLabel ? (
             <span className="shrink-0 text-[13px] text-muted-foreground">
@@ -1587,6 +1618,35 @@ export function ModelSettingsOverlay({
             </span>
           ) : null}
         </div>
+        {!localOwner && me?.defaultModelUnavailable !== undefined ? (
+          <ModelDefaultSettings
+            key={defaultsRevision}
+            busy={busy}
+            label={({ provider, modelId }) => {
+              const entry = catalog.find(
+                (candidate) => candidate.id === modelId && candidate.provider === provider,
+              );
+              return `${entry?.label ?? modelId} · ${entry?.providerName ?? provider}`;
+            }}
+            begin={() => {
+              if (busy || preferenceWriteOwner.current !== null || !contextCurrent()) return null;
+              const owner = beginPending("default");
+              preferenceWriteOwner.current = owner;
+              return owner;
+            }}
+            finish={(owner) => {
+              if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
+              finishPending(owner);
+            }}
+            onChange={async () => {
+              try {
+                await refresh(undefined, { keepConnectionState: true });
+              } catch (err) {
+                if (contextCurrent()) setError(errorText(err, t`Could not load model defaults`));
+              }
+            }}
+          />
+        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-hidden px-6 py-6 sm:px-8 md:flex-row">

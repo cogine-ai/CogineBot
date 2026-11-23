@@ -16,6 +16,7 @@ function setup() {
   const deps = {
     env: { agentRuntime: "scripted" },
     prisma: {
+      spaceMember: { findUnique: vi.fn(async () => null) },
       spaceModelPreference: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },
       spaceBackupModel: { findMany: vi.fn(async () => []) },
       userModelCredential: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null) },

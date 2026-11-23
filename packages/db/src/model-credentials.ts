@@ -17,7 +17,27 @@ export async function lockSpaceModelSelection(
   scope: ModelCredentialScope,
   mode: "read" | "write",
 ) {
-  const key = JSON.stringify(["space-model-selection", scope.spaceId, scope.userId]);
+  await lockAccountModelSelection(tx, scope.userId, "read");
+  await lockModelSelection(
+    tx,
+    JSON.stringify(["space-model-selection", scope.spaceId, scope.userId]),
+    mode,
+  );
+}
+
+export function lockAccountModelSelection(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  userId: string,
+  mode: "read" | "write",
+) {
+  return lockModelSelection(tx, JSON.stringify(["account-model-selection", userId]), mode);
+}
+
+async function lockModelSelection(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  key: string,
+  mode: "read" | "write",
+) {
   if (mode === "read") {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))::text`;
   } else {
@@ -69,7 +89,7 @@ export async function selectSpaceModelPreference(
   });
 }
 
-function withModelPreference<
+export function withModelPreference<
   T extends {
     credential: {
       id: string;
