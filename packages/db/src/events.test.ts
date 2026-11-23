@@ -2014,7 +2014,7 @@ describe("answerRunInput", () => {
           }),
           update: vi.fn().mockResolvedValue({ id: "effect-1" }),
         },
-        actionApprovalRule: { upsert: vi.fn() },
+        actionApprovalRule: { createManyAndReturn: vi.fn() },
         thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
         event: {
           create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -2039,7 +2039,7 @@ describe("answerRunInput", () => {
         }),
       ).resolves.toBe(Boolean(status));
 
-      expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+      expect(tx.actionApprovalRule.createManyAndReturn).not.toHaveBeenCalled();
       if (status) {
         expect(tx.externalEffect.update).toHaveBeenCalledExactlyOnceWith({
           where: { id: "effect-1" },
@@ -2298,8 +2298,10 @@ describe("answerRunInput", () => {
         },
         actionApprovalRule: {
           findMany: vi.fn().mockResolvedValue(requiredSite ? [{ matchValue: requiredSite }] : []),
-          upsert: vi.fn().mockResolvedValue({ id: "rule-1" }),
+          createManyAndReturn: vi.fn().mockResolvedValue([]),
         },
+        space: { findUniqueOrThrow: vi.fn().mockResolvedValue({ organizationId: "org-1" }) },
+        auditEvent: { createMany: vi.fn() },
         thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
         event: {
           create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -2358,35 +2360,42 @@ describe("answerRunInput", () => {
       if (blocked) {
         expect(tx.run.updateMany).not.toHaveBeenCalled();
         expect(tx.externalEffect.update).not.toHaveBeenCalled();
-        expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+        expect(tx.actionApprovalRule.createManyAndReturn).not.toHaveBeenCalled();
         expect(tx.message.update).not.toHaveBeenCalled();
         expect(tx.event.create).not.toHaveBeenCalled();
+        expect(tx.auditEvent.createMany).not.toHaveBeenCalled();
         return;
       }
       expect(tx.externalEffect.update).toHaveBeenCalledWith({
         where: { id: "effect-1" },
         data: { status: answer === "deny" ? "denied" : "approved" },
       });
+      expect(tx.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({
+            id: "approval.decided:effect-1",
+            outcome: answer === "deny" ? "denied" : "success",
+            metadata: { decision: answer },
+          }),
+        ],
+      });
       if (matchKind === null) {
-        expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+        expect(tx.actionApprovalRule.createManyAndReturn).not.toHaveBeenCalled();
         return;
       }
       const values = matchValues ?? [matchValue];
-      expect(tx.actionApprovalRule.upsert).toHaveBeenCalledTimes(values.length);
-      for (const value of values) {
-        const rule = {
+      expect(tx.actionApprovalRule.createManyAndReturn).toHaveBeenCalledExactlyOnceWith({
+        data: values.map((matchValue) => ({
           spaceId: "workspace-1",
           createdByUserId: "user-1",
           effect: "always_allow",
           matchKind,
-          matchValue: value,
-        };
-        expect(tx.actionApprovalRule.upsert).toHaveBeenCalledWith({
-          where: { spaceId_createdByUserId_effect_matchKind_matchValue: rule },
-          create: rule,
-          update: {},
-        });
-      }
+          matchValue,
+        })),
+        skipDuplicates: true,
+        select: { id: true, createdAt: true, effect: true, matchKind: true },
+      });
     },
   );
 
@@ -2421,7 +2430,7 @@ describe("answerRunInput", () => {
           .fn()
           .mockResolvedValue({ id: "effect-1", status: "intended", kind: "destination.write" }),
       },
-      actionApprovalRule: { upsert: vi.fn() },
+      actionApprovalRule: { createManyAndReturn: vi.fn() },
     };
     const prisma = {
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
@@ -2439,7 +2448,7 @@ describe("answerRunInput", () => {
     ).resolves.toBe(false);
 
     expect(tx.run.updateMany).not.toHaveBeenCalled();
-    expect(tx.actionApprovalRule.upsert).not.toHaveBeenCalled();
+    expect(tx.actionApprovalRule.createManyAndReturn).not.toHaveBeenCalled();
   });
 
   it("does not queue a run when an approval card has no matching effect", async () => {

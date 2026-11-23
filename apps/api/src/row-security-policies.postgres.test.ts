@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Prisma, RowSecurityPolicyStatus } from "@rakazo/db";
 import {
+  answerRunInput,
   applyRowSecurityPolicies,
   createDb,
   currentDbContext,
@@ -23,6 +24,7 @@ import {
   toTicketCommentDto,
   verifyRuntimeDatabase,
 } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 
@@ -248,6 +250,121 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     }
   });
 
+  it.each([true, false])(
+    "commits an Always answer through the tenant policy with audit INSERT allowed: %s",
+    async (allowAuditInsert) => {
+      const botId = id("bot-a");
+      const threadId = id("thread-a");
+      const kind = id("fixture-write");
+      const scope = { spaceId: spaceA, userId: userA, threadId, botId };
+      const task = await owner.prisma.task.create({
+        data: { ...scope, prompt: "Synthetic", status: "running" },
+      });
+      const run = await owner.prisma.run.create({
+        data: { ...scope, taskId: task.id, status: "waiting_input", trigger: "human" },
+      });
+      const effect = await owner.prisma.externalEffect.create({
+        data: {
+          spaceId: spaceA,
+          runId: run.id,
+          kind,
+          idempotencyKey: run.id,
+          status: "intended",
+          request: { body: "synthetic-audit-canary" },
+        },
+      });
+      const card = await owner.prisma.message.create({
+        data: {
+          threadId,
+          botId,
+          runId: run.id,
+          seq: 2,
+          role: "bot",
+          blocks: [
+            {
+              kind: "ask",
+              text: "Synthetic action",
+              status: "pending",
+              approvalEffectId: effect.id,
+              actions: [
+                { id: "allow", label: "Allow once" },
+                { id: "always", label: "Always allow" },
+                { id: "deny", label: "Deny" },
+              ],
+            },
+          ],
+        },
+      });
+      const grant = escapeIdentifier(groupRole!);
+      const warn = vi.spyOn(getLogger(), "warn").mockImplementation(() => {});
+      try {
+        if (!allowAuditInsert)
+          await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+        const input = {
+          spaceId: spaceA,
+          threadId,
+          runId: run.id,
+          messageId: card.id,
+          answeredByUserId: userA,
+          answer: "always",
+        };
+        expect(await inA(() => answerRunInput(runtime!.prisma, input))).toBe(true);
+        expect(await inA(() => answerRunInput(runtime!.prisma, input))).toBe(false);
+        expect(
+          await owner.prisma.externalEffect.findUnique({ where: { id: effect.id } }),
+        ).toMatchObject({ status: "approved" });
+        expect(await owner.prisma.run.findUnique({ where: { id: run.id } })).toMatchObject({
+          status: "queued",
+        });
+        expect(
+          await owner.prisma.actionApprovalRule.count({
+            where: { spaceId: spaceA, matchValue: kind },
+          }),
+        ).toBe(1);
+        expect(
+          await inA(() => runtime!.prisma.auditEvent.findMany({ where: { runId: run.id } })),
+        ).toEqual([]);
+        const audit = await owner.prisma.auditEvent.findMany({
+          where: { runId: run.id },
+          orderBy: { action: "asc" },
+          select: { action: true, metadata: true },
+        });
+        expect(audit).toEqual(
+          allowAuditInsert
+            ? [
+                { action: "approval.decided", metadata: { decision: "always" } },
+                {
+                  action: "approval.rule.created",
+                  metadata: { effect: "always_allow", matchKind: "tool" },
+                },
+              ]
+            : [],
+        );
+        expect(
+          warn.mock.calls.filter(([message]) => message === "audit.event.write_failed"),
+        ).toEqual(
+          allowAuditInsert
+            ? []
+            : [
+                ["audit.event.write_failed", { action: "approval.decided" }],
+                ["audit.event.write_failed", { action: "approval.rule.created" }],
+              ],
+        );
+      } finally {
+        if (!allowAuditInsert)
+          await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+        warn.mockRestore();
+        await owner.prisma.auditEvent.deleteMany({ where: { runId: run.id } });
+        await owner.prisma.actionApprovalRule.deleteMany({
+          where: { spaceId: spaceA, matchValue: kind },
+        });
+        await owner.prisma.event.deleteMany({ where: { runId: run.id } });
+        await owner.prisma.message.delete({ where: { id: card.id } });
+        await owner.prisma.task.delete({ where: { id: task.id } });
+      }
+    },
+  );
+
   it("prunes a bounded batch of expired entries while preserving the cutoff", async () => {
     const atCutoff = new Date("2026-11-01T00:00:00Z");
     await owner.prisma.auditEvent.createMany({
@@ -289,6 +406,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       ),
       "utf8",
     );
+    const addContext = await readFile(
+      new URL(
+        "../../../packages/db/prisma/migrations/20261124020000_approval_audit_run_context/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
     const prisma = runtime!.prisma;
     await owner.pool.query("ALTER SCHEMA cogine_audit RENAME TO previous_audit_fixture");
     try {
@@ -302,10 +426,20 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       await owner.pool.query("DROP SCHEMA cogine_audit");
       await owner.pool.query(migration);
+      await owner.pool.query(
+        `INSERT INTO cogine_audit.audit_events
+          (id, "organizationId", "spaceId", "actorType", "actorId", action, "targetType", "targetId", outcome, metadata)
+          VALUES ($1, $2, $3, 'user', $4, 'approval.rule.created', 'approval_rule', 'prior-rule', 'success', '{}')`,
+        [id("prior-audit"), orgA, spaceA, userA],
+      );
+      await owner.pool.query(addContext);
       await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
         connectionEnforced: true,
       });
       expect(await inA(() => prisma.auditEvent.findMany())).toEqual([]);
+      expect(
+        await owner.prisma.auditEvent.findUnique({ where: { id: id("prior-audit") } }),
+      ).toMatchObject({ targetId: "prior-rule", runId: null, threadId: null });
     } finally {
       await owner.pool.query("DROP TABLE IF EXISTS cogine_audit.audit_events");
       await owner.pool.query("DROP SCHEMA IF EXISTS cogine_audit");

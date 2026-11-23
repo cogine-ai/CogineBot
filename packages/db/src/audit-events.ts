@@ -1,6 +1,6 @@
 import { ActionApprovalRuleSchema } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
-import type { PrismaClient } from "./client.js";
+import type { Prisma, PrismaClient } from "./client.js";
 import { runAsSystem } from "./row-security.js";
 
 type ApprovalRuleChange = {
@@ -11,37 +11,45 @@ type ApprovalRuleChange = {
 
 const approvalRuleAuditMetadata = ActionApprovalRuleSchema.pick({ effect: true, matchKind: true });
 
-/** The rule transaction has committed. An audit failure leaves the change in place. */
-export async function recordApprovalRuleAudit(
-  prisma: Pick<PrismaClient, "$transaction">,
-  actor: { userId: string; spaceId: string },
+type ApprovalActor = { userId: string; spaceId: string };
+type AuditRow = Omit<Prisma.AuditEventCreateManyInput, "organizationId" | "spaceId">;
+
+function approvalRuleAuditRow(
+  userId: string,
   ruleId: string,
   happenedAt: Date,
   change: ApprovalRuleChange,
+): AuditRow {
+  return {
+    id: `${change.action}:${ruleId}`,
+    createdAt: happenedAt,
+    actorType: "user",
+    actorId: userId,
+    action: change.action,
+    targetType: "approval_rule",
+    targetId: ruleId,
+    outcome: "success",
+    metadata: approvalRuleAuditMetadata.safeParse(change).data ?? {},
+  };
+}
+
+/** Record committed facts without changing the outcome of the business transaction. */
+async function appendAuditEvents(
+  prisma: Pick<PrismaClient, "$transaction">,
+  spaceId: string,
+  rows: AuditRow[],
 ): Promise<void> {
   try {
-    await runAsSystem("append a committed approval rule audit event", () =>
+    await runAsSystem("append committed audit events", () =>
       prisma.$transaction(
         async (tx) => {
           const { organizationId } = await tx.space.findUniqueOrThrow({
-            where: { id: actor.spaceId },
+            where: { id: spaceId },
             select: { organizationId: true },
           });
           await tx.auditEvent.createMany({
             skipDuplicates: true,
-            data: {
-              id: `${change.action}:${ruleId}`,
-              createdAt: happenedAt,
-              organizationId,
-              spaceId: actor.spaceId,
-              actorType: "user",
-              actorId: actor.userId,
-              action: change.action,
-              targetType: "approval_rule",
-              targetId: ruleId,
-              outcome: "success",
-              metadata: approvalRuleAuditMetadata.safeParse(change).data ?? {},
-            },
+            data: rows.map((row) => ({ ...row, organizationId, spaceId })),
           });
         },
         { maxWait: 1000, timeout: 1000 },
@@ -49,8 +57,59 @@ export async function recordApprovalRuleAudit(
     );
   } catch {
     // Driver diagnostics may contain query arguments. Report only the gap.
-    getLogger().warn("audit.event.write_failed", { action: change.action });
+    for (const action of new Set(rows.map((row) => row.action))) {
+      getLogger().warn("audit.event.write_failed", { action });
+    }
   }
+}
+
+export function recordApprovalRuleAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: ApprovalActor,
+  ruleId: string,
+  happenedAt: Date,
+  change: ApprovalRuleChange,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    approvalRuleAuditRow(actor.userId, ruleId, happenedAt, change),
+  ]);
+}
+
+export type CommittedApprovalDecision = {
+  effectId: string;
+  decision: "allow" | "always" | "deny";
+  happenedAt: Date;
+  createdRules: { id: string; createdAt: Date; effect: string; matchKind: string }[];
+};
+
+export function recordManualApprovalAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: ApprovalActor,
+  run: { runId: string; threadId: string },
+  { effectId, decision, happenedAt, createdRules }: CommittedApprovalDecision,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      ...run,
+      id: `approval.decided:${effectId}`,
+      createdAt: happenedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action: "approval.decided",
+      targetType: "external_effect",
+      targetId: effectId,
+      outcome: decision === "deny" ? "denied" : "success",
+      metadata: { decision },
+    },
+    ...createdRules.map(({ id, createdAt, effect, matchKind }) => ({
+      ...approvalRuleAuditRow(actor.userId, id, createdAt, {
+        action: "approval.rule.created",
+        effect,
+        matchKind,
+      }),
+      ...run,
+    })),
+  ]);
 }
 
 export function auditEventRetentionDays(value: string | undefined): number {

@@ -1241,6 +1241,7 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       return f;
     }
     afterEach(async () => {
+      await prisma.auditEvent.deleteMany({ where: { spaceId: { in: [...approvalSpaces] } } });
       await prisma.organization.deleteMany({ where: { id: { in: [...approvalSpaces] } } });
       await prisma.user.deleteMany({ where: { id: { in: [...approvalSpaces] } } });
       approvalSpaces.clear();
@@ -1585,7 +1586,28 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       const next = await t.pause();
       const target = { effectId: next.effect.id, messageId: next.message.id };
       expect(await t.answer("allow", target, nonce)).toBe("conflict");
+      expect(await prisma.auditEvent.count({ where: { targetId: next.effect.id } })).toBe(0);
       expect(await t.answer("deny", target)).toBe("accepted");
+      expect(await t.answer("deny", target)).toBe("already_answered");
+      expect(await prisma.auditEvent.findMany({ where: { runId: t.run.id } })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: `approval.decided:${t.effect.id}`,
+            outcome: "success",
+            metadata: { decision: "allow" },
+          }),
+          expect.objectContaining({
+            id: `approval.decided:${next.effect.id}`,
+            actorId: t.source.userId,
+            actorType: "user",
+            spaceId: t.source.spaceId,
+            threadId: t.run.threadId,
+            outcome: "denied",
+            metadata: { decision: "deny" },
+          }),
+        ]),
+      );
+      expect(await prisma.auditEvent.count({ where: { runId: t.run.id } })).toBe(2);
     });
 
     it("serializes the original and delegated responses and preserves the first decision", async () => {
@@ -1606,6 +1628,13 @@ describePostgres("Space collaboration dispatch boundaries (PostgreSQL)", () => {
       expect(await t.answer(decision)).toBe("already_answered");
       expect(await t.answer(fromB ? "deny" : "allow")).toBe("conflict");
       expect(await t.query()).toMatchObject([{ state: fromB ? "allowed" : "denied" }]);
+      expect(await prisma.auditEvent.findMany({ where: { runId: t.run.id } })).toEqual([
+        expect.objectContaining({
+          targetId: t.effect.id,
+          outcome: fromB ? "success" : "denied",
+          metadata: { decision },
+        }),
+      ]);
       expect(
         await prisma.event.count({
           where: { runId: t.run.id, type: "thread.message.updated" },

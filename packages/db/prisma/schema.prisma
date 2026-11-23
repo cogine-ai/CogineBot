@@ -338,6 +338,8 @@ model AuditEvent {
   targetType     String
   targetId       String
   outcome        String
+  runId          String?
+  threadId       String?
   metadata       Json
 
   @@index([organizationId, createdAt, id])
