@@ -107,7 +107,7 @@ export class KeylessHttpWebProvider implements WebProvider {
   async fetch(request: WebFetchRequest, context: AdapterContext): Promise<WebFetchResult> {
     const maxChars = clampMaxChars(request.maxChars);
     const offset = clampOffset(request.offset);
-    const { url, body, contentType } = await fetchSafeWebText(request.url, {
+    const { url, body, contentType, status } = await fetchSafeWebText(request.url, {
       fetch: this.fetchImpl,
       resolveHostname: this.resolveHostname,
       timeoutMs: this.fetchTimeoutMs,
@@ -123,6 +123,7 @@ export class KeylessHttpWebProvider implements WebProvider {
       mediaType === "text/plain" || mediaType === "text/markdown"
         ? { title: "Untitled", text: body }
         : extractReadableText(body, url);
+    request.onResponseStatus?.(status);
     return { url, title: extracted.title, ...readWebPage(extracted.text, maxChars, offset) };
   }
 }

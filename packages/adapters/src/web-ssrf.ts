@@ -97,7 +97,12 @@ export function isBlockedHostname(hostname: string): boolean {
   return false;
 }
 
-type SafeWebResponse<Body> = { url: string; body: Body; contentType: string | null };
+type SafeWebResponse<Body> = {
+  url: string;
+  body: Body;
+  contentType: string | null;
+  status: number;
+};
 
 export async function fetchSafeWebText(
   url: string,
@@ -268,7 +273,12 @@ async function followRedirects(
     ? await readBodyPrefix(response, state.maxBytes, state.signal)
     : await readBodyCapped(response, state.maxBytes, state.signal);
 
-  return { url: validated.href, body, contentType: response.headers.get("content-type") };
+  return {
+    url: validated.href,
+    body,
+    contentType: response.headers.get("content-type"),
+    status: response.status,
+  };
 }
 
 async function cancelResponseBody(response: Response, signal: AbortSignal): Promise<void> {

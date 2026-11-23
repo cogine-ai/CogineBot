@@ -905,7 +905,7 @@ export async function requestWithBotSecret(input: {
   beforeDispatch?: (tx?: Prisma.TransactionClient) => Promise<void>;
   credentialBinding?: BotSecretHttpBinding;
   registerRedactions?: (values: string[]) => void;
-}): Promise<unknown> {
+}): Promise<{ error: string } | { status: number; body: unknown; truncated: boolean }> {
   const request = SecretHttpRequest.parse(input.request);
   const where = { ...scopeFields(input.scope), name: request.name, ...input.credentialBinding };
   const row = await input.prisma.botSecret.findFirst({ where });

@@ -141,24 +141,29 @@ export function recordAutomaticApprovalAudit(
   } & (
     | { decision: "pass"; outcome: "success"; lease: RunLease }
     | { decision: "ask" | "error"; outcome: "paused" }
+    | { decision: "deny"; outcome: "denied"; reason: "unattended" }
   ),
 ): Promise<void> {
+  const action = input.outcome === "denied" ? "approval.auto_denied" : "approval.auto_reviewed";
   return appendAuditEvents(
     prisma,
     input.spaceId,
     [
       {
-        id: `approval.auto_reviewed:${input.effectId}`,
+        id: `${action}:${input.effectId}`,
         createdAt: input.happenedAt,
         runId: input.runId,
         threadId: input.threadId,
         actorType: "system",
-        actorId: "auto_review",
-        action: "approval.auto_reviewed",
+        actorId: input.outcome === "denied" ? "approval_policy" : "auto_review",
+        action,
         targetType: "external_effect",
         targetId: input.effectId,
         outcome: input.outcome,
-        metadata: { decision: input.decision },
+        metadata:
+          input.outcome === "denied"
+            ? { decision: input.decision, reason: input.reason }
+            : { decision: input.decision },
       },
     ],
     input.outcome === "success" ? input : undefined,

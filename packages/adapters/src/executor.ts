@@ -7668,7 +7668,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             });
             if (!refused) return pauseForApproval();
-            if (refused.count === 1) return response;
+            if (refused.count === 1) {
+              if (reason === "unattended") {
+                await recordAutomaticApprovalAudit(deps.prisma, {
+                  spaceId: run.spaceId,
+                  threadId: run.threadId,
+                  runId,
+                  effectId,
+                  decision: "deny",
+                  outcome: "denied",
+                  reason,
+                  happenedAt: new Date(),
+                });
+              }
+              return response;
+            }
             const current = await deps.prisma.externalEffect.findUnique({
               where: { id: applied.effect.id },
             });
@@ -8475,8 +8489,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     : undefined,
                 )
               : Promise.resolve(true);
-          const finish = async (result: unknown, outcome?: "result" | "error") =>
-            (await persistEffectResult(result, outcome)) ? result : uncertainEffectResult(name);
+          const appliedReviewAdmission = () =>
+            claimedEffect && !claimedApproval && appliedReviewDecision === "pass"
+              ? new Date()
+              : undefined;
+          const recordReviewPass = async (happenedAt: Date) => {
+            if (!applied || context.signal.aborted) return;
+            await recordAutomaticApprovalAudit(deps.prisma, {
+              spaceId: run.spaceId,
+              threadId: run.threadId,
+              runId,
+              effectId: applied.effect.id,
+              decision: "pass",
+              outcome: "success",
+              happenedAt,
+              lease: { owner: workerId, fence },
+            });
+          };
+          const finish = async (
+            result: unknown,
+            outcome?: "result" | "error",
+            reviewAdmission?: Date,
+          ) => {
+            if (!(await persistEffectResult(result, outcome))) return uncertainEffectResult(name);
+            if (reviewAdmission) await recordReviewPass(reviewAdmission);
+            return result;
+          };
           const currentMemoryPermission = () => ({
             ...(claimedApproval ? { approved: true as const } : {}),
             ...(!claimedApproval &&
@@ -9277,6 +9315,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (name === "web_fetch") {
             const trustedSites = await trust.loadTrustedSites();
             let blockedRequest = false;
+            let reviewAdmission: Date | undefined;
+            let responseStatus: number | undefined;
             const resolveFetchRules = (site: string | undefined, rules: ActionApprovalRule[]) => {
               const resolved = resolveActionApprovalDetail({
                 toolName: name,
@@ -9318,11 +9358,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   `Redirect to ${url} needs approval. Call web_fetch with that URL to request approval.`,
                 );
               },
-              async (url) => {
-                resolveFetchRules(urlSite(url), await loadApprovalRules(undefined, "deny"));
+              {
+                beforeRequest: async (url) => {
+                  resolveFetchRules(urlSite(url), await loadApprovalRules(undefined, "deny"));
+                  reviewAdmission ??= appliedReviewAdmission();
+                },
+                onResponseStatus: (status) => {
+                  responseStatus = status;
+                },
               },
             );
-            return blockedRequest ? finishPolicyBlock() : finish(result);
+            const confirmed = "url" in result && isConfirmedHttpResponse(responseStatus);
+            return blockedRequest
+              ? finishPolicyBlock()
+              : finish(result, undefined, confirmed ? reviewAdmission : undefined);
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {
@@ -10280,6 +10329,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (authenticatedRequest) {
             if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
+            let reviewAdmission: Date | undefined;
             try {
               const result = await requestWithBotSecret({
                 prisma: deps.prisma,
@@ -10313,9 +10363,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     );
                   if (!(await renewRunLease(deps, runId, workerId, fence, tx)))
                     throw new BotSecretHttpRequestError("The run no longer owns this request.");
+                  reviewAdmission ??= appliedReviewAdmission();
                 },
               });
-              return finish(result);
+              const confirmed =
+                "status" in result &&
+                isConfirmedHttpResponse(result.status) &&
+                approvedActionReceipt({ data: result.body, truncated: result.truncated }, "result")
+                  .state === "succeeded";
+              return finish(result, undefined, confirmed ? reviewAdmission : undefined);
             } catch (error) {
               if (error instanceof ActionRuleDispatchError) {
                 trust.invalidateDestinationTrust();
@@ -11014,13 +11070,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 throw new ActionRuleDispatchError(policyBlock.error);
               }
               context.signal.throwIfAborted();
-              if (
-                viaConnector &&
-                claimedEffect &&
-                !claimedApproval &&
-                appliedReviewDecision === "pass"
-              )
-                autoReviewAdmittedAt ??= new Date();
+              if (viaConnector) autoReviewAdmittedAt ??= appliedReviewAdmission();
             };
             const beforeDispatch = Object.assign(() => verifyDispatch(), {
               [dispatchTransaction]: verifyDispatch,
@@ -11113,23 +11163,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!(await persistEffectResult(result, connectorOutcome)))
               return uncertainEffectResult(name);
             if (
-              applied &&
               autoReviewAdmittedAt &&
               !blockedAtDispatch &&
               !context.signal.aborted &&
               approvedActionReceipt(result, connectorOutcome).state === "succeeded"
-            ) {
-              await recordAutomaticApprovalAudit(deps.prisma, {
-                spaceId: run.spaceId,
-                threadId: run.threadId,
-                runId,
-                effectId: applied.effect.id,
-                decision: "pass",
-                outcome: "success",
-                happenedAt: autoReviewAdmittedAt,
-                lease: { owner: workerId, fence },
-              });
-            }
+            )
+              await recordReviewPass(autoReviewAdmittedAt);
             return result;
           }
           return finish({ error: `unknown tool ${name}` });
@@ -13774,6 +13813,10 @@ export async function recordEffect(
   const effect = create ? await create(data) : await deps.prisma.externalEffect.create({ data });
   consumedIds?.add(effect.id);
   return { duplicate: false, effect };
+}
+
+function isConfirmedHttpResponse(status: number | undefined): boolean {
+  return status !== undefined && status >= 200 && status < 300 && ![202, 206, 207].includes(status);
 }
 
 async function completeEffect(

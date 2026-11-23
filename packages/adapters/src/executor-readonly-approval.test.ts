@@ -4426,6 +4426,7 @@ describe("authenticated request destination policy", () => {
       expect.objectContaining({ method: "POST", body: args.body, redirect: "manual" }),
     );
     expect(f.effects[0]).toMatchObject({ status: "completed" });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
@@ -4461,6 +4462,51 @@ describe("authenticated request destination policy", () => {
     );
     expect(routine.fetch).toHaveBeenCalledOnce();
     expect(routine.pauseRunForInput).not.toHaveBeenCalled();
+    expect(routine.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          id: `approval.auto_reviewed:${routine.effects[0]?.id}`,
+          action: "approval.auto_reviewed",
+          outcome: "success",
+          metadata: { decision: "pass" },
+        }),
+      ],
+    });
+  });
+
+  it.each([
+    { status: 202 },
+    { status: 206 },
+    { status: 207 },
+    { status: 403 },
+    { status: 200, body: { ok: false } },
+    { status: 200, body: { write_outcome: "partial" } },
+    { status: 200, body: { deliveryVerified: false } },
+    { status: 200, body: { text: "x".repeat(21_000) }, truncated: true },
+  ])(
+    "preserves unconfirmed authenticated HTTP result %# without a success audit",
+    async ({ status, body = { synthetic: true }, truncated = false }) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const f = authFixture({ autoReview: true });
+      f.fetch.mockResolvedValueOnce(Response.json(body, { status }));
+      await f.run();
+      expect(f.fetch).toHaveBeenCalledOnce();
+      expect(f.effects[0]).toMatchObject({
+        status: "completed",
+        result: { status, truncated, body: truncated ? expect.any(String) : body },
+      });
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("audits a completed authenticated request with a no-content response", async () => {
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    const f = authFixture({ autoReview: true });
+    f.fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await f.run();
+    expect(f.effects[0]).toMatchObject({ status: "completed", result: { status: 204 } });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
   });
 
   it("refuses a URL that cannot fit in a human approval card without truncation", async () => {
@@ -4532,6 +4578,16 @@ describe("authenticated request destination policy", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.findCredential).not.toHaveBeenCalled();
     expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          id: `approval.auto_denied:${f.effects[0]?.id}`,
+          outcome: "denied",
+          metadata: { decision: "deny", reason: "unattended" },
+        }),
+      ],
+    });
   });
 
   it("keeps the action approval when a webhook's saved instruction names the site", async () => {
@@ -5742,13 +5798,15 @@ describe("connector read-only metadata and approval enforcement", () => {
           requested.push(url);
           return url.endsWith("/start")
             ? new Response(null, { status: 302, headers: { location: "/final" } })
-            : new Response("<html><body>Authorized result</body></html>", {
-                headers: { "content-type": "text/html" },
+            : new Response("Authorized result. ".repeat(30), {
+                headers: { "content-type": "text/plain" },
               });
         },
       }),
     });
-    f.setCalls([{ args: { url: "https://trusted.example.org/start" }, executionId: "start" }]);
+    f.setCalls([
+      { args: { url: "https://trusted.example.org/start", maxChars: 100 }, executionId: "start" },
+    ]);
     await f.run();
     expect(requested).toEqual([
       "https://trusted.example.org/start",
@@ -5758,7 +5816,63 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.effects).toHaveLength(1);
     expect(f.effects[0]!.status).toBe("completed");
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.results.at(-1)).toMatchObject({ truncated: true });
+    expect(f.results.at(-1)).not.toHaveProperty("status");
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          id: `approval.auto_reviewed:${f.effects[0]?.id}`,
+          outcome: "success",
+          metadata: { decision: "pass" },
+        }),
+      ],
+    });
   });
+
+  it.each([
+    { scenario: "late deny", status: 200 },
+    { scenario: "HTTP error", status: 403 },
+    { scenario: "HTTP accepted", status: 202 },
+    { scenario: "HTTP partial", status: 206 },
+    { scenario: "HTTP multi-status", status: 207 },
+    { scenario: "lost receipt", status: 200 },
+  ])(
+    "keeps an unconfirmed reviewed web fetch out of the audit ($scenario)",
+    async ({ scenario, status }) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const rules: ActionApprovalRule[] = [];
+      const fetch = vi.fn(
+        async () =>
+          new Response("Synthetic content", { status, headers: { "content-type": "text/plain" } }),
+      );
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        autoReview: true,
+        rules,
+        webProvider: new KeylessHttpWebProvider({
+          resolveHostname: async () => {
+            if (scenario === "late deny")
+              rules.push({ effect: "deny", matchKind: "tool", matchValue: "web_fetch" });
+            return [{ address: "203.0.113.10", family: 4 }];
+          },
+          fetch,
+        }),
+      });
+      if (scenario === "lost receipt") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "completed" ? { count: 0 } : update(input),
+        );
+      }
+      f.setCalls([{ args: { url: "https://new.example.org/report" }, executionId: "new-site" }]);
+      await f.run();
+      expect(reviewMock).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledTimes(scenario === "late deny" ? 0 : 1);
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+    },
+  );
 
   it("binds a replay's redirect authority to its canonical URL instead of the new caller URL", async () => {
     const canonical = "https://approved.example.org/start";
@@ -6119,34 +6233,64 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.results.at(-1)).toMatchObject({ error: expect.stringContaining(denied) });
   });
 
-  it("denies a webhook's unapproved new site without fetching or leaving a person approval", async () => {
-    const fetch = vi.fn();
-    const f = fixture({
-      name: "web_fetch",
-      builtin: true,
-      trigger: "webhook",
-      webProvider: {
-        describe: () => ({
-          id: "test-web",
-          contractVersion: "1",
-          adapterVersion: "1",
-          capabilities: { search: true, fetch: true, readability: true, keyless: true },
-        }),
-        fetch,
-        search: vi.fn(async () => []),
-      },
-    });
-    Object.assign(f.prisma, { routine: { findMany: vi.fn(async () => []) } });
-    f.setCalls([{ args: { url: "https://new.example.org/report" }, executionId: "new-site" }]);
-    await f.run();
-    expect(f.results).toEqual([
-      { error: "Fetching example.org needs approval, and a webhook run cannot ask." },
-    ]);
-    expect(fetch).not.toHaveBeenCalled();
-    expect(f.pauseRunForInput).not.toHaveBeenCalled();
-    expect(f.effects).toHaveLength(1);
-    expect(f.effects[0]).toMatchObject({ kind: "web_fetch", status: "denied" });
-  });
+  it.each(["no reviewer", "ask", "error", "lost refusal"] as const)(
+    "denies a webhook's unapproved new site without fetching or leaving a person approval (%s)",
+    async (scenario) => {
+      const fetch = vi.fn();
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        trigger: "webhook",
+        autoReview: scenario === "ask" || scenario === "error",
+        webProvider: {
+          describe: () => ({
+            id: "test-web",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { search: true, fetch: true, readability: true, keyless: true },
+          }),
+          fetch,
+          search: vi.fn(async () => []),
+        },
+      });
+      Object.assign(f.prisma, { routine: { findMany: vi.fn(async () => []) } });
+      if (scenario === "ask" || scenario === "error")
+        reviewMock.mockResolvedValue({ decision: scenario, model: "mock" });
+      if (scenario === "lost refusal") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "denied" ? { count: 0 } : update(input),
+        );
+      }
+      f.setCalls([{ args: { url: "https://new.example.org/report" }, executionId: "new-site" }]);
+      await f.run();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.effects).toHaveLength(1);
+      if (scenario === "lost refusal") {
+        expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        return;
+      }
+      expect(f.results).toEqual([
+        { error: "Fetching example.org needs approval, and a webhook run cannot ask." },
+      ]);
+      expect(f.effects[0]).toMatchObject({ kind: "web_fetch", status: "denied" });
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({
+            id: `approval.auto_denied:${f.effects[0]?.id}`,
+            actorType: "system",
+            actorId: "approval_policy",
+            action: "approval.auto_denied",
+            outcome: "denied",
+            metadata: { decision: "deny", reason: "unattended" },
+          }),
+        ],
+      });
+    },
+  );
 
   it.each(["shell", "write_file"])(
     "forces owner approval for webhook-triggered %s despite an allow rule",
