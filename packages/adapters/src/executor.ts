@@ -8188,14 +8188,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               throw new Error("Could not pause this run for approval; try sending again.");
             }
-            const happenedAt = new Date();
-            await notifyRun(deps, run, {
-              kind: "help",
-              title: `${bot.name} needs approval`,
-              body: `Review before ${name}`,
-              botId: bot.id,
-              threadId: thread.id,
-            });
             if (applied && (appliedReviewDecision === "ask" || appliedReviewDecision === "error")) {
               await recordAutomaticApprovalAudit(deps.prisma, {
                 spaceId: run.spaceId,
@@ -8204,9 +8196,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 effectId: applied.effect.id,
                 decision: appliedReviewDecision,
                 outcome: "paused",
-                happenedAt,
+                happenedAt: new Date(),
               });
             }
+            await notifyRun(deps, run, {
+              kind: "help",
+              title: `${bot.name} needs approval`,
+              body: `Review before ${name}`,
+              botId: bot.id,
+              threadId: thread.id,
+            });
             return pauseForApproval();
           };
 

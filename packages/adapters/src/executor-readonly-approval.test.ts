@@ -154,6 +154,7 @@ function fixture({
   sandboxProvider,
   browser,
   home,
+  notifications,
   messagingIdentity = false,
   startedAt = null,
 }: {
@@ -197,6 +198,7 @@ function fixture({
   sandboxProvider?: Partial<SandboxProvider>;
   browser?: BrowserProvider;
   home?: Pick<AgentHomeStore, "commit">;
+  notifications?: ExecutorDeps["notifications"];
   messagingIdentity?: boolean;
   startedAt?: Date | null;
 } = {}) {
@@ -388,7 +390,15 @@ function fixture({
       findFirst: vi.fn(
         async (_query: {
           where: { leaseExpiresAt?: { gt: Date } };
-        }): Promise<{ id: string } | null> => ({ id: run.id }),
+        }): Promise<{
+          id: string;
+          bot: { notifyOnFinish: boolean };
+          thread: { groupId: string | null };
+        } | null> => ({
+          id: run.id,
+          bot: { notifyOnFinish: true },
+          thread: { groupId },
+        }),
       ),
       updateMany: vi.fn(
         async ({
@@ -573,6 +583,7 @@ function fixture({
     sandbox: sandboxProvider ?? { describe: () => ({ capabilities: { graphical: false } }) },
     browser,
     home,
+    notifications,
     memory: {
       read: async (request: { scope: string; path?: string }) => {
         const documents =
@@ -7401,6 +7412,50 @@ describe("connector read-only metadata and approval enforcement", () => {
       },
     );
 
+    it("writes the committed pause audit before waiting for notification delivery", async () => {
+      reviewMock.mockResolvedValue({ decision: "ask", model: "synthetic-checker" });
+      let announceDelivery!: () => void;
+      const deliveryStarted = new Promise<void>((resolve) => {
+        announceDelivery = resolve;
+      });
+      let releaseDelivery!: () => void;
+      const deliveryReleased = new Promise<void>((resolve) => {
+        releaseDelivery = resolve;
+      });
+      const send = vi.fn(async () => {
+        announceDelivery();
+        await deliveryReleased;
+      });
+      const f = fixture({
+        catalog,
+        name: "demo_send_message",
+        autoReview: true,
+        notifications: {
+          describe: () => ({
+            id: "synthetic-notifications",
+            contractVersion: "1",
+            adapterVersion: "0.1.0",
+            capabilities: { email: false, push: true },
+          }),
+          send,
+        },
+      });
+      const run = f.run();
+      try {
+        await Promise.race([deliveryStarted, run]);
+        expect(send).toHaveBeenCalledOnce();
+        expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            data: [expect.objectContaining({ outcome: "paused", metadata: { decision: "ask" } })],
+          }),
+        );
+      } finally {
+        releaseDelivery();
+        await run;
+      }
+    });
+
     it.each([
       { scenario: "no admission" },
       { scenario: "provider error", result: { error: "Synthetic provider denial" } },
@@ -7429,8 +7484,9 @@ describe("connector read-only metadata and approval enforcement", () => {
           yield { type: "result", data: result };
         });
         if (scenario === "expired worker lease") {
+          const lookup = f.prisma.run.findFirst.getMockImplementation()!;
           f.prisma.run.findFirst.mockImplementation(async ({ where }) =>
-            where.leaseExpiresAt ? null : { id: "run-1" },
+            where.leaseExpiresAt ? null : lookup({ where }),
           );
         }
         if (scenario === "audit failure")

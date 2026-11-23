@@ -46,7 +46,7 @@ async function appendAuditEvents(
       prisma.$transaction(
         async (tx) => {
           if (liveRun) {
-            // A dispatch receipt from a superseded worker cannot establish an automatic grant.
+            // Sample ownership after the effect commits. The audit must not lock the Run against Stop.
             const current = await tx.run.findFirst({
               where: {
                 id: liveRun.runId,
