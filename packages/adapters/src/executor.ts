@@ -320,6 +320,7 @@ import {
   browserSnapshotFromTool,
   redactBrowserResult,
 } from "./browser-tools.js";
+import { invokesPrivateBrief } from "./builtin-skills.js";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
 import {
   agentConnectionTools,
@@ -4506,6 +4507,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const ownerTaskPrompt = modelPageContext
           ? task.prompt.slice(0, -modelPageContext.length)
           : task.prompt;
+        const privateBrief = invokesPrivateBrief(ownerTaskPrompt, agentSkills);
+        if (
+          privateBrief &&
+          (thread.groupId || (run.trigger !== "user" && run.trigger !== "routine"))
+        ) {
+          await settleRunFailure("Open a private bot chat to use Weekday brief.", bot);
+          return;
+        }
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??
@@ -6235,6 +6244,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               error:
                 "Approved catalog request could not be resolved to a tool. Deny and retry the direct tool call.",
             };
+          }
+          if (
+            privateBrief &&
+            run.trigger === "routine" &&
+            name !== "task_catalog" &&
+            name !== "skill_read"
+          ) {
+            // Check the resolved action, including calls through the catalog facade.
+            const tool = resolvedTool ?? connectorTools.get(name);
+            if (tool?.readOnly !== true || tool.batch) {
+              return {
+                error:
+                  "Weekday brief can only read connected sources. Report unavailable data in the chat.",
+              };
+            }
           }
           if (connectorCall.route?.resourceId) {
             observer?.onConnectorRouteResolved?.(connectorCall.route);

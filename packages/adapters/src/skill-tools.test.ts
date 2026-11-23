@@ -1,6 +1,6 @@
 import { buildSkillMd, formatSkillsCatalogInstruction, parseSkillMd } from "@rakazo/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
+import { BUILTIN_AGENT_SKILLS, invokesPrivateBrief } from "./builtin-skills.js";
 import {
   listAgentSkillRecords,
   skillCreateFromTool,
@@ -216,6 +216,24 @@ describe("skill tools", () => {
     expect(await skillDeleteFromTool(prisma as never, owner, { name: "Plugin recipe" })).toEqual({
       error: "Builtin and plugin skills are read-only.",
     });
+  });
+
+  it("identifies private brief invocations in chat and in saved routine prompts", async () => {
+    const records = await listAgentSkillRecords(prisma as never, owner);
+    for (const prompt of [
+      "/Weekday brief",
+      "@Weekday brief scheduled delivery",
+      "Use skill: Weekday brief\n\nScheduled delivery",
+    ]) {
+      expect(invokesPrivateBrief(prompt, records)).toBe(true);
+    }
+    expect(invokesPrivateBrief("Please discuss a weekday brief", records)).toBe(false);
+    expect(
+      invokesPrivateBrief(
+        "/Weekday brief",
+        records.map((r) => ({ ...r, source: "user" })),
+      ),
+    ).toBe(false);
   });
 
   it("ships builtin skills as valid, readable, read-only SKILL.md records", async () => {

@@ -178,6 +178,7 @@
       ],
       "expectedOutput": {
         "id": "t1",
+        "webUrl": "https://mail.google.com/mail/u/?authuser=owner%40example.test#all/t1",
         "complete": true
       },
       "rejectedInput": {
