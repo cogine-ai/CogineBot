@@ -334,6 +334,8 @@ export async function listSchedulesFromTool(
       name: row.name,
       prompt: row.prompt,
       crons: row.crons,
+      timezone: row.timezone,
+      threadId: row.threadId,
       active: row.active,
       nextRunAt: row.nextRunAt?.toISOString() ?? null,
       oneShot: isOneShotRoutineCrons(row.crons),

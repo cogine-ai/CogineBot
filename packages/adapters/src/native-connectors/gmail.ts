@@ -881,8 +881,15 @@ async function readAction(id: string, args: Obj, context: NativeActionContext): 
     )
       return incomplete("Gmail thread message identity or order is incomplete.");
     messages.sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    // Bind the link to the same Google account even in a multi-login browser.
+    const email = context.principal.context.email;
     return {
       id: args.threadId,
+      ...(typeof email === "string" && email
+        ? {
+            webUrl: `https://mail.google.com/mail/u/?authuser=${enc(email)}#all/${enc(args.threadId)}`,
+          }
+        : {}),
       ...pick(body, ["historyId", "snippet"]),
       messages,
       complete: messages.every((value) => value.complete === true),

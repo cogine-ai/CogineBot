@@ -652,6 +652,43 @@ function fixture({
   };
 }
 
+describe("weekday brief delivery", () => {
+  it("stops a shared-chat invocation before the runtime can read connected sources", async () => {
+    const f = fixture({ prompt: "/Weekday brief", groupId: "group-1" });
+    f.runRecord.status = "queued";
+    await f.executor.continueRun(f.runRecord.id, "worker-1");
+    expect(f.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        error: "Open a private bot chat to use Weekday brief.",
+      }),
+    );
+    expect(f.runtimeRun).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "enforces read-only scheduled delivery with catalog=%s",
+    async (catalog) => {
+      const prompt = "@Weekday brief scheduled delivery";
+      const read = fixture({ prompt, trigger: "routine", catalog });
+      await read.run();
+      expect(read.execute).toHaveBeenCalledOnce();
+
+      const write = fixture({
+        prompt,
+        trigger: "routine",
+        catalog,
+        name: "demo_send_mail",
+        readOnly: false,
+      });
+      await write.run();
+      expect(write.execute).not.toHaveBeenCalled();
+      expect(write.results.at(-1)).toMatchObject({ error: expect.stringContaining("only read") });
+    },
+  );
+});
+
 describe("delegated shell approval receipts", () => {
   it.each([
     { code: 0, receipt: "succeeded" },

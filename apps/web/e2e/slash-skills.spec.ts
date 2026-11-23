@@ -64,6 +64,14 @@ test("composer / picker lists skills above actions", async ({ page }, testInfo) 
   await expect(composer).toHaveValue("");
   await page.getByRole("button", { name: "Remove skill Interrogate" }).click();
 
+  await composer.fill("/Weekday");
+  const brief = picker.getByRole("button", { name: "Skill Weekday brief", exact: true });
+  await expect(brief).toBeVisible();
+  await captureScreenshot(page, testInfo, "weekday-brief-private-chat-entry");
+  await brief.click();
+  await expect(skillChip).toContainText("Weekday brief");
+  await page.getByRole("button", { name: "Remove skill Weekday brief" }).click();
+
   await composer.fill("@");
   await expect(page.getByTestId("slash-picker")).toHaveCount(0);
 });

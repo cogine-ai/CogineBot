@@ -1,4 +1,4 @@
-import { runReadsThreadHistory } from "@rakazo/core";
+import { extractForcedSkillName, runReadsThreadHistory } from "@rakazo/core";
 import type { RunLease } from "@rakazo/db";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
 import {
@@ -320,6 +320,7 @@ import {
   browserSnapshotFromTool,
   redactBrowserResult,
 } from "./browser-tools.js";
+import { invokesPrivateBrief } from "./builtin-skills.js";
 import { USE_TOOL } from "./builtin-tool-bridge.js";
 import {
   agentConnectionTools,
@@ -656,6 +657,12 @@ import {
 } from "./user-progress.js";
 import { createWebProvider } from "./web-provider-factory.js";
 import { webFetchFromTool, webSearchFromTool } from "./web-tools.js";
+import {
+  briefSourceAccounts,
+  briefSources,
+  deliverWeekdayBrief,
+} from "./weekday-brief-delivery.js";
+import { briefSetupChoice, weekdayBriefSetup } from "./weekday-brief-setup.js";
 
 const MEMORY_MUTATION_TOOLS = new Set([
   "remember",
@@ -4506,6 +4513,37 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const ownerTaskPrompt = modelPageContext
           ? task.prompt.slice(0, -modelPageContext.length)
           : task.prompt;
+        const ownerStartedRun = isOwnerStartedRun(
+          run.trigger,
+          sourceMessage?.role === "user" && sourceMessage.authorUserId === run.userId,
+        );
+        const ownerBriefTurn =
+          ownerStartedRun && (run.trigger === "user" || run.trigger === "follow_up");
+        const originalBriefText =
+          ownerBriefTurn &&
+          sourceMessage?.role === "user" &&
+          !pageSource &&
+          Array.isArray(sourceMessage.blocks)
+            ? scriptedSteeringText(sourceMessage.blocks as MessageBlock[])
+            : "";
+        const briefChoice = briefSetupChoice(ownerTaskPrompt);
+        const resumeBrief = Boolean(
+          fence > 1 && invokesPrivateBrief(originalBriefText, agentSkills),
+        );
+        const briefInput =
+          originalBriefText && (resumeBrief || run.trigger === "follow_up")
+            ? originalBriefText
+            : ownerTaskPrompt;
+        const privateBrief = invokesPrivateBrief(briefInput, agentSkills);
+        if (
+          privateBrief &&
+          (thread.groupId ||
+            thread.externalConversationId ||
+            (!ownerBriefTurn && run.trigger !== "routine"))
+        ) {
+          await settleRunFailure("Open a private bot chat to use Weekday brief.", bot);
+          return;
+        }
         const historySearchBeforeSeq =
           contextStrategy !== "current" && run.sourceMessageId
             ? (messages.find((message) => message.id === run.sourceMessageId)?.seq ??
@@ -5152,10 +5190,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           run.trigger === "user" || run.trigger === "follow_up"
             ? (sourceMessage?.clientNonce ?? null)
             : null;
-        const ownerStartedRun = isOwnerStartedRun(
-          run.trigger,
-          sourceMessage?.role === "user" && sourceMessage.authorUserId === run.userId,
-        );
         const directHistorySource = historyMyChatsAllowed(
           run,
           sourceMessage,
@@ -6235,6 +6269,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               error:
                 "Approved catalog request could not be resolved to a tool. Deny and retry the direct tool call.",
             };
+          }
+          if (
+            privateBrief &&
+            run.trigger === "routine" &&
+            name !== "task_catalog" &&
+            name !== "skill_read"
+          ) {
+            // Check the resolved action, including calls through the catalog facade.
+            const tool = resolvedTool ?? connectorTools.get(name);
+            if (tool?.readOnly !== true || tool.batch) {
+              return {
+                error:
+                  "Weekday brief can only read connected sources. Report unavailable data in the chat.",
+              };
+            }
           }
           if (connectorCall.route?.resourceId) {
             observer?.onConnectorRouteResolved?.(connectorCall.route);
@@ -11028,7 +11077,37 @@ export function createRunExecutor(deps: ExecutorDeps) {
         );
 
         try {
-          const runtimeEvents = deps.runtime.run(
+          const forced = extractForcedSkillName(briefInput);
+          const setupBrief =
+            privateBrief &&
+            ownerBriefTurn &&
+            forced?.name.toLowerCase() === "weekday brief" &&
+            !/^(?:show (?:me )?today|run now|today.s brief|查看今天|立即运行|现在运行)/i.test(
+              forced.rest,
+            );
+          const scheduledBrief =
+            privateBrief && run.trigger === "routine" ? briefSources(ownerTaskPrompt) : undefined;
+          const runRuntime: typeof deps.runtime.run = setupBrief
+            ? () =>
+                weekdayBriefSetup({
+                  text: briefInput,
+                  timezone: userTimezone,
+                  sources: briefSourceAccounts(connectedPlugins, tools),
+                  threadId: thread.id,
+                  runId,
+                  selection: resumeBrief ? briefChoice : undefined,
+                  execute: applyTool,
+                })
+            : (request, ctx) =>
+                scheduledBrief
+                  ? deliverWeekdayBrief(
+                      scheduledBrief,
+                      connectedPlugins,
+                      request,
+                      (classification) => deps.runtime.run(classification, ctx),
+                    )
+                  : deps.runtime.run(request, ctx);
+          const runtimeEvents = runRuntime(
             {
               botId: bot.id,
               threadId: thread.id,
@@ -11225,7 +11304,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               !isSteeringContinuation &&
               approvedEffects[0]?.kind === "update_bot" &&
               readOwnSettingsRequest(approvedEffects[0].request)
-                ? { script: [{ toolCalls: [{ name: "update_bot", args: {} }], complete: true }] }
+                ? {
+                    script: [{ toolCalls: [{ name: "update_bot", args: {} }], complete: true }],
+                  }
                 : {}),
               ...(scripted
                 ? {}
