@@ -406,6 +406,8 @@ export interface MemoryCommitRequest extends MemoryCommitTarget {
   };
   /** Verified key replays return the first result before revision checks; a different request fails. */
   idempotencyKey?: string;
+  /** Observe an acknowledged new revision, after commit. Existing receipts do not invoke this. */
+  onRevisionCommitted?: () => void;
 }
 
 export interface MemoryCommitReceiptRequest extends MemoryCommitTarget {

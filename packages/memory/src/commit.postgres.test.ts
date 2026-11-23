@@ -1,7 +1,7 @@
 import type { AdapterContext, MemoryCommitRequest } from "@rakazo/adapter-kit";
 import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
 import { createDb, type PrismaClient } from "@rakazo/db";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { MarkdownMemoryStore } from "./index.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -127,11 +127,17 @@ describePostgres("memory commits (PostgreSQL)", () => {
 
   it("does not append another idempotent revision after a committed reply is lost", async () => {
     const path = "idempotent-lost-reply.md";
-    const write = { ...request(path, "original"), idempotencyKey: "lost-reply" };
+    const onRevisionCommitted = vi.fn();
+    const write = {
+      ...request(path, "original"),
+      idempotencyKey: "lost-reply",
+      onRevisionCommitted,
+    };
     const committed = await store.commit(write, context);
     const recovered = await store.commit(write, context);
     expect(recovered).toEqual(committed);
     expect((await document(path)).revisions).toHaveLength(1);
+    expect(onRevisionCommitted).toHaveBeenCalledOnce();
   });
 
   it("keeps distinct idempotent intents even when their content is identical", async () => {
@@ -188,7 +194,13 @@ describePostgres("memory commits (PostgreSQL)", () => {
 
   it("commits overlapping idempotent retries only once", async () => {
     const path = "idempotent-overlap.md";
-    const write = { ...request(path, "original"), expectedRevision: 0, idempotencyKey: "overlap" };
+    const onRevisionCommitted = vi.fn();
+    const write = {
+      ...request(path, "original"),
+      expectedRevision: 0,
+      idempotencyKey: "overlap",
+      onRevisionCommitted,
+    };
     const racing = concurrentStore();
     const results = await Promise.all([
       racing.commit(write, context),
@@ -197,6 +209,7 @@ describePostgres("memory commits (PostgreSQL)", () => {
     expect(results[1]).toEqual(results[0]);
     const current = await document(path);
     expect(current.revisions).toHaveLength(1);
+    expect(onRevisionCommitted).toHaveBeenCalledOnce();
     expect(await prisma.memoryDocument.count({ where: { spaceId: context.spaceId, path } })).toBe(
       1,
     );
@@ -240,7 +253,8 @@ describePostgres("memory commits (PostgreSQL)", () => {
 
   it("rolls back an idempotent commit when its receipt cannot be saved", async () => {
     const path = "idempotent-rollback.md";
-    const write = { ...request(path, "original"), idempotencyKey: "rollback" };
+    const onRevisionCommitted = vi.fn();
+    const write = { ...request(path, "original"), idempotencyKey: "rollback", onRevisionCommitted };
     const fault = new Error("receipt storage failed");
     const failing = new MarkdownMemoryStore(
       prisma.$extends({
@@ -254,12 +268,14 @@ describePostgres("memory commits (PostgreSQL)", () => {
       }) as PrismaClient,
     );
     await expect(failing.commit(write, context)).rejects.toBe(fault);
+    expect(onRevisionCommitted).not.toHaveBeenCalled();
     expect(await prisma.memoryDocument.count({ where: { spaceId: context.spaceId, path } })).toBe(
       0,
     );
     const first = await store.commit(write, context);
     await expect(store.commit(write, context)).resolves.toEqual(first);
     expect((await document(path)).revisions).toHaveLength(1);
+    expect(onRevisionCommitted).toHaveBeenCalledOnce();
   });
 
   it.each(["user", "bot"] as const)(

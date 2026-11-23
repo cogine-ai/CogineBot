@@ -46,6 +46,7 @@ import type {
   JobPublisher,
   ManagedConnectorProvider,
   MemoryCommitReceiptRequest,
+  MemoryCommitRequest,
   MemoryStore,
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
@@ -8515,6 +8516,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (reviewAdmission) await recordReviewPass(reviewAdmission);
             return result;
           };
+          const commitReviewedMemory = async (request: MemoryCommitRequest) => {
+            const admittedAt = appliedReviewAdmission();
+            let written = false;
+            const saved = await deps.memory.commit(
+              admittedAt
+                ? {
+                    ...request,
+                    onRevisionCommitted: () => {
+                      written = true;
+                    },
+                  }
+                : request,
+              context,
+            );
+            return { saved, reviewAdmission: written ? admittedAt : undefined };
+          };
           const currentMemoryPermission = () => ({
             ...(claimedApproval ? { approved: true as const } : {}),
             ...(!claimedApproval &&
@@ -9235,23 +9252,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 const early = await claimMemoryWrite();
                 if (early !== undefined) return early;
                 context.signal.throwIfAborted();
-                const saved = await deps.memory.commit(
-                  {
-                    ...request,
-                    content,
-                    expectedRevision: revision,
-                    runLease: { owner: workerId, fence },
-                    runApproval: markdownRunApproval("remember"),
-                    ...(applied
-                      ? memoryReceiptRequest(applied.effect)
-                      : { sourceRunId: runId, sourceThreadId: thread.id }),
-                  },
-                  context,
-                );
+                const { saved, reviewAdmission } = await commitReviewedMemory({
+                  ...request,
+                  content,
+                  expectedRevision: revision,
+                  runLease: { owner: workerId, fence },
+                  runApproval: markdownRunApproval("remember"),
+                  ...(applied
+                    ? memoryReceiptRequest(applied.effect)
+                    : { sourceRunId: runId, sourceThreadId: thread.id }),
+                });
                 return finish(
                   memoryCorrection
                     ? { ok: true, path: saved.path, revision: saved.revision }
                     : { ok: true },
+                  undefined,
+                  reviewAdmission,
                 );
               } catch (error) {
                 if (error instanceof MemoryWriteAuthorizationError)
@@ -9280,21 +9296,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const early = await claimMemoryWrite();
               if (early !== undefined) return early;
               context.signal.throwIfAborted();
-              const saved = await deps.memory.commit(
-                {
-                  scope: "user",
-                  path,
-                  content: String(args.content ?? ""),
-                  expectedRevision,
-                  runLease: { owner: workerId, fence },
-                  runApproval: markdownRunApproval("save_shared_memory"),
-                  ...(applied
-                    ? memoryReceiptRequest(applied.effect)
-                    : { sourceRunId: runId, sourceThreadId: thread.id }),
-                },
-                context,
+              const { saved, reviewAdmission } = await commitReviewedMemory({
+                scope: "user",
+                path,
+                content: String(args.content ?? ""),
+                expectedRevision,
+                runLease: { owner: workerId, fence },
+                runApproval: markdownRunApproval("save_shared_memory"),
+                ...(applied
+                  ? memoryReceiptRequest(applied.effect)
+                  : { sourceRunId: runId, sourceThreadId: thread.id }),
+              });
+              return finish(
+                { ok: true, path: saved.path, revision: saved.revision },
+                undefined,
+                reviewAdmission,
               );
-              return finish({ ok: true, path: saved.path, revision: saved.revision });
             } catch (error) {
               if (error instanceof MemoryWriteAuthorizationError)
                 return handleMemoryAuthorizationError(error);
@@ -10088,21 +10105,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             }
             context.signal.throwIfAborted();
+            const id = String(args.id ?? "");
+            const admission = appliedReviewAdmission();
+            const result = await semanticMemory.forget(
+              {
+                id,
+                scope: memoryScope!,
+                botId: bot.id,
+                ...(typeof args.entity === "string" && args.entity.trim()
+                  ? { entity: args.entity.trim() }
+                  : {}),
+                ...(typeof args.reason === "string" && args.reason.trim()
+                  ? { reason: args.reason.trim() }
+                  : {}),
+              },
+              context,
+            );
             return finish(
-              await semanticMemory.forget(
-                {
-                  id: String(args.id ?? ""),
-                  scope: memoryScope!,
-                  botId: bot.id,
-                  ...(typeof args.entity === "string" && args.entity.trim()
-                    ? { entity: args.entity.trim() }
-                    : {}),
-                  ...(typeof args.reason === "string" && args.reason.trim()
-                    ? { reason: args.reason.trim() }
-                    : {}),
-                },
-                context,
-              ),
+              result,
+              undefined,
+              result.ok && result.value.expired && result.value.id === id.trim()
+                ? admission
+                : undefined,
             );
           }
           if (name === "end_call") {
