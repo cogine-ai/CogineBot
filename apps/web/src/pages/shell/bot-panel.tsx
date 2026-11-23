@@ -990,7 +990,9 @@ export function BotSettings({
               }}
             >
               <NativeSelectOption value="">
-                {t`Default (${thinkingLevelLabel(defaultThinkingLevel)})`}
+                {me?.thinkingDefaultsAvailable
+                  ? t`Default`
+                  : t`Default (${thinkingLevelLabel(defaultThinkingLevel)})`}
               </NativeSelectOption>
               {thinkingOptions.map((level) => (
                 <NativeSelectOption key={level} value={level}>

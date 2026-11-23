@@ -4,6 +4,7 @@ import type {
   ModelCredentialReference,
   ModelHeaderRow,
   ModelOAuthBegin,
+  ThinkingDefaults,
   ThinkingLevel,
 } from "@rakazo/contracts";
 import {
@@ -80,6 +81,7 @@ import { ModelSettingsPanel } from "../../components/model-settings-panel";
 import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { Checkmark, Chevron } from "../../components/row-accessories";
+import { ThinkingDefaultSettingsRows } from "../../components/thinking-default-settings";
 import type {
   ApiRequestContext,
   MobileMe,
@@ -148,6 +150,8 @@ function ModelsForm({
   const [credentials, setCredentials] = useState<MobileModelCredential[]>([]);
   const [me, setMe] = useState<MobileMe | null>(null);
   const [defaultsRevision, setDefaultsRevision] = useState(0);
+  const [thinkingRevision, setThinkingRevision] = useState(0);
+  const [thinkingDefaults, setThinkingDefaults] = useState<ThinkingDefaults | null>(null);
   const preferenceWriteOwner = useRef<number | null>(null);
   const [provider, setProvider] = useState("");
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -241,6 +245,19 @@ function ModelsForm({
     setPending(next);
     return owner;
   }
+  function beginPreferenceWrite() {
+    if (busyRef.current || preferenceWriteOwner.current !== null || !settingsCurrent()) return null;
+    const owner = beginPending("default");
+    preferenceWriteOwner.current = owner;
+    busyRef.current = true;
+    return owner;
+  }
+
+  function finishPreferenceWrite(owner: number) {
+    if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
+    finishPending(owner);
+  }
+
   function finishPending(owner: number) {
     if (owner === pendingOwnerRef.current) setPending(null);
   }
@@ -646,13 +663,32 @@ function ModelsForm({
   );
   // The banner shows the effective effort — stored level or the runtime
   // default — only when the active model can actually think.
-  const activeThinkingLabel = modelThinkingLevels(
-    activeCredential,
-    currentEntry,
-    me?.defaultModel,
-  ).some((level) => level !== "off")
-    ? thinkingLevelLabel(activeCredential?.thinkingLevel ?? "medium", t)
-    : null;
+  const activeThinking =
+    thinkingDefaults?.binding?.credentialId === activeCredential?.id &&
+    thinkingDefaults?.binding?.model.modelId === me?.defaultModel
+      ? thinkingDefaults
+      : null;
+  const effectiveThinkingLevel = activeThinking
+    ? activeThinking.effective.level
+    : activeCredential?.thinkingLevel;
+  const connectionEffortLabel =
+    activeThinking && (activeThinking.account.value || activeThinking.space.value)
+      ? t("Connection reasoning effort")
+      : t("Reasoning effort");
+  const activeLevels =
+    activeThinking?.levels ?? modelThinkingLevels(activeCredential, currentEntry, me?.defaultModel);
+  const preferredEffort = effectiveThinkingLevel ?? "medium";
+  const displayedEffort =
+    !activeThinking || activeThinking.levels.includes(preferredEffort)
+      ? preferredEffort
+      : ((clampCatalogThinkingLevel(
+          preferredEffort === "off" ? "minimal" : preferredEffort,
+          activeThinking.levels,
+        ) as ThinkingLevel | null) ?? (activeThinking.levels.includes("off") ? "off" : null));
+  const activeThinkingLabel =
+    displayedEffort && activeLevels.some((level) => level !== "off")
+      ? thinkingLevelLabel(displayedEffort, t)
+      : null;
   const compatibleRows = compatibleModelRows(
     savedCompatibleModelIds(credential, baseUrl),
     enabledModelIds,
@@ -1506,12 +1542,12 @@ function ModelsForm({
                 {reasoning ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={t("Reasoning effort")}
+                    accessibilityLabel={connectionEffortLabel}
                     accessibilityValue={{ text: reasoningEffortValue }}
                     disabled={busy}
                     onPress={() => {
                       presentMessageActionSheet({
-                        title: t("Reasoning effort"),
+                        title: connectionEffortLabel,
                         cancel: t("Cancel"),
                         more: t("More"),
                         colorScheme,
@@ -1529,7 +1565,7 @@ function ModelsForm({
                     }}
                     style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
                   >
-                    <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+                    <Text style={styles.modelLabel}>{connectionEffortLabel}</Text>
                     <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
                   </Pressable>
                 ) : null}
@@ -1560,12 +1596,12 @@ function ModelsForm({
       {credential && modelReasoning ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={t("Reasoning effort")}
+          accessibilityLabel={connectionEffortLabel}
           accessibilityValue={{ text: reasoningEffortValue }}
           disabled={busy}
           onPress={() => {
             presentMessageActionSheet({
-              title: t("Reasoning effort"),
+              title: connectionEffortLabel,
               cancel: t("Cancel"),
               more: t("More"),
               colorScheme,
@@ -1583,7 +1619,7 @@ function ModelsForm({
           }}
           style={({ pressed }) => [styles.modelRow, pressed && styles.pressed]}
         >
-          <Text style={styles.modelLabel}>{t("Reasoning effort")}</Text>
+          <Text style={styles.modelLabel}>{connectionEffortLabel}</Text>
           <Text style={styles.rowValue}>{reasoningEffortValue}</Text>
         </Pressable>
       ) : null}
@@ -2245,25 +2281,26 @@ function ModelsForm({
               );
               return `${entry?.label ?? modelId} · ${entry?.providerName ?? provider}`;
             }}
-            begin={() => {
-              if (busyRef.current || preferenceWriteOwner.current !== null || !settingsCurrent())
-                return null;
-              const owner = beginPending("default");
-              preferenceWriteOwner.current = owner;
-              busyRef.current = true;
-              return owner;
-            }}
-            finish={(owner) => {
-              if (preferenceWriteOwner.current === owner) preferenceWriteOwner.current = null;
-              finishPending(owner);
-            }}
+            begin={beginPreferenceWrite}
+            finish={finishPreferenceWrite}
             onChange={async () => {
               try {
-                await load({ keepConnectionState: true });
+                if (await load({ keepConnectionState: true }))
+                  setThinkingRevision((value) => value + 1);
               } catch (err) {
                 if (settingsCurrent()) setError(errorText(err, t("Could not load model defaults")));
               }
             }}
+          />
+        ) : null}
+        {me?.thinkingDefaultsAvailable ? (
+          <ThinkingDefaultSettingsRows
+            key={`${defaultsRevision}:${thinkingRevision}`}
+            target={settings}
+            busy={busy}
+            begin={beginPreferenceWrite}
+            finish={finishPreferenceWrite}
+            onRead={setThinkingDefaults}
           />
         ) : null}
 

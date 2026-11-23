@@ -7845,3 +7845,39 @@ msgstr "更改我的默认模型？"
 
 msgid "Following Spaces use their own connection for new runs."
 msgstr "跟随此设置的 Space 会用各自的连接开始新任务。"
+
+msgid "Thinking defaults"
+msgstr "思考级别默认设置"
+
+msgid "My default thinking"
+msgstr "我的默认思考级别"
+
+msgid "Thinking in this Space"
+msgstr "此 Space 的思考级别"
+
+msgid "Model default"
+msgstr "模型默认"
+
+msgid "Follow my default"
+msgstr "跟随我的默认设置"
+
+msgid "Keep the current level in this Space"
+msgstr "在此 Space 保留当前级别"
+
+msgid "Change my default thinking?"
+msgstr "更改我的默认思考级别？"
+
+msgid "Thinking level is unavailable for this model."
+msgstr "此模型不支持该思考级别。"
+
+msgid "Could not load thinking defaults"
+msgstr "无法加载思考级别默认设置"
+
+msgid "Could not save thinking defaults"
+msgstr "无法保存思考级别默认设置"
+
+msgid "New runs use this level on supported, matching models. These Spaces may be affected."
+msgstr "新任务会在匹配的模型支持时使用此级别。以下 Space 可能受影响。"
+
+msgid "Connection reasoning effort"
+msgstr "连接的推理级别"

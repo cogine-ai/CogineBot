@@ -1,5 +1,6 @@
 import type { AgentRunModel, AgentRunRequest, AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { createRunExecutor, PiAgentRuntime, serializeModelSecret } from "@rakazo/adapters";
+import type { ThinkingLevel } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startModelEmulator } from "./model-emulator.js";
@@ -10,7 +11,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
+function fixture(endpoints: Array<{ baseUrl: string; apiKey: string; reasoning?: boolean }>) {
   const rows = endpoints.map((endpoint, index) => ({
     id: `connection-${index}`,
     userId: "fixture-user",
@@ -26,6 +27,7 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
   const retired = new Set<string>();
   const local = new Map<string, string[]>();
   let accountModel: string | undefined;
+  let accountThinking: ThinkingLevel | undefined;
   const findLocal = vi.fn(
     async ({
       where,
@@ -91,6 +93,21 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
           ? {
               member: {
                 user: {
+                  thinkingDefaultHistory: accountThinking
+                    ? [
+                        {
+                          value: {
+                            model: { provider: "openai-compatible", modelId: accountModel },
+                            level: accountThinking,
+                          },
+                          revision: 1,
+                          receipt: {
+                            clientNonce: "fixture-thinking-nonce",
+                            requestHash: "fixture-thinking-hash",
+                          },
+                        },
+                      ]
+                    : [],
                   modelDefaultHistory: [
                     {
                       value: { modelId: accountModel, provider: "openai-compatible" },
@@ -124,6 +141,7 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
               baseUrl: row.endpoint.baseUrl,
               apiKey: row.endpoint.apiKey,
               enabledModelIds: enabled.get(row.id),
+              reasoning: row.endpoint.reasoning,
             }),
           };
         },
@@ -141,6 +159,9 @@ function fixture(endpoints: Array<{ baseUrl: string; apiKey: string }>) {
     enabled,
     findFirst,
     local,
+    accountThinking: (level: ThinkingLevel) => {
+      accountThinking = level;
+    },
     accountDefault: (modelId: string) => {
       accountModel = modelId;
     },
@@ -214,6 +235,52 @@ describe("bound model execution through real HTTP and SSE", () => {
     } finally {
       a.assertComplete();
       b.assertComplete();
+    }
+  });
+
+  it("sends the personal effort only through a Space endpoint that can use it", async () => {
+    const reasoning = await startModelEmulator({
+      modelId: "same-model",
+      apiKey: "fake-key-yes",
+      steps: [
+        {
+          expect: (body) => expect(body).toMatchObject({ reasoning_effort: "high" }),
+          response: { type: "text", text: "From reasoning endpoint" },
+        },
+      ],
+    });
+    const plain = await startModelEmulator({
+      modelId: "same-model",
+      apiKey: "fake-key-no",
+      steps: [
+        {
+          expect: (body) => expect(body).not.toHaveProperty("reasoning_effort"),
+          response: { type: "text", text: "From plain endpoint" },
+        },
+      ],
+    });
+    cleanups.push(
+      () => reasoning.close(),
+      () => plain.close(),
+    );
+    const { executor, local, accountDefault, accountThinking } = fixture([
+      { baseUrl: reasoning.baseUrl, apiKey: "fake-key-yes", reasoning: true },
+      { baseUrl: plain.baseUrl, apiKey: "fake-key-no", reasoning: false },
+    ]);
+    local.set("space-a", ["connection-0"]);
+    local.set("space-b", ["connection-1"]);
+    accountDefault("same-model");
+    accountThinking("high");
+    const a = await executor.resolveModel({ userId: "fixture-user", spaceId: "space-a" });
+    const b = await executor.resolveModel({ userId: "fixture-user", spaceId: "space-b" });
+    expect(a.thinkingLevel).toBe("high");
+    expect(b.thinkingLevel).toBeNull();
+    try {
+      expect(await collect(a)).toContainEqual({ type: "done", text: "From reasoning endpoint" });
+      expect(await collect(b)).toContainEqual({ type: "done", text: "From plain endpoint" });
+    } finally {
+      reasoning.assertComplete();
+      plain.assertComplete();
     }
   });
 

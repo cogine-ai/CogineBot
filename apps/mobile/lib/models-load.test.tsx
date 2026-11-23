@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ModelDefaults, UpdateModelDefaultsInput } from "@rakazo/contracts";
+import type { ModelDefaults, ThinkingDefaults, UpdateModelDefaultsInput } from "@rakazo/contracts";
 import { defaultModelChoiceKey } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
@@ -447,6 +447,96 @@ it("discards an old account model confirmation and saves only through the curren
     baseUrl: "https://draft.example.test/v1",
     expectedRevision: credential.connectionRevision,
   });
+});
+
+it("ignores an earlier Space's thinking confirmation and writes only the current target", async () => {
+  const model = { provider: "openai-compatible", modelId: "model-a" };
+  const snapshot: ThinkingDefaults = {
+    account: { value: null, revision: 0 },
+    space: { value: null, revision: 0 },
+    effective: { level: null, source: "system", unsupported: false },
+    binding: {
+      model,
+      credentialId: credential.id,
+      connectionRevision: credential.connectionRevision,
+      modelAccountRevision: 0,
+      modelSpaceRevision: 0,
+    },
+    levels: ["low", "high"],
+    followsAccount: true,
+    followingSpaces: [{ id: "space-settings", name: "Settings Space" }],
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(
+    (
+      procedure: string,
+      input: unknown,
+      options?: {
+        requestContext?: { headers: Record<string, string> };
+      },
+    ) => {
+      if (procedure === "me")
+        return Promise.resolve({
+          userId: "user-1",
+          spaceId: options?.requestContext?.headers["x-rakazo-space-id"] ?? state.spaceId,
+          defaultProvider: model.provider,
+          defaultModel: model.modelId,
+          defaultModelCredentialId: credential.id,
+          thinkingDefaultsAvailable: true,
+        });
+      if (procedure === "models/thinkingDefaults") return Promise.resolve(snapshot);
+      if (procedure === "models/updateThinkingDefaults")
+        return Promise.resolve({
+          status: "updated",
+          settings: {
+            ...snapshot,
+            account: { value: { model, level: "high" }, revision: 1 },
+            effective: { level: "high", source: "account", unsupported: false },
+          },
+        });
+      return normal(procedure, input, options);
+    },
+  );
+  const render = () => act(async () => root.render(<Models />));
+  async function choose() {
+    const control = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="My default thinking"]',
+    );
+    if (!control) throw new Error("Thinking default picker is missing");
+    await act(async () => {
+      control.value = "high";
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const [title, message, actions] = state.alert.mock.calls.at(-1)!;
+    expect(title).toBe("Change my default thinking?");
+    expect(message).toContain("Settings Space");
+    return actions[1].onPress as () => void;
+  }
+  const writes = () =>
+    state.rpc.mock.calls.filter(([name]) => name === "models/updateThinkingDefaults");
+  state.params.spaceId = "space-settings";
+  await render();
+  const earlier = await choose();
+  state.params.spaceId = "space-other";
+  await render();
+  state.params.spaceId = "space-settings";
+  await render();
+  await act(async () => earlier());
+  expect(writes()).toHaveLength(0);
+  const active = await choose();
+  await act(async () => {
+    active();
+    active();
+  });
+  expect(writes()).toHaveLength(1);
+  expect(writes()[0]?.[1]).toMatchObject({
+    scope: "account",
+    level: "high",
+    expectedRevision: 0,
+    followingSpaceIds: ["space-settings"],
+  });
+  expect(writes()[0]?.[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-settings");
+  expect(container.textContent).toContain("My default");
 });
 
 it("finishes backup loading after refocus metadata arrives behind an endpoint draft edit", async () => {

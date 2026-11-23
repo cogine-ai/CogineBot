@@ -7773,3 +7773,39 @@ msgstr "Change my default model?"
 
 msgid "Following Spaces use their own connection for new runs."
 msgstr "Following Spaces use their own connection for new runs."
+
+msgid "Thinking defaults"
+msgstr "Thinking defaults"
+
+msgid "My default thinking"
+msgstr "My default thinking"
+
+msgid "Thinking in this Space"
+msgstr "Thinking in this Space"
+
+msgid "Model default"
+msgstr "Model default"
+
+msgid "Follow my default"
+msgstr "Follow my default"
+
+msgid "Keep the current level in this Space"
+msgstr "Keep the current level in this Space"
+
+msgid "Change my default thinking?"
+msgstr "Change my default thinking?"
+
+msgid "Thinking level is unavailable for this model."
+msgstr "Thinking level is unavailable for this model."
+
+msgid "Could not load thinking defaults"
+msgstr "Could not load thinking defaults"
+
+msgid "Could not save thinking defaults"
+msgstr "Could not save thinking defaults"
+
+msgid "New runs use this level on supported, matching models. These Spaces may be affected."
+msgstr "New runs use this level on supported, matching models. These Spaces may be affected."
+
+msgid "Connection reasoning effort"
+msgstr "Connection reasoning effort"

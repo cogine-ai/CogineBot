@@ -39,6 +39,18 @@ export const DE_MESSAGES: Record<string, string> = {
     "Gilt für neue Wiedergaben in Spaces, die den Standard übernehmen und diese Stimme unterstützen.",
   "Voice for this Space": "Stimme für diesen Space",
   Unavailable: "Nicht verfügbar",
+  "My default thinking": "Mein Standard-Denkniveau",
+  "Thinking in this Space": "Denkniveau in diesem Space",
+  "Follow my default": "Meinen Standard verwenden",
+  "Keep the current level in this Space": "Aktuelles Niveau für diesen Space beibehalten",
+  "Change my default thinking?": "Mein Standard-Denkniveau ändern?",
+  "Thinking level is unavailable for this model.":
+    "Dieses Modell unterstützt dieses Denkniveau nicht.",
+  "Could not load thinking defaults": "Standard-Denkniveau konnte nicht geladen werden",
+  "Could not save thinking defaults": "Standard-Denkniveau konnte nicht gespeichert werden",
+  "New runs use this level on supported, matching models. These Spaces may be affected.":
+    "Neue Runs verwenden dieses Niveau auf passenden Modellen, die es unterstützen. Diese Spaces können betroffen sein.",
+  "Connection reasoning effort": "Denkniveau der Verbindung",
   "My default model": "Mein Standardmodell",
   "No account default": "Kein Kontostandard",
   "Override model in this Space": "Eigenes Modell für diesen Space",

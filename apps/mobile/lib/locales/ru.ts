@@ -38,6 +38,18 @@ export const RU_MESSAGES: Record<string, string> = {
     "Применяется при новом воспроизведении в пространствах, которые используют этот голос по умолчанию и где он доступен.",
   "Voice for this Space": "Голос для этого пространства",
   Unavailable: "Недоступно",
+  "My default thinking": "Моя глубина размышлений",
+  "Thinking in this Space": "Глубина размышлений в этом Space",
+  "Follow my default": "Использовать мой стандарт",
+  "Keep the current level in this Space": "Сохранить текущий уровень в этом Space",
+  "Change my default thinking?": "Изменить мою глубину размышлений?",
+  "Thinking level is unavailable for this model.":
+    "Эта модель не поддерживает выбранную глубину размышлений.",
+  "Could not load thinking defaults": "Не удалось загрузить глубину размышлений",
+  "Could not save thinking defaults": "Не удалось сохранить глубину размышлений",
+  "New runs use this level on supported, matching models. These Spaces may be affected.":
+    "Новые запуски используют этот уровень на совместимых моделях. Изменение может затронуть эти Space.",
+  "Connection reasoning effort": "Глубина размышлений подключения",
   "My default model": "Моя модель по умолчанию",
   "No account default": "Модель по умолчанию не выбрана",
   "Override model in this Space": "Отдельная модель для этого пространства",

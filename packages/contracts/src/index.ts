@@ -43,6 +43,7 @@ export * from "./run-quota-wait.js";
 export * from "./runs.js";
 export * from "./search.js";
 export * from "./terminal.js";
+export * from "./thinking-defaults.js";
 export * from "./timezone.js";
 export * from "./update-revocations.js";
 export * from "./voice-defaults.js";

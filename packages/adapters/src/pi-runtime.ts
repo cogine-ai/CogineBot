@@ -34,7 +34,12 @@ import type {
   ToolResultHistoryReference,
 } from "@rakazo/adapter-kit";
 import type { RunQuotaTarget } from "@rakazo/contracts";
-import { canonicalPiProviderId, RUN_QUOTA_WAIT_MAX_MS, usableModelId } from "@rakazo/contracts";
+import {
+  canonicalPiProviderId,
+  RUN_QUOTA_WAIT_MAX_MS,
+  ThinkingLevelSchema,
+  usableModelId,
+} from "@rakazo/contracts";
 import {
   abortableDelay,
   createStreamingRedactor,
@@ -1349,6 +1354,13 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
         : {}),
       ...(modelConfig.maxTokens !== undefined ? { maxTokens: modelConfig.maxTokens } : {}),
     };
+  }
+  const supported = modelConfig.supportedThinkingLevels;
+  if (model && supported?.length) {
+    const thinkingLevelMap: ThinkingLevelMap = {};
+    for (const level of ThinkingLevelSchema.options)
+      thinkingLevelMap[level] = supported.includes(level) ? level : null;
+    model = { ...model, reasoning: true, thinkingLevelMap };
   }
   const apiKey = modelConfig.oauth ? undefined : modelConfig.apiKey;
   return { provider, modelId, models, model, apiKey, credentials };

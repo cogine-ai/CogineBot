@@ -40,6 +40,7 @@ model User {
   readAloudHistory            Json                         @default("[]")
   voiceDefaultHistory         Json                         @default("[]")
   modelDefaultHistory         Json                         @default("[]")
+  thinkingDefaultHistory      Json                         @default("[]")
   sessions                    Session[]
   accounts                    Account[]
   members                     Member[]
@@ -300,6 +301,7 @@ model SpaceMember {
   readAloudHistory Json                   @default("[]")
   voiceOverrideHistory Json              @default("[]")
   modelOverrideHistory Json              @default("[]")
+  thinkingOverrideHistory Json           @default("[]")
   aiDataConsents AiDataConsent[]
   backupModels SpaceBackupModel[]
 
@@ -847,6 +849,7 @@ model Run {
   modelPinned          Boolean          @default(false)
   // An inherited account choice must continue to use an authorized Space connection.
   requiresSpaceModelBinding Boolean      @default(false)
+  usesDefaultThinkingLevel Boolean @default(false)
   /// A pinned Run can temporarily use a backup. The attempt fence scopes this evidence.
   attemptModel         Json?
   /// Model binding and instructions already supplied to this Run.
@@ -917,6 +920,7 @@ model SteeringMessage {
   modelId       String?
   modelCredentialId String?
   requiresSpaceModelBinding Boolean @default(false)
+  usesDefaultThinkingLevel Boolean @default(false)
   thinkingLevel String?
   claimedAt DateTime?
   createdAt DateTime @default(now())

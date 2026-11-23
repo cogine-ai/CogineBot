@@ -213,6 +213,8 @@ import {
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
+  resolveThinkingDefault,
+  ThinkingLevelSchema,
   UsagePricingSnapshotSchema,
   usableModelId,
   validateMcpStdioCredentials,
@@ -302,8 +304,11 @@ import {
   readAloudSettings,
   readModelDefaults,
   readPluginCleanupRefs,
+  readThinkingDefaults,
+  readThinkingPreferences,
   readVoiceDefaults,
   recordSpaceModelChoice,
+  recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
   releaseSpaceDeletionClaim,
   renameSpaceForMember,
@@ -328,6 +333,7 @@ import {
   updateModelDefaults,
   updateReadAloud,
   updateSpaceCollaborationForMember,
+  updateThinkingDefaults,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -436,6 +442,7 @@ import {
 import { mapSpaceLifecycleError } from "./space-lifecycle-error.js";
 import { assertTeachingSendAllowed, createTaughtSkillsService } from "./taught-skills.js";
 import { asTenant } from "./tenant-context.js";
+import { prepareThinkingModel, readThinkingCapabilities } from "./thinking-defaults.js";
 import { clearThreadConversation } from "./thread-clear.js";
 import {
   isBackgroundRun,
@@ -1938,6 +1945,26 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     models: {
+      thinkingDefaults: authed.models.thinkingDefaults.handler(async ({ context }) => {
+        const model = await prepareThinkingModel(
+          deps.prisma,
+          deps.secrets,
+          context.actor,
+          codexCatalog,
+        );
+        return readThinkingDefaults(deps.prisma, context.actor, model);
+      }),
+      updateThinkingDefaults: authed.models.updateThinkingDefaults.handler(
+        async ({ context, input }) => {
+          const model = await prepareThinkingModel(
+            deps.prisma,
+            deps.secrets,
+            context.actor,
+            codexCatalog,
+          );
+          return updateThinkingDefaults(deps.prisma, context.actor, input, model);
+        },
+      ),
       defaults: authed.models.defaults.handler(async ({ context }) =>
         readModelDefaults(deps.prisma, context.actor),
       ),
@@ -2477,6 +2504,12 @@ export function createRouter(deps: RouterDeps) {
                     },
                     data: { thinkingLevel },
                   });
+                  await recordSpaceThinkingEdit(
+                    tx,
+                    context.actor,
+                    { provider: input.provider, modelId: input.modelId },
+                    ThinkingLevelSchema.nullable().parse(thinkingLevel),
+                  );
                   return;
                 }
                 await selectSpaceModelPreference(
@@ -9171,6 +9204,7 @@ async function meDto(deps: RouterDeps, actor: Actor): Promise<Me> {
     needsModel: setup.needsModel,
     defaultModelCredentialId: setup.credential?.id ?? null,
     defaultModelUnavailable: setup.defaultUnavailable,
+    thinkingDefaultsAvailable: true,
     defaultProvider:
       !setup.defaultUnavailable && (setup.credential || setup.platformAllowed || setup.hasLocal)
         ? (setup.credential?.provider ??
@@ -9319,6 +9353,33 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
   const modelId = bot.modelId ?? defaultModel;
   const label = (bot.modelId ? bound : setup.credential)?.label;
   const inherited = bot.modelId ? bound : setup.credential;
+  const resolvedThinking = async () => {
+    if (bot.thinkingLevel || !provider || !modelId || !inherited) return null;
+    const preferences = await readThinkingPreferences(deps.prisma, actor);
+    if (!preferences.account && !preferences.space) return null;
+    const model = { provider, modelId };
+    const capability = await readThinkingCapabilities(
+      deps.prisma,
+      deps.secrets,
+      actor,
+      model,
+      inherited,
+      deps.codexCatalog,
+    );
+    if (!capability) return null;
+    const legacy =
+      inherited.defaultModel === modelId
+        ? ThinkingLevelSchema.safeParse(inherited.thinkingLevel).data
+        : null;
+    return resolveThinkingDefault({
+      model,
+      allowed: capability.levels,
+      explicit: null,
+      legacy: legacy ?? capability.connectionLevel,
+      ...preferences,
+    });
+  };
+  const effort = await resolvedThinking();
   return botSettingsHistory(bot, {
     ...(readAloud && {
       readAloud: { after: readAloud.enabled ? "On" : "Off", source: readAloud.source },
@@ -9329,15 +9390,20 @@ async function effectiveBotSettingsHistory(deps: RouterDeps, actor: Actor, bot: 
       source: bot.modelId ? "bot" : setup.defaultSource,
     },
     thinkingLevel: {
-      after:
-        bot.thinkingLevel ??
-        (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
-        "Model default",
-      source: bot.thinkingLevel
-        ? "bot"
-        : inherited?.defaultModel === modelId && inherited?.thinkingLevel
-          ? "space"
-          : "model",
+      after: effort
+        ? (effort.level ?? "Model default")
+        : (bot.thinkingLevel ??
+          (inherited?.defaultModel === modelId ? inherited?.thinkingLevel : null) ??
+          "Model default"),
+      source: effort
+        ? effort.source === "system"
+          ? "model"
+          : effort.source
+        : bot.thinkingLevel
+          ? "bot"
+          : inherited?.defaultModel === modelId && inherited?.thinkingLevel
+            ? "space"
+            : "model",
     },
     voice: {
       after: bot.voiceId ?? voice?.effectiveVoice.choice?.voiceId ?? "Unavailable",
