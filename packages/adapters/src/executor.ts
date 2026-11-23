@@ -8518,16 +8518,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           };
           const commitReviewedMemory = async (request: MemoryCommitRequest) => {
             const admittedAt = appliedReviewAdmission();
-            let written = false;
-            const saved = await deps.memory.commit(
-              admittedAt
-                ? {
-                    ...request,
-                    onRevisionCommitted: () => {
-                      written = true;
-                    },
-                  }
-                : request,
+            const { revision: saved, written } = await deps.memory.commitWithOutcome(
+              request,
               context,
             );
             return { saved, reviewAdmission: written ? admittedAt : undefined };

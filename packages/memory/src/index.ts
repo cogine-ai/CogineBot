@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   AdapterContext,
+  MemoryCommitOutcome,
   MemoryCommitReceiptRequest,
   MemoryCommitRequest,
   MemoryCommitTarget,
@@ -84,15 +85,22 @@ export class MarkdownMemoryStore implements MemoryStore {
   }
 
   async commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision> {
+    const { revision } = await this.commitWithOutcome(request, context);
+    return revision;
+  }
+
+  async commitWithOutcome(
+    request: MemoryCommitRequest,
+    context: AdapterContext,
+  ): Promise<MemoryCommitOutcome> {
     const receiptId =
       request.idempotencyKey === undefined
         ? undefined
         : memoryCommitReceiptId(request.idempotencyKey, context);
     // A save replaces the current content and appends its history atomically.
     // Conflicts retry the whole transaction so revision numbers use fresh state.
-    let result: { revision: MemoryRevision; written: boolean };
     try {
-      result = await withTransactionRetry(() =>
+      return await withTransactionRetry(() =>
         this.prisma.$transaction(
           async (tx) => {
             if (receiptId) {
@@ -211,12 +219,10 @@ export class MarkdownMemoryStore implements MemoryStore {
           context,
           request.content,
         );
-        if (committed) return committed;
+        if (committed) return { revision: committed, written: false };
       }
       throw error;
     }
-    if (result.written) request.onRevisionCommitted?.();
-    return result.revision;
   }
 
   async readCommitReceipt(

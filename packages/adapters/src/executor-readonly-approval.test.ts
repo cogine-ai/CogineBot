@@ -1,4 +1,5 @@
 import type {
+  AdapterContext,
   AgentHomeStore,
   AgentRunRequest,
   AgentRuntime,
@@ -8,6 +9,7 @@ import type {
   ConnectorProvider,
   ConnectorRoute,
   ConnectorTool,
+  MemoryCommitRequest,
   SandboxProvider,
   SecretStore,
   SemanticMemoryProvider,
@@ -221,30 +223,22 @@ function fixture({
     content: initialMemory,
     revision: initialMemory === undefined ? 0 : 1,
   };
-  const commit = vi.fn(
-    async (request: {
-      path: string;
-      content: string;
-      expectedRevision?: number;
-      onRevisionCommitted?: () => void;
-    }) => {
-      if (
-        request.expectedRevision !== undefined &&
-        request.expectedRevision !== sharedMemoryState.revision
-      ) {
-        throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
-      }
-      sharedMemoryState.content = request.content;
-      sharedMemoryState.revision = (sharedMemoryState.revision || 0) + 1;
-      request.onRevisionCommitted?.();
-      return {
-        id: "doc-1",
-        path: request.path,
-        revision: sharedMemoryState.revision,
-        content: request.content,
-      };
-    },
-  );
+  const commit = vi.fn(async (request: MemoryCommitRequest, _context: AdapterContext) => {
+    if (
+      request.expectedRevision !== undefined &&
+      request.expectedRevision !== sharedMemoryState.revision
+    ) {
+      throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+    }
+    sharedMemoryState.content = request.content;
+    sharedMemoryState.revision = (sharedMemoryState.revision || 0) + 1;
+    return {
+      id: "doc-1",
+      path: request.path,
+      revision: sharedMemoryState.revision,
+      content: request.content,
+    };
+  });
   const run = {
     id: "run-1",
     botId: "bot-1",
@@ -614,6 +608,11 @@ function fixture({
         return { documents };
       },
       commit,
+      commitWithOutcome: async (request: MemoryCommitRequest, context: AdapterContext) => {
+        const before = sharedMemoryState.revision;
+        const revision = await commit(request, context);
+        return { revision, written: sharedMemoryState.revision !== before };
+      },
       readCommitReceipt: async () => undefined,
     },
     memoryProviders: {
@@ -6919,6 +6918,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         expect(f.results.at(-1)).toMatchObject({ uncertain: true });
       } else {
         expect(f.effects[0]?.status).toBe("completed");
+        expect(f.results.at(-1)).toEqual({ ok: true, path: args.path, revision: 1 });
       }
       if (receipt !== "new revision") {
         expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
