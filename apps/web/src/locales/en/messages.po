@@ -7722,3 +7722,27 @@ msgstr "Reload"
 
 msgid "Confirm"
 msgstr "Confirm"
+
+msgid "Voice defaults"
+msgstr "Voice defaults"
+
+msgid "My default voice"
+msgstr "My default voice"
+
+msgid "Override voice in this Space"
+msgstr "Override voice in this Space"
+
+msgid "Choose a voice available in this Space."
+msgstr "Choose a voice available in this Space."
+
+msgid "Change my default voice?"
+msgstr "Change my default voice?"
+
+msgid "Applies to new playback in following Spaces where the voice is available."
+msgstr "Applies to new playback in following Spaces where the voice is available."
+
+msgid "Voice for this Space"
+msgstr "Voice for this Space"
+
+msgid "Choose a voice"
+msgstr "Choose a voice"

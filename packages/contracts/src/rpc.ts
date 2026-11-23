@@ -316,6 +316,12 @@ import {
   UpdateReadAloudInput,
   UpdateReadAloudResult,
 } from "./read-aloud.js";
+import {
+  UpdateVoiceDefaultsInput,
+  UpdateVoiceDefaultsResult,
+  VoiceChoiceSchema,
+  VoiceDefaultsSchema,
+} from "./voice-defaults.js";
 
 export const appContract = {
   aiConsent: {
@@ -1400,6 +1406,8 @@ export const appContract = {
   voice: {
     catalog: oc.output(z.array(VoiceCatalogEntrySchema)),
     status: oc.output(VoiceStatusSchema),
+    defaults: oc.output(VoiceDefaultsSchema),
+    updateDefaults: oc.input(UpdateVoiceDefaultsInput).output(UpdateVoiceDefaultsResult),
     credentials: oc.output(z.array(VoiceCredentialSchema)),
     connect: oc
       .input(
@@ -1431,7 +1439,13 @@ export const appContract = {
           botId: Id.optional(),
         }),
       )
-      .output(z.object({ ready: z.boolean(), utterances: z.array(z.string()) })),
+      .output(
+        z.object({
+          ready: z.boolean(),
+          utterances: z.array(z.string()),
+          voice: VoiceChoiceSchema.optional(),
+        }),
+      ),
   },
   externalConversations: {
     updatePolicy: oc

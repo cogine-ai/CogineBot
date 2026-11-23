@@ -1022,6 +1022,26 @@ history are retained. A downgrade disables undo for a version that would restore
 inheritance. After upgrading again, users can select **Use Space default**
 for any Bot they want to follow Space and account changes.
 
+Before a planned downgrade to a build that only reads each Space's saved voice,
+record the inherited provider and voice ID with the exact active connection and
+its update time. Verify a new playback with a Bot that follows the Space default
+and confirm the recorded values stayed the same. Then stop application writers
+and create this temporary table in the session used for the downgrade:
+
+```sql
+CREATE TEMPORARY TABLE voice_freeze_verified (
+  space_id text, user_id text, provider text, voice_id text,
+  credential_id text, credential_updated_at timestamp(3)
+);
+```
+
+Load the verified rows in that session and apply [the voice freeze SQL](../packages/db/prisma/operations/freeze-voice-defaults.sql)
+with the database migration role. The script aborts if a following Space has an
+unavailable voice, a changed connection, or a missing verification. Resolve that
+Space's selection before retrying. The script writes only the voice ID into the
+active Space configuration. It retains explicit choices, preference history, and
+credentials.
+
 The first managed run builds and checks the deployment even when the older
 `.last-deployed-revision` file already matches Git; that file alone does not establish image identity.
 Later runs skip the rollout only when the generation, revision marker, actual images and both health

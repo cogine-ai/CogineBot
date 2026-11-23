@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Actor, UpdateReadAloudInput } from "@rakazo/contracts";
 import { ReadAloudStoredVersionSchema, resolveReadAloud } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
+import { lockPersonalSettings } from "./personal-settings.js";
 import { IsolationError } from "./scope.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
@@ -95,16 +96,7 @@ export async function updateReadAloud(
   return withTransactionRetry(() =>
     prisma.$transaction(
       async (tx) => {
-        // Account writes and explicit overrides serialize on the owner, even across Spaces.
-        const [user] = await tx.$queryRaw<
-          { id: string }[]
-        >`SELECT id FROM "user" WHERE id = ${actor.userId} FOR NO KEY UPDATE`;
-        const [space] = await tx.$queryRaw<
-          { id: string }[]
-        >`SELECT id FROM spaces WHERE id = ${actor.spaceId} AND "deletingAt" IS NULL FOR SHARE`;
-        const [member] = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM space_members
-        WHERE "spaceId" = ${actor.spaceId} AND "userId" = ${actor.userId} FOR NO KEY UPDATE`;
-        if (!user || !space || !member) throw new IsolationError();
+        await lockPersonalSettings(tx, actor);
         const { settings, accountHistory, spaceHistory } = await readSettings(tx, actor);
         const fromAccount = request.scope === "account";
         const current = fromAccount ? settings.account : settings.space;

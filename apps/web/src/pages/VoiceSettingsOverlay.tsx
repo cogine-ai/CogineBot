@@ -18,6 +18,7 @@ import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-r
 import { errorText } from "../lib/user-error";
 
 import { ReadAloudSettings } from "./ReadAloudSettings";
+import { VoiceDefaultSettings } from "./VoiceDefaultSettings";
 
 type VoiceSettingsProps = {
   onClose: () => void;
@@ -51,6 +52,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
   const [catalog, setCatalog] = useState<VoiceCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<VoiceCredential[]>([]);
   const [status, setStatus] = useState<VoiceStatus | null>(null);
+  const [defaultsRevision, setDefaultsRevision] = useState(0);
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -104,6 +106,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
       setVoiceId(cred?.voiceId || listed[0]?.id || "");
       setSpeechModel(cred?.speechModel ?? "");
       setVoices(listed);
+      setDefaultsRevision((revision) => revision + 1);
       setLoadFailed(false);
       return true;
     } catch (error) {
@@ -137,10 +140,16 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
 
   const selected = catalog.find((entry) => entry.id === provider) ?? catalog[0];
   const credential = credentials.find((entry) => entry.provider === provider);
+  const chooseExplicitVoice = status?.source === "account" || status?.provider !== provider;
   const voiceOptions = useMemo(
     () => (voices.length ? voices : voiceId ? [{ id: voiceId, label: voiceId }] : []),
     [voices, voiceId],
   );
+  const sampleAvailable =
+    status?.voiceId &&
+    (status.source !== "account" ||
+      status.provider !== provider ||
+      voices.some(({ id }) => id === status.voiceId));
 
   async function connectKey() {
     if (!current() || pendingRef.current !== null || !selected || !apiKey.trim()) return;
@@ -318,6 +327,20 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
 
         <div className="rk-scroll min-h-0 min-w-0 flex-1 overflow-y-auto">
           <ReadAloudSettings />
+          {status ? (
+            <VoiceDefaultSettings
+              key={defaultsRevision}
+              busy={busy}
+              catalog={provider && status.provider === provider ? { provider, voices } : null}
+              onChange={() => refresh(provider)}
+              beginWrite={() => {
+                if (!current() || pendingRef.current !== null) return false;
+                markPending("voice");
+                return true;
+              }}
+              endWrite={() => markPending(null)}
+            />
+          ) : null}
           {loading ? (
             <p className="text-sm text-muted-foreground">
               <Trans>Loading voice providers…</Trans>
@@ -385,15 +408,21 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
                 <>
                   <Field className="mt-6">
                     <FieldLabel htmlFor={voiceSelectId}>
-                      <Trans>Voice</Trans>
+                      <Trans>Voice for this Space</Trans>
                     </FieldLabel>
                     <NativeSelect
                       id={voiceSelectId}
                       className="w-full"
-                      value={voiceId}
+                      value={chooseExplicitVoice ? "" : voiceId}
                       disabled={busy}
                       onChange={(event) => void chooseVoice(event.target.value)}
                     >
+                      {chooseExplicitVoice ? (
+                        <NativeSelectOption
+                          value=""
+                          disabled
+                        >{t`Choose a voice`}</NativeSelectOption>
+                      ) : null}
                       {voiceOptions.map((voice) => (
                         <NativeSelectOption key={voice.id} value={voice.id}>
                           {voice.label}
@@ -429,7 +458,7 @@ function VoiceSettingsForm({ onClose, embedded = false, onBusyChange }: VoiceSet
                     type="button"
                     variant="secondary"
                     className="mt-4 rounded-full"
-                    disabled={busy || !status?.ready}
+                    disabled={busy || !sampleAvailable}
                     onClick={() => void testVoice()}
                   >
                     {pending === "test" ? <Trans>Playing…</Trans> : <Trans>Hear a sample</Trans>}

@@ -1,4 +1,4 @@
-import type { ComputerMode, ReadAloudEffective, ThinkingLevel } from "@rakazo/contracts";
+import type { ComputerMode, ReadAloudEffective, ThinkingLevel, VoiceInfo } from "@rakazo/contracts";
 import {
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_INSTRUCTIONS_MAX_LENGTH,
@@ -114,7 +114,9 @@ export default function BotSettingsScreen() {
   const [modelMetaError, setModelMetaError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [instructionsConflict, setInstructionsConflict] = useState(false);
-  const [deviceVoiceEnabled, setDeviceVoiceEnabled] = useState(false);
+  const [deviceVoiceEnabled, setDeviceVoiceEnabled] = useState<boolean | null>(null);
+  const [hostedVoices, setHostedVoices] = useState<VoiceInfo[]>([]);
+  const [hostedVoiceId, setHostedVoiceId] = useState("");
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState<string | undefined>();
   const savedVoiceId = useRef<string | undefined>(undefined);
@@ -155,6 +157,7 @@ export default function BotSettingsScreen() {
         );
         setThinkingLevel(next.thinkingLevel ?? "");
         setAutoSpeak(next.autoSpeakInherited ? null : next.autoSpeak);
+        setHostedVoiceId(next.voiceId ?? "");
       })
       .catch((err) => {
         if (!cancelled) setError(errorText(err, t("Could not load bot")));
@@ -279,7 +282,7 @@ export default function BotSettingsScreen() {
           if (current) setDeviceVoiceEnabled(enabled);
         })
         .catch(() => {
-          if (current) setDeviceVoiceEnabled(false);
+          if (current) setDeviceVoiceEnabled(null);
         });
       return () => {
         current = false;
@@ -303,6 +306,18 @@ export default function BotSettingsScreen() {
       current = false;
     };
   }, [botId, deviceVoiceEnabled, t]);
+
+  useEffect(() => {
+    setHostedVoices([]);
+    if (!botId || deviceVoiceEnabled !== false) return;
+    const controller = new AbortController();
+    void rpc<VoiceInfo[]>("voice/voices", {}, { signal: controller.signal })
+      .then((available) => {
+        if (!controller.signal.aborted) setHostedVoices(available);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [botId, deviceVoiceEnabled]);
 
   async function chooseVoice(voice: Voice) {
     if (!botId) return;
@@ -382,6 +397,7 @@ export default function BotSettingsScreen() {
         autoSpeak?: boolean;
         autoSpeakInherited?: true;
         expectedReadAloudRevision?: number;
+        voiceId?: string | null;
       } = { botId };
       if (profile.name !== bot.name) input.name = profile.name;
       if (profile.title !== bot.title) input.title = profile.title;
@@ -413,6 +429,9 @@ export default function BotSettingsScreen() {
         if (autoSpeak === null) input.autoSpeakInherited = true;
         else input.autoSpeak = autoSpeak;
         input.expectedReadAloudRevision = bot.readAloudRevision;
+      }
+      if (deviceVoiceEnabled === false && hostedVoiceId !== (bot.voiceId ?? "")) {
+        input.voiceId = hostedVoiceId || null;
       }
       if (computerMode !== bot.computerMode) {
         await rpc(
@@ -708,6 +727,21 @@ export default function BotSettingsScreen() {
           ) : (
             voiceRow
           )
+        ) : deviceVoiceEnabled === false && (hostedVoices.length || bot?.voiceId) ? (
+          <MenuPicker
+            label={t("Voice")}
+            value={hostedVoiceId}
+            choices={[
+              { key: "", label: t("Use Space default") },
+              ...(hostedVoiceId && !hostedVoices.some(({ id }) => id === hostedVoiceId)
+                ? [{ key: hostedVoiceId, label: hostedVoiceId }]
+                : []),
+              ...hostedVoices.map(({ id, label }) => ({ key: id, label })),
+            ]}
+            onChange={(id) => {
+              if (!pending) setHostedVoiceId(id);
+            }}
+          />
         ) : null}
         <Pressable
           accessibilityRole="button"

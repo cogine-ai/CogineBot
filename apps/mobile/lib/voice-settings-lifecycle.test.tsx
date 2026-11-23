@@ -69,7 +69,10 @@ vi.mock("../components/row-accessories", () => ({
 }));
 vi.mock("../components/menu-picker", () => ({
   MenuPicker: ({ label, onChange }: { label: string; onChange: (key: string) => void }) => (
-    <button type="button" onClick={() => onChange("true")}>
+    <button
+      type="button"
+      onClick={() => onChange(label === "My default voice" ? "voice:fish-audio-voice" : "true")}
+    >
       {label}
     </button>
   ),
@@ -195,6 +198,19 @@ beforeEach(() => {
         }
         if (proc === "voice/catalog") return catalog;
         if (proc === "voice/credentials") return credentials;
+        if (proc === "voice/defaults")
+          return {
+            account: { value: null, revision: 0 },
+            space: { value: false, revision: 0 },
+            provider: activeProvider,
+            followingSpaces: [
+              { id: options?.requestContext?.headers["x-rakazo-space-id"], name: "Support" },
+            ],
+            effective: {
+              choice: { provider: activeProvider, voiceId: "fish-audio-voice" },
+              source: "system",
+            },
+          };
         if (proc === "voice/setVoice") activeProvider = args!.provider;
         if (proc === "voice/status" || proc === "voice/setVoice") {
           return {
@@ -228,6 +244,46 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it("keeps provider actions locked during a confirmed hosted voice default save", async () => {
+  state.store.set(DEVICE_VOICE_KEY, "0");
+  const held = deferred<unknown>();
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation((name: string, input: unknown, options: unknown) =>
+    name === "voice/updateDefaults" ? held.promise : normal(name, input, options),
+  );
+  await render();
+  await click("My default voice");
+  const confirm = state.alert.mock.lastCall?.[2]?.find(
+    ({ text }: { text: string }) => text === "Confirm",
+  ).onPress;
+  expect(confirm).toBeTypeOf("function");
+  await act(async () => {
+    confirm();
+    confirm();
+  });
+  const writes = state.rpc.mock.calls.filter(([name]) => name === "voice/updateDefaults");
+  expect(writes).toHaveLength(1);
+  expect(writes[0]?.[1]).toMatchObject({
+    scope: "account",
+    value: { provider: "fish-audio", voiceId: "fish-audio-voice" },
+    expectedRevision: 0,
+    followingSpaceIds: ["space-b"],
+  });
+  expect(writes[0]?.[2].requestContext.headers["x-rakazo-space-id"]).toBe("space-b");
+  expect(button("Other provider").disabled).toBe(true);
+  await act(async () =>
+    held.resolve({
+      status: "updated",
+      settings: await normal(
+        "voice/defaults",
+        {},
+        { requestContext: { headers: { "x-rakazo-space-id": "space-b" } } },
+      ),
+    }),
+  );
+  expect(button("Other provider").disabled).toBe(false);
+});
 
 it("does not compensate an old target over the new target's device preference", async () => {
   const activation = deferred<unknown>();

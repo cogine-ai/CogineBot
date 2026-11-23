@@ -10,9 +10,15 @@ import {
   NoVoiceConfigured,
   voiceCatalogEntry,
 } from "@rakazo/adapters";
-import type { Actor, VoiceCredential, VoiceStatus } from "@rakazo/contracts";
+import type {
+  Actor,
+  UpdateVoiceDefaultsInput,
+  VoiceChoice,
+  VoiceCredential,
+  VoiceStatus,
+} from "@rakazo/contracts";
 import { toUtterances } from "@rakazo/core";
-import type { PrismaClient } from "@rakazo/db";
+import type { PrismaClient, VerifiedVoiceChoice } from "@rakazo/db";
 import {
   deleteUnreferencedCredentialSecret,
   findDefaultVoiceCredential,
@@ -22,6 +28,7 @@ import {
   Prisma,
   runAsTenant,
   selectSpaceVoicePreference,
+  updateVoiceDefaults,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Context, Hono } from "hono";
@@ -96,13 +103,19 @@ export function fishSpeechModelValue(speechModel: string): string | null {
 }
 
 export async function loadDefaultVoiceCredential(deps: VoiceDeps, actor: Actor) {
-  return loadVoiceCredential(deps, actor);
+  return loadVoiceSecret(deps, actor, await findDefaultVoiceCredential(deps.prisma, actor));
 }
 
 export async function loadVoiceCredential(deps: VoiceDeps, actor: Actor, provider?: string) {
-  const cred = provider
-    ? await findVoiceCredential(deps.prisma, actor, provider)
-    : await findDefaultVoiceCredential(deps.prisma, actor);
+  if (!provider) return loadDefaultVoiceCredential(deps, actor);
+  return loadVoiceSecret(deps, actor, await findVoiceCredential(deps.prisma, actor, provider));
+}
+
+async function loadVoiceSecret<Credential extends { secretId: string }>(
+  deps: VoiceDeps,
+  actor: Actor,
+  cred: Credential | null,
+) {
   if (!cred) return null;
   const secret = await deps.prisma.secret.findFirst({
     where: { id: cred.secretId, userId: actor.userId, spaceId: null },
@@ -111,10 +124,61 @@ export async function loadVoiceCredential(deps: VoiceDeps, actor: Actor, provide
   return { cred, apiKey: await deps.secrets.load(secret.ciphertext, secret.id) };
 }
 
+async function hasVoice(
+  actor: Actor,
+  loaded: { cred: { provider: string }; apiKey: string },
+  choice: VoiceChoice,
+  signal?: AbortSignal,
+) {
+  if (loaded.cred.provider !== choice.provider) return false;
+  const deadline = AbortSignal.timeout(SPEAK_TIMEOUT_MS);
+  const voices = await createVoiceProvider(choice.provider).listVoices(
+    loaded.apiKey,
+    voiceContext(actor, signal ? AbortSignal.any([signal, deadline]) : deadline),
+  );
+  return voices.some(({ id }) => id === choice.voiceId);
+}
+
+export async function readVoiceStatus(deps: VoiceDeps, actor: Actor, signal?: AbortSignal) {
+  const cred = await findDefaultVoiceCredential(deps.prisma, actor);
+  const effective = cred?.effectiveVoice;
+  let voiceId = effective?.choice?.voiceId ?? "";
+  if (cred && effective?.source === "account" && effective.choice) {
+    const loaded = await loadVoiceSecret(deps, actor, cred).catch(() => null);
+    if (!loaded || !(await hasVoice(actor, loaded, effective.choice, signal).catch(() => false)))
+      voiceId = "";
+  }
+  return {
+    ...toVoiceStatus(cred && { provider: cred.provider, voiceId }),
+    source: effective?.source ?? ("system" as const),
+  };
+}
+
+export async function saveVoiceDefaults(
+  deps: VoiceDeps,
+  actor: Actor,
+  input: UpdateVoiceDefaultsInput,
+  signal?: AbortSignal,
+) {
+  let proof: VerifiedVoiceChoice | undefined;
+  if (input.scope === "account" ? input.value !== null : input.enabled) {
+    const loaded = await loadDefaultVoiceCredential(deps, actor).catch(() => null);
+    if (loaded) {
+      const choice = input.scope === "account" ? input.value : loaded.cred.effectiveVoice.choice;
+      // A provider outage must not hide a receipt from an already committed save.
+      if (choice && (await hasVoice(actor, loaded, choice, signal).catch(() => false))) {
+        proof = { choice, credentialId: loaded.cred.id, secretId: loaded.cred.secretId };
+      }
+    }
+  }
+  signal?.throwIfAborted();
+  return updateVoiceDefaults(deps.prisma, actor, input, proof);
+}
+
 export async function resolveVoiceTarget(
   deps: VoiceDeps,
   actor: Actor,
-  input: { botId?: string; voiceId?: string },
+  input: { botId?: string; voiceId?: string; voiceProvider?: string; signal?: AbortSignal },
 ) {
   let botVoiceId: string | null = null;
   if (input.botId) {
@@ -127,9 +191,25 @@ export async function resolveVoiceTarget(
   }
   const loaded = await loadDefaultVoiceCredential(deps, actor);
   if (!loaded) throw new NoVoiceConfigured("key");
-  const voiceId = input.voiceId || botVoiceId || loaded.cred.voiceId;
-  if (!voiceId) throw new NoVoiceConfigured("voice");
-  return { ...loaded, voiceId };
+  const provider = loaded.cred.provider;
+  if (input.voiceProvider && input.voiceProvider !== provider) {
+    throw new ORPCError("CONFLICT", {
+      message: "The voice provider changed. Start playback again.",
+    });
+  }
+  const explicitId = input.voiceId || botVoiceId;
+  const effective = loaded.cred.effectiveVoice;
+  const voiceId = explicitId || effective.choice?.voiceId;
+  if (
+    !voiceId ||
+    (!explicitId &&
+      effective.source === "account" &&
+      effective.choice &&
+      !(await hasVoice(actor, loaded, effective.choice, input.signal)))
+  ) {
+    throw new NoVoiceConfigured("voice");
+  }
+  return { ...loaded, voiceId, voice: { provider, voiceId } };
 }
 
 export async function persistVoiceCredential(
@@ -333,23 +413,29 @@ export async function updateVoiceSpeechModel(
 export async function prepareVoice(
   deps: VoiceDeps,
   actor: Actor,
-  input: { text: string; voiceId?: string; botId?: string },
+  input: { text: string; voiceId?: string; botId?: string; signal?: AbortSignal },
 ) {
   try {
-    await resolveVoiceTarget(deps, actor, input);
+    const target = await resolveVoiceTarget(deps, actor, input);
+    return { ready: true, utterances: toUtterances(input.text), voice: target.voice };
   } catch (error) {
     if (error instanceof NoVoiceConfigured) {
       return { ready: false, utterances: [] as string[] };
     }
     throw error;
   }
-  return { ready: true, utterances: toUtterances(input.text) };
 }
 
 export async function synthesizeVoice(
   deps: VoiceDeps,
   actor: Actor,
-  input: { text: string; voiceId?: string; botId?: string; signal?: AbortSignal },
+  input: {
+    text: string;
+    voiceId?: string;
+    voiceProvider?: string;
+    botId?: string;
+    signal?: AbortSignal;
+  },
 ) {
   const target = await resolveVoiceTarget(deps, actor, input);
   const text = input.text.trim();
@@ -428,6 +514,7 @@ export function mountVoiceHttpRoutes(
         return synthesizeVoice(deps, actor, {
           text: String((body as { text?: unknown }).text ?? ""),
           voiceId: optionalString((body as { voiceId?: unknown }).voiceId),
+          voiceProvider: optionalString((body as { voiceProvider?: unknown }).voiceProvider),
           botId: optionalString((body as { botId?: unknown }).botId),
           signal: AbortSignal.any(
             [c.req.raw.signal, AbortSignal.timeout(SPEAK_TIMEOUT_MS)].filter(

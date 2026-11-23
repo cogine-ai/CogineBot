@@ -1564,6 +1564,7 @@ export const VoiceStatusSchema = z.object({
   transcribe: z.boolean(),
   provider: z.string().nullable(),
   voiceId: z.string(),
+  source: z.enum(["space", "account", "system"]).optional(),
 });
 export type VoiceStatus = z.infer<typeof VoiceStatusSchema>;
 

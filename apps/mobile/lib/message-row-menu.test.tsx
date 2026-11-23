@@ -141,13 +141,13 @@ afterEach(async () => {
   state.listeners.clear();
 });
 
-async function screen() {
+async function screen(botVoiceId?: string) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const element = document.createElement("div");
   const root = createRoot(element);
   function Screen() {
     const canSpeak = useMessageSpeechAvailable();
-    const value = row(canSpeak);
+    const value = row(canSpeak(botVoiceId));
     return (
       <div
         data-native={names(value.menu.menu).join(",")}
@@ -301,6 +301,18 @@ describe("capability-owned Speak in both native and accessibility menus", () => 
     const view = await screen();
     expect(view.hasSpeak()).toBe(true);
     expect(view.accessibleSpeak()).toBe(true);
+  });
+  it("shows Speak for an explicit Bot voice when only the hosted connection is ready", async () => {
+    state.rpc.mockResolvedValue({ ready: false, configured: true });
+    const view = await screen("bot-voice");
+    expect(view.hasSpeak()).toBe(true);
+    expect(view.accessibleSpeak()).toBe(true);
+  });
+  it("keeps Speak hidden without a voice when only the hosted connection is ready", async () => {
+    state.rpc.mockResolvedValue({ ready: false, configured: true });
+    const view = await screen();
+    expect(view.hasSpeak()).toBe(false);
+    expect(view.accessibleSpeak()).toBe(false);
   });
   it.each(["preference", "device", "provider"])(
     "hides unknown/failed %s capability without switching voice paths",

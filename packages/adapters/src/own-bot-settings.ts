@@ -12,6 +12,7 @@ import {
   findDefaultModelCredential,
   findDefaultVoiceCredential,
   lockDefaultVoiceCredential,
+  lockPersonalSettings,
   prepareBotSettingsVersion,
   readAloudForBot,
 } from "@rakazo/db";
@@ -75,6 +76,7 @@ const voiceBinding = z.object({
   provider: z.string(),
   updatedAt: z.string(),
   voiceId: z.string(),
+  inheritedVoiceId: z.string().optional(),
 });
 
 const settingsRequestSchema = z.strictObject({
@@ -298,7 +300,7 @@ export async function readOwnBotSettings(
   const selection = connection
     ? choices.filter((choice) => choice.connection.label.toLowerCase() === connection.toLowerCase())
     : choices;
-  const id = bot.voiceId ?? voice?.credential.voiceId ?? null;
+  const id = bot.voiceId ?? voice?.credential.effectiveVoice.choice?.voiceId ?? null;
   const models = limitedModelChoices(query ? matchByName(selection, query, modelKeys) : selection);
   if (query || connection) return { models };
   const thinking = await thinkingSettings(
@@ -349,7 +351,7 @@ export async function readOwnBotSettings(
       id,
       label: voice?.voices.find((option) => option.id === id)?.label,
       provider: voice && voiceCatalogEntry(voice.credential.provider)?.name,
-      source: bot.voiceId ? "bot" : "space",
+      source: bot.voiceId ? "bot" : (voice?.credential.effectiveVoice.source ?? "system"),
       available: Boolean(id && voice?.voices.some((option) => option.id === id)),
       choices: voice?.voices.slice(0, 10).map(({ id, label }) => ({ id, label })) ?? [],
     },
@@ -505,7 +507,7 @@ export async function prepareOwnBotSettings(
   }
   const effectiveVoice = patch.voiceId === undefined ? bot.voiceId : patch.voiceId;
   const hostedPlayback = loadedVoice?.voices.some(
-    ({ id }) => id === (effectiveVoice ?? loadedVoice.credential.voiceId),
+    ({ id }) => id === (effectiveVoice ?? loadedVoice.credential.effectiveVoice.choice?.voiceId),
   );
   if (loadedVoice && (explicitVoice || hostedPlayback)) {
     const { credential } = loadedVoice;
@@ -514,6 +516,10 @@ export async function prepareOwnBotSettings(
       provider: credential.provider,
       updatedAt: credential.updatedAt.toISOString(),
       voiceId: credential.voiceId,
+      ...(effectiveVoice == null &&
+        credential.effectiveVoice.choice && {
+          inheritedVoiceId: credential.effectiveVoice.choice.voiceId,
+        }),
     };
   }
 
@@ -574,12 +580,15 @@ export async function ownSettingsBindingsCurrent(
       return false;
   }
   if (voiceConnection) {
+    if (voiceConnection.inheritedVoiceId !== undefined) await lockPersonalSettings(tx, request);
     const voice = await lockDefaultVoiceCredential(tx, request, voiceConnection.id);
     if (
       voice?.id !== voiceConnection.id ||
       voice.provider !== voiceConnection.provider ||
       voice.updatedAt.toISOString() !== voiceConnection.updatedAt ||
-      voice.voiceId !== voiceConnection.voiceId
+      voice.voiceId !== voiceConnection.voiceId ||
+      (voiceConnection.inheritedVoiceId !== undefined &&
+        voice.effectiveVoice.choice?.voiceId !== voiceConnection.inheritedVoiceId)
     )
       return false;
   }

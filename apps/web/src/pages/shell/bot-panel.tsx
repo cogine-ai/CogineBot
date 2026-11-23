@@ -1096,7 +1096,7 @@ export function BotSettings({
               value={voiceId}
               onChange={(event) => setVoiceId(event.target.value)}
             >
-              <NativeSelectOption value="">{t`Account default`}</NativeSelectOption>
+              <NativeSelectOption value="">{t`Use Space default`}</NativeSelectOption>
               {voices.map((voice) => (
                 <NativeSelectOption key={voice.id} value={voice.id}>
                   {voice.label}

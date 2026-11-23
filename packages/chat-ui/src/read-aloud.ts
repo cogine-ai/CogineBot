@@ -5,24 +5,27 @@ import type {
 } from "@rakazo/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type ReadAloudTransport = {
-  read: (signal: AbortSignal) => Promise<ReadAloudSettings>;
-  write: (input: UpdateReadAloudInput, signal: AbortSignal) => Promise<UpdateReadAloudResult>;
+type PreferenceTransport<Settings, Input, Problem extends string> = {
+  read: (signal: AbortSignal) => Promise<Settings>;
+  write: (
+    input: Input,
+    signal: AbortSignal,
+  ) => Promise<{ status: "updated" | Problem; settings: Settings }>;
   isCurrent: () => boolean;
 };
 
-export function useReadAloudSettings(transport: ReadAloudTransport) {
-  const binding = useRef<{ controller: AbortController; transport: ReadAloudTransport } | null>(
-    null,
-  );
+export function usePreferenceSettings<Settings, Input, Problem extends string>(
+  transport: PreferenceTransport<Settings, Input, Problem>,
+) {
+  const binding = useRef<{ controller: AbortController; transport: typeof transport } | null>(null);
   const busy = useRef(false);
   const [accepted, setAccepted] = useState<{
-    transport: ReadAloudTransport;
-    settings: ReadAloudSettings;
+    transport: typeof transport;
+    settings: Settings;
   } | null>(null);
   const settings = accepted?.transport === transport ? accepted.settings : null;
   const [pending, setPending] = useState(true);
-  const [problem, setProblem] = useState<"load" | "save" | "conflict" | null>(null);
+  const [problem, setProblem] = useState<"load" | "save" | Problem | null>(null);
 
   const load = useCallback(async () => {
     const request = binding.current;
@@ -55,17 +58,18 @@ export function useReadAloudSettings(transport: ReadAloudTransport) {
     };
   }, [load, transport]);
 
-  async function save(input: UpdateReadAloudInput) {
+  async function save(input: Input) {
     const request = binding.current;
-    if (request?.transport !== transport || busy.current || !transport.isCurrent()) return;
+    if (request?.transport !== transport || busy.current || !transport.isCurrent()) return false;
     busy.current = true;
     setPending(true);
     setProblem(null);
     try {
       const result = await transport.write(input, request.controller.signal);
-      if (request !== binding.current || !transport.isCurrent()) return;
+      if (request !== binding.current || !transport.isCurrent()) return false;
       setAccepted({ transport, settings: result.settings });
-      if (result.status === "conflict") setProblem("conflict");
+      if (result.status === "updated") return true;
+      setProblem(result.status);
     } catch {
       if (request === binding.current && transport.isCurrent()) setProblem("save");
     } finally {
@@ -74,7 +78,18 @@ export function useReadAloudSettings(transport: ReadAloudTransport) {
         setPending(false);
       }
     }
+    return false;
   }
 
   return { settings, pending, problem, load, save };
+}
+
+export function useReadAloudSettings(
+  transport: PreferenceTransport<
+    ReadAloudSettings,
+    UpdateReadAloudInput,
+    Exclude<UpdateReadAloudResult["status"], "updated">
+  >,
+) {
+  return usePreferenceSettings(transport);
 }

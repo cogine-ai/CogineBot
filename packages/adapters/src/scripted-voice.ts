@@ -11,6 +11,7 @@ import type {
 } from "@rakazo/adapter-kit";
 
 export const SCRIPTED_VOICE_ID = "alloy-test";
+export const SCRIPTED_ALT_VOICE_ID = "ember-test";
 export const SCRIPTED_TRANSCRIPT = "hello from the test microphone";
 
 /** A tiny MPEG frame so `/api/voice/speak` can return `audio/mpeg` without a live vendor. */
@@ -43,7 +44,10 @@ export class ScriptedVoiceProvider implements VoiceProvider {
   }
 
   async listVoices(_apiKey: string, _context: AdapterContext): Promise<VoiceInfo[]> {
-    return [{ id: SCRIPTED_VOICE_ID, label: "Scripted", description: "Test voice" }];
+    return [
+      { id: SCRIPTED_VOICE_ID, label: "Scripted", description: "Test voice" },
+      { id: SCRIPTED_ALT_VOICE_ID, label: "Scripted Ember", description: "Alternate test voice" },
+    ];
   }
 
   async synthesize(

@@ -733,6 +733,7 @@ describe("ScriptedVoiceProvider", () => {
     await expect(provider.verify("fake-scripted-voice-key", ctx)).resolves.toEqual({ ok: true });
     expect(await provider.listVoices("fake-scripted-voice-key", ctx)).toEqual([
       { id: SCRIPTED_VOICE_ID, label: "Scripted", description: "Test voice" },
+      { id: "ember-test", label: "Scripted Ember", description: "Alternate test voice" },
     ]);
     const clip = await provider.synthesize(
       { text: "Hello", voiceId: SCRIPTED_VOICE_ID, apiKey: "fake-scripted-voice-key" },

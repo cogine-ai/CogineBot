@@ -3710,6 +3710,14 @@ export function ShellPage() {
     [active?.id, groupId, inGroup],
   );
   const transcriptMembers = activeSnapshot?.members ?? activeGroup?.members;
+  const canSpeakBot = (id?: string) =>
+    Boolean(
+      voiceStatus?.ready ||
+        (voiceStatus?.configured &&
+          (id === undefined || id === active?.id
+            ? active?.voiceId
+            : bots.find((bot) => bot.id === id)?.voiceId)),
+    );
   const resolveTranscriptBot = useCallback(
     (botId: string) => {
       const bot = bots.find((candidate) => candidate.id === botId);
@@ -6612,7 +6620,7 @@ export function ShellPage() {
               onBotChanged={refreshBots}
               onConnectionsChanged={connectionsChanged}
               onAddRoutine={addSkillRoutine}
-              voiceReady={Boolean(voiceStatus?.ready)}
+              canSpeakBot={canSpeakBot}
               speakingMessageId={speakingMessageId}
               onSpeak={speakMessage}
               onOpenComputer={onOpenComputer}
@@ -6704,7 +6712,7 @@ export function ShellPage() {
               onVoice={
                 !inGroup && active
                   ? () => {
-                      if (!voiceStatus?.ready) {
+                      if (!canSpeakBot(active.id)) {
                         openSettings("voice");
                         return;
                       }
@@ -8208,7 +8216,7 @@ const Transcript = memo(function Transcript({
   onBotChanged,
   onConnectionsChanged,
   onAddRoutine,
-  voiceReady,
+  canSpeakBot,
   speakingMessageId,
   onSpeak,
   onOpenComputer,
@@ -8252,7 +8260,7 @@ const Transcript = memo(function Transcript({
   onBotChanged: () => Promise<void>;
   onConnectionsChanged: () => void;
   onAddRoutine: (name: string, prompt: string) => void;
-  voiceReady: boolean;
+  canSpeakBot: (botId?: string) => boolean;
   speakingMessageId: string | null;
   onSpeak: (message: ThreadMessage) => void;
   onOpenComputer: (botId?: string) => void;
@@ -8633,7 +8641,7 @@ const Transcript = memo(function Transcript({
                         onBotChanged={onBotChanged}
                         onConnectionsChanged={onConnectionsChanged}
                         onAddRoutine={onAddRoutine}
-                        voiceReady={voiceReady}
+                        voiceReady={speakingMessageId === message.id || canSpeakBot(message.botId)}
                         speaking={speakingMessageId === message.id}
                         onSpeak={() => onSpeak(message)}
                         onOpenComputer={onOpenComputer}

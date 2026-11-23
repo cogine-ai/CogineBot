@@ -1,5 +1,5 @@
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -14,6 +14,7 @@ import { NativeActionButton } from "../../components/native-action-button";
 import { NativeSwitch } from "../../components/native-switch";
 import { ReadAloudSettingsRows } from "../../components/read-aloud-settings";
 import { Checkmark } from "../../components/row-accessories";
+import { VoiceDefaultSettingsRows } from "../../components/voice-default-settings";
 import { mobileTokens } from "../../lib/appearance";
 import {
   loadCallSoundsEnabled,
@@ -29,9 +30,14 @@ import {
   saveDeviceVoiceEnabled,
 } from "../../lib/device-voice";
 import { useI18n } from "../../lib/i18n";
-import { captureMobileScope, isMobileScopeCurrent } from "../../lib/mobile-scope";
+import {
+  captureMobileScope,
+  isMobileScopeCurrent,
+  mobileScopeKey,
+  subscribeMobileScope,
+} from "../../lib/mobile-scope";
 import { native, useThemedStyles } from "../../lib/native";
-import { useSpaceSettings, useSpaceSettingsKey } from "../../lib/space-settings";
+import { useSpaceSettings } from "../../lib/space-settings";
 import { errorText } from "../../lib/user-error";
 import { speakText } from "../../lib/voice";
 
@@ -52,16 +58,17 @@ type VoiceStatus = {
   ready: boolean;
   provider: string | null;
   voiceId: string;
+  source?: "space" | "account" | "system";
 };
 type VoiceInfo = { id: string; label: string; description?: string };
 
 export default function VoiceSettings() {
   const { spaceId, name } = useLocalSearchParams<{ spaceId?: string; name?: string }>();
   const target = typeof spaceId === "string" ? spaceId : undefined;
-  const key = useSpaceSettingsKey(target);
+  const scope = useSyncExternalStore(subscribeMobileScope, mobileScopeKey, mobileScopeKey);
   return (
     <VoiceSettingsForm
-      key={key}
+      key={`${target ?? ""}:${scope}`}
       targetSpaceId={target}
       targetName={typeof name === "string" ? name : target}
     />
@@ -82,6 +89,9 @@ function VoiceSettingsForm({
   const [catalog, setCatalog] = useState<VoiceCatalogEntry[]>([]);
   const [credentials, setCredentials] = useState<VoiceCredential[]>([]);
   const [status, setStatus] = useState<VoiceStatus | null>(null);
+  const [defaultsRevision, setDefaultsRevision] = useState(0);
+  const refreshGeneration = useRef(0);
+  const defaultsWriteInFlight = useRef(false);
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [provider, setProvider] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -122,24 +132,27 @@ function VoiceSettingsForm({
 
   const load = useCallback(
     async (nextProvider?: string) => {
+      const generation = ++refreshGeneration.current;
+      const ownerCurrent = captureDeviceVoiceOwner();
+      const live = () => ownerCurrent() && generation === refreshGeneration.current;
       const [nextCatalog, nextCredentials, nextStatus] = await Promise.all([
         rpc<VoiceCatalogEntry[]>("voice/catalog"),
         rpc<VoiceCredential[]>("voice/credentials"),
         rpc<VoiceStatus>("voice/status"),
       ]);
+      if (!live()) return;
       const selected = nextProvider || nextStatus.provider || nextCatalog[0]?.id || "";
+      const cred = nextCredentials.find((entry) => entry.provider === selected);
+      const listed = cred ? await rpc<VoiceInfo[]>("voice/voices", { provider: selected }) : [];
+      if (!live()) return;
       setCatalog(nextCatalog);
       setCredentials(nextCredentials);
       setStatus(nextStatus);
       setProvider(selected);
-      const cred = nextCredentials.find((entry) => entry.provider === selected);
       setVoiceId(cred?.voiceId ?? "");
       setSpeechModel(cred?.speechModel ?? "");
-      if (cred) {
-        setVoices(await rpc<VoiceInfo[]>("voice/voices", { provider: selected }));
-      } else {
-        setVoices([]);
-      }
+      setVoices(listed);
+      setDefaultsRevision((revision) => revision + 1);
     },
     [rpc],
   );
@@ -253,7 +266,13 @@ function VoiceSettingsForm({
 
   async function toggleDeviceVoice() {
     const ownerCurrent = captureDeviceVoiceOwner();
-    if (!ownerCurrent() || pending !== null || !deviceVoiceReady || deviceVoiceSaveInFlight.current)
+    if (
+      !ownerCurrent() ||
+      pending !== null ||
+      defaultsWriteInFlight.current ||
+      !deviceVoiceReady ||
+      deviceVoiceSaveInFlight.current
+    )
       return;
     const intent = beginDeviceVoiceIntent();
     setPending("device-voice");
@@ -317,6 +336,11 @@ function VoiceSettingsForm({
 
   const selected = catalog.find((entry) => entry.id === provider);
   const credential = credentials.find((entry) => entry.provider === provider);
+  const sampleAvailable =
+    status?.voiceId &&
+    (status.source !== "account" ||
+      status.provider !== provider ||
+      voices.some(({ id }) => id === status.voiceId));
 
   async function connect() {
     if (!selected || apiKey.trim().length < 8) return;
@@ -416,6 +440,31 @@ function VoiceSettingsForm({
       {targetName ? <Stack.Screen options={{ title: `${targetName} · ${t("Voice")}` }} /> : null}
       <ScrollView contentContainerStyle={styles.content} contentInsetAdjustmentBehavior="automatic">
         <ReadAloudSettingsRows settings={settings} />
+        {deviceVoiceReady && !deviceVoice && status ? (
+          <VoiceDefaultSettingsRows
+            key={defaultsRevision}
+            target={settings}
+            busy={pending !== null}
+            catalog={provider && status.provider === provider ? { provider, voices } : null}
+            onChange={() =>
+              load(provider).catch((error) => {
+                if (settings.isCurrent())
+                  setError(errorText(error, t("Could not load voice settings")));
+              })
+            }
+            beginWrite={() => {
+              if (pending !== null || defaultsWriteInFlight.current || !settings.isCurrent())
+                return false;
+              defaultsWriteInFlight.current = true;
+              setPending("voice");
+              return true;
+            }}
+            endWrite={() => {
+              defaultsWriteInFlight.current = false;
+              setPending(null);
+            }}
+          />
+        ) : null}
         {loading ? <ActivityIndicator color={native.secondaryLabel} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <View style={styles.group}>
@@ -524,6 +573,7 @@ function VoiceSettingsForm({
             ) : null}
             {voices.length ? (
               <View style={[styles.group, styles.voices]}>
+                <Text style={styles.fieldLabel}>{t("Voice for this Space")}</Text>
                 {voices.map((voice, index) => (
                   <Pressable
                     key={voice.id}
@@ -546,7 +596,7 @@ function VoiceSettingsForm({
             ) : null}
           </>
         ) : null}
-        {deviceVoice || status?.ready ? (
+        {deviceVoice || sampleAvailable ? (
           <NativeActionButton
             disabled={pending !== null}
             label={t("Hear a sample")}

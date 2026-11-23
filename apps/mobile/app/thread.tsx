@@ -2837,7 +2837,15 @@ function Thread({
     const targetBotId = botId;
     if (!targetBotId || voiceCallStarting.current) return;
     voiceCallStarting.current = true;
-    const loadVoiceStatus = () => rpc<{ ready: boolean; transcribe: boolean }>("voice/status");
+    const loadVoiceStatus = async () => {
+      const status = await rpc<{ configured?: boolean; ready: boolean; transcribe: boolean }>(
+        "voice/status",
+      );
+      return {
+        ...status,
+        ready: status.ready || Boolean(status.configured && currentBot?.voiceId),
+      };
+    };
     try {
       const [plan, callerName] = await Promise.all([
         resolveVoiceCallPlan({
@@ -3299,6 +3307,10 @@ function Thread({
         ? (snap?.activeRuns?.find((run) => run.botId === activityBotId)?.status ??
           (snap?.run?.botId === activityBotId ? snap.run.status : currentBotStatus))
         : undefined;
+      const speaker =
+        !message.botId || message.botId === currentBot?.id
+          ? currentBot
+          : mentionBots.find(({ id }) => id === message.botId);
       return (
         <MessageRow
           pageCards={pageCards}
@@ -3314,7 +3326,7 @@ function Thread({
           members={snap?.members}
           readOnly={readOnly}
           onCall={onCall}
-          canSpeak={canSpeak}
+          canSpeak={canSpeak(speaker?.voiceId)}
           canAnswer={!readOnly && message.id === answerableAskMessageId}
           delegatedApprovals={delegatedApprovals.get(message.id)}
           onAnswerDelegated={answerDelegated}
