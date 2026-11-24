@@ -74,8 +74,10 @@ export class CursorCloudAgentEmulator {
       if (method === "GET")
         return Response.json(this.run(await this.provider.get(internalId, context, match[2])));
       if (match[3]) {
-        if (!this.cancelPending) await this.provider.cancel(internalId, context, match[2]);
-        return new Response(null, { status: 204 });
+        if (this.cancelPending) return Response.json({ id: match[2] }, { status: 202 });
+        const result = await this.provider.cancel(internalId, context, match[2]);
+        if (!result.cancellationConfirmed) return new Response(null, { status: 409 });
+        return Response.json({ id: match[2] });
       }
       const reply = await this.provider.reply(
         internalId,

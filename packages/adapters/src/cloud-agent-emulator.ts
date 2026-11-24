@@ -82,13 +82,18 @@ export class EmulatorCloudAgentProvider implements CloudAgentProvider {
     return this.startRun(agent);
   }
 
-  async cancel(id: string, context: AdapterContext, runId?: string) {
+  async cancel(
+    id: string,
+    context: AdapterContext,
+    runId?: string,
+  ): ReturnType<CloudAgentProvider["cancel"]> {
     context.signal.throwIfAborted();
     const agent = this.require(id);
     const run = agent.runs.get(runId ?? agent.latestRunId);
     if (!run) throw new CloudAgentRequestRejected();
-    if (run.status === "running") run.status = "cancelled";
-    return { ...run };
+    if (run.status !== "running") return { ...run };
+    run.status = "cancelled";
+    return { ...run, cancellationConfirmed: true as const };
   }
 
   complete(id: string, options: { branch?: string; prUrl?: string; failed?: boolean } = {}) {

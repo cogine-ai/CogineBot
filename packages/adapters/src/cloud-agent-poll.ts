@@ -13,7 +13,12 @@ import {
 } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { cloudAgentHttpsUrl } from "@rakazo/core";
-import { appendEventInTransaction, type CloudAgent, Prisma } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  type CloudAgent,
+  Prisma,
+  recordCloudAgentApprovalAudit,
+} from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { cloudAgentsEnabled } from "./cloud-agent-factory.js";
 import {
@@ -96,7 +101,14 @@ export async function pollCloudAgent(
             launchRequest: {},
             cancelRequested: abandoned || agent.cancelRequested,
           },
-          { abandoned, preserveStop: true },
+          {
+            abandoned,
+            preserveStop: true,
+            reviewedOperation: {
+              kind: "cloud_agent_launch",
+              effectId: agent.launchReviewEffectId,
+            },
+          },
         );
       } catch (error) {
         if (error instanceof CloudAgentRetryLater) {
@@ -169,7 +181,17 @@ export async function pollCloudAgent(
           followup: Prisma.DbNull,
           followupDispatching: false,
         },
-        { abandoned },
+        {
+          abandoned,
+          reviewedOperation:
+            !abandoned &&
+            agent.cancelReviewGeneration === agent.generation &&
+            runId &&
+            snapshot.status === "cancelled" &&
+            snapshot.cancellationConfirmed
+              ? { kind: "cloud_agent_cancel", effectId: agent.cancelReviewEffectId }
+              : undefined,
+        },
       );
       return;
     }
@@ -211,7 +233,16 @@ export async function pollCloudAgent(
             followup: Prisma.DbNull,
             followupDispatching: false,
           },
-          { preserveStop: true },
+          {
+            preserveStop: true,
+            reviewedOperation: {
+              kind: "cloud_agent_reply",
+              effectId:
+                agent.followupReviewGeneration === agent.generation
+                  ? agent.followupReviewEffectId
+                  : null,
+            },
+          },
         );
       } catch (error) {
         if (error instanceof CloudAgentRetryLater) {
@@ -364,7 +395,18 @@ async function finishPoll(
   deps: CloudAgentDeps,
   agent: CloudAgent,
   data: Prisma.CloudAgentUpdateManyMutationInput,
-  { abandoned = false, preserveStop = false }: { abandoned?: boolean; preserveStop?: boolean } = {},
+  {
+    abandoned = false,
+    preserveStop = false,
+    reviewedOperation,
+  }: {
+    abandoned?: boolean;
+    preserveStop?: boolean;
+    reviewedOperation?: {
+      kind: Parameters<typeof recordCloudAgentApprovalAudit>[1]["kind"];
+      effectId: string | null;
+    };
+  } = {},
 ) {
   const committed = await deps.prisma.$transaction(async (tx) => {
     // Same lock order as clearing chat: thread first, then message/run changes.
@@ -418,6 +460,11 @@ async function finishPoll(
       data: {
         ...data,
         cancelRequested,
+        launchReviewEffectId: data.launchRequest === undefined ? undefined : null,
+        followupReviewEffectId: data.followup === Prisma.DbNull ? null : undefined,
+        followupReviewGeneration: data.followup === Prisma.DbNull ? null : undefined,
+        cancelReviewEffectId: terminal ? null : undefined,
+        cancelReviewGeneration: terminal ? null : undefined,
         nextPollAt,
         errorCount: 0,
         leaseToken: null,
@@ -480,6 +527,15 @@ async function finishPoll(
     return { seq, wakeRunId, nextPollAt };
   });
   if (!committed) return;
+  if (reviewedOperation?.effectId) {
+    await recordCloudAgentApprovalAudit(deps.prisma, {
+      spaceId: agent.spaceId,
+      userId: agent.userId,
+      kind: reviewedOperation.kind,
+      effectId: reviewedOperation.effectId,
+      happenedAt: new Date(),
+    });
+  }
   if (committed.seq !== undefined)
     await deps.events.notify(agent.threadId, committed.seq).catch(() => undefined);
   if (committed.wakeRunId) {

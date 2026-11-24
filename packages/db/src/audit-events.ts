@@ -35,33 +35,18 @@ function approvalRuleAuditRow(
   };
 }
 
-/** Record committed facts without changing the outcome of the business transaction. */
-async function appendAuditEvents(
+async function writeAuditEvents(
   prisma: Pick<PrismaClient, "$transaction">,
   spaceId: string,
-  rows: AuditRow[],
-  liveRun?: { runId: string; threadId: string; lease: RunLease },
+  actions: string[],
+  getRows: (tx: Prisma.TransactionClient) => Promise<AuditRow[]>,
 ): Promise<void> {
   try {
     await runAsSystem("append committed audit events", () =>
       prisma.$transaction(
         async (tx) => {
-          if (liveRun) {
-            // Sample ownership after the effect commits. The audit must not lock the Run against Stop.
-            const current = await tx.run.findFirst({
-              where: {
-                id: liveRun.runId,
-                spaceId,
-                threadId: liveRun.threadId,
-                status: "running",
-                leaseOwner: liveRun.lease.owner,
-                leaseFence: liveRun.lease.fence,
-                leaseExpiresAt: { gt: new Date() },
-              },
-              select: { id: true },
-            });
-            if (!current) return;
-          }
+          const rows = await getRows(tx);
+          if (!rows.length) return;
           const { organizationId } = await tx.space.findUniqueOrThrow({
             where: { id: spaceId },
             select: { organizationId: true },
@@ -76,10 +61,43 @@ async function appendAuditEvents(
     );
   } catch {
     // Driver diagnostics may contain query arguments. Report only the gap.
-    for (const action of new Set(rows.map((row) => row.action))) {
+    for (const action of new Set(actions)) {
       getLogger().warn("audit.event.write_failed", { action });
     }
   }
+}
+
+/** Record committed facts without changing the outcome of the business transaction. */
+function appendAuditEvents(
+  prisma: Pick<PrismaClient, "$transaction">,
+  spaceId: string,
+  rows: AuditRow[],
+  liveRun?: { runId: string; threadId: string; lease: RunLease },
+): Promise<void> {
+  return writeAuditEvents(
+    prisma,
+    spaceId,
+    rows.map((row) => row.action),
+    async (tx) => {
+      if (liveRun) {
+        // Sample ownership after the effect commits. The audit must not lock the Run against Stop.
+        const current = await tx.run.findFirst({
+          where: {
+            id: liveRun.runId,
+            spaceId,
+            threadId: liveRun.threadId,
+            status: "running",
+            leaseOwner: liveRun.lease.owner,
+            leaseFence: liveRun.lease.fence,
+            leaseExpiresAt: { gt: new Date() },
+          },
+          select: { id: true },
+        });
+        if (!current) return [];
+      }
+      return rows;
+    },
+  );
 }
 
 export function recordApprovalRuleAudit(
@@ -176,44 +194,84 @@ export function recordManualApprovalAudit(
   ]);
 }
 
+type AutomaticApproval = {
+  runId: string;
+  threadId: string;
+  effectId: string;
+  happenedAt: Date;
+} & (
+  | { decision: "pass"; outcome: "success" }
+  | { decision: "ask" | "error"; outcome: "paused" }
+  | { decision: "deny"; outcome: "denied"; reason: "unattended" }
+);
+
+function automaticApprovalRow(input: AutomaticApproval): AuditRow {
+  const action = input.outcome === "denied" ? "approval.auto_denied" : "approval.auto_reviewed";
+  return {
+    id: `${action}:${input.effectId}`,
+    createdAt: input.happenedAt,
+    runId: input.runId,
+    threadId: input.threadId,
+    actorType: "system",
+    actorId: input.outcome === "denied" ? "approval_policy" : "auto_review",
+    action,
+    targetType: "external_effect",
+    targetId: input.effectId,
+    outcome: input.outcome,
+    metadata:
+      input.outcome === "denied"
+        ? { decision: input.decision, reason: input.reason }
+        : { decision: input.decision },
+  };
+}
+
 export function recordAutomaticApprovalAudit(
   prisma: Pick<PrismaClient, "$transaction">,
-  input: {
-    spaceId: string;
-    runId: string;
-    threadId: string;
-    effectId: string;
-    happenedAt: Date;
-  } & (
-    | { decision: "pass"; outcome: "success"; lease: RunLease }
-    | { decision: "ask" | "error"; outcome: "paused" }
-    | { decision: "deny"; outcome: "denied"; reason: "unattended" }
-  ),
+  input: { spaceId: string } & AutomaticApproval &
+    ({ outcome: "success"; lease: RunLease } | { outcome: "paused" | "denied" }),
 ): Promise<void> {
-  const action = input.outcome === "denied" ? "approval.auto_denied" : "approval.auto_reviewed";
   return appendAuditEvents(
     prisma,
     input.spaceId,
-    [
-      {
-        id: `${action}:${input.effectId}`,
-        createdAt: input.happenedAt,
-        runId: input.runId,
-        threadId: input.threadId,
-        actorType: "system",
-        actorId: input.outcome === "denied" ? "approval_policy" : "auto_review",
-        action,
-        targetType: "external_effect",
-        targetId: input.effectId,
-        outcome: input.outcome,
-        metadata:
-          input.outcome === "denied"
-            ? { decision: input.decision, reason: input.reason }
-            : { decision: input.decision },
-      },
-    ],
+    [automaticApprovalRow(input)],
     input.outcome === "success" ? input : undefined,
   );
+}
+
+/** Append after a fenced worker commits a correlated provider receipt. The initiating Run may have ended. */
+export function recordCloudAgentApprovalAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  input: {
+    spaceId: string;
+    userId: string;
+    kind: "cloud_agent_launch" | "cloud_agent_reply" | "cloud_agent_cancel";
+    effectId: string;
+    happenedAt: Date;
+  },
+): Promise<void> {
+  return writeAuditEvents(prisma, input.spaceId, ["approval.auto_reviewed"], async (tx) => {
+    const effect = await tx.externalEffect.findFirst({
+      where: {
+        id: input.effectId,
+        spaceId: input.spaceId,
+        kind: input.kind,
+        reviewDecision: "pass",
+        run: { spaceId: input.spaceId, userId: input.userId },
+      },
+      select: { runId: true, run: { select: { threadId: true } } },
+    });
+    if (!effect) return [];
+    return [
+      automaticApprovalRow({
+        effectId: input.effectId,
+        happenedAt: input.happenedAt,
+        runId: effect.runId,
+        threadId: effect.run.threadId,
+        decision: "pass",
+        outcome: "success",
+      }),
+    ];
+  });
 }
 
 export function auditEventRetentionDays(value: string | undefined): number {

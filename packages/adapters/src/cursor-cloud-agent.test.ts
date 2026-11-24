@@ -439,6 +439,48 @@ describe("Cursor HTTP boundary", () => {
   });
 
   it.each([
+    { receipt: () => Response.json({ id: "prior-run" }), confirmed: true },
+    {
+      receipt: () => Response.json({ id: "prior-run" }, { status: 202 }),
+      confirmed: false,
+    },
+    {
+      receipt: () => Response.json({ id: "prior-run", status: "RUNNING" }),
+      confirmed: false,
+    },
+    { receipt: () => Response.json({ id: "another-run" }), confirmed: false },
+    { receipt: () => new Response(null, { status: 204 }), confirmed: false },
+    { receipt: () => new Response(null, { status: 409 }), confirmed: false },
+  ])(
+    "requires the matching response to attribute cancellation (%#)",
+    async ({ receipt, confirmed }) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(Response.json(wireAgent))
+        .mockResolvedValueOnce(Response.json({ id: "prior-run", status: "RUNNING" }))
+        .mockResolvedValueOnce(receipt())
+        .mockResolvedValueOnce(Response.json(wireAgent))
+        .mockResolvedValueOnce(Response.json({ id: "prior-run", status: "CANCELLED" }));
+      const provider = new CursorCloudAgentProvider({ apiKey: "fake-key", fetch });
+      const result = await provider.cancel(wireAgent.id, context, "prior-run");
+      expect(result.status).toBe("cancelled");
+      expect("cancellationConfirmed" in result).toBe(confirmed);
+    },
+  );
+
+  it("does not attribute a cancellation that predated the request", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(wireAgent))
+      .mockResolvedValueOnce(Response.json({ id: "prior-run", status: "CANCELLED" }));
+    const provider = new CursorCloudAgentProvider({ apiKey: "fake-key", fetch });
+    const result = await provider.cancel(wireAgent.id, context, "prior-run");
+    expect(result.status).toBe("cancelled");
+    expect(result).not.toHaveProperty("cancellationConfirmed");
+    expect(fetch.mock.calls.map(([, init]) => init?.method)).toEqual(["GET", "GET"]);
+  });
+
+  it.each([
     { apiKey: "fake-key", linkKey: "fake-key" },
     { apiKey: "fake-key", linkKey: "%66ake%2Dkey" },
     { apiKey: "fake%2Dkey", linkKey: "fake%2Dkey" },

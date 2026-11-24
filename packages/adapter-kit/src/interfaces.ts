@@ -563,7 +563,12 @@ export interface CloudAgentProvider {
     request: CloudAgentReplyRequest,
     context: AdapterContext,
   ): Promise<CloudAgentHandle>;
-  cancel(id: string, context: AdapterContext, runId?: string): Promise<CloudAgentSnapshot>;
+  /** A confirmed cancellation identifies the effect of this request on the returned run. */
+  cancel(
+    id: string,
+    context: AdapterContext,
+    runId?: string,
+  ): Promise<CloudAgentSnapshot & { cancellationConfirmed?: true }>;
 }
 
 /**

@@ -40,6 +40,7 @@ export async function executeCloudAgentTool(
   run: { id: string; threadId: string },
   name: string,
   args: Record<string, unknown>,
+  autoReviewedEffectId?: string,
 ) {
   const connection = deps.cloudAgent;
   if (!connection || !cloudAgentsEnabled(connection, context.spaceId)) {
@@ -77,6 +78,7 @@ export async function executeCloudAgentTool(
           threadId: run.threadId,
           title: request.prompt.split(/\r?\n/, 1)[0]!.slice(0, 80),
           launchRequest: request,
+          launchReviewEffectId: autoReviewedEffectId,
         },
       });
       const blocks = [cloudAgentBlock(created)];
@@ -129,6 +131,8 @@ export async function executeCloudAgentTool(
         where: { id: agent.id, version: agent.version },
         data: {
           followup,
+          followupReviewEffectId: autoReviewedEffectId ?? null,
+          followupReviewGeneration: autoReviewedEffectId ? agent.generation + 1 : null,
           followupDispatching: false,
           branch: null,
           prUrl: null,
@@ -148,6 +152,8 @@ export async function executeCloudAgentTool(
         where: { id: agent.id, version: agent.version, nextPollAt: { not: null } },
         data: {
           cancelRequested: true,
+          cancelReviewEffectId: autoReviewedEffectId ?? null,
+          cancelReviewGeneration: autoReviewedEffectId ? agent.generation : null,
           version: { increment: 1 },
           ...(canWithdrawLocally ? { nextPollAt: new Date() } : {}),
         },
