@@ -220,6 +220,7 @@ import {
   recheckDelegatedApprovalDispatch,
   recheckDelegatedApprovalDispatchInTransaction,
   recordAutomaticApprovalAudit,
+  recordConnectionActivationAudit,
   recordUsage,
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
@@ -3266,36 +3267,49 @@ export async function persistLivePluginConnections(
   liveSlugs: string[],
 ): Promise<void> {
   const sync = planLiveConnectionSync(rows, liveSlugs);
-  if (sync.connectIds.length > 0) {
-    const updated = await prisma.connection.updateMany({
-      where: {
-        id: { in: sync.connectIds },
-        userId: owner.userId,
-        spaceId: owner.spaceId,
-        status: { in: ["pending", "error"] },
-      },
-      data: { status: "connected" },
-    });
-    if (updated.count === sync.connectIds.length) {
-      for (const row of rows) {
-        if (sync.connectIds.includes(row.id)) row.status = "connected";
-      }
+  const activated =
+    sync.connectIds.length > 0
+      ? await prisma.connection.updateManyAndReturn({
+          where: {
+            id: { in: sync.connectIds },
+            userId: owner.userId,
+            spaceId: owner.spaceId,
+            status: { in: ["pending", "error"] },
+          },
+          data: { status: "connected" },
+          select: { id: true },
+        })
+      : [];
+  if (activated.length > 0 && activated.length === sync.connectIds.length) {
+    for (const row of rows) {
+      if (sync.connectIds.includes(row.id)) row.status = "connected";
     }
   }
-  if (sync.revokeIds.length > 0) {
-    const updated = await prisma.connection.updateMany({
-      where: {
-        id: { in: sync.revokeIds },
-        userId: owner.userId,
-        spaceId: owner.spaceId,
-        status: { in: ["pending", "error"] },
-      },
-      data: { status: "revoked" },
-    });
-    if (updated.count === sync.revokeIds.length) {
-      for (const row of rows) {
-        if (sync.revokeIds.includes(row.id)) row.status = "revoked";
+  try {
+    if (sync.revokeIds.length > 0) {
+      const updated = await prisma.connection.updateMany({
+        where: {
+          id: { in: sync.revokeIds },
+          userId: owner.userId,
+          spaceId: owner.spaceId,
+          status: { in: ["pending", "error"] },
+        },
+        data: { status: "revoked" },
+      });
+      if (updated.count === sync.revokeIds.length) {
+        for (const row of rows) {
+          if (sync.revokeIds.includes(row.id)) row.status = "revoked";
+        }
       }
+    }
+  } finally {
+    if (activated.length > 0) {
+      await recordConnectionActivationAudit(
+        prisma,
+        { spaceId: owner.spaceId, system: "connection_reconciler" },
+        activated.map(({ id }) => id),
+        new Date(),
+      );
     }
   }
 }

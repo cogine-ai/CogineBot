@@ -860,7 +860,24 @@ postgres("control-plane metadata with complete row policies", () => {
       { status: "revoked" },
     );
     expect(remote).toHaveBeenCalledTimes(2);
-    assertRestored(observed.observations);
+    expect(observed.observations).toHaveLength(3);
+    const [complete, audit, revoke] = observed.observations;
+    assertRestored([complete!, revoke!]);
+    expect(audit!.after).toEqual(audit!.before);
+    expect(audit!.before[0]).toMatchObject({
+      pid: complete!.after![0]!.pid,
+      space: "",
+      user: "",
+      bypass: "on",
+      key: true,
+    });
+    expect(revoke!.before[0]!.pid).toBe(audit!.before[0]!.pid);
+    expect(
+      await owner.prisma.auditEvent.findMany({
+        where: { targetId: connectionId },
+        select: { action: true, spaceId: true, actorId: true, metadata: true },
+      }),
+    ).toEqual([{ action: "connection.connected", spaceId: spaceA, actorId: userA, metadata: {} }]);
   });
 
   it.each(["complete", "revoke"] as const)(

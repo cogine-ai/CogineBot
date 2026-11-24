@@ -308,6 +308,7 @@ import {
   readVoiceDefaults,
   recordApprovalRuleAudit,
   recordBotCredentialAudit,
+  recordConnectionActivationAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -517,17 +518,20 @@ async function reconcilePendingConnections(
   );
   const sync = planLiveConnectionSync(rows, connectedProviders);
   if (sync.connectIds.length === 0 && sync.revokeIds.length === 0) return;
-  await prisma.$transaction(async (tx) => {
-    if (sync.connectIds.length > 0)
-      await tx.connection.updateMany({
-        where: {
-          id: { in: sync.connectIds },
-          spaceId: owner.spaceId,
-          userId: owner.userId,
-          status: "pending",
-        },
-        data: { status: "connected" },
-      });
+  const connected = await prisma.$transaction(async (tx) => {
+    const activated =
+      sync.connectIds.length > 0
+        ? await tx.connection.updateManyAndReturn({
+            where: {
+              id: { in: sync.connectIds },
+              spaceId: owner.spaceId,
+              userId: owner.userId,
+              status: "pending",
+            },
+            data: { status: "connected" },
+            select: { id: true },
+          })
+        : [];
     if (sync.revokeIds.length > 0)
       await tx.connection.updateMany({
         where: {
@@ -538,7 +542,16 @@ async function reconcilePendingConnections(
         },
         data: { status: "revoked" },
       });
+    return activated;
   });
+  if (connected.length > 0) {
+    await recordConnectionActivationAudit(
+      prisma,
+      owner,
+      connected.map(({ id }) => id),
+      new Date(),
+    );
+  }
 }
 
 /** Serialize begin/revoke for one user+provider so slug-wide remote deletes cannot race a new connect. */
@@ -7384,6 +7397,9 @@ export function createRouter(deps: RouterDeps) {
             }
             throw new IsolationError();
           }
+          if (!auth.authorizationUrl) {
+            await recordConnectionActivationAudit(deps.prisma, context.actor, [row.id], new Date());
+          }
           return { connectionId: row.id, authorizationUrl: auth.authorizationUrl };
         } catch (error) {
           if (error instanceof IsolationError) throw error;
@@ -7433,6 +7449,7 @@ export function createRouter(deps: RouterDeps) {
         if (!transactionConnector)
           throw new ORPCError("BAD_REQUEST", { message: "Integration provider is not configured" });
         let row = existing;
+        let connectedNow = false;
         if (existing.status !== "connected" && existing.status !== "error") {
           // Hold the provider lock across remote completion, account-id resolution,
           // providerRef persistence, and any overlapping revokeUnreferenced cleanup
@@ -7460,12 +7477,9 @@ export function createRouter(deps: RouterDeps) {
                 });
               }
               if (current.status === "connected" || current.status === "error") return current;
-              // App-level readiness cannot vouch for an account while its own
-              // provider authorization is still being created.
-              const reserved = lacksProviderAuthorization(current);
-              if (current.status === "revoked") {
-                if (reserved) {
-                  if (input.card) return current;
+              const settleRevokedGrant = async (revoked: NonNullable<typeof current>) => {
+                if (lacksProviderAuthorization(revoked)) {
+                  if (input.card) return revoked;
                   throw new IsolationError();
                 }
                 // Authorization URLs from a revoke-win begin can still finish
@@ -7476,9 +7490,9 @@ export function createRouter(deps: RouterDeps) {
                   "connections.complete",
                   context.signal,
                 );
-                const pendingRef = current.providerRef?.trim();
+                const pendingRef = revoked.providerRef?.trim();
                 try {
-                  if (pendingRef && pendingRef !== current.provider) {
+                  if (pendingRef && pendingRef !== revoked.provider) {
                     const cancelAuthorizationRequest = (
                       transactionConnector as {
                         cancelAuthorizationRequest?: (
@@ -7505,7 +7519,7 @@ export function createRouter(deps: RouterDeps) {
                       if (resolveAccountId) {
                         const resolved = await resolveAccountId(
                           context.actor.userId,
-                          current.provider,
+                          revoked.provider,
                           pendingRef,
                           [],
                           context.actor.spaceId,
@@ -7546,22 +7560,19 @@ export function createRouter(deps: RouterDeps) {
                       }
                     }
                   }
-                } catch (error) {
-                  getLogger().error(
-                    "connections.complete remote cleanup failed for revoked row",
-                    error,
-                    {
-                      connectionId: current.id,
-                      connectorId: existing.connectorId,
-                      provider: existing.provider,
-                    },
-                  );
+                } catch {
+                  getLogger().error("connections.complete remote cleanup failed for revoked row", {
+                    connectionId: revoked.id,
+                  });
                 }
-                if (input.card) return current;
+                if (input.card) return revoked;
                 throw new IsolationError();
-              }
+              };
 
-              if (reserved) return current;
+              if (current.status === "revoked") return settleRevokedGrant(current);
+              // App-level readiness cannot vouch for an account while its own
+              // provider authorization is still being created.
+              if (lacksProviderAuthorization(current)) return current;
 
               const adapterContext = connectionContext(
                 context.actor,
@@ -7697,16 +7708,40 @@ export function createRouter(deps: RouterDeps) {
                   return current;
                 }
               }
-              return tx.connection.update({
-                where: { id: current.id },
+              // Catalog reconciliation can commit while completion awaits the provider.
+              const [activated] = await tx.connection.updateManyAndReturn({
+                where: { id: current.id, status: current.status },
                 data: {
                   status: "connected",
                   ...(providerRef ? { providerRef } : {}),
                 },
               });
+              if (activated) {
+                connectedNow = current.status === "pending";
+                return activated;
+              }
+              if (providerRef) {
+                // Reconciliation changes status only. Keep the exact account for later revoke.
+                await tx.connection.updateMany({
+                  where: { id: current.id, status: "connected" },
+                  data: { providerRef },
+                });
+              }
+              const latest = await tx.connection.findFirst({
+                where: {
+                  id: current.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                },
+              });
+              if (!latest) throw new IsolationError();
+              return latest.status === "revoked" ? settleRevokedGrant(latest) : latest;
             },
             { timeout: 60_000 },
           );
+        }
+        if (connectedNow) {
+          await recordConnectionActivationAudit(deps.prisma, context.actor, [row.id], new Date());
         }
         if (row.status === "connected" && input.card) {
           const card = await markAppConnected(

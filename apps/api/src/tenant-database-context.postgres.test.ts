@@ -114,6 +114,8 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       `GRANT CONNECT ON DATABASE "${database.rows[0]!.name.replaceAll('"', '""')}" TO "${role}"`,
     );
     await owner.pool.query(`GRANT USAGE ON SCHEMA public TO "${role}"`);
+    await owner.pool.query(`GRANT USAGE ON SCHEMA cogine_audit TO "${role}"`);
+    await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO "${role}"`);
     await owner.pool.query(
       `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${role}"`,
     );
@@ -1021,15 +1023,24 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         select: { status: true },
         orderBy: { createdAt: "asc" },
       });
+    const events = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetId: { in: rows.map((row) => row.id) } },
+        select: { action: true, targetId: true, outcome: true, metadata: true },
+      });
     rejectRevocation = true;
     try {
       expect(await client.connections.catalog({})).toHaveLength(1);
       expect(await statuses()).toEqual([{ status: "pending" }, { status: "pending" }]);
+      expect(await events()).toEqual([]);
     } finally {
       rejectRevocation = false;
     }
-    await client.connections.catalog({});
+    await Promise.all([client.connections.catalog({}), client.connections.catalog({})]);
     expect(await statuses()).toEqual([{ status: "connected" }, { status: "revoked" }]);
+    expect(await events()).toEqual([
+      { action: "connection.connected", targetId: rows[0]!.id, outcome: "success", metadata: {} },
+    ]);
   });
 
   it("checks references across tenants after commit and releases its sole connection before cleanup", async () => {

@@ -1,5 +1,6 @@
 import { createRouterClient } from "@orpc/server";
 import type { Actor } from "@rakazo/contracts";
+import { getLogger } from "@rakazo/logging";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
@@ -84,10 +85,10 @@ function fixture(
             return siblings.find((row) => row.providerRef === where.providerRef) ?? null;
           },
           findMany: vi.fn(async () => siblings),
-          update: async ({ data }: { data: Partial<ConnectionRow> }) => {
+          updateManyAndReturn: async ({ data }: { data: Partial<ConnectionRow> }) => {
             transactionUpdate(data);
             transactionRow = { ...transactionRow, ...data };
-            return { ...transactionRow };
+            return [{ ...transactionRow }];
           },
         },
       };
@@ -241,17 +242,30 @@ describe("connection completion grant lifecycle", () => {
 
   it("never reopens a revoked grant after remote cleanup failure or a repeated late callback", async () => {
     const f = fixture({ status: "revoked", providerRef: "original-request" });
-    f.cancelAuthorizationRequest.mockRejectedValue(new Error("Synthetic cleanup failure"));
+    f.cancelAuthorizationRequest.mockRejectedValue(
+      new Error("Synthetic cleanup failure with ?code=fixture-only&state=fixture-only"),
+    );
     f.resolveConnectedAccountId.mockResolvedValue("late-oauth-account");
-    for (let attempt = 0; attempt < 2; attempt++) {
-      await expect(
-        f.client.connections.complete({ connectionId: "target", code: "late-code" }),
-      ).rejects.toThrow();
-      expect(f.row()).toMatchObject({
-        status: "revoked",
-        providerRef: "original-request",
-        metadata: { authRevision: "original-grant" },
-      });
+    const error = vi.spyOn(getLogger(), "error");
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(
+          f.client.connections.complete({ connectionId: "target", code: "late-code" }),
+        ).rejects.toThrow();
+        expect(f.row()).toMatchObject({
+          status: "revoked",
+          providerRef: "original-request",
+          metadata: { authRevision: "original-grant" },
+        });
+      }
+      expect(error.mock.calls).toEqual(
+        Array.from({ length: 2 }, () => [
+          "connections.complete remote cleanup failed for revoked row",
+          { connectionId: "target" },
+        ]),
+      );
+    } finally {
+      error.mockRestore();
     }
     expect(f.cancelAuthorizationRequest).toHaveBeenCalledTimes(2);
     expect(f.complete).not.toHaveBeenCalled();

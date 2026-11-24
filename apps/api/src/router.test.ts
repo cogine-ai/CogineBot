@@ -1818,10 +1818,9 @@ describe("connections.complete", () => {
           _spaceId: string,
         ) => (ref === current.providerRef ? "apn_new_explicit" : undefined),
       );
-      const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...current,
-        ...data,
-      }));
+      const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => [
+        { ...current, ...data },
+      ]);
       const tx = {
         $executeRaw: vi.fn(),
         connection: {
@@ -1833,7 +1832,7 @@ describe("connections.complete", () => {
                 : null,
           ),
           findMany: vi.fn(async () => [sibling]),
-          update,
+          updateManyAndReturn: update,
         },
       };
       const deps = {
@@ -1893,7 +1892,7 @@ describe("connections.complete", () => {
           actor.spaceId,
         );
         expect(update).toHaveBeenCalledWith({
-          where: { id: current.id },
+          where: { id: current.id, status: "pending" },
           data: { status: "connected", providerRef: "apn_new_explicit" },
         });
       } else {
@@ -1926,16 +1925,15 @@ describe("connections.complete", () => {
         return "ca_new_explicit";
       },
     );
-    const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-      ...current,
-      ...data,
-    }));
+    const update = vi.fn(async ({ data }: { data: Record<string, unknown> }) => [
+      { ...current, ...data },
+    ]);
     const tx = {
       $executeRaw: vi.fn(),
       connection: {
         findFirst: vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce(null),
         findMany: vi.fn(async () => [{ providerRef: "failed-request", status: "error" }]),
-        update,
+        updateManyAndReturn: update,
       },
     };
     const deps = {
@@ -1977,7 +1975,7 @@ describe("connections.complete", () => {
       actor.spaceId,
     );
     expect(update).toHaveBeenCalledWith({
-      where: { id: current.id },
+      where: { id: current.id, status: "pending" },
       data: { status: "connected", providerRef: "ca_new_explicit" },
     });
   });
@@ -2160,12 +2158,11 @@ describe("connections.complete", () => {
           connection: {
             findFirst: vi.fn().mockResolvedValueOnce(row).mockResolvedValueOnce(null),
             findMany: vi.fn().mockResolvedValue([]),
-            update: vi
+            updateManyAndReturn: vi
               .fn()
-              .mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
-                ...row,
-                ...data,
-              })),
+              .mockImplementation(async ({ data }: { data: Record<string, unknown> }) => [
+                { ...row, ...data },
+              ]),
           },
         };
         return fn(tx);

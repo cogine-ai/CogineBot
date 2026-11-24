@@ -116,6 +116,29 @@ export function recordBotCredentialAudit(
   ]);
 }
 
+export function recordConnectionActivationAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser | { spaceId: string; system: "connection_reconciler" },
+  connectionIds: string[],
+  happenedAt: Date,
+): Promise<void> {
+  return appendAuditEvents(
+    prisma,
+    actor.spaceId,
+    connectionIds.map((connectionId) => ({
+      id: `connection.connected:${connectionId}`,
+      createdAt: happenedAt,
+      actorType: "userId" in actor ? "user" : "system",
+      actorId: "userId" in actor ? actor.userId : actor.system,
+      action: "connection.connected",
+      targetType: "connection",
+      targetId: connectionId,
+      outcome: "success",
+      metadata: {},
+    })),
+  );
+}
+
 export type CommittedApprovalDecision = {
   effectId: string;
   decision: "allow" | "always" | "deny";
