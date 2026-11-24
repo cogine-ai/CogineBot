@@ -11009,6 +11009,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return finish(result);
           }
           if (name === "archive_bot" || name === "delete_bot") {
+            const admission = appliedReviewAdmission();
             const archived = await archiveSpawnedBot(
               deps,
               {
@@ -11025,7 +11026,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               context,
             );
             if ("error" in archived) return finish(archived);
-            if (!(await persistEffectResult(archived))) return uncertainEffectResult(name);
+            const { archiveOutcome, ...result } = archived;
+            if (!(await persistEffectResult(result))) return uncertainEffectResult(name);
+            if (archiveOutcome === "restored") return result;
+            if (archiveOutcome === "archived" && admission) await recordReviewPass(admission);
             try {
               await publishMessage(deps, run, "bot", [
                 {
@@ -11046,7 +11050,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             } catch (error) {
               getLogger().error("archived bot notification", error);
             }
-            return archived;
+            return result;
           }
           if (deps.connector) {
             let accountError: string | undefined;

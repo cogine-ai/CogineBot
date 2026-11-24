@@ -359,7 +359,7 @@ describe("spawned bot archival", () => {
           },
           computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          bot: { update: vi.fn().mockResolvedValue({}) },
+          bot: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -381,7 +381,7 @@ describe("spawned bot archival", () => {
         },
         context,
       ),
-    ).resolves.toMatchObject({ ok: true, botId: "child-1", name: "Scout" });
+    ).resolves.toEqual({ ok: true, botId: "child-1", name: "Scout", archiveOutcome: "archived" });
   });
 });
 
@@ -1852,7 +1852,7 @@ describe("destroyBot", () => {
 
 describe("archiveBot", () => {
   it("stops work and routines while preserving the bot", async () => {
-    const updateBot = vi.fn().mockResolvedValue({});
+    const updateBot = vi.fn().mockResolvedValue({ count: 1 });
     const disableRoutines = vi.fn().mockResolvedValue({ count: 2 });
     const cancelRuns = vi
       .fn()
@@ -1878,7 +1878,7 @@ describe("archiveBot", () => {
         routine: { findMany: vi.fn().mockResolvedValue([]), updateMany: disableRoutines },
         computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        bot: { update: updateBot },
+        bot: { updateMany: updateBot },
       }),
     );
     const cancel = vi.fn().mockResolvedValue(undefined);
@@ -1912,7 +1912,7 @@ describe("archiveBot", () => {
       data: { active: false, nextRunAt: null, latestRunId: null, autoCompletedRunId: null },
     });
     expect(updateBot).toHaveBeenCalledWith({
-      where: { id: "bot-1" },
+      where: { id: "bot-1", archivedAt: null },
       data: { archivedAt: expect.any(Date), pinned: false },
     });
     expect(groupCleanup.$queryRaw).toHaveBeenCalledOnce();
@@ -1980,7 +1980,12 @@ describe("archiveBot", () => {
           findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
-        bot: { update: vi.fn().mockResolvedValue({}) },
+        bot: {
+          updateMany: vi
+            .fn()
+            .mockResolvedValueOnce({ count: 0 })
+            .mockResolvedValueOnce({ count: 1 }),
+        },
       }),
     );
     const dedicated = {
@@ -2086,7 +2091,7 @@ describe("archiveBot", () => {
           findFirst: vi.fn().mockResolvedValue({ id: "computer-1" }),
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
-        bot: { update: vi.fn().mockResolvedValue({}) },
+        bot: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       }),
     );
     const prisma = {
@@ -2172,7 +2177,7 @@ describe("archiveBot", () => {
           },
           computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
           computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-          bot: { update: vi.fn().mockResolvedValue({}) },
+          bot: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         }),
       );
       const prisma = {

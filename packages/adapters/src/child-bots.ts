@@ -476,8 +476,8 @@ export async function archiveSpawnedBot(
     return { error: "A bot cannot archive itself with archive_bot." };
   }
 
-  await archiveBot(deps, target, context);
-  return { ok: true as const, botId: target.id, name: target.name };
+  const archiveOutcome = await archiveBot(deps, target, context);
+  return { ok: true as const, botId: target.id, name: target.name, archiveOutcome };
 }
 
 export async function archiveBot(
@@ -488,7 +488,7 @@ export async function archiveBot(
   const dedicated = await deps.prisma.computer.findUnique({
     where: { scopeKey: computerScopeKey("dedicated", bot.spaceId, bot.id) },
   });
-  const { activeRuns, activeRoutines } = await deps.prisma.$transaction(async (tx) => {
+  const { activeRuns, activeRoutines, outcome } = await deps.prisma.$transaction(async (tx) => {
     // Creation-intent intros take this same transaction mutex. Avoid holding
     // a Bot row ahead of existing Computer/Run writers' locks.
     await lockBotCreationIntro(tx, bot.id);
@@ -524,16 +524,30 @@ export async function archiveBot(
         data: { state: "stopped" },
       });
     }
-    await tx.bot.update({
-      where: { id: bot.id },
-      data: { archivedAt: bot.archivedAt ?? now, pinned: false },
+    const archived = await tx.bot.updateMany({
+      where: { id: bot.id, archivedAt: null },
+      data: { archivedAt: now, pinned: false },
     });
-    return { activeRuns: cancelledRuns, activeRoutines };
+    let outcome: "archived" | "already_archived" | "restored" = "archived";
+    if (archived.count === 0) {
+      outcome = "already_archived";
+      // A concurrent restore can make the Bot active before this repeated archive unpins it.
+      const stillArchived = await tx.bot.updateMany({
+        where: { id: bot.id, archivedAt: { not: null } },
+        data: { pinned: false },
+      });
+      if (stillArchived.count === 0) {
+        await tx.bot.findUniqueOrThrow({ where: { id: bot.id }, select: { id: true } });
+        outcome = "restored";
+      }
+    }
+    return { activeRuns: cancelledRuns, activeRoutines, outcome };
   });
   await Promise.allSettled([
     ...activeRuns.map((run) => deps.jobs.cancel(runJobKey(run.id))),
     ...activeRoutines.map((routine) => deps.jobs.cancel(routineJobKey(routine.id))),
   ]);
+  if (outcome === "restored") return outcome;
   await releaseTeamComputerScreen(deps, bot, dedicated?.id, context);
   const currentDedicated = dedicated
     ? await deps.prisma.computer.findUnique({ where: { id: dedicated.id } })
@@ -570,7 +584,7 @@ export async function archiveBot(
       where: observed,
       data: { state: claim.state, updatedAt: claim.updatedAt },
     });
-    if (claimed.count !== 1) return;
+    if (claimed.count !== 1) return outcome;
     let requested = false;
     try {
       const evidence = await saveComputerBeforeStop(
@@ -606,6 +620,7 @@ export async function archiveBot(
       throw error;
     }
   }
+  return outcome;
 }
 
 export async function destroyBot(
