@@ -114,15 +114,49 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       overrides: Partial<typeof context> = {},
     ) =>
       executeCloudAgentTool(deps, { ...context, ...overrides }, run, `cloud_agent_${name}`, args);
+    const launchArgs = {
+      prompt: "Add README",
+      repository: "https://github.com/example/demo",
+      openPr: true,
+    };
     const launch = async () => {
-      const result = await tool("launch", {
-        prompt: "Add README",
-        repository: "https://github.com/example/demo",
-        openPr: true,
-      });
+      const result = await tool("launch", launchArgs);
       if (!("id" in result)) throw new Error("Launch failed");
       return result.id;
     };
+    const reviewed = async (
+      toolName: "launch" | "reply" | "cancel",
+      args: Record<string, unknown>,
+      origin: { id: string; threadId: string; botId: string } = run,
+    ) => {
+      const name = `cloud_agent_${toolName}`;
+      const effect = await prisma.externalEffect.create({
+        data: {
+          spaceId: id,
+          runId: origin.id,
+          kind: name,
+          idempotencyKey: randomUUID(),
+          status: "executing",
+          reviewDecision: "pass",
+          request: {},
+        },
+      });
+      const result = await executeCloudAgentTool(
+        deps,
+        { ...context, botId: origin.botId, operationId: effect.idempotencyKey },
+        origin,
+        name,
+        args,
+        effect.id,
+      );
+      if (!("id" in result)) throw new Error("Cloud agent operation failed");
+      return { id: result.id, effectId: effect.id };
+    };
+    const audit = () =>
+      prisma.auditEvent.findMany({
+        where: { spaceId: id, action: "approval.auto_reviewed" },
+        orderBy: { createdAt: "asc" },
+      });
     const state = (agentId: string) =>
       prisma.cloudAgent.findUniqueOrThrow({ where: { id: agentId } });
     const pollNow = (agentId: string) => pollCloudAgent(deps, { agentId });
@@ -153,6 +187,9 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       context,
       tool,
       launch,
+      launchArgs,
+      reviewed,
+      audit,
       state,
       poll,
       pollNow,
@@ -183,7 +220,8 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
 
   it("recovers an accepted launch whose response was lost without creating a second remote agent", async () => {
     const h = await setup();
-    const id = await h.launch();
+    const { id, effectId } = await h.reviewed("launch", h.launchArgs);
+    expect(await h.audit()).toEqual([]);
     h.wire.loseNextLaunchResponse = true;
     await h.poll(id);
     expect(await h.state(id)).toMatchObject({
@@ -191,6 +229,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       launchDispatched: true,
       status: "running",
     });
+    expect(await h.audit()).toEqual([]);
     h.wire.failNextRequest = 429;
     await h.poll(id);
     expect(await h.state(id)).toMatchObject({
@@ -213,6 +252,16 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     expect((await h.state(id)).remoteId).toBeTruthy();
     expect(h.wire.ids.size).toBe(1);
     expect(h.wire.requests.filter((request) => request.path === "/v1/agents")).toHaveLength(4);
+    await h.finish(id);
+    expect(await h.audit()).toMatchObject([
+      {
+        targetId: effectId,
+        runId: h.run.id,
+        threadId: h.thread.id,
+        outcome: "success",
+        metadata: { decision: "pass" },
+      },
+    ]);
   });
 
   it("keeps the provider delay across status reads, duplicate jobs, and a repeated launch", async () => {
@@ -393,7 +442,35 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     await h.poll(id);
     await h.finish(id);
     const oldRun = (await h.state(id)).latestRunId!;
-    await h.tool("reply", { id, prompt: "Add tests" });
+    const { id: otherBotId } = await prisma.bot.create({
+      data: { spaceId: h.id, userId: h.id, name: "Other bot", color: "test-color" },
+    });
+    const otherThread = await prisma.thread.create({
+      data: { spaceId: h.id, userId: h.id, botId: otherBotId },
+    });
+    const otherTask = await prisma.task.create({
+      data: {
+        spaceId: h.id,
+        userId: h.id,
+        botId: otherBotId,
+        threadId: otherThread.id,
+        prompt: "Test follow-up",
+        status: "completed",
+      },
+    });
+    const otherRun = await prisma.run.create({
+      data: {
+        spaceId: h.id,
+        userId: h.id,
+        botId: otherBotId,
+        taskId: otherTask.id,
+        threadId: otherThread.id,
+        status: "completed",
+        trigger: "user",
+      },
+    });
+    const replyEffect = await h.reviewed("reply", { id, prompt: "Add tests" }, otherRun);
+    expect(await h.audit()).toEqual([]);
     const entered = deferred();
     const release = deferred();
     const provider = h.connection.provider;
@@ -409,6 +486,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     const observe = vi.spyOn(provider, "observeRunSuccessor");
     const cancel = vi.spyOn(provider, "cancel");
     const polling = h.pollNow(id);
+    let cancelEffectId: string | undefined;
     try {
       await Promise.race([
         entered.promise,
@@ -420,7 +498,8 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       expect(newRunId).not.toBe(oldRun);
       h.wire.staleLatestRunId = oldRun;
       h.wire.staleRunListId = oldRun;
-      expect(await h.tool("cancel", { id })).toMatchObject({ cancellationPending: true });
+      cancelEffectId = (await h.reviewed("cancel", { id })).effectId;
+      expect(await h.audit()).toEqual([]);
     } finally {
       release.resolve();
       await polling;
@@ -445,6 +524,26 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       latestRunId: newRunId,
       cancelRequested: false,
     });
+    const nextReply = await h.reviewed("reply", { id, prompt: "Add tests" });
+    await h.poll(id);
+    const events = await h.audit();
+    expect(events).toHaveLength(3);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          targetId: replyEffect.effectId,
+          runId: otherRun.id,
+          threadId: otherRun.threadId,
+          outcome: "success",
+        }),
+        expect.objectContaining({ targetId: cancelEffectId, runId: h.run.id, outcome: "success" }),
+        expect.objectContaining({
+          targetId: nextReply.effectId,
+          runId: h.run.id,
+          outcome: "success",
+        }),
+      ]),
+    );
   });
 
   it("observes a successor after a lost follow-up response without adopting or resending it", async () => {
@@ -453,7 +552,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     await h.poll(id);
     await h.finish(id);
     const oldRun = (await h.state(id)).latestRunId!;
-    await h.tool("reply", { id, prompt: "Add tests" });
+    await h.reviewed("reply", { id, prompt: "Add tests" });
     h.wire.loseNextReplyResponse = true;
     await h.poll(id);
     expect((await h.state(id)).followupDispatching).toBe(true);
@@ -497,6 +596,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
         (request) => request.method === "POST" && request.path.endsWith("/runs"),
       ),
     ).toHaveLength(1);
+    expect(await h.audit()).toEqual([]);
   });
 
   it("pins the previous remote run before dispatching a legacy follow-up without a run ID", async () => {
@@ -654,17 +754,87 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     const h = await setup();
     const id = await h.launch();
     await h.poll(id);
-    await h.tool("cancel", { id });
+    const { effectId } = await h.reviewed("cancel", { id });
     h.wire.failNextRequest = 503;
     await h.poll(id);
     expect(await h.state(id)).toMatchObject({ status: "running", cancelRequested: true });
+    expect(await h.audit()).toEqual([]);
     h.wire.cancelPending = true;
     await h.poll(id);
     expect((await h.state(id)).nextPollAt!.getTime()).toBeGreaterThan(Date.now() + 1_000);
     expect(await h.state(id)).toMatchObject({ status: "running", cancelRequested: true });
+    expect(await h.audit()).toEqual([]);
     h.wire.cancelPending = false;
     await h.poll(id);
     expect(await h.state(id)).toMatchObject({ status: "cancelled", cancelRequested: false });
+    expect(await h.audit()).toMatchObject([{ targetId: effectId, outcome: "success" }]);
+  });
+
+  it("does not attribute an already cancelled remote run to a queued review", async () => {
+    const h = await setup();
+    const id = await h.launch();
+    await h.poll(id);
+    await h.reviewed("cancel", { id });
+    const { remoteId, latestRunId } = await h.state(id);
+    await h.connection.provider.cancel(remoteId!, h.context, latestRunId!);
+    await h.poll(id);
+    expect(await h.state(id)).toMatchObject({
+      status: "cancelled",
+      cancelRequested: false,
+      cancelReviewEffectId: null,
+    });
+    expect(await h.audit()).toEqual([]);
+  });
+
+  it("does not reuse a cancellation approval from a previous generation after a worker upgrade", async () => {
+    const h = await setup();
+    const id = await h.launch();
+    await h.poll(id);
+    const { effectId } = await h.reviewed("cancel", { id });
+    const old = await h.state(id);
+    await h.connection.provider.cancel(old.remoteId!, h.context, old.latestRunId!);
+    await h.poll(id);
+    await h.tool("reply", { id, prompt: "Start a separate run" });
+    await h.poll(id);
+    await h.tool("cancel", { id });
+    // An older worker and tool leave the previous generation's new columns untouched.
+    await prisma.cloudAgent.update({
+      where: { id },
+      data: { cancelReviewEffectId: effectId, cancelReviewGeneration: old.generation },
+    });
+    await h.poll(id);
+    expect(await h.state(id)).toMatchObject({
+      status: "cancelled",
+      generation: old.generation + 1,
+      cancelReviewEffectId: null,
+      cancelReviewGeneration: null,
+    });
+    expect(await h.audit()).toEqual([]);
+  });
+
+  it("does not reuse a withdrawn follow-up approval for the next generation after a worker upgrade", async () => {
+    const h = await setup();
+    const id = await h.launch();
+    await h.poll(id);
+    await h.finish(id);
+    const { effectId } = await h.reviewed("reply", { id, prompt: "Withdraw this run" });
+    const old = await h.state(id);
+    await h.tool("cancel", { id });
+    await h.poll(id);
+    await h.tool("reply", { id, prompt: "Start a separate run" });
+    await prisma.cloudAgent.update({
+      where: { id },
+      data: { followupReviewEffectId: effectId, followupReviewGeneration: old.generation },
+    });
+    await h.poll(id);
+    expect(await h.state(id)).toMatchObject({
+      status: "running",
+      generation: old.generation + 1,
+      followup: null,
+      followupReviewEffectId: null,
+      followupReviewGeneration: null,
+    });
+    expect(await h.audit()).toEqual([]);
   });
 
   it("keeps cancellation pending with an old run or an unverified successor", async () => {
@@ -934,17 +1104,18 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     const id = await h.launch();
     await h.poll(id);
     await h.finish(id);
-    await h.tool("reply", { id, prompt: "Tests" });
-    await h.tool("cancel", { id });
+    await h.reviewed("reply", { id, prompt: "Tests" });
+    await h.reviewed("cancel", { id });
     const requests = h.wire.requests.length;
     await h.poll(id);
     expect(h.wire.requests).toHaveLength(requests);
     expect(await h.state(id)).toMatchObject({ status: "cancelled", followup: null });
+    expect(await h.audit()).toEqual([]);
   });
 
   it("recovers remote identity after the database fails following an accepted create", async () => {
     const h = await setup();
-    const id = await h.launch();
+    const { id, effectId } = await h.reviewed("launch", h.launchArgs);
     const original = h.connection.provider.launch.bind(h.connection.provider);
     vi.spyOn(h.connection.provider, "launch").mockImplementationOnce(async (...args) => {
       const result = await original(...args);
@@ -953,9 +1124,11 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     });
     await h.poll(id);
     expect((await h.state(id)).remoteId).toBeNull();
+    expect(await h.audit()).toEqual([]);
     await h.poll(id);
     expect((await h.state(id)).remoteId).toBeTruthy();
     expect(h.wire.ids.size).toBe(1);
+    expect(await h.audit()).toMatchObject([{ targetId: effectId, outcome: "success" }]);
   });
 
   it("fences concurrent pollers and preserves cancellation during launch", async () => {

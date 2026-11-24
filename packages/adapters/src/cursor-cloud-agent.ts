@@ -36,6 +36,10 @@ const runSchema = z.object({
 
 const busyCode = z.object({ code: z.literal("agent_busy") });
 const busyErrorSchema = z.union([busyCode, z.object({ error: busyCode })]);
+const cancelReceiptSchema = z.object({
+  id: z.string().min(1),
+  status: z.literal("CANCELLED").optional(),
+});
 
 export interface CursorCloudAgentOptions {
   apiKey: string;
@@ -188,18 +192,24 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
     return this.handle(agent, parsed.data.run);
   }
 
-  async cancel(id: string, context: AdapterContext, runId?: string): Promise<CloudAgentSnapshot> {
+  async cancel(id: string, context: AdapterContext, runId?: string) {
     const snapshot = await this.get(id, context, runId);
     if (snapshot.status !== "running") return snapshot;
-    await this.request(
+    const response = await this.request(
       "POST",
       `/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(snapshot.latestRunId!)}/cancel`,
       {},
       context.signal,
       "reconcile",
+      200,
     );
-    // Cancellation may still be in progress. Never report success before observing it.
-    return this.get(id, context, snapshot.latestRunId);
+    // The documented 200 response acknowledges a completed transition. Keep the
+    // subsequent read for state reconciliation, including responses without a receipt.
+    const state = await this.get(id, context, snapshot.latestRunId);
+    const receipt = cancelReceiptSchema.safeParse(response);
+    return state.status === "cancelled" && receipt.success && receipt.data.id === state.latestRunId
+      ? { ...state, cancellationConfirmed: true as const }
+      : state;
   }
 
   private async agent(id: string, signal: AbortSignal) {
@@ -279,6 +289,7 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
     body: unknown,
     signal: AbortSignal,
     conflict?: "reconcile" | "followup",
+    receiptStatus?: number,
   ): Promise<unknown> {
     const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]);
     if (boundedSignal.aborted) throw new CloudAgentRetryLater("unavailable");
@@ -325,6 +336,10 @@ export class CursorCloudAgentProvider implements CloudAgentProvider {
       }
       if ([400, 409, 422].includes(response.status)) throw new CloudAgentRequestRejected();
       throw new Error(`Cloud agent request failed (${response.status})`);
+    }
+    if (receiptStatus !== undefined && response.status !== receiptStatus) {
+      void response.body?.cancel().catch(() => undefined);
+      return null;
     }
     if (response.status === 204) {
       void response.body?.cancel().catch(() => undefined);

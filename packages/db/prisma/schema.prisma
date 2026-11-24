@@ -987,10 +987,15 @@ model CloudAgent {
   branch              String?
   prUrl               String?
   launchRequest       Json
+  launchReviewEffectId String?
   launchDispatched    Boolean  @default(false)
   followup            Json?
+  followupReviewEffectId String?
+  followupReviewGeneration Int?
   followupDispatching Boolean  @default(false)
   cancelRequested     Boolean  @default(false)
+  cancelReviewEffectId String?
+  cancelReviewGeneration Int?
   generation          Int      @default(0)
   wakeGeneration      Int      @default(-1)
   version             Int      @default(0)

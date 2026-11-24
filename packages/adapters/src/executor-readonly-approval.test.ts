@@ -45,6 +45,8 @@ import {
 import { encodeRunLogin } from "./bot-secrets.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
 import * as ChildBotsModule from "./child-bots.js";
+import { EmulatorCloudAgentProvider } from "./cloud-agent-emulator.js";
+import * as CloudAgentService from "./cloud-agent-service.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { ComputerScreenUnavailableError } from "./computer-screens.js";
@@ -165,6 +167,7 @@ function fixture({
   notifications,
   messagingIdentity = false,
   reportToolCompletion = false,
+  cloudAgent,
   startedAt = null,
 }: {
   builtin?: boolean;
@@ -211,6 +214,7 @@ function fixture({
   notifications?: ExecutorDeps["notifications"];
   messagingIdentity?: boolean;
   reportToolCompletion?: boolean;
+  cloudAgent?: ExecutorDeps["cloudAgent"];
   startedAt?: Date | null;
 } = {}) {
   const tool: ConnectorTool = {
@@ -661,6 +665,7 @@ function fixture({
     secretStore,
     deploymentModelKey,
     autoReview: reviewProvider ?? undefined,
+    cloudAgent,
     web: webProvider,
     secretHttp,
     ...(messagingIdentity ? { messaging: { hasIdentity: async () => true } } : {}),
@@ -709,6 +714,42 @@ function fixture({
     },
   };
 }
+
+describe("cloud agent automatic review admission", () => {
+  it.each([true, false])("passes provenance only for automatic review (%s)", async (reviewed) => {
+    const name = "cloud_agent_launch";
+    const args = { prompt: "Add a sample README" };
+    const executeCloudAgent = vi
+      .spyOn(CloudAgentService, "executeCloudAgentTool")
+      .mockResolvedValue({ error: "Synthetic queued response" });
+    reviewMock.mockReset().mockResolvedValue({ decision: "pass", model: "mock" });
+    try {
+      const f = fixture({
+        name,
+        builtin: true,
+        autoReview: true,
+        rules: reviewed ? [] : [{ effect: "always_allow", matchKind: "tool", matchValue: name }],
+        cloudAgent: { key: "offline-test", provider: new EmulatorCloudAgentProvider() },
+      });
+      f.setCalls([{ args, executionId: "launch-1" }]);
+      await f.run();
+      const [effect] = f.effects;
+      expect(executeCloudAgent).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        expect.objectContaining({ operationId: effect?.idempotencyKey }),
+        expect.objectContaining({ id: f.runRecord.id }),
+        name,
+        args,
+        reviewed ? effect?.id : undefined,
+      );
+      expect(reviewMock).toHaveBeenCalledTimes(reviewed ? 1 : 0);
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+    } finally {
+      executeCloudAgent.mockRestore();
+      reviewMock.mockReset();
+    }
+  });
+});
 
 describe("semantic memory recall availability", () => {
   const fact = {
