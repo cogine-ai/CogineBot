@@ -162,6 +162,38 @@ describe("loop stop audit", () => {
 });
 
 describe("tool completion audit", () => {
+  it.each([
+    ["shell", { code: 0 }, false, false, "unknown"],
+    ["shell", { code: 0 }, false, true, "succeeded"],
+    ["shell", { details: { exitCode: 0 } }, false, true, "succeeded"],
+    ["shell", { code: 2, stderr: "synthetic stderr" }, false, false, "error"],
+    ["shell", { details: { exitCode: 2, stdout: "synthetic stdout" } }, false, false, "error"],
+    ["shell", { running: true, code: null, stdout: "synthetic output" }, false, true, "running"],
+    ["shell", { details: { running: true, code: null } }, false, true, "running"],
+    ["shell", { running: true, code: null }, false, false, "unknown"],
+    ["shell", { code: 2 }, true, false, "paused"],
+    ["destination.read", { code: 2 }, false, false, "succeeded"],
+    ["destination.read", { running: true, code: null }, false, false, "succeeded"],
+  ] as const)(
+    "records shell state and leaves connector data intact (%s, %j, paused=%s)",
+    async (name, result, paused, observedShellResult, outcome) => {
+      const append = vi.fn().mockResolvedValue(undefined);
+      await appendToolCompletionAudit(
+        { events: { append } },
+        { spaceId: "space-1", threadId: "thread-1", botId: "bot-1", runId: "run-1" },
+        { name, executionId: "call-1", durationMs: 4, result, paused },
+        [],
+        observedShellResult,
+      );
+      expect(append).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "agent.tool.completed",
+          payload: { name, executionId: "call-1", durationMs: 4, outcome },
+        }),
+      );
+    },
+  );
+
   it("records result metadata without persisting tool contents", () => {
     const payload = toolCompletionAuditPayload({
       name: "computer_observe",

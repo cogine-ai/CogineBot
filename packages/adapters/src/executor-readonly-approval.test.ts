@@ -52,7 +52,11 @@ import * as ComputerWorkspaceModule from "./computer-workspace.js";
 import { connectorAccountRevision } from "./connector-account-binding.js";
 import { DestinationEmulator } from "./destination-emulator.js";
 import type { ExecutorDeps } from "./executor.js";
-import { buildApprovalContinuation, createRunExecutor } from "./executor.js";
+import {
+  buildApprovalContinuation,
+  createRunExecutor,
+  toolCompletionFromResult,
+} from "./executor.js";
 import { FakeBrowserProvider } from "./fake-browser.js";
 import { InstalledConnectorProvider } from "./installed-connectors.js";
 import { KeylessHttpWebProvider } from "./keyless-http-web.js";
@@ -159,6 +163,7 @@ function fixture({
   home,
   notifications,
   messagingIdentity = false,
+  reportToolCompletion = false,
   startedAt = null,
 }: {
   builtin?: boolean;
@@ -203,6 +208,7 @@ function fixture({
   home?: Pick<AgentHomeStore, "commit">;
   notifications?: ExecutorDeps["notifications"];
   messagingIdentity?: boolean;
+  reportToolCompletion?: boolean;
   startedAt?: Date | null;
 } = {}) {
   const tool: ConnectorTool = {
@@ -558,6 +564,13 @@ function fixture({
         { onConnectorRouteResolved: (route) => resolvedRoutes.push({ ...route }) },
       );
       results.push(result);
+      if (reportToolCompletion)
+        await request.onToolCompleted?.(
+          toolCompletionFromResult(
+            { name: call.name ?? name, executionId: call.executionId, durationMs: 1 },
+            result,
+          ),
+        );
       if (isApprovalPausedResult(result)) return;
     }
     yield { type: "done" as const, text: "Done" };
@@ -880,20 +893,122 @@ describe("semantic memory recall availability", () => {
 });
 
 describe("delegated shell approval receipts", () => {
+  function shellFixture(
+    execute: SandboxProvider["execute"],
+    options: Parameters<typeof fixture>[0] = {},
+  ) {
+    const f = fixture({
+      name: "shell",
+      builtin: true,
+      home: { commit: async () => "fixture-revision" },
+      sandboxProvider: {
+        describe: () => ({
+          id: "desktop",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: {
+            graphical: false,
+            pty: true,
+            snapshots: false,
+            takeover: false,
+            persistentHome: true,
+          },
+        }),
+        execute,
+        async *exportWorkspace() {
+          yield* [];
+        },
+      },
+      ...options,
+    });
+    Object.assign(f.prisma, {
+      $queryRaw: vi.fn(async () => [{ id: "computer-1" }]),
+      computer: {
+        findFirst: vi.fn(async () => ({
+          id: "computer-1",
+          state: "running",
+          homeRevision: "empty",
+          updatedAt: new Date(),
+        })),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
+    });
+    return f;
+  }
+
+  it("ties exit evidence to the result when shell calls reuse an execution ID", async () => {
+    const execute = vi.fn<SandboxProvider["execute"]>(async function* (_computer, request) {
+      yield {
+        type: "exit",
+        code: 0,
+        ...(request.argv.at(-1) === "printf first" ? { terminalStateVerified: true } : {}),
+      };
+    });
+    const run = vi.fn<AgentRuntime["run"]>(async function* (request) {
+      const executionId = "repeated-id";
+      const verified = await request.executeTool!(
+        "shell",
+        { command: "printf first" },
+        executionId,
+      );
+      const unverified = await request.executeTool!(
+        "shell",
+        { command: "printf second" },
+        executionId,
+      );
+      expect(verified).toMatchObject({ code: 0 });
+      expect(unverified).toMatchObject({ code: 0 });
+      for (const details of [unverified, verified]) {
+        await request.onToolCompleted?.({
+          name: "shell",
+          executionId,
+          durationMs: 1,
+          result: { content: [], details },
+        });
+      }
+      yield { type: "done", text: "Done" };
+    });
+    const f = shellFixture(execute, {
+      runtimeProvider: {
+        abort: async () => {},
+        describe: () => ({
+          id: "shell-audit-test",
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { scripted: false, streaming: true, compaction: false, tools: true },
+        }),
+        run,
+      },
+    });
+
+    f.runRecord.status = "queued";
+    await f.executor.continueRun(f.runRecord.id, "worker-1");
+    expect(run).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(
+      f.append.mock.calls
+        .filter(([event]) => event.type === "agent.tool.completed")
+        .map(([event]) => event.payload),
+    ).toEqual([
+      expect.objectContaining({ executionId: "repeated-id", outcome: "unknown" }),
+      expect.objectContaining({ executionId: "repeated-id", outcome: "succeeded" }),
+    ]);
+  });
+
   it.each([
-    { code: 0, receipt: "succeeded" },
-    { code: 2, receipt: "failed" },
-    { code: undefined, receipt: "unknown" },
-    { code: 0, unverified: true, receipt: "unknown" },
-    { code: 1, unverified: true, receipt: "unknown" },
-    { code: 130, unverified: true, receipt: "unknown" },
-    { code: 0, running: true, receipt: "succeeded" },
-    { code: 2, running: true, receipt: "failed" },
-    { code: 0, running: true, unverified: true, receipt: "unknown" },
+    { code: 0, receipt: "succeeded", auditOutcome: "succeeded" },
+    { code: 2, receipt: "failed", auditOutcome: "error" },
+    { code: undefined, receipt: "unknown", auditOutcome: "unknown" },
+    { code: 0, unverified: true, receipt: "unknown", auditOutcome: "unknown" },
+    { code: 1, unverified: true, receipt: "unknown", auditOutcome: "error" },
+    { code: 130, unverified: true, receipt: "unknown", auditOutcome: "error" },
+    { code: 0, running: true, receipt: "succeeded", auditOutcome: "running" },
+    { code: 2, running: true, receipt: "failed", auditOutcome: "running" },
+    { code: 0, running: true, unverified: true, receipt: "unknown", auditOutcome: "running" },
     { code: 2, reportedError: true, receipt: "failed" },
   ])(
     "records $receipt for shell result %j",
-    async ({ code, receipt, unverified, running, reportedError }) => {
+    async ({ code, receipt, auditOutcome, unverified, running, reportedError }) => {
       let releaseExit!: () => void;
       const exit = new Promise<void>((resolve) => {
         releaseExit = resolve;
@@ -911,46 +1026,14 @@ describe("delegated shell approval receipts", () => {
             ...(unverified ? {} : { terminalStateVerified: true }),
           };
       });
-      const f = fixture({
-        name: "shell",
-        builtin: true,
+      const f = shellFixture(execute, {
+        reportToolCompletion: true,
         rules: [{ effect: "require_approval", matchKind: "tool", matchValue: "shell" }],
-        home: { commit: async () => "fixture-revision" },
-        sandboxProvider: {
-          describe: () => ({
-            id: "desktop",
-            contractVersion: "1",
-            adapterVersion: "1",
-            capabilities: {
-              graphical: false,
-              pty: true,
-              snapshots: false,
-              takeover: false,
-              persistentHome: true,
-            },
-          }),
-          execute,
-          async *exportWorkspace() {
-            yield* [];
-          },
-        },
       });
       const admit = vi
         .spyOn(DbModule, "authorizeCollaborationRunStart")
         .mockResolvedValue({ allowed: true, notices: [] });
       Object.assign(f.runRecord, { origin: "bot_peer" });
-      Object.assign(f.prisma, {
-        $queryRaw: vi.fn(async () => [{ id: "computer-1" }]),
-        computer: {
-          findFirst: vi.fn(async () => ({
-            id: "computer-1",
-            state: "running",
-            homeRevision: "empty",
-            updatedAt: new Date(),
-          })),
-          updateMany: vi.fn(async () => ({ count: 1 })),
-        },
-      });
       const args = { command: "printf fixture" };
       f.setCalls([{ args, executionId: "first" }]);
       try {
@@ -977,6 +1060,19 @@ describe("delegated shell approval receipts", () => {
         const modelResult = reportedError
           ? { error: "command exited" }
           : { code: running ? null : (code ?? 0), stdout: "fixture", stderr: "" };
+        if (auditOutcome) {
+          expect(f.append).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "agent.tool.completed",
+              payload: {
+                name: "shell",
+                executionId: "approved",
+                durationMs: 1,
+                outcome: auditOutcome,
+              },
+            }),
+          );
+        }
         if (running) {
           expect(effect).toMatchObject({
             status: "completed",
@@ -1017,6 +1113,19 @@ describe("delegated shell approval receipts", () => {
         await f.run();
         expect(f.results.at(-1)).toMatchObject(modelResult);
         expect(execute).toHaveBeenCalledOnce();
+        if (running || code === 0) {
+          expect(f.append).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "agent.tool.completed",
+              payload: {
+                name: "shell",
+                executionId: "replay",
+                durationMs: 1,
+                outcome: "unknown",
+              },
+            }),
+          );
+        }
       } finally {
         releaseExit();
         if (running) vi.useRealTimers();

@@ -3119,17 +3119,25 @@ export function logLoopGuardStop(
 export function toolCompletionAuditPayload(
   completion: AgentToolCompletion,
   secrets: string[] = [],
+  observedShellResult = false,
 ): Record<string, unknown> {
   const durationMs = Number.isFinite(completion.durationMs)
     ? Math.max(0, Math.round(completion.durationMs))
     : 0;
   const error =
     completion.error === undefined ? toolResultError(completion.result) : completion.error;
+  let outcome = completion.paused ? "paused" : error === undefined ? "succeeded" : "error";
+  if (outcome === "succeeded" && completion.name === "shell") {
+    const shellOutcome = toolCompletionOutcome(completion);
+    if (shellOutcome === "failed") outcome = "error";
+    else if (!observedShellResult) outcome = "unknown";
+    else if (shellOutcome === undefined) outcome = "running";
+  }
   const payload: Record<string, unknown> = {
     name: redactSecrets(completion.name, secrets),
     executionId: redactSecrets(completion.executionId, secrets),
     durationMs,
-    outcome: completion.paused ? "paused" : error === undefined ? "succeeded" : "error",
+    outcome,
   };
   if (error !== undefined) {
     payload.error = sanitizeConnectorError(error, secrets);
@@ -3166,6 +3174,7 @@ export async function appendToolCompletionAudit(
   target: { spaceId: string; threadId: string; botId: string; runId: string },
   completion: AgentToolCompletion,
   secrets: string[] = [],
+  observedShellResult = false,
 ): Promise<void> {
   try {
     await deps.events.append({
@@ -3174,7 +3183,7 @@ export async function appendToolCompletionAudit(
       botId: target.botId,
       runId: target.runId,
       type: "agent.tool.completed",
-      payload: toolCompletionAuditPayload(completion, secrets),
+      payload: toolCompletionAuditPayload(completion, secrets, observedShellResult),
     });
   } catch (error) {
     // Audit persistence must not change the tool result or strand the run.
@@ -5724,6 +5733,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
               : [],
           ),
         );
+        // Pi wraps live tool results in details. Bind evidence to the result itself because IDs
+        // may repeat across parallel calls and replayed results are separate stored objects.
+        const observedShellResults = new WeakSet<object>();
+        const consumeShellResult = (result: unknown) =>
+          result !== null && typeof result === "object" && observedShellResults.delete(result);
+        const auditToolCompletion = (completion: AgentToolCompletion) =>
+          appendToolCompletionAudit(
+            deps,
+            { spaceId: run.spaceId, threadId: thread.id, botId: bot.id, runId },
+            completion,
+            runSecrets,
+            completion.name === "shell" &&
+              (consumeShellResult(completion.result) ||
+                consumeShellResult((completion.result as { details?: unknown } | null)?.details)),
+          );
         const priorCompletedToolCount = scriptedResume.stored?.state.cursor.ordinal ?? 0;
         const withReplyToolOutcomes = (segments: MessageBlock[], unfinished?: ToolStepOutcome) =>
           withToolStepOutcomes(
@@ -9066,6 +9090,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   notice: SHELL_STILL_RUNNING_NOTICE,
                 });
                 if (isRunningShellCommand(returned)) {
+                  observedShellResults.add(returned);
                   observer?.onShellStillRunning?.(completion);
                   if (claimedApproval && run.origin === "bot_peer" && applied) {
                     // Update the card after a verified exit, retaining the already-returned tool result.
@@ -9106,7 +9131,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 output: commandOutput(redacted, false).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
               if (terminalExitCode === undefined) return finish(redacted);
-              return finish(redacted, terminalExitCode === 0 ? "result" : "error");
+              const returned = await finish(redacted, terminalExitCode === 0 ? "result" : "error");
+              if (terminalExitCode === 0 && returned === redacted)
+                observedShellResults.add(redacted);
+              return returned;
             } catch (error) {
               const message = redactSecrets(
                 error instanceof Error ? error.message : "command failed",
@@ -11801,17 +11829,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   completion.executionId,
                   toolResultFingerprint(completion.result, completion.error),
                 );
-                return appendToolCompletionAudit(
-                  deps,
-                  {
-                    spaceId: run.spaceId,
-                    threadId: thread.id,
-                    botId: bot.id,
-                    runId,
-                  },
-                  completion,
-                  runSecrets,
-                );
+                return auditToolCompletion(completion);
               },
               storeToolResult: (result) =>
                 !disabledBuiltinTools.has("read_history") && connectorTools.has(result.name)
@@ -12179,36 +12197,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   );
                   const outcome = toolCompletionOutcome(completion);
                   if (outcome) toolOutcomes.set(event.executionId, outcome);
-                  await appendToolCompletionAudit(
-                    deps,
-                    {
-                      spaceId: run.spaceId,
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                    },
-                    completion,
-                    runSecrets,
-                  );
+                  await auditToolCompletion(completion);
                   if (isToolPauseResult(result)) return;
                 } catch (error) {
                   toolOutcomes.set(event.executionId, "failed");
-                  await appendToolCompletionAudit(
-                    deps,
-                    {
-                      spaceId: run.spaceId,
-                      threadId: thread.id,
-                      botId: bot.id,
-                      runId,
-                    },
-                    {
-                      name: event.name,
-                      executionId: event.executionId,
-                      durationMs: Date.now() - startedAt,
-                      error,
-                    },
-                    runSecrets,
-                  );
+                  await auditToolCompletion({
+                    name: event.name,
+                    executionId: event.executionId,
+                    durationMs: Date.now() - startedAt,
+                    error,
+                  });
                   throw error;
                 }
               }
