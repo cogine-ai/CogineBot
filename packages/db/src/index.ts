@@ -5,6 +5,7 @@ export {
   pruneAuditEvents,
   recordApprovalRuleAudit,
   recordAutomaticApprovalAudit,
+  recordAutoReviewPreferenceAudit,
   recordBotCredentialAudit,
   recordCloudAgentApprovalAudit,
   recordConnectionActivationAudit,

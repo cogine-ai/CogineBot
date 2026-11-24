@@ -112,6 +112,27 @@ export function recordApprovalRuleAudit(
   ]);
 }
 
+export function recordAutoReviewPreferenceAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  preference: { id: string; enabled: boolean },
+  happenedAt: Date,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      id: randomUUID(),
+      createdAt: happenedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action: "approval.policy.changed",
+      targetType: "auto_review_preference",
+      targetId: preference.id,
+      outcome: "success",
+      metadata: { enabled: preference.enabled },
+    },
+  ]);
+}
+
 export function recordBotCredentialAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   actor: AuditUser,
