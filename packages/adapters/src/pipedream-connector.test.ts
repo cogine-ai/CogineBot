@@ -432,6 +432,35 @@ describe("PipedreamConnector", () => {
     });
   });
 
+  it.each([
+    { ref: "account-1", status: 204, redirected: false, proof: "account_deleted", send: true },
+    { ref: "account-1", status: 202, redirected: false, proof: undefined, send: true },
+    { ref: "account-1", status: 204, redirected: true, proof: undefined, send: true },
+    { ref: "linear", status: 204, redirected: false, proof: undefined, send: true },
+    { ref: "absent", status: 204, redirected: false, proof: undefined, send: false },
+  ])(
+    "requires a direct, completed DELETE ($ref, $status, redirected: $redirected)",
+    async ({ ref, status, redirected, proof, send }) => {
+      const remove = vi.fn(() =>
+        Object.defineProperty(new Response(null, { status }), "redirected", { value: redirected }),
+      );
+      const connector = new PipedreamConnector(FAKE_CONFIG, {
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/oauth/token"))
+            return Response.json({ access_token: "fake-access-token" });
+          if (url.pathname.endsWith("/accounts"))
+            return Response.json({ data: [{ id: "account-1", app: { name_slug: "linear" } }] });
+          if (url.pathname.endsWith("/accounts/account-1") && init?.method === "DELETE")
+            return remove();
+          throw new Error("Unexpected request");
+        },
+      });
+      await expect(connector.revoke(ref, context)).resolves.toBe(proof);
+      expect(remove).toHaveBeenCalledTimes(send ? 1 : 0);
+    },
+  );
+
   it("exposes 20 app tools directly and switches to the catalog at 21", async () => {
     for (const count of [20, 21]) {
       const connector = new PipedreamConnector(FAKE_CONFIG, {

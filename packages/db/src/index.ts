@@ -1,4 +1,5 @@
 export * from "./artifact-versions.js";
+export type { ConnectionRevocationRemoteOutcome } from "./audit-events.js";
 export {
   AUDIT_PRUNE_BATCH_SIZE,
   auditEventRetentionDays,
@@ -9,6 +10,7 @@ export {
   recordBotCredentialAudit,
   recordCloudAgentApprovalAudit,
   recordConnectionActivationAudit,
+  recordConnectionRevocationAudit,
 } from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";

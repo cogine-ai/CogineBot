@@ -860,24 +860,35 @@ postgres("control-plane metadata with complete row policies", () => {
       { status: "revoked" },
     );
     expect(remote).toHaveBeenCalledTimes(2);
-    expect(observed.observations).toHaveLength(3);
-    const [complete, audit, revoke] = observed.observations;
+    expect(observed.observations).toHaveLength(4);
+    const [complete, activationAudit, revoke, revocationAudit] = observed.observations;
     assertRestored([complete!, revoke!]);
-    expect(audit!.after).toEqual(audit!.before);
-    expect(audit!.before[0]).toMatchObject({
-      pid: complete!.after![0]!.pid,
-      space: "",
-      user: "",
-      bypass: "on",
-      key: true,
-    });
-    expect(revoke!.before[0]!.pid).toBe(audit!.before[0]!.pid);
+    for (const audit of [activationAudit!, revocationAudit!]) {
+      expect(audit.after).toEqual(audit.before);
+      expect(audit.before[0]).toMatchObject({
+        pid: complete!.after![0]!.pid,
+        space: "",
+        user: "",
+        bypass: "on",
+        key: true,
+      });
+    }
+    expect(revoke!.before[0]!.pid).toBe(activationAudit!.before[0]!.pid);
     expect(
       await owner.prisma.auditEvent.findMany({
         where: { targetId: connectionId },
+        orderBy: { action: "asc" },
         select: { action: true, spaceId: true, actorId: true, metadata: true },
       }),
-    ).toEqual([{ action: "connection.connected", spaceId: spaceA, actorId: userA, metadata: {} }]);
+    ).toEqual([
+      { action: "connection.connected", spaceId: spaceA, actorId: userA, metadata: {} },
+      {
+        action: "connection.revoked",
+        spaceId: spaceA,
+        actorId: userA,
+        metadata: { remoteOutcome: "unconfirmed" },
+      },
+    ]);
   });
 
   it("resolves the exact remote account through the configured completion route", async () => {

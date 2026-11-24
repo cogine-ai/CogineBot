@@ -441,6 +441,153 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     },
   );
 
+  describe("managed connection revocation audit", () => {
+    const scope = { spaceId: spaceA, userId: userA };
+    const account = "synthetic-account-ref";
+    const seed = (name: string, target: "reservation" | "app" | "account") => {
+      const provider = id(name);
+      return owner.prisma.connection.create({
+        data: {
+          ...scope,
+          connectorId: "composio",
+          provider,
+          providerRef: target === "reservation" ? null : target === "app" ? provider : account,
+          displayName: "Synthetic managed account",
+          status: target === "reservation" ? "pending" : "connected",
+          ...(target === "reservation" ? { metadata: { authRevision: "reserved-fixture" } } : {}),
+        },
+      });
+    };
+    const audit = (targetId: string) =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetId, action: "connection.revoked" },
+        select: {
+          organizationId: true,
+          spaceId: true,
+          actorType: true,
+          actorId: true,
+          outcome: true,
+          targetType: true,
+          targetId: true,
+          metadata: true,
+        },
+      });
+    const expected = (targetId: string, remoteOutcome: string) => [
+      {
+        organizationId: orgA,
+        spaceId: spaceA,
+        actorType: "user",
+        actorId: userA,
+        outcome: "success",
+        targetType: "connection",
+        targetId,
+        metadata: { remoteOutcome },
+      },
+    ];
+    const status = (id: string) =>
+      owner.prisma.connection.findUniqueOrThrow({ where: { id }, select: { status: true } });
+
+    it.each([
+      { scenario: "reservation", target: "reservation", sibling: false, attempt: false },
+      { scenario: "app-with-sibling", target: "app", sibling: true, attempt: false },
+      { scenario: "app-final", target: "app", sibling: false, attempt: true },
+    ] as const)(
+      "records the final local revoke for $scenario",
+      async ({ scenario, target, sibling, attempt }) => {
+        const row = await seed(scenario, target);
+        const other = sibling
+          ? await owner.prisma.connection.create({
+              data: {
+                ...scope,
+                provider: row.provider,
+                providerRef: "synthetic-sibling",
+                displayName: "Other account",
+                status: "connected",
+              },
+            })
+          : null;
+        const revoke = vi
+          .fn<ManagedConnectorProvider["revoke"]>()
+          .mockResolvedValue("account_deleted");
+        const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, { revoke });
+        await inA(() => connections.revoke({ connectionId: row.id }));
+        await inA(() => connections.revoke({ connectionId: row.id }));
+        expect(await status(row.id)).toEqual({ status: "revoked" });
+        if (other) expect(await status(other.id)).toEqual({ status: "connected" });
+        expect(revoke).toHaveBeenCalledTimes(attempt ? 1 : 0);
+        expect(await audit(row.id)).toEqual(
+          expected(row.id, attempt ? "unconfirmed" : "not_requested"),
+        );
+      },
+    );
+
+    it.each(["account_deleted", undefined] as const)(
+      "attributes a concrete account revoke once after the provider returns %s",
+      async (receipt) => {
+        const row = await seed(`managed-revoke-${receipt}`, "account");
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const revoke = vi.fn<ManagedConnectorProvider["revoke"]>(async () => {
+          entered.resolve();
+          await release.promise;
+          return receipt;
+        });
+        const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, { revoke });
+        const peer = (await auditRouterFor(userB, spaceA, runtime!.prisma, { revoke })).connections;
+        await runAsTenant({ spaceId: spaceA, userId: userB }, () =>
+          peer.revoke({ connectionId: row.id }),
+        );
+        expect(await status(row.id)).toEqual({ status: "connected" });
+        expect(revoke).not.toHaveBeenCalled();
+        expect(await audit(row.id)).toEqual([]);
+        const original = inA(() => connections.revoke({ connectionId: row.id }));
+        try {
+          await Promise.race([entered.promise, original]);
+          expect(await status(row.id)).toEqual({ status: "revoked" });
+          expect(await audit(row.id)).toEqual([]);
+          expect(await inA(() => connections.revoke({ connectionId: row.id }))).toEqual({
+            ok: true,
+          });
+          expect(await audit(row.id)).toEqual([]);
+        } finally {
+          release.resolve();
+          await original;
+        }
+        expect(revoke).toHaveBeenCalledExactlyOnceWith(account, expect.objectContaining(scope));
+        expect(await audit(row.id)).toEqual(expected(row.id, receipt ?? "unconfirmed"));
+      },
+    );
+
+    it.each([
+      { name: "pre-delete-timeout", target: "account", keepRevoked: false },
+      { name: "uncertain-delete", target: "account", keepRevoked: true },
+      { name: "app-rollback", target: "app", keepRevoked: false },
+    ] as const)(
+      "uses the settled local state after $name",
+      async ({ name, target, keepRevoked }) => {
+        const row = await seed(name, target);
+        const error = Object.assign(new Error("Synthetic timeout"), {
+          remoteRevokePreDelete: name === "pre-delete-timeout",
+        });
+        const revoke = vi
+          .fn<ManagedConnectorProvider["revoke"]>()
+          .mockRejectedValueOnce(error)
+          .mockResolvedValueOnce("account_deleted");
+        const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, { revoke });
+        const call = () => inA(() => connections.revoke({ connectionId: row.id }));
+        await expect(call()).rejects.toThrow();
+        expect(await status(row.id)).toEqual({ status: keepRevoked ? "revoked" : "connected" });
+        expect(await audit(row.id)).toEqual(keepRevoked ? expected(row.id, "unconfirmed") : []);
+        await expect(call()).resolves.toEqual({ ok: true });
+        expect(await status(row.id)).toEqual({ status: "revoked" });
+        expect(revoke).toHaveBeenCalledTimes(keepRevoked ? 1 : 2);
+        expect(await audit(row.id)).toEqual(
+          expected(row.id, keepRevoked || target === "app" ? "unconfirmed" : "account_deleted"),
+        );
+      },
+    );
+  });
+
   it("records a saved approval rule under its organization with metadata only", async () => {
     const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
     const rule = await inA(() =>

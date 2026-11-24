@@ -244,6 +244,7 @@ import type {
   BoardEvents,
   Board as BoardRow,
   BotSettingsRow,
+  ConnectionRevocationRemoteOutcome,
   PrismaClient,
   ThreadEvents,
 } from "@rakazo/db";
@@ -313,6 +314,7 @@ import {
   recordAutoReviewPreferenceAudit,
   recordBotCredentialAudit,
   recordConnectionActivationAudit,
+  recordConnectionRevocationAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -7806,11 +7808,15 @@ export function createRouter(deps: RouterDeps) {
         };
       }),
       revoke: authed.connections.revoke.handler(async ({ context, input }) => {
-        type RemoteRevoke = {
-          connectorId: string;
-          connectionRef: string;
-          accountSpecific: boolean;
-        };
+        type Revocation =
+          | { kind: "unchanged" }
+          | { kind: "settled"; remoteOutcome: ConnectionRevocationRemoteOutcome }
+          | {
+              kind: "account";
+              connectorId: string;
+              connectionRef: string;
+              previousStatus: string;
+            };
         const snapshot = await deps.prisma.connection.findFirst({
           where: {
             id: input.connectionId,
@@ -7848,13 +7854,8 @@ export function createRouter(deps: RouterDeps) {
           ? await prepareManagedConnectorForTransaction(configured)
           : undefined;
         const outcome = await deps.prisma.$transaction(
-          async (tx) => {
-            if (!snapshot) {
-              return {
-                remote: null as null | RemoteRevoke,
-                previousStatus: null as string | null,
-              };
-            }
+          async (tx): Promise<Revocation> => {
+            if (!snapshot) return { kind: "unchanged" };
 
             // Advisory lock covers inserts as well as existing rows. SELECT FOR UPDATE
             // alone misses a concurrent begin that inserts after the lock query.
@@ -7880,7 +7881,7 @@ export function createRouter(deps: RouterDeps) {
                 userId: context.actor.userId,
               },
             });
-            if (!row) return { remote: null, previousStatus: null };
+            if (!row) return { kind: "unchanged" };
 
             const updated = await tx.connection.updateMany({
               where: {
@@ -7893,12 +7894,9 @@ export function createRouter(deps: RouterDeps) {
             });
             // Before provider begin assigns a ref, disconnect is local. A
             // late begin result is handled by the existing begin-race cleanup.
-            if (updated.count === 0 || lacksProviderAuthorization(row)) {
-              return {
-                remote: null as null | RemoteRevoke,
-                previousStatus: null as string | null,
-              };
-            }
+            if (updated.count === 0) return { kind: "unchanged" };
+            if (lacksProviderAuthorization(row))
+              return { kind: "settled", remoteOutcome: "not_requested" };
 
             const remaining = await tx.connection.count({
               where: {
@@ -7915,10 +7913,7 @@ export function createRouter(deps: RouterDeps) {
             // siblings remain. Slug-only legacy rows must wait until they are last,
             // or a provider-wide revoke would drop every account for that app.
             if (!accountSpecific && remaining > 0) {
-              return {
-                remote: null as null | RemoteRevoke,
-                previousStatus: null as string | null,
-              };
+              return { kind: "settled", remoteOutcome: "not_requested" };
             }
 
             // Slug-only remote delete is provider-wide. Run it before commit while
@@ -7960,69 +7955,75 @@ export function createRouter(deps: RouterDeps) {
                 if (error instanceof ORPCError) throw error;
                 throw new ORPCError("BAD_REQUEST", { message: sanitizeComposioError(error) });
               }
-              return {
-                remote: null as null | RemoteRevoke,
-                previousStatus: null as string | null,
-              };
+              // An app-scoped call cannot establish which account belonged to this row.
+              return { kind: "settled", remoteOutcome: "unconfirmed" };
             }
 
             return {
-              remote: {
-                connectorId: row.connectorId,
-                connectionRef,
-                accountSpecific,
-              },
+              kind: "account",
+              connectorId: row.connectorId,
+              connectionRef,
               previousStatus: row.status,
             };
           },
           { timeout: 60_000 },
         );
 
-        if (outcome.remote) {
-          const restoreLocalStatus = async () => {
-            // Local row was marked revoked inside the transaction; restore it so a
-            // failed remote disconnect remains retryable instead of orphaned.
-            if (!outcome.previousStatus) return;
-            await deps.prisma.connection.updateMany({
-              where: {
-                id: input.connectionId,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                status: "revoked",
-              },
-              data: { status: outcome.previousStatus },
-            });
-          };
+        if (outcome.kind === "unchanged") return { ok: true as const };
+        let remoteOutcome: ConnectionRevocationRemoteOutcome =
+          outcome.kind === "settled" ? outcome.remoteOutcome : "unconfirmed";
+        if (outcome.kind === "account") {
           try {
-            const connector = deps.connectors.managed(outcome.remote.connectorId);
+            const connector = deps.connectors.managed(outcome.connectorId);
             if (!connector) {
               throw new ORPCError("BAD_REQUEST", {
-                message: `Connector ${outcome.remote.connectorId} is not configured`,
+                message: `Connector ${outcome.connectorId} is not configured`,
               });
             }
-            await connector.revoke(
-              outcome.remote.connectionRef,
+            const receipt = await connector.revoke(
+              outcome.connectionRef,
               connectionContext(context.actor, "connections.revoke", context.signal),
             );
+            if (receipt === "account_deleted") remoteOutcome = receipt;
           } catch (error) {
             // Restore when DELETE clearly did not run (including pre-delete list
             // timeouts). Post-delete timeouts stay ambiguous — leave revoked.
             if (shouldRestoreLocalAfterRemoteRevokeFailure(error)) {
-              await restoreLocalStatus();
+              await deps.prisma.connection.updateMany({
+                where: {
+                  id: input.connectionId,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  status: "revoked",
+                },
+                data: { status: outcome.previousStatus },
+              });
             } else {
               getLogger().error(
                 "connections.revoke remote outcome uncertain; leaving local revoked",
-                error,
                 {
                   connectionId: input.connectionId,
-                  connectorId: outcome.remote.connectorId,
                 },
+              );
+              await recordConnectionRevocationAudit(
+                deps.prisma,
+                context.actor,
+                input.connectionId,
+                "unconfirmed",
+                new Date(),
               );
             }
             if (error instanceof ORPCError) throw error;
             throw new ORPCError("BAD_REQUEST", { message: sanitizeComposioError(error) });
           }
         }
+        await recordConnectionRevocationAudit(
+          deps.prisma,
+          context.actor,
+          input.connectionId,
+          remoteOutcome,
+          new Date(),
+        );
         return { ok: true as const };
       }),
       tools: authed.connections.tools.handler(async ({ context, input }) => {

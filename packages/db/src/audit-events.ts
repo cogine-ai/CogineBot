@@ -178,6 +178,30 @@ export function recordConnectionActivationAudit(
   );
 }
 
+export type ConnectionRevocationRemoteOutcome = "not_requested" | "unconfirmed" | "account_deleted";
+
+export function recordConnectionRevocationAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  connectionId: string,
+  remoteOutcome: ConnectionRevocationRemoteOutcome,
+  happenedAt: Date,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      id: `connection.revoked:${connectionId}`,
+      createdAt: happenedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action: "connection.revoked",
+      targetType: "connection",
+      targetId: connectionId,
+      outcome: "success",
+      metadata: { remoteOutcome },
+    },
+  ]);
+}
+
 export type CommittedApprovalDecision = {
   effectId: string;
   decision: "allow" | "always" | "deny";
