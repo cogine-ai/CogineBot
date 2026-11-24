@@ -44,6 +44,7 @@ import {
 } from "./approval-effect.js";
 import { encodeRunLogin } from "./bot-secrets.js";
 import { MAX_SHARED_MEMORY_CHARS } from "./builtin-tools.js";
+import * as ChildBotsModule from "./child-bots.js";
 import { ConnectorRegistry } from "./composio-connector.js";
 import * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { ComputerScreenUnavailableError } from "./computer-screens.js";
@@ -8532,6 +8533,75 @@ describe("connector batch approval", () => {
       await f.run();
       expect(f.execute).toHaveBeenCalledTimes(readOnly ? 1 : 0);
       expect(f.pauseRunForInput).toHaveBeenCalledTimes(readOnly ? 0 : 1);
+    },
+  );
+});
+
+describe("automatic child Bot archive approval", () => {
+  beforeEach(() => {
+    reviewMock.mockReset();
+  });
+
+  it.each([
+    ["archive_bot", "archived"],
+    ["archive_bot", "already_archived"],
+    ["archive_bot", "restored"],
+    ["archive_bot", "lost effect settlement"],
+    ["delete_bot", "archived"],
+  ] as const)(
+    "uses the committed outcome for the %s approval audit (%s)",
+    async (toolName, outcome) => {
+      const result = { ok: true as const, botId: "child-1", name: "Synthetic child" };
+      const archive = vi.spyOn(ChildBotsModule, "archiveSpawnedBot").mockResolvedValue({
+        ...result,
+        archiveOutcome: outcome === "lost effect settlement" ? "archived" : outcome,
+      });
+      const publish = vi.spyOn(RunMessagesModule, "publishMessage").mockResolvedValue(null);
+      try {
+        const f = fixture({ name: toolName, builtin: true, autoReview: true });
+        reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+        if (outcome === "lost effect settlement") {
+          const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+          f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+            input.data.status === "completed" ? { count: 0 } : update(input),
+          );
+        }
+        f.setCalls([{ args: { confirm_name: result.name }, executionId: "archive-child" }]);
+        await f.run();
+        expect(reviewMock).toHaveBeenCalledOnce();
+        expect(archive).toHaveBeenCalledOnce();
+        if (outcome === "lost effect settlement") {
+          expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+        } else {
+          expect(f.results.at(-1)).toEqual(result);
+          expect(f.effects[0]?.result).toEqual(result);
+        }
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(
+          outcome === "archived" ? 1 : 0,
+        );
+        const notifications = f.append.mock.calls.filter(
+          ([event]) => event.type === "bot.archived",
+        );
+        const cards = publish.mock.calls.filter(([, , , blocks]) =>
+          blocks.some((block) => block.kind === "child_bot"),
+        );
+        const expectedNotifications =
+          outcome === "restored" || outcome === "lost effect settlement" ? 0 : 1;
+        expect(notifications).toHaveLength(expectedNotifications);
+        expect(cards).toHaveLength(expectedNotifications);
+        if (outcome === "archived") {
+          expect(JSON.stringify(f.prisma.auditEvent.createMany.mock.calls)).not.toContain(
+            result.name,
+          );
+          await f.run();
+          expect(f.results.at(-1)).toEqual(result);
+          expect(archive).toHaveBeenCalledOnce();
+          expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
+        }
+      } finally {
+        archive.mockRestore();
+        publish.mockRestore();
+      }
     },
   );
 });

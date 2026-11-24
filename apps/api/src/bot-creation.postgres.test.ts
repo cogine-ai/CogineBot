@@ -36,6 +36,7 @@ describePostgres("bot creation intent HTTP acceptance", () => {
   const requestKind = new AsyncLocalStorage<"intro" | "archive" | "switch">();
   let afterIntroRead: (() => Promise<void>) | undefined;
   let afterArchiveSnapshot: (() => Promise<void>) | undefined;
+  let afterAlreadyArchived: (() => Promise<void>) | undefined;
   let beforeIntentLock: ((kind: "intro" | "archive") => void) | undefined;
   let afterSwitchComputerLock: (() => Promise<void>) | undefined;
   let afterArchiveIntentLock: (() => void) | undefined;
@@ -75,6 +76,16 @@ describePostgres("bot creation intent HTTP acceptance", () => {
             const result = await query(args);
             if (requestKind.getStore() === "intro" && args.where?.spawnKey)
               await afterIntroRead?.();
+            return result;
+          },
+          async updateMany({ args, query }) {
+            const result = await query(args);
+            if (
+              requestKind.getStore() === "archive" &&
+              args.where?.archivedAt === null &&
+              result.count === 0
+            )
+              await afterAlreadyArchived?.();
             return result;
           },
         },
@@ -291,6 +302,93 @@ describePostgres("bot creation intent HTTP acceptance", () => {
       afterArchiveSnapshot = undefined;
       beforeIntentLock = undefined;
       await Promise.allSettled([archive, ...(replay ? [replay] : [])]);
+    }
+  });
+
+  it("keeps the first archive timestamp when two requests read the active Bot", async () => {
+    const bot = await botWithoutIntro(input());
+    const firstSnapshot = signal();
+    const secondAttempt = signal();
+    const releaseFirst = signal();
+    const releaseSecond = signal();
+    let attempts = 0;
+    let snapshots = 0;
+    beforeIntentLock = (kind) => {
+      if (kind === "archive" && ++attempts === 2) secondAttempt.resolve();
+    };
+    afterArchiveSnapshot = async () => {
+      if (++snapshots === 1) {
+        firstSnapshot.resolve();
+        await releaseFirst.promise;
+      } else {
+        await releaseSecond.promise;
+      }
+    };
+    const archive = () =>
+      requestKind.run("archive", () => rpc(cookie, "bots/archive", { botId: bot.id }));
+    const first = archive();
+    let second: ReturnType<typeof archive> | undefined;
+    try {
+      await Promise.race([firstSnapshot.promise, first]);
+      second = archive();
+      await Promise.race([secondAttempt.promise, second]);
+      expect(attempts).toBe(2);
+      releaseFirst.resolve();
+      await expect(first).resolves.toEqual({ ok: true });
+      const archived = await database.prisma.bot.findUniqueOrThrow({ where: { id: bot.id } });
+      expect(archived.archivedAt).not.toBeNull();
+      releaseSecond.resolve();
+      await expect(second).resolves.toEqual({ ok: true });
+      expect(
+        (await database.prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).archivedAt,
+      ).toEqual(archived.archivedAt);
+    } finally {
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      afterArchiveSnapshot = undefined;
+      beforeIntentLock = undefined;
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
+  });
+
+  it("keeps the pin and screen on a Bot restored during a repeat archive", async () => {
+    const bot = await botWithoutIntro(input());
+    await rpc(cookie, "bots/archive", { botId: bot.id });
+    const computer = await database.prisma.computer.findUniqueOrThrow({
+      where: { scopeKey: `team:${actor.spaceId}` },
+    });
+    const releaseScreen = vi.spyOn(handles.sandbox, "releaseScreen");
+    const alreadyArchived = signal();
+    const release = signal();
+    afterAlreadyArchived = async () => {
+      alreadyArchived.resolve();
+      await release.promise;
+    };
+    const repeat = requestKind.run("archive", () => rpc(cookie, "bots/archive", { botId: bot.id }));
+    try {
+      await Promise.race([alreadyArchived.promise, repeat]);
+      await expect(rpc(cookie, "bots/restore", { botId: bot.id })).resolves.toEqual({ ok: true });
+      await rpc(cookie, "bots/update", { botId: bot.id, pinned: true });
+      await database.prisma.computer.update({
+        where: { id: computer.id },
+        data: { state: "running", providerRef: "synthetic-restored-computer" },
+      });
+      release.resolve();
+      await expect(repeat).resolves.toEqual({ ok: true });
+      expect(releaseScreen).not.toHaveBeenCalled();
+      expect(await database.prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
+        archivedAt: null,
+        pinned: true,
+      });
+    } finally {
+      release.resolve();
+      afterAlreadyArchived = undefined;
+      await Promise.allSettled([repeat]);
+      releaseScreen.mockRestore();
+      await database.prisma.computer.update({
+        where: { id: computer.id },
+        data: { state: computer.state, providerRef: computer.providerRef },
+      });
     }
   });
 
