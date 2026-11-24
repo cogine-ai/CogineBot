@@ -299,6 +299,7 @@ describe("saveSupermemoryMemory", () => {
 
   it.each([
     { status: 201, body: creation, written: true },
+    { status: 201, body: { memories: creation.memories }, written: true },
     { status: 200, body: creation, written: false },
     { status: 202, body: { id: "synthetic-doc", status: "queued" }, written: false },
     { status: 201, body: { ...creation, memories: [] }, written: false },

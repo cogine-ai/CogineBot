@@ -33,7 +33,6 @@ export type SupermemorySaveResponse = { ok: true; written?: true } | { ok: false
 export type SupermemoryProbeResponse = { ok: true } | { ok: false; error: string };
 
 const SupermemoryCreationSchema = z.object({
-  documentId: z.string().trim().min(1).nullable(),
   memories: z.tuple([
     z.object({ id: z.string().trim().min(1), memory: z.string(), isStatic: z.literal(false) }),
   ]),
