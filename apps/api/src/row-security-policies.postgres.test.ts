@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { ConnectorProvider } from "@rakazo/adapter-kit";
+import type { ManagedConnectorProvider } from "@rakazo/adapter-kit";
 import type { Prisma, RowSecurityPolicyStatus } from "@rakazo/db";
 import {
   answerRunInput,
@@ -92,7 +92,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     userId: string,
     spaceId: string,
     prisma = runtime!.prisma,
-    connector?: Partial<ConnectorProvider>,
+    connector?: Partial<ManagedConnectorProvider>,
   ) {
     const { createRouterClient } = await import("@orpc/server");
     const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
@@ -186,7 +186,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
 
   it("audits confirmed managed grants once across callbacks and polls", async () => {
     const connectionReady = vi.fn(async () => false);
-    const begin = vi.fn<ConnectorProvider["begin"]>(async ({ provider }) => ({
+    const begin = vi.fn<ManagedConnectorProvider["begin"]>(async ({ provider }) => ({
       state: "synthetic-provider-grant",
       authorizationUrl: provider.includes("-oauth-")
         ? "https://authorization.example.test/connect?code=synthetic"
@@ -317,11 +317,18 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
               select: { id: true },
             })
           : { id: connectionId };
-      const observing = Promise.withResolvers<void>();
-      const ready = Promise.withResolvers<boolean>();
-      const connectionReady = vi.fn(() => {
-        observing.resolve();
-        return ready.promise;
+      let markObserving!: () => void;
+      const observing = new Promise<void>((resolve) => {
+        markObserving = resolve;
+      });
+      let allowCompletion!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        allowCompletion = resolve;
+      });
+      const connectionReady = vi.fn(async () => {
+        markObserving();
+        await ready;
+        return true;
       });
       const cancelAuthorizationRequest = vi.fn(async () => undefined);
       const connector = {
@@ -348,11 +355,11 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           select: { targetId: true },
         });
       try {
-        await Promise.race([observing.promise, completed]);
+        await Promise.race([observing, completed]);
         expect(connectionReady).toHaveBeenCalledOnce();
         await inA(() => catalog.connections.catalog({}));
         expect(await audit()).toEqual([{ targetId: winner.id }]);
-        ready.resolve(true);
+        allowCompletion();
         if (status === "connected") {
           expect(await completed).toMatchObject({ status, remoteAccountId: grantId });
           expect(cancelAuthorizationRequest).not.toHaveBeenCalled();
@@ -365,7 +372,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         }
         expect(await audit()).toEqual([{ targetId: winner.id }]);
       } finally {
-        ready.resolve(true);
+        allowCompletion();
         await completed.catch(() => undefined);
         await catalogRuntime.pool.end();
       }
