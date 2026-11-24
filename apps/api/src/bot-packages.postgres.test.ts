@@ -28,8 +28,10 @@ import {
   claimEmptySpaceDeletionForMember,
   createDb,
   createSpaceForMember,
+  pruneAuditEvents,
   releaseSpaceDeletionClaim,
 } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   listAgentSkillRecords,
@@ -52,6 +54,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   let forbidSkillPayloadRead = false;
   let loseClaimAck = false;
   let loseCommitAck = false;
+  let loseRecoveryLookup = false;
+  let failNextNonceLookup = false;
+  let failNextAuditAppend = false;
   let afterMarkerAccepted: (() => Promise<void>) | undefined;
   let afterCompletionRollback: (() => Promise<void>) | undefined;
   const users: string[] = [];
@@ -66,6 +71,16 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         if (property === "$extends")
           return (...args: unknown[]) =>
             faultable(Reflect.apply(client.$extends, client, args) as PrismaClient);
+        if (property === "botPackageImport" && failNextNonceLookup)
+          return new Proxy(client.botPackageImport, {
+            get(model, operation, modelReceiver) {
+              if (operation !== "findUnique") return Reflect.get(model, operation, modelReceiver);
+              return async () => {
+                failNextNonceLookup = false;
+                throw new Error("Synthetic import receipt lookup unavailable");
+              };
+            },
+          });
         if (property !== "$transaction") return Reflect.get(client, property, receiver);
         return (...args: unknown[]) => {
           let onRollback: (() => Promise<void>) | undefined;
@@ -75,6 +90,17 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
               const value = await callback(
                 new Proxy(tx, {
                   get(target, key, txReceiver) {
+                    if (key === "auditEvent" && failNextAuditAppend)
+                      return new Proxy(target.auditEvent, {
+                        get(model, operation, modelReceiver) {
+                          if (operation !== "createMany")
+                            return Reflect.get(model, operation, modelReceiver);
+                          return async () => {
+                            failNextAuditAppend = false;
+                            throw new Error("Synthetic audit append unavailable");
+                          };
+                        },
+                      });
                     if (key === "agentSkill" && forbidSkillPayloadRead) {
                       return new Proxy(target.agentSkill, {
                         get(model, operation, modelReceiver) {
@@ -133,6 +159,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
                 }
                 if (loseCommitAck && value.status === "completed") {
                   loseCommitAck = false;
+                  failNextNonceLookup = loseRecoveryLookup;
                   throw new Error("Synthetic committed Bot acknowledgement lost");
                 }
               }
@@ -370,6 +397,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     forbidSkillPayloadRead = false;
     loseClaimAck = false;
     loseCommitAck = false;
+    loseRecoveryLookup = false;
+    failNextNonceLookup = false;
+    failNextAuditAppend = false;
     afterMarkerAccepted = undefined;
     afterCompletionRollback = undefined;
     readCodexCatalog.mockReset();
@@ -491,6 +521,97 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     ]);
     expect(outbound).toHaveBeenCalledTimes(2);
     outbound.mockClear();
+  });
+
+  it("recovers model creation on retry after both the commit acknowledgement and receipt lookup fail", async () => {
+    const owner = await account();
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+      modelKeySourceDigest: "e".repeat(64),
+    });
+    const resume = { clientNonce: randomUUID() };
+    const confirm = {
+      previewToken: plan.previewToken,
+      apiKey: "synthetic-audit-replay-key",
+      ...resume,
+    };
+    outbound.mockResolvedValueOnce(Response.json({ data: [{ id: model.modelId }] }));
+    loseCommitAck = true;
+    loseRecoveryLookup = true;
+    const warn = vi.spyOn(getLogger(), "warn");
+    try {
+      expect((await request(owner, "import", confirm)).status).toBe(500);
+      expect(
+        warn.mock.calls.filter(([message]) => message === "audit.event.recovery_failed"),
+      ).toEqual([["audit.event.recovery_failed", { action: "credential.created" }]]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(loseCommitAck).toBe(false);
+    expect(failNextNonceLookup).toBe(false);
+    const recovered = await call<BotPackageReceipt>(owner, "status", resume);
+    expect(recovered.status).toBe("completed");
+    expect(await modelCredentialAudit(owner)).toEqual([]);
+    const credential = await database.prisma.userModelCredential.findFirstOrThrow({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    failNextAuditAppend = true;
+    expect(await call<BotPackageReceipt>(owner, "resume", resume)).toEqual(recovered);
+    expect(failNextAuditAppend).toBe(false);
+    expect(await modelCredentialAudit(owner)).toEqual([]);
+    const readMarker = () =>
+      database.prisma.botPackageImport.findUniqueOrThrow({ where: { id: recovered.importId } });
+    expect(await readMarker()).toMatchObject({
+      createdModelCredentialId: credential.id,
+      modelCredentialCreatedAt: credential.createdAt,
+    });
+    expect(
+      await Promise.all([
+        call<BotPackageReceipt>(owner, "resume", resume),
+        call<BotPackageReceipt>(owner, "import", confirm),
+      ]),
+    ).toEqual([recovered, recovered]);
+    expect(await modelCredentialAudit(owner)).toEqual([
+      {
+        action: "credential.created",
+        targetId: credential.id,
+        spaceId: owner.actor.spaceId,
+        metadata: {},
+      },
+    ]);
+    const [audit] = await database.prisma.auditEvent.findMany({
+      where: { targetType: "model_credential", targetId: credential.id },
+    });
+    expect(audit?.createdAt).toEqual(credential.createdAt);
+    expect(await readMarker()).toMatchObject({
+      createdModelCredentialId: null,
+      modelCredentialCreatedAt: null,
+    });
+    expect(outbound).toHaveBeenCalledOnce();
+    outbound.mockClear();
+
+    vi.stubEnv("AUDIT_EVENT_RETENTION_DAYS", "1");
+    const expired = new Date(Date.now() - 2 * 86_400_000);
+    await database.prisma.auditEvent.update({
+      where: { id: audit!.id },
+      data: { createdAt: expired },
+    });
+    await database.prisma.botPackageImport.update({
+      where: { id: recovered.importId },
+      data: { createdModelCredentialId: credential.id, modelCredentialCreatedAt: expired },
+    });
+    expect(await pruneAuditEvents(database.prisma, 1, new Date())).toBeGreaterThan(0);
+    expect(await readMarker()).toMatchObject({
+      createdModelCredentialId: null,
+      modelCredentialCreatedAt: null,
+    });
+    vi.stubEnv("AUDIT_EVENT_RETENTION_DAYS", "365");
+    expect(await call<BotPackageReceipt>(owner, "resume", resume)).toMatchObject({
+      status: "completed",
+    });
+    expect(await modelCredentialAudit(owner)).toEqual([]);
   });
 
   it("rolls a rejected or failed backup connection back and resumes using the original nonce", async () => {

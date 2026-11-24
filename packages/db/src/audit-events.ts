@@ -133,29 +133,69 @@ export function recordAutoReviewPreferenceAudit(
   ]);
 }
 
+type CredentialAuditTarget = "bot_secret" | "webhook" | "model_credential";
+type CredentialAuditAction = "credential.created" | "credential.changed" | "credential.deleted";
+
+function credentialAuditRow(
+  actor: AuditUser,
+  targetType: CredentialAuditTarget,
+  targetId: string,
+  action: CredentialAuditAction,
+  happenedAt: Date,
+): AuditRow {
+  return {
+    // A model credential row has one creation, including import receipt replays.
+    id:
+      targetType === "model_credential" && action === "credential.created"
+        ? `${action}:${targetType}:${targetId}`
+        : randomUUID(),
+    createdAt: happenedAt,
+    actorType: "user",
+    actorId: actor.userId,
+    action,
+    targetType,
+    targetId,
+    outcome: "success",
+    metadata: {},
+  };
+}
+
 export function recordCredentialAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   actor: AuditUser,
-  target: { type: "bot_secret" | "webhook" | "model_credential"; ids: readonly string[] },
-  action: "credential.created" | "credential.changed" | "credential.deleted",
+  target: { type: CredentialAuditTarget; ids: readonly string[] },
+  action: CredentialAuditAction,
   happenedAt: Date,
 ): Promise<void> {
   if (!target.ids.length) return Promise.resolve();
   return appendAuditEvents(
     prisma,
     actor.spaceId,
-    target.ids.map((id) => ({
-      id: randomUUID(),
-      createdAt: happenedAt,
-      actorType: "user",
-      actorId: actor.userId,
-      action,
-      targetType: target.type,
-      targetId: id,
-      outcome: "success",
-      metadata: {},
-    })),
+    target.ids.map((id) => credentialAuditRow(actor, target.type, id, action, happenedAt)),
   );
+}
+
+export function recordImportedModelCredentialAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  importId: string,
+  credentialId: string,
+  happenedAt: Date,
+): Promise<void> {
+  const action = "credential.created";
+  return writeAuditEvents(prisma, actor.spaceId, [action], async (tx) => {
+    // Consume the pending receipt in the audit transaction. A failed append restores it.
+    await tx.$executeRaw`SET LOCAL lock_timeout = '500ms'`;
+    const consumed = await tx.$executeRaw`
+      UPDATE bot_package_imports
+      SET "createdModelCredentialId" = null, "modelCredentialCreatedAt" = null
+      WHERE id = ${importId} AND "spaceId" = ${actor.spaceId} AND "userId" = ${actor.userId}
+        AND status = 'completed' AND "createdModelCredentialId" = ${credentialId}
+        AND "modelCredentialCreatedAt" = ${happenedAt}`;
+    return consumed === 1
+      ? [credentialAuditRow(actor, "model_credential", credentialId, action, happenedAt)]
+      : [];
+  });
 }
 
 export function recordConnectionActivationAudit(
@@ -357,6 +397,17 @@ export function pruneAuditEvents(
     prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SET LOCAL statement_timeout = '1s'`;
+        await tx.$executeRaw`
+          WITH expired AS (
+            SELECT id FROM bot_package_imports
+            WHERE "modelCredentialCreatedAt" < ${before}
+            ORDER BY "modelCredentialCreatedAt", id
+            LIMIT ${AUDIT_PRUNE_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+          )
+          UPDATE bot_package_imports i
+          SET "createdModelCredentialId" = null, "modelCredentialCreatedAt" = null
+          FROM expired WHERE i.id = expired.id
+        `;
         return tx.$executeRaw`
           DELETE FROM cogine_audit.audit_events
           WHERE id IN (

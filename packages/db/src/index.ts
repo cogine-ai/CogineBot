@@ -11,6 +11,7 @@ export {
   recordConnectionActivationAudit,
   recordConnectionRevocationAudit,
   recordCredentialAudit,
+  recordImportedModelCredentialAudit,
 } from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";

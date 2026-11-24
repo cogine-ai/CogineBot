@@ -35,13 +35,15 @@ import { isOneShotRoutineCron } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import {
   activePluginSkillWhere,
+  auditEventRetentionDays,
   botCreationComputerKind,
   createBotRecordsInTransaction,
   lockSpaceForContentCreation,
-  recordCredentialAudit,
+  recordImportedModelCredentialAudit,
   Prisma as Sql,
   withTransactionRetry,
 } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
 import { redactSecretText } from "@rakazo/logging/redaction";
 import * as z from "zod";
 import { createAgentSkillsService, resolveSkillContent } from "./agent-skills.js";
@@ -289,6 +291,25 @@ export function createBotPackagesService(deps: Deps) {
       include: includeChildren,
     });
   }
+  async function finishReceipt(actor: Actor, row: Row) {
+    const { createdModelCredentialId, modelCredentialCreatedAt } = row;
+    const retention = auditEventRetentionDays(process.env.AUDIT_EVENT_RETENTION_DAYS);
+    if (
+      row.status === "completed" &&
+      createdModelCredentialId &&
+      modelCredentialCreatedAt &&
+      modelCredentialCreatedAt.getTime() >= Date.now() - retention * 86_400_000
+    )
+      await recordImportedModelCredentialAudit(
+        deps.prisma,
+        actor,
+        row.id,
+        createdModelCredentialId,
+        modelCredentialCreatedAt,
+      );
+    return receipt(actor, row);
+  }
+
   async function finish(context: Context, marker: Row, apiKey?: string) {
     const { clientNonce } = marker;
     const plan = marker.plan ? packagePlanSchema.parse(marker.plan) : undefined;
@@ -307,7 +328,6 @@ export function createBotPackagesService(deps: Deps) {
         message: "Select the original backup to resume this model connection.",
       });
     const kind = await botCreationComputerKind(deps.prisma);
-    let attempted: Awaited<ReturnType<typeof finishTransaction>> | undefined;
     let row: Row;
     try {
       let prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined;
@@ -325,11 +345,8 @@ export function createBotPackagesService(deps: Deps) {
           deps.remoteConnectors?.fetch,
         );
       }
-      const commit = async (tx: Prisma.TransactionClient) => {
-        attempted = undefined;
-        attempted = await finishTransaction(tx, context, clientNonce, kind, prepared);
-        return attempted.row;
-      };
+      const commit = (tx: Prisma.TransactionClient) =>
+        finishTransaction(tx, context, clientNonce, kind, prepared);
       row = await persistPreparedSecret(deps.prisma, deps.secrets, prepared, () =>
         transact(context, commit, modelKey !== undefined),
       );
@@ -341,29 +358,17 @@ export function createBotPackagesService(deps: Deps) {
           data: { status: "failed", revision: { increment: 1 } },
         })
         .catch(() => undefined);
-      const recovered = await findNonce(context.actor, clientNonce).catch(() => null);
+      const recovered = await findNonce(context.actor, clientNonce).catch(() => {
+        if (modelKey)
+          getLogger().warn("audit.event.recovery_failed", { action: "credential.created" });
+        return null;
+      });
       if (!recovered || (recovered.status !== "completed" && recovered.status !== "cancelled"))
         throw mapSpaceLifecycleError(error);
       await scope(context);
       row = recovered;
     }
-    // The nonce can also recover another attempt's receipt. Match the Bot created by this
-    // transaction before attributing a credential creation to this call.
-    if (
-      attempted?.createdModelCredentialId &&
-      row.status === "completed" &&
-      row.id === attempted.row.id &&
-      row.botId !== null &&
-      row.botId === attempted.row.botId
-    )
-      await recordCredentialAudit(
-        deps.prisma,
-        context.actor,
-        { type: "model_credential", ids: [attempted.createdModelCredentialId] },
-        "credential.created",
-        attempted.row.updatedAt,
-      );
-    return receipt(context.actor, row);
+    return finishReceipt(context.actor, row);
   }
   async function finishTransaction(
     tx: Prisma.TransactionClient,
@@ -371,10 +376,10 @@ export function createBotPackagesService(deps: Deps) {
     clientNonce: string,
     kind: string,
     prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined,
-  ): Promise<{ row: Row; createdModelCredentialId?: string }> {
+  ): Promise<Row> {
     const marker = await lockedNonce(tx, context.actor, clientNonce);
     if (!marker) throw new ORPCError("NOT_FOUND");
-    if (marker.status !== "importing" && marker.status !== "failed") return { row: marker };
+    if (marker.status !== "importing" && marker.status !== "failed") return marker;
     if (marker.botId || !marker.plan)
       throw new ORPCError("CONFLICT", { message: "This import cannot be resumed." });
     const document = packagePlanSchema.parse(marker.plan);
@@ -392,7 +397,7 @@ export function createBotPackagesService(deps: Deps) {
           deps.codexCatalog,
           true,
         )
-      : createdModel;
+      : (createdModel?.binding ?? null);
     const reviewedModel = binding ?? document.backupModelKey;
     const modelOmission =
       reviewedModel && !model
@@ -404,8 +409,8 @@ export function createBotPackagesService(deps: Deps) {
             "model",
           )
         : null;
-    if (document.modelOnly && !model) {
-      const row = await tx.botPackageImport.update({
+    if (document.modelOnly && !model)
+      return tx.botPackageImport.update({
         where: { id: marker.id },
         data: {
           status: "cancelled",
@@ -415,8 +420,6 @@ export function createBotPackagesService(deps: Deps) {
         },
         include: includeChildren,
       });
-      return { row };
-    }
     const bot = await createBotRecordsInTransaction(
       tx,
       context.actor,
@@ -481,18 +484,23 @@ export function createBotPackagesService(deps: Deps) {
           },
         });
     }
-    const row = await tx.botPackageImport.update({
+    return tx.botPackageImport.update({
       where: { id: marker.id },
       data: {
         status: "completed",
         botId: bot.id,
+        ...(createdModel
+          ? {
+              createdModelCredentialId: createdModel.binding.modelCredentialId,
+              modelCredentialCreatedAt: createdModel.createdAt,
+            }
+          : {}),
         plan: Sql.DbNull,
         ...(modelOmission ? { leftOut: [...safeLeftOut(marker.leftOut), modelOmission] } : {}),
         revision: { increment: 1 },
       },
       include: includeChildren,
     });
-    return { row, createdModelCredentialId: createdModel?.modelCredentialId };
   }
   return {
     async preview(context: Context, input: BotPackagePreviewInput) {
@@ -672,7 +680,7 @@ export function createBotPackagesService(deps: Deps) {
         return marker;
       });
       if (existing.status !== "importing" && existing.status !== "failed")
-        return receipt(context.actor, existing);
+        return finishReceipt(context.actor, existing);
       await deps.billing?.assertAccess(context.actor);
       return finish(context, existing, input.apiKey);
     },
@@ -732,7 +740,8 @@ export function createBotPackagesService(deps: Deps) {
       await scope(context);
       const row = await findNonce(context.actor, input.clientNonce);
       if (!row) throw new ORPCError("NOT_FOUND");
-      if (row.status !== "importing" && row.status !== "failed") return receipt(context.actor, row);
+      if (row.status !== "importing" && row.status !== "failed")
+        return finishReceipt(context.actor, row);
       await deps.billing?.assertAccess(context.actor);
       return finish(context, row, input.apiKey);
     },
