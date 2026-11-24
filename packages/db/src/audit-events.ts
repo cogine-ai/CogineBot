@@ -186,20 +186,36 @@ export function recordConnectionRevocationAudit(
   connectionId: string,
   remoteOutcome: ConnectionRevocationRemoteOutcome,
   happenedAt: Date,
+  expectedVersion?: string,
 ): Promise<void> {
-  return appendAuditEvents(prisma, actor.spaceId, [
-    {
-      id: `connection.revoked:${connectionId}`,
-      createdAt: happenedAt,
-      actorType: "user",
-      actorId: actor.userId,
-      action: "connection.revoked",
-      targetType: "connection",
-      targetId: connectionId,
-      outcome: "success",
-      metadata: { remoteOutcome },
-    },
-  ]);
+  return writeAuditEvents(prisma, actor.spaceId, ["connection.revoked"], async (tx) => {
+    if (expectedVersion !== undefined) {
+      // Compensation may have committed even when its response was lost.
+      const [current] = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM connections
+        WHERE id = ${connectionId}
+          AND "spaceId" = ${actor.spaceId}
+          AND "userId" = ${actor.userId}
+          AND status = 'revoked'
+          AND xmin::text = ${expectedVersion}
+        FOR SHARE`;
+      if (!current) return [];
+    }
+    return [
+      {
+        // Reauthorizing creates a new connection row with its own lifecycle.
+        id: `connection.revoked:${connectionId}`,
+        createdAt: happenedAt,
+        actorType: "user",
+        actorId: actor.userId,
+        action: "connection.revoked",
+        targetType: "connection",
+        targetId: connectionId,
+        outcome: "success",
+        metadata: { remoteOutcome },
+      },
+    ];
+  });
 }
 
 export type CommittedApprovalDecision = {

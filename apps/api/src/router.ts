@@ -7816,6 +7816,8 @@ export function createRouter(deps: RouterDeps) {
               connectorId: string;
               connectionRef: string;
               previousStatus: string;
+              revokedAt: Date;
+              revokedVersion: string;
             };
         const snapshot = await deps.prisma.connection.findFirst({
           where: {
@@ -7883,18 +7885,19 @@ export function createRouter(deps: RouterDeps) {
             });
             if (!row) return { kind: "unchanged" };
 
-            const updated = await tx.connection.updateMany({
-              where: {
-                id: row.id,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
-                status: { in: ["connected", "pending", "error"] },
-              },
-              data: { status: "revoked" },
-            });
+            // A failed compensation needs the row version, including across same-tick revokes.
+            const revokedAt = new Date();
+            const [revoked] = await tx.$queryRaw<Array<{ version: string }>>`
+              UPDATE connections
+              SET status = 'revoked', "updatedAt" = ${revokedAt}
+              WHERE id = ${row.id}
+                AND "spaceId" = ${context.actor.spaceId}
+                AND "userId" = ${context.actor.userId}
+                AND status IN ('connected', 'pending', 'error')
+              RETURNING xmin::text AS version`;
             // Before provider begin assigns a ref, disconnect is local. A
             // late begin result is handled by the existing begin-race cleanup.
-            if (updated.count === 0) return { kind: "unchanged" };
+            if (!revoked) return { kind: "unchanged" };
             if (lacksProviderAuthorization(row))
               return { kind: "settled", remoteOutcome: "not_requested" };
 
@@ -7964,6 +7967,8 @@ export function createRouter(deps: RouterDeps) {
               connectorId: row.connectorId,
               connectionRef,
               previousStatus: row.status,
+              revokedAt,
+              revokedVersion: revoked.version,
             };
           },
           { timeout: 60_000 },
@@ -7989,15 +7994,29 @@ export function createRouter(deps: RouterDeps) {
             // Restore when DELETE clearly did not run (including pre-delete list
             // timeouts). Post-delete timeouts stay ambiguous — leave revoked.
             if (shouldRestoreLocalAfterRemoteRevokeFailure(error)) {
-              await deps.prisma.connection.updateMany({
-                where: {
-                  id: input.connectionId,
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                  status: "revoked",
-                },
-                data: { status: outcome.previousStatus },
-              });
+              try {
+                await deps.prisma.connection.updateMany({
+                  where: {
+                    id: input.connectionId,
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                    status: "revoked",
+                  },
+                  data: { status: outcome.previousStatus },
+                });
+              } catch {
+                getLogger().warn("connections.revoke compensation failed", {
+                  connectionId: input.connectionId,
+                });
+                await recordConnectionRevocationAudit(
+                  deps.prisma,
+                  context.actor,
+                  input.connectionId,
+                  isRemoteRevokePreDeleteFailure(error) ? "not_requested" : "unconfirmed",
+                  outcome.revokedAt,
+                  outcome.revokedVersion,
+                );
+              }
             } else {
               getLogger().error(
                 "connections.revoke remote outcome uncertain; leaving local revoked",

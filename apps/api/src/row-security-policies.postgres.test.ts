@@ -586,6 +586,56 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         );
       },
     );
+    it.each(["still revoked", "restored", "revoked again"] as const)(
+      "keeps the provider error when compensation throws and the connection is %s",
+      async (result) => {
+        const row = await seed(`compensation-error-${result}`, "account");
+        const revoke = vi.fn<ManagedConnectorProvider["revoke"]>().mockRejectedValue(
+          Object.assign(new Error("Synthetic pre-delete provider failure"), {
+            remoteRevokePreDelete: true,
+          }),
+        );
+        const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, { revoke });
+        const delegate = runtime!.prisma.connection;
+        const restore = delegate.updateMany.bind(delegate);
+        const compensation = vi.spyOn(delegate, "updateMany").mockImplementationOnce((args) => {
+          if (result === "still revoked")
+            throw new Error("Synthetic compensation failed before write");
+          return (async () => {
+            const firstRevocation =
+              result === "revoked again"
+                ? await owner.prisma.connection.findUniqueOrThrow({
+                    where: { id: row.id },
+                    select: { updatedAt: true },
+                  })
+                : null;
+            await restore(args);
+            if (firstRevocation) {
+              // A later revoke can receive the same wall-clock timestamp as the first one.
+              await owner.prisma.connection.update({
+                where: { id: row.id },
+                data: { status: "revoked", updatedAt: firstRevocation.updatedAt },
+              });
+            }
+            throw new Error("Synthetic compensation result lost");
+          })() as ReturnType<typeof restore>;
+        });
+        try {
+          await expect(inA(() => connections.revoke({ connectionId: row.id }))).rejects.toThrow(
+            "Synthetic pre-delete provider failure",
+          );
+          expect(compensation).toHaveBeenCalledOnce();
+        } finally {
+          compensation.mockRestore();
+        }
+        expect(await status(row.id)).toEqual({
+          status: result === "restored" ? "connected" : "revoked",
+        });
+        expect(await audit(row.id)).toEqual(
+          result === "still revoked" ? expected(row.id, "not_requested") : [],
+        );
+      },
+    );
   });
 
   it("records a saved approval rule under its organization with metadata only", async () => {
