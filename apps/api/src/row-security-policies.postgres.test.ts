@@ -540,6 +540,110 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     }
   });
 
+  it("audits explicit automatic-review preferences once per committed change", async () => {
+    const api = (await auditRouterFor(userA, spaceA)).autoReview;
+    const otherSpace = (await auditRouterFor(userA, spaceC)).autoReview;
+    const secondRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+    const scope = { spaceId: spaceA, userId: userA };
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { actorId: userA, action: "approval.policy.changed" },
+        select: {
+          organizationId: true,
+          spaceId: true,
+          actorType: true,
+          actorId: true,
+          targetType: true,
+          targetId: true,
+          outcome: true,
+          metadata: true,
+        },
+      });
+    vi.stubEnv("RAKAZO_AUTO_REVIEW", "1");
+    try {
+      const second = (await auditRouterFor(userA, spaceA, secondRuntime.prisma)).autoReview;
+      expect(await inA(() => api.get())).toMatchObject({ enabled: true });
+      expect(await owner.prisma.actionAutoReviewPreference.count({ where: scope })).toBe(0);
+      const repeated = async (enabled: boolean) => {
+        const result = await Promise.all([
+          inA(() => api.set({ enabled })),
+          inA(() => second.set({ enabled })),
+        ]);
+        expect(result).toEqual([
+          expect.objectContaining({ enabled }),
+          expect.objectContaining({ enabled }),
+        ]);
+      };
+      // The first write pins the inherited value. Subsequent identical saves are no-ops.
+      await repeated(true);
+      expect(await audit()).toHaveLength(1);
+      await repeated(false);
+      expect(await audit()).toHaveLength(2);
+      await repeated(true);
+      const preference = await owner.prisma.actionAutoReviewPreference.findFirstOrThrow({
+        where: scope,
+      });
+      expect(preference.enabled).toBe(true);
+      const expected = {
+        organizationId: orgA,
+        spaceId: spaceA,
+        actorType: "user",
+        actorId: userA,
+        targetType: "auto_review_preference",
+        targetId: preference.id,
+        outcome: "success",
+      };
+      const records = await audit();
+      expect(records.filter((event) => (event.metadata as { enabled: boolean }).enabled)).toEqual(
+        Array.from({ length: 2 }, () => ({ ...expected, metadata: { enabled: true } })),
+      );
+      expect(records.filter((event) => !(event.metadata as { enabled: boolean }).enabled)).toEqual([
+        { ...expected, metadata: { enabled: false } },
+      ]);
+      expect(await inA(() => runtime!.prisma.auditEvent.findMany())).toEqual([]);
+      expect(
+        await runAsTenant({ spaceId: spaceC, userId: userA }, () => otherSpace.get()),
+      ).toMatchObject({ enabled: true });
+      expect(
+        await owner.prisma.actionAutoReviewPreference.count({
+          where: { spaceId: spaceC, userId: userA },
+        }),
+      ).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+      await owner.prisma.auditEvent.deleteMany({
+        where: { actorId: userA, action: "approval.policy.changed" },
+      });
+      await owner.prisma.actionAutoReviewPreference.deleteMany({ where: scope });
+      await secondRuntime.prisma.$disconnect();
+      await secondRuntime.pool.end();
+    }
+  });
+
+  it("preserves an automatic-review preference when audit storage is unavailable", async () => {
+    const api = (await auditRouterFor(userA, spaceA)).autoReview;
+    const scope = { spaceId: spaceA, userId: userA };
+    const grant = escapeIdentifier(groupRole!);
+    const warn = vi.spyOn(getLogger(), "warn").mockImplementation(() => {});
+    try {
+      await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+      expect(await inA(() => api.set({ enabled: true }))).toMatchObject({ enabled: true });
+      expect(await inA(() => api.set({ enabled: true }))).toMatchObject({ enabled: true });
+      expect(
+        await owner.prisma.actionAutoReviewPreference.findFirst({ where: scope }),
+      ).toMatchObject({
+        enabled: true,
+      });
+      expect(warn.mock.calls.filter(([message]) => message === "audit.event.write_failed")).toEqual(
+        [["audit.event.write_failed", { action: "approval.policy.changed" }]],
+      );
+    } finally {
+      await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+      warn.mockRestore();
+      await owner.prisma.actionAutoReviewPreference.deleteMany({ where: scope });
+    }
+  });
+
   it.each([
     { effect: "deny", metadata: { effect: "deny", matchKind: "tool" } },
     { effect: "invalid-fixture-category", metadata: {} },

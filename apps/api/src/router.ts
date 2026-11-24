@@ -310,6 +310,7 @@ import {
   readThinkingPreferences,
   readVoiceDefaults,
   recordApprovalRuleAudit,
+  recordAutoReviewPreferenceAudit,
   recordBotCredentialAudit,
   recordConnectionActivationAudit,
   recordSpaceModelChoice,
@@ -8643,21 +8644,27 @@ export function createRouter(deps: RouterDeps) {
         return loadAutoReviewSettings(deps, context.actor);
       }),
       set: authed.autoReview.set.handler(async ({ context, input }) => {
-        await deps.prisma.actionAutoReviewPreference.upsert({
-          where: {
-            spaceId_userId: {
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-            },
-          },
-          create: {
-            spaceId: context.actor.spaceId,
-            userId: context.actor.userId,
-            enabled: input.enabled,
-          },
-          update: { enabled: input.enabled },
+        const { actor } = context;
+        const { enabled } = input;
+        const scope = { spaceId: actor.spaceId, userId: actor.userId };
+        const saved = await deps.prisma.$transaction(async (tx) => {
+          const select = { id: true, enabled: true } as const;
+          // An explicit first save pins the preference, including the inherited value.
+          const [created] = await tx.actionAutoReviewPreference.createManyAndReturn({
+            data: { ...scope, enabled },
+            skipDuplicates: true,
+            select,
+          });
+          if (created) return created;
+          const [changed] = await tx.actionAutoReviewPreference.updateManyAndReturn({
+            where: { ...scope, enabled: { not: enabled } },
+            data: { enabled },
+            select,
+          });
+          return changed;
         });
-        return loadAutoReviewSettings(deps, context.actor);
+        if (saved) await recordAutoReviewPreferenceAudit(deps.prisma, actor, saved, new Date());
+        return loadAutoReviewSettings(deps, actor);
       }),
     },
     artifacts: {
