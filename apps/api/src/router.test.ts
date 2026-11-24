@@ -1744,12 +1744,15 @@ describe("connections.complete", () => {
     const revoke = vi.fn(async () => undefined);
     const tx = {
       $executeRaw: vi.fn(),
-      $queryRaw: vi.fn(async () => []),
+      $queryRaw: vi.fn(async (query: TemplateStringsArray, ..._params: unknown[]) =>
+        query.join(" ").includes("RETURNING xmin") ? [{ version: "1" }] : [],
+      ),
       connection: {
         findFirst: vi.fn(async () => current),
-        updateMany: vi.fn(async () => ({ count: 1 })),
         count: vi.fn(async () => 0),
       },
+      space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "org-test" })) },
+      auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
     };
     const deps = {
       prisma: {
@@ -1777,14 +1780,18 @@ describe("connections.complete", () => {
     await expect(client.connections.revoke({ connectionId: current.id })).resolves.toEqual({
       ok: true,
     });
-    expect(tx.connection.updateMany).toHaveBeenCalledWith(
+    expect(
+      tx.$queryRaw.mock.calls.filter(([query]) => query.join(" ").includes("RETURNING xmin")),
+    ).toEqual([[expect.any(Array), expect.any(Date), current.id, actor.spaceId, actor.userId]]);
+    expect(tx.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          id: current.id,
-          userId: actor.userId,
-          spaceId: actor.spaceId,
-        }),
-        data: { status: "revoked" },
+        data: [
+          expect.objectContaining({
+            action: "connection.revoked",
+            targetId: current.id,
+            metadata: { remoteOutcome: "not_requested" },
+          }),
+        ],
       }),
     );
     expect(tx.connection.count).not.toHaveBeenCalled();
@@ -2035,7 +2042,9 @@ describe("connections.complete", () => {
           updateMany: vi.fn(async () => ({ count: 1 })),
         },
         $executeRaw: vi.fn(),
-        $queryRaw: vi.fn(async () => []),
+        $queryRaw: vi.fn(async (query: TemplateStringsArray) =>
+          query.join(" ").includes("RETURNING xmin") ? [{ version: "1" }] : [],
+        ),
       };
       let transactionId = 0;
       const raw = {
