@@ -5,6 +5,7 @@ export {
   pruneAuditEvents,
   recordApprovalRuleAudit,
   recordAutomaticApprovalAudit,
+  recordBotCredentialAudit,
 } from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";

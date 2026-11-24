@@ -475,11 +475,12 @@ export async function prepareBotSecret(input: {
           data: { ciphertext: stored.ciphertext, ...(namedLogin && { auth }) },
         });
         if (updated.count !== 1) throw credentialChanged();
-      } else {
-        await tx.botSecret.create({
-          data: { id, ...where, origin: destination.origin, auth, ciphertext: stored.ciphertext },
-        });
+        return { created: false };
       }
+      await tx.botSecret.create({
+        data: { id, ...where, origin: destination.origin, auth, ciphertext: stored.ciphertext },
+      });
+      return { created: true };
     },
   };
 }
@@ -629,8 +630,9 @@ export async function storeBotSecret(
     const prepared = await prepareBotSecret({ ...input, requireBotOwner: true });
     return persistPreparedSecret(input.prisma, input.secretStore, prepared, () =>
       input.prisma.$transaction(async (tx) => {
-        await prepared.store(tx);
-        return getBotSecretMetadata(tx, input.scope, input.destination.name);
+        const { created } = await prepared.store(tx);
+        const row = await getBotSecretMetadata(tx, input.scope, input.destination.name);
+        return row && { ...row, credentialId: prepared.id, created };
       }),
     );
   });
@@ -827,7 +829,7 @@ export async function forgetBotSecret(
       where,
       select: { id: true, revision: true, auth: true },
     });
-    if (!current && expectedRevision === undefined) return { removed: false };
+    if (!current && expectedRevision === undefined) return { removed: false as const };
     if (
       !current ||
       (expectedRevision !== undefined && current.revision !== expectedRevision) ||
@@ -838,7 +840,7 @@ export async function forgetBotSecret(
       where: { ...where, id: current.id, revision: current.revision },
     });
     if (removed.count !== 1) throw credentialChanged();
-    return { removed: true };
+    return { removed: true as const, credentialId: current.id };
   });
 }
 

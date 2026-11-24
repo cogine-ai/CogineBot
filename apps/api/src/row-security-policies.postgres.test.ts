@@ -87,12 +87,14 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     runtime!.prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM public.${escapeIdentifier(table)} ORDER BY id`,
     );
-  async function approvalRulesFor(userId: string, spaceId: string, prisma = runtime!.prisma) {
+  async function auditRouterFor(userId: string, spaceId: string, prisma = runtime!.prisma) {
     const { createRouterClient } = await import("@orpc/server");
+    const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
     const { createRouter } = await import("./router.js");
     return createRouterClient(
       createRouter({
         prisma,
+        secrets: new EncryptedSecretStore("synthetic-audit-fixture-key"),
         env: {
           defaultProvider: "fake",
           defaultModel: "fake-model",
@@ -107,11 +109,73 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           actor: { userId, spaceId, email: "member@example.test", isDeploymentOwner: false },
         },
       },
-    ).approvalRules;
+    );
   }
 
+  it("keeps bot credential mutations scoped and preserves a write when audit insertion fails", async () => {
+    const botId = id("bot-a");
+    const { botSecrets } = await auditRouterFor(userA, spaceA);
+    const peer = (await auditRouterFor(userB, spaceA)).botSecrets;
+    const name = "audit-fixture";
+    const input = {
+      botId,
+      destination: {
+        name,
+        origin: "https://credential-fixture.example.test",
+        auth: { type: "bearer" as const },
+      },
+      value: "synthetic-credential-value",
+    };
+    await expect(
+      runAsTenant({ spaceId: spaceA, userId: userB }, () => peer.put(input)),
+    ).rejects.toThrow();
+    const initial = await inA(() => botSecrets.putForEdit({ ...input, expectedRevision: null }));
+    const credential = await owner.prisma.botSecret.findFirstOrThrow({
+      where: { botId, name },
+      select: { id: true },
+    });
+    const grant = escapeIdentifier(groupRole!);
+    await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+    try {
+      const updated = await inA(() =>
+        botSecrets.putForEdit({
+          ...input,
+          value: "synthetic-replacement",
+          expectedRevision: initial.revision,
+        }),
+      );
+      expect(updated.revision).not.toBe(initial.revision);
+    } finally {
+      await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+    }
+    await inA(() => botSecrets.remove({ botId, name }));
+    await inA(() => botSecrets.remove({ botId, name }));
+    expect(await owner.prisma.botSecret.count({ where: { botId, name } })).toBe(0);
+    expect(
+      await owner.prisma.auditEvent.findMany({
+        where: { targetId: credential.id },
+        orderBy: { action: "asc" },
+        select: {
+          organizationId: true,
+          spaceId: true,
+          actorId: true,
+          action: true,
+          metadata: true,
+        },
+      }),
+    ).toEqual(
+      ["credential.created", "credential.deleted"].map((action) => ({
+        organizationId: orgA,
+        spaceId: spaceA,
+        actorId: userA,
+        action,
+        metadata: {},
+      })),
+    );
+  });
+
   it("records a saved approval rule under its organization with metadata only", async () => {
-    const rules = await approvalRulesFor(userA, spaceA);
+    const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
     const rule = await inA(() =>
       rules.set({
         effect: "require_approval",
@@ -157,12 +221,16 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   });
 
   it("records one create and one delete across retries, races and foreign removes", async () => {
-    const rules = await approvalRulesFor(userA, spaceA);
-    const sharedMember = await approvalRulesFor(userB, spaceA);
-    const otherSpace = await approvalRulesFor(userA, spaceC);
+    const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
+    const { approvalRules: sharedMember } = await auditRouterFor(userB, spaceA);
+    const { approvalRules: otherSpace } = await auditRouterFor(userA, spaceC);
     const secondRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     try {
-      const secondClient = await approvalRulesFor(userA, spaceA, secondRuntime.prisma);
+      const { approvalRules: secondClient } = await auditRouterFor(
+        userA,
+        spaceA,
+        secondRuntime.prisma,
+      );
       const input = {
         effect: "always_allow" as const,
         matchKind: "site" as const,
@@ -220,7 +288,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           matchValue: "legacy_tool_fixture",
         },
       });
-      const rules = await approvalRulesFor(userA, spaceA);
+      const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
       await expect(inA(() => rules.remove({ id: stored.id }))).resolves.toEqual({ ok: true });
       expect(
         await owner.prisma.auditEvent.findUnique({
@@ -232,7 +300,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
   );
 
   it("keeps a committed approval rule when the restricted audit write fails", async () => {
-    const rules = await approvalRulesFor(userA, spaceA);
+    const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
     const grant = escapeIdentifier(groupRole!);
     await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
     try {
