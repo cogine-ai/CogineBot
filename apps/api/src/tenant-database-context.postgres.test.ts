@@ -11,7 +11,7 @@ import {
   InMemoryRealtimeFanout,
   MessagingTeamChatEmulator,
 } from "@rakazo/adapters";
-import type { Actor } from "@rakazo/contracts";
+import type { Actor, VoiceCredential } from "@rakazo/contracts";
 import { SCREEN_TARGET_ENDPOINT } from "@rakazo/core/node/screen-capability";
 import {
   boardEventTopic,
@@ -96,6 +96,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let second: { cookie: string; actor: Actor };
   let rejectConsent: string | undefined;
   let rejectRevocation = false;
+  let retryVoiceCreateFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -138,6 +139,18 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     const instrumented = runtime.prisma.$extends({
       query: {
+        userVoiceCredential: {
+          async create({ args, query }) {
+            const row = await query(args);
+            if (row.userId === retryVoiceCreateFor) {
+              retryVoiceCreateFor = undefined;
+              throw Object.assign(new Error("Synthetic voice credential conflict"), {
+                code: "P2034",
+              });
+            }
+            return row;
+          },
+        },
         messagingOutbound: {
           async updateMany({ args, query }) {
             inboundContexts.push(currentDbContext());
@@ -621,6 +634,95 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     });
     expect((await request(screenSecret)).status).toBe(403);
     expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("audits each committed voice credential change in the initiating Space", async () => {
+    const caller = await account("Voice-audit");
+    const otherSpace = await rpc<{ id: string }>(caller.cookie, "spaces/create", {
+      name: "Other voice Space",
+    });
+    const spaces = await owner.prisma.space.findMany({
+      where: { id: { in: [caller.actor.spaceId, otherSpace.id] } },
+    });
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { actorId: caller.actor.userId, targetType: "voice_credential" },
+        select: {
+          action: true,
+          actorType: true,
+          organizationId: true,
+          spaceId: true,
+          targetId: true,
+          outcome: true,
+          metadata: true,
+        },
+        orderBy: [{ action: "asc" }, { targetId: "asc" }],
+      });
+    const input = { provider: "openai", apiKey: "fixture-voice-key", voiceId: "alloy" };
+    const provider = vi.spyOn(adapters, "createVoiceProvider").mockReturnValue({
+      verify: async (key: string) => ({ ok: key !== "fixture-rejected-key" }),
+    } as never);
+    try {
+      expect(
+        (await raw(caller.cookie, "voice/connect", { ...input, apiKey: "fixture-rejected-key" }))
+          .status,
+      ).toBe(400);
+      expect((await raw(caller.cookie, "voice/connect", input, first.actor.spaceId)).status).toBe(
+        403,
+      );
+      expect(await audit()).toEqual([]);
+
+      retryVoiceCreateFor = caller.actor.userId;
+      const saved = await rpc<VoiceCredential>(caller.cookie, "voice/connect", input);
+      expect(retryVoiceCreateFor).toBeUndefined();
+      const savedRow = await owner.prisma.userVoiceCredential.findUniqueOrThrow({
+        where: { id: saved.id },
+      });
+      const savedSecret = await owner.prisma.secret.findUniqueOrThrow({
+        where: { id: savedRow.secretId },
+      });
+      expect(deleted.mock.calls.some(([ref]) => ref === savedSecret.ciphertext)).toBe(false);
+      const expected = (action: string, spaceId = caller.actor.spaceId) => ({
+        action,
+        actorType: "user",
+        organizationId: spaces.find((space) => space.id === spaceId)!.organizationId,
+        spaceId,
+        targetId: saved.id,
+        outcome: "success",
+        metadata: {},
+      });
+      await rpc(caller.cookie, "voice/setVoice", { provider: input.provider, voiceId: "nova" });
+      expect(await audit()).toEqual([expected("credential.created")]);
+
+      const replacement = await rpc<VoiceCredential>(
+        caller.cookie,
+        "voice/connect",
+        {
+          ...input,
+          apiKey: "fixture-voice-replacement",
+        },
+        otherSpace.id,
+      );
+      expect(replacement.id).toBe(saved.id);
+      expect(await owner.prisma.secret.findUnique({ where: { id: savedRow.secretId } })).toBeNull();
+      await rpc(second.cookie, "voice/disconnect", { provider: input.provider });
+      expect(
+        await owner.prisma.userVoiceCredential.findUnique({ where: { id: saved.id } }),
+      ).not.toBeNull();
+      await rpc(caller.cookie, "voice/disconnect", { provider: input.provider });
+      await rpc(caller.cookie, "voice/disconnect", { provider: input.provider }, otherSpace.id);
+      expect(
+        await owner.prisma.userVoiceCredential.findUnique({ where: { id: saved.id } }),
+      ).toBeNull();
+      expect(await audit()).toEqual([
+        expected("credential.changed", otherSpace.id),
+        expected("credential.created"),
+        expected("credential.deleted"),
+      ]);
+    } finally {
+      retryVoiceCreateFor = undefined;
+      provider.mockRestore();
+    }
   });
 
   it.each(["speak", "transcribe"])(
