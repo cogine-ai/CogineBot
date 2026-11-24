@@ -312,9 +312,9 @@ import {
   readVoiceDefaults,
   recordApprovalRuleAudit,
   recordAutoReviewPreferenceAudit,
-  recordBotCredentialAudit,
   recordConnectionActivationAudit,
   recordConnectionRevocationAudit,
+  recordCredentialAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -1214,10 +1214,10 @@ export function createRouter(deps: RouterDeps) {
       throw mapBotSecretStoreError(error);
     }
     if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
-    await recordBotCredentialAudit(
+    await recordCredentialAudit(
       deps.prisma,
       actor,
-      row.credentialId,
+      { type: "bot_secret", id: row.credentialId },
       row.created ? "credential.created" : "credential.changed",
       row.updatedAt,
     );
@@ -1235,10 +1235,10 @@ export function createRouter(deps: RouterDeps) {
       throw mapBotSecretStoreError(error);
     }
     if (result.removed)
-      await recordBotCredentialAudit(
+      await recordCredentialAudit(
         deps.prisma,
         actor,
-        result.credentialId,
+        { type: "bot_secret", id: result.credentialId },
         "credential.deleted",
         new Date(),
       );
@@ -3263,41 +3263,58 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       rotateWebhookSecret: authed.bots.rotateWebhookSecret.handler(async ({ context, input }) => {
-        const bot = await repos.getBot(context.actor, input.botId);
+        const { actor } = context;
+        const bot = await repos.getBot(actor, input.botId);
         const plaintext = randomBytes(32).toString("base64url");
         const stored = await deps.secrets.put(plaintext, {
           operationId: "bots.rotateWebhookSecret",
           traceId: "bots.rotateWebhookSecret",
-          spaceId: context.actor.spaceId,
-          userId: context.actor.userId,
+          spaceId: actor.spaceId,
+          userId: actor.userId,
           signal: context.signal ?? new AbortController().signal,
         });
-        await deps.prisma.$transaction(async (tx) => {
-          const previousSecretId = bot.webhookSecretId;
-          await tx.secret.create({
-            data: {
-              id: stored.id,
-              userId: context.actor.userId,
-              spaceId: context.actor.spaceId,
-              kind: "webhook",
-              ciphertext: stored.ciphertext,
-            },
-          });
-          await tx.bot.update({
-            where: { id: bot.id },
-            data: { webhookSecretId: stored.id },
-          });
-          if (previousSecretId) {
-            await tx.secret.deleteMany({
-              where: {
-                id: previousSecretId,
-                spaceId: context.actor.spaceId,
-                userId: context.actor.userId,
+        const changed = await persistPreparedSecret(deps.prisma, deps.secrets, stored, () =>
+          deps.prisma.$transaction(async (tx) => {
+            // Use the actual predecessor so concurrent rotations retire each superseded key.
+            const [current] = await tx.$queryRaw<Array<{ webhookSecretId: string | null }>>`
+                SELECT "webhookSecretId" FROM bots
+                WHERE id = ${bot.id} AND "spaceId" = ${actor.spaceId} AND "userId" = ${actor.userId}
+                  AND "archivedAt" IS NULL FOR NO KEY UPDATE`;
+            if (!current) throw new IsolationError();
+            await tx.secret.create({
+              data: {
+                id: stored.id,
+                userId: actor.userId,
+                spaceId: actor.spaceId,
                 kind: "webhook",
+                ciphertext: stored.ciphertext,
               },
             });
-          }
-        });
+            const { updatedAt } = await tx.bot.update({
+              where: { id: bot.id },
+              data: { webhookSecretId: stored.id },
+              select: { updatedAt: true },
+            });
+            if (current.webhookSecretId) {
+              await tx.secret.deleteMany({
+                where: {
+                  id: current.webhookSecretId,
+                  spaceId: actor.spaceId,
+                  userId: actor.userId,
+                  kind: "webhook",
+                },
+              });
+            }
+            return { replaced: current.webhookSecretId !== null, updatedAt };
+          }),
+        );
+        await recordCredentialAudit(
+          deps.prisma,
+          actor,
+          { type: "webhook", id: bot.id },
+          changed.replaced ? "credential.changed" : "credential.created",
+          changed.updatedAt,
+        );
         return {
           secret: plaintext,
           path: `/api/v1/bots/${bot.id}/webhook`,
