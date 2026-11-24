@@ -248,6 +248,14 @@ export interface ManagedConnectorProvider
   listConnectedExternalIds(context: AdapterContext): Promise<string[]>;
   connectionReady(context: AdapterContext, externalId: string): Promise<boolean>;
   warmDirectory?(): Promise<void>;
+  /** Resolve a stored grant or app reference to a remote account, excluding other grants. */
+  resolveConnectedAccountId?(
+    userId: string,
+    slug: string,
+    currentRef: string | null | undefined,
+    excludeIds?: string[],
+    spaceId?: string,
+  ): Promise<string | undefined>;
 }
 
 export interface MemoryStore {

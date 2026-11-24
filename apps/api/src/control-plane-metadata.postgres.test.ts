@@ -880,6 +880,92 @@ postgres("control-plane metadata with complete row policies", () => {
     ).toEqual([{ action: "connection.connected", spaceId: spaceA, actorId: userA, metadata: {} }]);
   });
 
+  it("resolves the exact remote account through the configured completion route", async () => {
+    const provider = {
+      listConnectedExternalIds: async () => [],
+      connectionReady: async () => {
+        assertTenant();
+        return true;
+      },
+      resolveConnectedAccountId: vi.fn(async function (
+        this: unknown,
+        _userId: string,
+        _slug: string,
+        ref: string | null | undefined,
+      ) {
+        expect(this).toBe(provider);
+        assertTenant();
+        return ref === "request-fixture" ? "new-account-fixture" : (ref ?? undefined);
+      }),
+    };
+    const settings = new IntegrationProviderSettings(
+      runtime.prisma,
+      new EncryptedSecretStore("synthetic-connection-fixture-key"),
+      "synthetic-identity",
+      {},
+      () => provider as unknown as ManagedConnectorProvider,
+    );
+    const call = await integrationRpc(settings, runtime.prisma);
+    expect(
+      (await call("integrationSetup/save", { provider: "composio", apiKey: "synthetic-fixture" }))
+        .status,
+    ).toBe(200);
+
+    const connectionId = id("exact-grant");
+    await owner.prisma.connection.createMany({
+      data: [
+        { id: connectionId, status: "pending", providerRef: "request-fixture" },
+        { id: id("other-grant"), status: "connected", providerRef: "other-account-fixture" },
+      ].map((row) => ({
+        ...row,
+        ...tenant(),
+        connectorId: "composio",
+        provider: row.id === connectionId ? "fixture-mail" : " FIXTURE-MAIL ",
+        displayName: "Synthetic mail",
+      })),
+    });
+
+    expect((await call("connections/complete", { connectionId })).status).toBe(200);
+    expect(provider.resolveConnectedAccountId).toHaveBeenLastCalledWith(
+      userA,
+      "fixture-mail",
+      "request-fixture",
+      ["other-account-fixture"],
+      spaceA,
+    );
+    expect(await owner.prisma.connection.findUnique({ where: { id: connectionId } })).toMatchObject(
+      {
+        status: "connected",
+        providerRef: "new-account-fixture",
+      },
+    );
+    expect(
+      await owner.prisma.auditEvent.count({
+        where: { targetId: connectionId, action: "connection.connected" },
+      }),
+    ).toBe(1);
+
+    const ambiguousId = id("app-only-grant");
+    await owner.prisma.connection.createMany({
+      data: [
+        { id: ambiguousId, status: "pending", provider: "fixture-mail" },
+        { id: id("legacy-app-grant"), status: "connected", provider: " FIXTURE-MAIL " },
+      ].map((row) => ({
+        ...row,
+        ...tenant(),
+        connectorId: "composio",
+        providerRef: row.provider,
+        displayName: "Synthetic mail",
+      })),
+    });
+    expect((await call("connections/complete", { connectionId: ambiguousId })).status).toBe(200);
+    expect(await owner.prisma.connection.findUnique({ where: { id: ambiguousId } })).toMatchObject({
+      status: "pending",
+      providerRef: "fixture-mail",
+    });
+    expect(await owner.prisma.auditEvent.count({ where: { targetId: ambiguousId } })).toBe(0);
+  });
+
   it.each(["complete", "revoke"] as const)(
     "rejects rotated provider credentials before a public %s side effect",
     async (operation) => {

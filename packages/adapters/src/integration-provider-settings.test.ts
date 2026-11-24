@@ -3,7 +3,10 @@ import type { Prisma, PrismaClient } from "@rakazo/db";
 import { currentDbContext, runAsTenant } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { InfisicalSecretStore } from "./infisical-secret-store.js";
-import { IntegrationProviderSettings } from "./integration-provider-settings.js";
+import {
+  IntegrationProviderSettings,
+  prepareManagedConnectorForTransaction,
+} from "./integration-provider-settings.js";
 import { infisicalFake } from "./secret-store-fake.js";
 import { EncryptedSecretStore } from "./secrets.js";
 
@@ -168,6 +171,44 @@ describe("integration provider settings", () => {
       });
     });
   });
+  it("keeps account lookup bound to the prepared credentials and preserves absent capabilities", async () => {
+    const f = fixture();
+    const wrapper = f.settings
+      .providers()
+      .find((provider) => provider.describe().id === "composio")!;
+    await f.settings.save({ provider: "composio", apiKey: "fake-first-key" }, context);
+    expect(
+      (await prepareManagedConnectorForTransaction(wrapper)).resolveConnectedAccountId,
+    ).toBeUndefined();
+
+    const adapter = {
+      ...f.adapter,
+      resolveConnectedAccountId: vi.fn(async function (this: ManagedConnectorProvider) {
+        expect(this).toBe(adapter);
+        return "account-fixture";
+      }),
+    };
+    f.factory.mockReturnValue(adapter);
+    await f.settings.save({ provider: "composio", apiKey: "fake-account-key" }, context);
+    const { provider, resolveConnectedAccountId } =
+      await prepareManagedConnectorForTransaction(wrapper);
+    expect(provider).toBeDefined();
+    expect(provider).not.toHaveProperty("resolveConnectedAccountId");
+    f.prisma.integrationProviderConfig.findUnique.mockClear();
+
+    await expect(
+      resolveConnectedAccountId!("user", "mail", "request-fixture", ["sibling"], "space"),
+    ).resolves.toBe("account-fixture");
+    expect(adapter.resolveConnectedAccountId).toHaveBeenCalledExactlyOnceWith(
+      "user",
+      "mail",
+      "request-fixture",
+      ["sibling"],
+      "space",
+    );
+    expect(f.prisma.integrationProviderConfig.findUnique).not.toHaveBeenCalled();
+  });
+
   it("returns no tools or catalog for unconfigured providers", async () => {
     const f = fixture();
     for (const provider of f.settings.providers()) {

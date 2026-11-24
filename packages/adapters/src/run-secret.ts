@@ -5,7 +5,7 @@ import {
   SecretAskPurpose,
 } from "@rakazo/contracts";
 import { isSecretAskBlock, runSecretKind } from "@rakazo/core";
-import type { PrismaClient, RunSecretWriter } from "@rakazo/db";
+import type { Connection, PrismaClient, RunSecretWriter } from "@rakazo/db";
 import {
   loadRunTurnCheckpointSecretEffectId,
   runLoginKind,
@@ -19,6 +19,8 @@ import {
   resolveRequestSecretDestination,
   sameSecretDestination,
 } from "./bot-secrets.js";
+import { lacksProviderAuthorization } from "./connector-account-binding.js";
+import { prepareManagedConnectorForTransaction } from "./integration-provider-settings.js";
 import { persistPreparedSecret } from "./secret-persistence.js";
 
 export { runSecretKind };
@@ -89,13 +91,59 @@ export function resolveMissingRunSecretAction(
   return { action: "ask" };
 }
 
+type RunConnection = Pick<
+  Connection,
+  "id" | "spaceId" | "userId" | "connectorId" | "provider" | "providerRef"
+>;
+type RunConnectionStatus = "connected" | "pending" | "missing";
+type RunConfirmationStatus = RunConnectionStatus | "awaiting_confirmation";
+
+export async function readRunConnectionStatus(
+  prisma: PrismaClient,
+  scope: Pick<Connection, "id" | "spaceId" | "userId">,
+): Promise<RunConnectionStatus> {
+  const latest = await prisma.connection.findFirst({ where: scope, select: { status: true } });
+  if (latest?.status === "connected" || latest?.status === "pending") return latest.status;
+  return "missing";
+}
+
+async function confirmRunConnection(
+  prisma: PrismaClient,
+  connector: ManagedConnectorProvider,
+  row: RunConnection,
+  context: AdapterContext,
+): Promise<RunConfirmationStatus> {
+  const scope = { id: row.id, spaceId: row.spaceId, userId: row.userId };
+  const { provider, resolveConnectedAccountId } =
+    await prepareManagedConnectorForTransaction(connector);
+  // The connection endpoint confirms account-aware grants by reference. An
+  // app-level readiness signal can instead describe an existing sibling.
+  if (resolveConnectedAccountId) {
+    const status = await readRunConnectionStatus(prisma, scope);
+    return status === "pending" ? "awaiting_confirmation" : status;
+  }
+  if (!provider || !(await provider.connectionReady(context, row.provider))) return "pending";
+
+  const result = await prisma.connection.updateMany({
+    where: {
+      ...scope,
+      connectorId: row.connectorId,
+      provider: row.provider,
+      providerRef: row.providerRef,
+      status: "pending",
+    },
+    data: { status: "connected" },
+  });
+  return result.count === 1 ? "connected" : readRunConnectionStatus(prisma, scope);
+}
+
 export async function reconcileManagedConnection(
   prisma: PrismaClient,
   connectors: { managed(id: string): ManagedConnectorProvider | undefined } | undefined,
   run: { spaceId: string; userId: string },
   context: AdapterContext,
   connectionId: string,
-): Promise<"connected" | "pending" | "missing"> {
+): Promise<RunConfirmationStatus> {
   const row = await prisma.connection.findFirst({
     where: {
       id: connectionId,
@@ -106,21 +154,14 @@ export async function reconcileManagedConnection(
   if (!row) return "missing";
   if (row.status === "connected") return "connected";
   if (row.status !== "pending") return "missing";
+  if (lacksProviderAuthorization(row)) return "pending";
   const connector = connectors?.managed(row.connectorId);
   if (!connector) return "pending";
   try {
-    const ready = await connector.connectionReady(context, row.provider);
-    if (ready) {
-      await prisma.connection.update({
-        where: { id: row.id },
-        data: { status: "connected" },
-      });
-      return "connected";
-    }
+    return await confirmRunConnection(prisma, connector, row, context);
   } catch {
     return "pending";
   }
-  return "pending";
 }
 
 export function createRunSecretWriter(secretStore: SecretStore): RunSecretWriter {
@@ -276,7 +317,7 @@ export async function tryCompleteConnectionWithCode(
   context: AdapterContext,
   connectionId: string,
   code: string,
-): Promise<{ connected: boolean; error?: string }> {
+): Promise<{ connected: boolean; awaitingConfirmation?: true; error?: string }> {
   const row = await prisma.connection.findFirst({
     where: {
       id: connectionId,
@@ -288,19 +329,16 @@ export async function tryCompleteConnectionWithCode(
   if (!row) return { connected: false };
   // Already finished on a prior attempt; do not resubmit the OTP.
   if (row.status === "connected") return { connected: true };
+  if (lacksProviderAuthorization(row)) return { connected: false };
   const connector = connectors?.managed(row.connectorId);
   if (!connector) return { connected: false };
   const state = row.providerRef ?? row.provider;
   try {
     await connector.complete({ state, code }, context);
-    const ready = await connector.connectionReady(context, row.provider);
-    if (ready) {
-      await prisma.connection.update({
-        where: { id: row.id },
-        data: { status: "connected" },
-      });
-    }
-    return { connected: ready };
+    const status = await confirmRunConnection(prisma, connector, row, context);
+    return status === "awaiting_confirmation"
+      ? { connected: false, awaitingConfirmation: true }
+      : { connected: status === "connected" };
   } catch {
     return {
       connected: false,
