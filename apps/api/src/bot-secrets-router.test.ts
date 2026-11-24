@@ -94,6 +94,8 @@ function botSecretDeps(seed: Row[] = []) {
     }),
   };
   const prisma = {
+    space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "org-1" })) },
+    auditEvent: { createMany: vi.fn(async (_args: unknown) => ({ count: 1 })) },
     bot: {
       findMany: vi.fn(
         async (args: {
@@ -201,6 +203,53 @@ afterEach(() => {
 });
 
 describe("botSecrets router", () => {
+  it("records committed owner credential changes without retaining credential content", async () => {
+    const { call, prisma, rows } = botSecretDeps();
+    const input = {
+      ...putInput("https://credential-fixture.example.test"),
+      value: "synthetic-credential-value",
+    };
+    const created = await call("putForEdit", { ...input, expectedRevision: null });
+    expect(created.status).toBe(200);
+    const { id, revision } = rows[0]!;
+    expect(created.body.json).not.toHaveProperty("credentialId");
+    expect(created.body.json).not.toHaveProperty("created");
+    const changed = await call("putForEdit", { ...input, expectedRevision: revision });
+    expect(changed.status).toBe(200);
+    const rejected = await call("putForEdit", { ...input, expectedRevision: revision });
+    expect(rejected.status).toBe(409);
+
+    const remove = { botId: input.botId, name: input.destination.name };
+    expect((await call("removeForEdit", { ...remove, expectedRevision: revision })).status).toBe(
+      409,
+    );
+    expect((await call("remove", remove)).body.json).toEqual({ ok: true });
+    expect((await call("remove", remove)).body.json).toEqual({ ok: true });
+    expect(rows).toHaveLength(0);
+
+    const actions = ["credential.created", "credential.changed", "credential.deleted"];
+    expect(prisma.auditEvent.createMany.mock.calls.map(([args]) => args)).toEqual(
+      actions.map((action) => ({
+        skipDuplicates: true,
+        data: [
+          {
+            id: expect.any(String),
+            createdAt: expect.any(Date),
+            organizationId: "org-1",
+            spaceId: actor.spaceId,
+            actorType: "user",
+            actorId: actor.userId,
+            action,
+            targetType: "bot_secret",
+            targetId: id,
+            outcome: "success",
+            metadata: {},
+          },
+        ],
+      })),
+    );
+  });
+
   it("requires a revision to save named fields and keeps older forms from replacing them", async () => {
     const { call, rows, secrets } = botSecretDeps();
     const login = {

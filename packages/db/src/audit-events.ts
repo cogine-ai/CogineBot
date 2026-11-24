@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ActionApprovalRuleSchema } from "@rakazo/contracts";
 import { getLogger } from "@rakazo/logging";
 import type { Prisma, PrismaClient } from "./client.js";
@@ -12,7 +13,7 @@ type ApprovalRuleChange = {
 
 const approvalRuleAuditMetadata = ActionApprovalRuleSchema.pick({ effect: true, matchKind: true });
 
-type ApprovalActor = { userId: string; spaceId: string };
+type AuditUser = { userId: string; spaceId: string };
 type AuditRow = Omit<Prisma.AuditEventCreateManyInput, "organizationId" | "spaceId">;
 
 function approvalRuleAuditRow(
@@ -83,13 +84,35 @@ async function appendAuditEvents(
 
 export function recordApprovalRuleAudit(
   prisma: Pick<PrismaClient, "$transaction">,
-  actor: ApprovalActor,
+  actor: AuditUser,
   ruleId: string,
   happenedAt: Date,
   change: ApprovalRuleChange,
 ): Promise<void> {
   return appendAuditEvents(prisma, actor.spaceId, [
     approvalRuleAuditRow(actor.userId, ruleId, happenedAt, change),
+  ]);
+}
+
+export function recordBotCredentialAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  credentialId: string,
+  action: "credential.created" | "credential.changed" | "credential.deleted",
+  happenedAt: Date,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      id: randomUUID(),
+      createdAt: happenedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action,
+      targetType: "bot_secret",
+      targetId: credentialId,
+      outcome: "success",
+      metadata: {},
+    },
   ]);
 }
 
@@ -102,7 +125,7 @@ export type CommittedApprovalDecision = {
 
 export function recordManualApprovalAudit(
   prisma: Pick<PrismaClient, "$transaction">,
-  actor: ApprovalActor,
+  actor: AuditUser,
   run: { runId: string; threadId: string },
   { effectId, decision, happenedAt, createdRules }: CommittedApprovalDecision,
 ): Promise<void> {

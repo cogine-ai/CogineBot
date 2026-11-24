@@ -28,7 +28,6 @@ import type {
   ComputerExecutionLease,
   ConnectorRegistry,
   FaviconResolver,
-  getBotSecretMetadata,
   IntegrationProviderSettings,
   McpConnector,
   MemoryProviderResolver,
@@ -308,6 +307,7 @@ import {
   readThinkingPreferences,
   readVoiceDefaults,
   recordApprovalRuleAudit,
+  recordBotCredentialAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -1191,7 +1191,7 @@ export function createRouter(deps: RouterDeps) {
   }
   async function putOwnedBotCredential(actor: Actor, input: BotSecretPutInput) {
     const bot = await repos.getBot(actor, input.botId);
-    let row: Awaited<ReturnType<typeof getBotSecretMetadata>>;
+    let row: Awaited<ReturnType<typeof storeBotSecret>>;
     try {
       row = await storeBotSecret({
         prisma: deps.prisma,
@@ -1205,18 +1205,34 @@ export function createRouter(deps: RouterDeps) {
       throw mapBotSecretStoreError(error);
     }
     if (!row) throw new ORPCError("CONFLICT", { message: "Credential was not saved" });
+    await recordBotCredentialAudit(
+      deps.prisma,
+      actor,
+      row.credentialId,
+      row.created ? "credential.created" : "credential.changed",
+      row.updatedAt,
+    );
     return botSecretMetadataDto(row);
   }
   async function removeOwnedBotCredential(actor: Actor, input: BotSecretRemoveInput) {
     const bot = await repos.getBot(actor, input.botId);
+    let result: Awaited<ReturnType<typeof forgetBotSecret>>;
     try {
-      await forgetBotSecret(deps.prisma, botSecretScope(actor, bot.id), input.name, {
+      result = await forgetBotSecret(deps.prisma, botSecretScope(actor, bot.id), input.name, {
         expectedRevision: input.expectedRevision,
         requireBotOwner: true,
       });
     } catch (error) {
       throw mapBotSecretStoreError(error);
     }
+    if (result.removed)
+      await recordBotCredentialAudit(
+        deps.prisma,
+        actor,
+        result.credentialId,
+        "credential.deleted",
+        new Date(),
+      );
     return { ok: true as const };
   }
   async function readOwnedBotCredential(
