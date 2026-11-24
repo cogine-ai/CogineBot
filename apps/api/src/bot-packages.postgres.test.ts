@@ -53,6 +53,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
   let loseClaimAck = false;
   let loseCommitAck = false;
   let afterMarkerAccepted: (() => Promise<void>) | undefined;
+  let afterCompletionRollback: (() => Promise<void>) | undefined;
   const users: string[] = [];
   const organizations: string[] = [];
   const readCodexCatalog = vi.fn<CodexLiveCatalog["read"]>();
@@ -67,10 +68,11 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
             faultable(Reflect.apply(client.$extends, client, args) as PrismaClient);
         if (property !== "$transaction") return Reflect.get(client, property, receiver);
         return (...args: unknown[]) => {
+          let onRollback: (() => Promise<void>) | undefined;
           if (typeof args[0] === "function") {
             const callback = args[0] as (tx: Prisma.TransactionClient) => Promise<unknown>;
-            args[0] = (tx: Prisma.TransactionClient) =>
-              callback(
+            args[0] = async (tx: Prisma.TransactionClient) => {
+              const value = await callback(
                 new Proxy(tx, {
                   get(target, key, txReceiver) {
                     if (key === "agentSkill" && forbidSkillPayloadRead) {
@@ -103,26 +105,42 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
                   },
                 }),
               );
+              if (
+                afterCompletionRollback &&
+                value &&
+                typeof value === "object" &&
+                "status" in value &&
+                value.status === "completed"
+              ) {
+                onRollback = afterCompletionRollback;
+                afterCompletionRollback = undefined;
+                throw new Error("Synthetic rollback after the completion callback");
+              }
+              return value;
+            };
           }
           return (Reflect.apply(client.$transaction, client, args) as Promise<unknown>).then(
             async (value) => {
-              const row = value && typeof value === "object" && "row" in value ? value.row : value;
-              if (row && typeof row === "object" && "status" in row) {
-                if (row.status === "importing" && afterMarkerAccepted) {
+              if (value && typeof value === "object" && "status" in value) {
+                if (value.status === "importing" && afterMarkerAccepted) {
                   const effect = afterMarkerAccepted;
                   afterMarkerAccepted = undefined;
                   await effect();
                 }
-                if (loseClaimAck && row.status === "importing") {
+                if (loseClaimAck && value.status === "importing") {
                   loseClaimAck = false;
                   throw new Error("Synthetic accepted marker acknowledgement lost");
                 }
-                if (loseCommitAck && row.status === "completed") {
+                if (loseCommitAck && value.status === "completed") {
                   loseCommitAck = false;
                   throw new Error("Synthetic committed Bot acknowledgement lost");
                 }
               }
               return value;
+            },
+            async (error: unknown) => {
+              await onRollback?.();
+              throw error;
             },
           );
         };
@@ -353,6 +371,7 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     loseClaimAck = false;
     loseCommitAck = false;
     afterMarkerAccepted = undefined;
+    afterCompletionRollback = undefined;
     readCodexCatalog.mockReset();
     vi.unstubAllEnvs();
     expect(outbound).not.toHaveBeenCalled();
@@ -407,12 +426,19 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const imported = await call<BotPackageReceipt>(owner, "import", confirm);
     expect(loseCommitAck).toBe(false);
     expect(await call<BotPackageReceipt>(owner, "import", confirm)).toEqual(imported);
-    expect(await modelCredentialAudit(owner)).toEqual([]);
     expect(outbound).toHaveBeenCalledTimes(1);
     outbound.mockClear();
     const row = await database.prisma.userModelCredential.findFirstOrThrow({
       where: { userId: owner.actor.userId, provider: model.provider },
     });
+    expect(await modelCredentialAudit(owner)).toEqual([
+      {
+        action: "credential.created",
+        targetId: row.id,
+        spaceId: owner.actor.spaceId,
+        metadata: {},
+      },
+    ]);
     expect(await database.prisma.bot.findUnique({ where: { id: imported.botId! } })).toMatchObject({
       modelProvider: model.provider,
       modelId: model.modelId,
@@ -427,6 +453,44 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     const replay = await call<BotPackagePreview>(owner, "preview", input);
     expect(replay.modelKey).toBeUndefined();
     expect(replay.model).toEqual(model);
+  });
+
+  it("does not audit a rolled-back credential when recovering another attempt's receipt", async () => {
+    const owner = await account();
+    const model = { provider: "openai", modelId: "gpt-4.1" };
+    const plan = await call<BotPackagePreview>(owner, "preview", {
+      source: JSON.stringify({ format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model }),
+      importModelKey: true,
+      modelKeySourceDigest: "d".repeat(64),
+    });
+    const resume = { clientNonce: randomUUID(), apiKey: "synthetic-audit-recovery-key" };
+    const verify = () => Response.json({ data: [{ id: model.modelId }] });
+    outbound
+      .mockImplementationOnce(async () => verify())
+      .mockImplementationOnce(async () => verify());
+    let winner: BotPackageReceipt | undefined;
+    afterCompletionRollback = async () => {
+      winner = await call<BotPackageReceipt>(owner, "resume", resume);
+    };
+    const recovered = await call<BotPackageReceipt>(owner, "import", {
+      previewToken: plan.previewToken,
+      ...resume,
+    });
+    expect(winner?.status).toBe("completed");
+    expect(recovered).toEqual(winner);
+    const credential = await database.prisma.userModelCredential.findFirstOrThrow({
+      where: { userId: owner.actor.userId, provider: model.provider },
+    });
+    expect(await modelCredentialAudit(owner)).toEqual([
+      {
+        action: "credential.created",
+        targetId: credential.id,
+        spaceId: owner.actor.spaceId,
+        metadata: {},
+      },
+    ]);
+    expect(outbound).toHaveBeenCalledTimes(2);
+    outbound.mockClear();
   });
 
   it("rolls a rejected or failed backup connection back and resumes using the original nonce", async () => {

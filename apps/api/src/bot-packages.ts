@@ -307,6 +307,8 @@ export function createBotPackagesService(deps: Deps) {
         message: "Select the original backup to resume this model connection.",
       });
     const kind = await botCreationComputerKind(deps.prisma);
+    let attempted: Awaited<ReturnType<typeof finishTransaction>> | undefined;
+    let row: Row;
     try {
       let prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined;
       if (
@@ -323,23 +325,14 @@ export function createBotPackagesService(deps: Deps) {
           deps.remoteConnectors?.fetch,
         );
       }
-      const commit = (tx: Prisma.TransactionClient) =>
-        finishTransaction(tx, context, clientNonce, kind, prepared);
-      const { row, createdModelCredentialId } = await persistPreparedSecret(
-        deps.prisma,
-        deps.secrets,
-        prepared,
-        () => transact(context, commit, modelKey !== undefined),
+      const commit = async (tx: Prisma.TransactionClient) => {
+        attempted = undefined;
+        attempted = await finishTransaction(tx, context, clientNonce, kind, prepared);
+        return attempted.row;
+      };
+      row = await persistPreparedSecret(deps.prisma, deps.secrets, prepared, () =>
+        transact(context, commit, modelKey !== undefined),
       );
-      if (createdModelCredentialId)
-        await recordCredentialAudit(
-          deps.prisma,
-          context.actor,
-          { type: "model_credential", ids: [createdModelCredentialId] },
-          "credential.created",
-          row.updatedAt,
-        );
-      return receipt(context.actor, row);
     } catch (error) {
       // An acknowledgement failure may follow a successful commit. Never turn it into a new write.
       await deps.prisma.botPackageImport
@@ -349,12 +342,28 @@ export function createBotPackagesService(deps: Deps) {
         })
         .catch(() => undefined);
       const recovered = await findNonce(context.actor, clientNonce).catch(() => null);
-      if (recovered && (recovered.status === "completed" || recovered.status === "cancelled")) {
-        await scope(context);
-        return receipt(context.actor, recovered);
-      }
-      throw mapSpaceLifecycleError(error);
+      if (!recovered || (recovered.status !== "completed" && recovered.status !== "cancelled"))
+        throw mapSpaceLifecycleError(error);
+      await scope(context);
+      row = recovered;
     }
+    // The nonce can also recover another attempt's receipt. Match the Bot created by this
+    // transaction before attributing a credential creation to this call.
+    if (
+      attempted?.createdModelCredentialId &&
+      row.status === "completed" &&
+      row.id === attempted.row.id &&
+      row.botId !== null &&
+      row.botId === attempted.row.botId
+    )
+      await recordCredentialAudit(
+        deps.prisma,
+        context.actor,
+        { type: "model_credential", ids: [attempted.createdModelCredentialId] },
+        "credential.created",
+        attempted.row.updatedAt,
+      );
+    return receipt(context.actor, row);
   }
   async function finishTransaction(
     tx: Prisma.TransactionClient,
