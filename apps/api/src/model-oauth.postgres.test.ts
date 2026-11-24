@@ -134,6 +134,14 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     }
   }
 
+  function credentialAudit(actor: Actor) {
+    return a.prisma.auditEvent.findMany({
+      where: { actorId: actor.userId, targetType: "model_credential" },
+      orderBy: { action: "asc" },
+      select: { action: true, targetId: true, spaceId: true, metadata: true },
+    });
+  }
+
   it.each([
     ["anthropic", false],
     ["chatgpt-plan", false],
@@ -559,6 +567,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     expect(stored?.handoffCiphertext).toBeTruthy();
     expect(stored?.handoffCiphertext).not.toContain(verifier);
     expect(first.providerStarted).not.toHaveBeenCalled();
+    expect(await credentialAudit(actor)).toEqual([]);
     const stranger = process(b, await member());
     await expect(
       stranger.client.models.submitOAuthCode({ loginId: id, code: "fixture-code" }),
@@ -580,6 +589,13 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       where: { userId: actor.userId },
     });
     expect(existing).toHaveLength(1);
+    const issued = {
+      action: "credential.created",
+      targetId: existing[0]!.id,
+      spaceId: actor.spaceId,
+      metadata: {},
+    };
+    await vi.waitFor(async () => expect(await credentialAudit(actor)).toEqual([issued]));
     expect(existing[0]).toMatchObject({ label: "Manual", connectionRevision: 1 });
     expect(first.exchange.mock.calls.length + second.exchange.mock.calls.length).toBe(1);
     const ready = await first.oauth.sessions.read({ ...actor, id });
@@ -590,6 +606,13 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     await expect(first.client.models.finishOAuth({ loginId: id })).rejects.toMatchObject({
       code: "NOT_FOUND",
     });
+    expect(await credentialAudit(actor)).toEqual([issued]);
+    await second.client.models.disconnect({ provider: "anthropic" });
+    await second.client.models.disconnect({ provider: "anthropic" });
+    expect(await credentialAudit(actor)).toEqual([
+      issued,
+      { ...issued, action: "credential.deleted" },
+    ]);
   });
 
   it("makes a device login result visible across processes without transferring the exchange", async () => {
@@ -1051,6 +1074,15 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     expect(
       await a.prisma.userModelCredential.findMany({ where: { userId: actor.userId } }),
     ).toMatchObject([{ id: newer.id, connectionRevision: 2, label: "Reconnected" }]);
+    await vi.waitFor(async () =>
+      expect(await credentialAudit(actor)).toEqual(
+        [
+          { action: "credential.changed", targetId: newer.id },
+          { action: "credential.created", targetId: old.id },
+          { action: "credential.deleted", targetId: old.id },
+        ].map((event) => ({ ...event, spaceId: actor.spaceId, metadata: {} })),
+      ),
+    );
   });
 
   it("retires a first login after an intervening credential is created and explicitly disconnected", async () => {

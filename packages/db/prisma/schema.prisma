@@ -618,6 +618,8 @@ model BotPackageImport {
   leftOut          Json @default("[]")
   skillCount       Int @default(0)
   connectionCount  Int @default(0)
+  createdModelCredentialId String?
+  modelCredentialCreatedAt DateTime?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   components       BotPackageComponent[]

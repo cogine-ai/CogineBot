@@ -86,8 +86,11 @@ export async function createBackupModelKey(
     },
   });
   return {
-    modelProvider: model.provider,
-    modelId: model.modelId,
-    modelCredentialId: credential.id,
+    binding: {
+      modelProvider: model.provider,
+      modelId: model.modelId,
+      modelCredentialId: credential.id,
+    },
+    createdAt: credential.createdAt,
   };
 }
