@@ -563,6 +563,7 @@ import { findRunRecoveryBlockers, pendingQuotaWaitExpired } from "./run-recovery
 import {
   commitConsumedRunSecret,
   normalizeSecretAskPurpose,
+  readRunConnectionStatus,
   reconcileManagedConnection,
   resolveCompletedSecretLeftover,
   resolveMissingRunSecretAction,
@@ -2992,6 +2993,11 @@ const MODEL_LIMIT_RECOVERY_UNAVAILABLE = "Model limit recovery is no longer avai
 function runtimeFallbackModel(runtime: AgentRuntime) {
   return runtime.describe().capabilities.scripted ? { provider: "scripted", id: "scripted" } : null;
 }
+
+const pendingRunConnection = {
+  connectionStatus: "pending",
+  note: "Check this connection in Integrations after signing in.",
+} as const;
 
 export interface ExecutorDeps {
   runLease?: RunLease & { runId: string };
@@ -8161,6 +8167,21 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseOwner: workerId,
             leaseFence: fence,
           });
+          const interruptedEffectRecovery = async (result: unknown) => {
+            const recovery = nativeCheckpointRecovery(result);
+            const connectionId = secretDestination?.connectionId;
+            if (!connectionId) return recovery;
+            const status = await readRunConnectionStatus(deps.prisma, {
+              id: connectionId,
+              spaceId: run.spaceId,
+              userId: run.userId,
+            }).catch(() => "missing" as const);
+            if (status === "missing") return recovery;
+            return {
+              ...recovery,
+              ...(status === "pending" ? pendingRunConnection : { connectionStatus: status }),
+            };
+          };
           const claimOrReturn = async (
             from: "approved" | "intended",
           ): Promise<unknown | undefined> => {
@@ -8195,7 +8216,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   deps.prisma,
                   applied!.effect.id,
                   name,
-                  nativeCheckpointRecovery(current.result),
+                  await interruptedEffectRecovery(current.result),
                 );
               }
             }
@@ -8424,7 +8445,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (gate.action === "return") {
               const recovered = await recoverMemoryWrite(applied.effect);
               if (recovered !== undefined) return recovered;
-              if (secretDestination && !secretDestination.destination) {
+              // A receipt that only confirmed an existing connection never owned an input.
+              if (
+                applied.effect.status === "completed" &&
+                (gate.result as { submitted?: unknown } | null)?.submitted !== false &&
+                secretDestination &&
+                !secretDestination.destination
+              ) {
                 const replacementSecret = await deps.prisma.secret.findFirst({
                   where: {
                     spaceId: run.spaceId,
@@ -8486,7 +8513,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 (await recoverPageWrite(applied.effect)) ??
                 (await recoverMemoryWrite(applied.effect));
               if (recovered !== undefined) return recovered;
-              const recovery = nativeCheckpointRecovery(applied.effect.result);
+              const recovery = await interruptedEffectRecovery(applied.effect.result);
               return settleUncertainEffect(deps.prisma, applied.effect.id, gate.toolName, recovery);
             } else if (gate.action === "execute") {
               if (applied.effect.requiresPeerApprovalRecheck && viaConnector && deps.connector) {
@@ -10555,7 +10582,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 }
               }
               // Claim executing (above), take the secret, then connector complete().
-              // Retries without a secret reconcile via connectionReady / settle_attempt.
+              // Retries without a secret reconcile the current connection without resubmitting.
               return commitConsumedRunSecret({
                 deleteSecret: async () => {
                   await deps.prisma.secret.delete({
@@ -10563,17 +10590,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   });
                 },
                 afterSecretTaken: async () => {
-                  let connectionResult: { connected: boolean; error?: string } | undefined;
-                  if (connectionId) {
-                    connectionResult = await tryCompleteConnectionWithCode(
-                      deps.prisma,
-                      deps.connectors,
-                      run,
-                      context,
-                      connectionId,
-                      plaintext,
-                    );
-                  }
+                  const connectionResult = connectionId
+                    ? await tryCompleteConnectionWithCode(
+                        deps.prisma,
+                        deps.connectors,
+                        run,
+                        context,
+                        connectionId,
+                        plaintext,
+                      )
+                    : undefined;
                   return purpose === "password" && !connectionId
                     ? {
                         ok: true,
@@ -10586,6 +10612,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                         ...(connectionResult
                           ? {
                               connected: connectionResult.connected,
+                              ...(connectionResult.awaitingConfirmation
+                                ? pendingRunConnection
+                                : {}),
                               ...(connectionResult.error
                                 ? { connectionError: connectionResult.error }
                                 : {}),
@@ -10608,6 +10637,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
             await bindScriptedEffect(recordedForAsk.effect, executionId);
             const missingSecretAction = resolveMissingRunSecretAction(recordedForAsk.effect);
             if (missingSecretAction.action === "return") return missingSecretAction.result;
+            if (missingSecretAction.action === "settle_attempt") {
+              // The effect could have been claimed after the first read. A
+              // committed connection status cannot prove what happened to its input.
+              return settleUncertainEffect(
+                deps.prisma,
+                recordedForAsk.effect.id,
+                "request_secret",
+                await interruptedEffectRecovery(recordedForAsk.effect.result),
+              );
+            }
             if (connectionId) {
               const connectionStatus = await reconcileManagedConnection(
                 deps.prisma,
@@ -10617,45 +10656,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 connectionId,
               );
               if (connectionStatus === "connected") {
-                const connectedResult = {
-                  ok: true,
-                  submitted: true,
-                  connected: true,
-                };
-                if (recordedForAsk.effect.status === "executing") {
-                  return (await completeExternalEffect(
-                    deps.prisma,
-                    recordedForAsk.effect.id,
-                    "executing",
-                    connectedResult,
-                  ))
-                    ? connectedResult
-                    : uncertainEffectResult(name);
-                }
+                const connectedResult = { ok: true, submitted: false, connected: true };
                 return (await persistEffectResult(connectedResult))
                   ? connectedResult
                   : uncertainEffectResult(name);
               }
-            }
-            if (missingSecretAction.action === "settle_attempt") {
-              // Secret was taken and connector may have consumed the OTP; do not re-ask.
-              const failedAttempt = {
-                ok: true,
-                submitted: true,
-                connected: false,
-                connectionError: "Connection could not be completed.",
-              };
-              if (recordedForAsk.effect.status === "executing") {
-                return (await completeExternalEffect(
-                  deps.prisma,
-                  recordedForAsk.effect.id,
-                  "executing",
-                  failedAttempt,
-                ))
-                  ? failedAttempt
-                  : uncertainEffectResult(name);
-              }
-              return settleUncertainEffect(deps.prisma, recordedForAsk.effect.id, "request_secret");
             }
             const showSecretCard = async () => {
               if (!(await renewRunLease(deps, runId, workerId, fence))) {

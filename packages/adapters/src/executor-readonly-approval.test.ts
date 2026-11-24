@@ -149,6 +149,7 @@ function fixture({
   connectionIds = [],
   onConnectionRead,
   connectorProvider,
+  managedConnectors,
   otherTools = [],
   catalogToolName = "demo_execute_tool",
   runtimeProvider,
@@ -194,6 +195,7 @@ function fixture({
   connectionIds?: string[];
   onConnectionRead?: (count: number) => void;
   connectorProvider?: ConnectorProvider;
+  managedConnectors?: ExecutorDeps["connectors"];
   otherTools?: ConnectorTool[];
   catalogToolName?: string;
   runtimeProvider?: AgentRuntime;
@@ -581,6 +583,7 @@ function fixture({
       describe: () => ({ capabilities: { scripted: false } }),
       run: runtimeRun,
     },
+    connectors: managedConnectors,
     connector: connectorProvider ?? {
       discoverTools: async () =>
         builtin
@@ -3708,6 +3711,113 @@ describe("generated command credentials in a Run", () => {
     },
   );
 });
+
+it.each([
+  "code-submitted",
+  "interrupted-pending",
+  "interrupted-connected",
+  "late-interruption",
+  "denied",
+  "already-connected",
+] as const)(
+  "reports protected-input confirmation state without replaying a code (%s)",
+  async (scenario) => {
+    const hasCode = scenario === "code-submitted";
+    const alreadyConnected = scenario === "already-connected";
+    const confirmed = alreadyConnected || scenario === "interrupted-connected";
+    const denied = scenario === "denied";
+    const lateInterruption = scenario === "late-interruption";
+    const complete = vi.fn(async () => ({ connectionRef: "request-fixture" }));
+    const connectionReady = vi.fn(async () => true);
+    const f = fixture({
+      name: "request_secret",
+      builtin: true,
+      managedConnectors: {
+        managed: () =>
+          ({
+            complete,
+            connectionReady,
+            resolveConnectedAccountId: async () => "existing-account",
+          }) as never,
+      },
+    });
+    const args = { label: "Fixture code", purpose: "otp", connectionId: "pending-connection" };
+    const effect = {
+      id: "fixture-connection-effect",
+      runId: f.runRecord.id,
+      spaceId: f.runRecord.spaceId,
+      kind: "request_secret",
+      idempotencyKey: approvalEffectKey(f.runRecord.id, "request_secret", args),
+      status: hasCode
+        ? "approved"
+        : denied
+          ? "denied"
+          : lateInterruption || alreadyConnected
+            ? "intended"
+            : "executing",
+      updatedAt: new Date(0),
+      request: args,
+      result: null,
+    };
+    f.effects.push(effect);
+    Object.assign(f.prisma.connection, {
+      findFirst: vi.fn(async () => ({
+        id: args.connectionId,
+        spaceId: f.runRecord.spaceId,
+        userId: f.runRecord.userId,
+        status: confirmed ? "connected" : "pending",
+        connectorId: "fixture",
+        provider: "mail",
+        providerRef: "request-fixture",
+      })),
+    });
+    let codeAvailable = hasCode;
+    const deleteSecret = vi.fn(async () => {
+      codeAvailable = false;
+    });
+    Object.assign(f.prisma.secret, {
+      findFirst: vi.fn(async () => {
+        if (lateInterruption && effect.status === "intended") effect.status = "executing";
+        return codeAvailable
+          ? { id: "fixture-code-row", ciphertext: "synthetic-code", createdAt: new Date(1000) }
+          : null;
+      }),
+      delete: deleteSecret,
+    });
+    f.setCalls([{ args, executionId: "protected-input" }]);
+    await f.run();
+
+    const pending = {
+      connectionStatus: "pending",
+      note: "Check this connection in Integrations after signing in.",
+    };
+    const result = hasCode
+      ? { ok: true, submitted: true, connected: false, ...pending }
+      : alreadyConnected
+        ? { ok: true, submitted: false, connected: true }
+        : denied
+          ? { error: DENIED_ACTION_ERROR }
+          : {
+              error: expect.stringContaining("outcome is unknown"),
+              uncertain: true,
+              recovery: confirmed ? { connectionStatus: "connected" } : pending,
+            };
+    expect(f.results).toEqual([result]);
+    expect(effect).toMatchObject({
+      status: hasCode || alreadyConnected ? "completed" : denied ? "denied" : "uncertain",
+      ...(denied ? {} : { result }),
+    });
+    // A newer protected input in the Run still belongs to its own request.
+    if (!hasCode) codeAvailable = true;
+    await f.run();
+    expect(f.results).toEqual([result, result]);
+    expect(codeAvailable).toBe(!hasCode);
+    expect(complete).toHaveBeenCalledTimes(hasCode ? 1 : 0);
+    expect(deleteSecret).toHaveBeenCalledTimes(hasCode ? 1 : 0);
+    expect(connectionReady).not.toHaveBeenCalled();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+  },
+);
 
 it.each(["temporary", "saved", "invalid", "shadowed", "different-site"])(
   "reconciles a claimed website login after worker interruption (%s)",

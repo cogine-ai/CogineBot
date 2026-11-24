@@ -388,7 +388,8 @@ describe.each(["otp", "missing-secret"] as const)("Run connection commit with %s
     async (status) => {
       const f = fixture(true);
       f.connection.findFirst.mockResolvedValueOnce({ status });
-      await expect(f.settle()).resolves.toBe(entry === "otp" ? status === "connected" : status);
+      const expected = status === "pending" ? "awaiting_confirmation" : status;
+      await expect(f.settle()).resolves.toBe(entry === "otp" ? status === "connected" : expected);
       expect(f.connectionReady).not.toHaveBeenCalled();
       expect(f.connection.updateMany).not.toHaveBeenCalled();
       expect(f.complete).toHaveBeenCalledTimes(entry === "otp" ? 1 : 0);

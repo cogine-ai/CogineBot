@@ -96,8 +96,9 @@ type RunConnection = Pick<
   "id" | "spaceId" | "userId" | "connectorId" | "provider" | "providerRef"
 >;
 type RunConnectionStatus = "connected" | "pending" | "missing";
+type RunConfirmationStatus = RunConnectionStatus | "awaiting_confirmation";
 
-async function readRunConnectionStatus(
+export async function readRunConnectionStatus(
   prisma: PrismaClient,
   scope: Pick<Connection, "id" | "spaceId" | "userId">,
 ): Promise<RunConnectionStatus> {
@@ -111,13 +112,16 @@ async function confirmRunConnection(
   connector: ManagedConnectorProvider,
   row: RunConnection,
   context: AdapterContext,
-): Promise<RunConnectionStatus> {
+): Promise<RunConfirmationStatus> {
   const scope = { id: row.id, spaceId: row.spaceId, userId: row.userId };
   const { provider, resolveConnectedAccountId } =
     await prepareManagedConnectorForTransaction(connector);
   // The connection endpoint confirms account-aware grants by reference. An
   // app-level readiness signal can instead describe an existing sibling.
-  if (resolveConnectedAccountId) return readRunConnectionStatus(prisma, scope);
+  if (resolveConnectedAccountId) {
+    const status = await readRunConnectionStatus(prisma, scope);
+    return status === "pending" ? "awaiting_confirmation" : status;
+  }
   if (!provider || !(await provider.connectionReady(context, row.provider))) return "pending";
 
   const result = await prisma.connection.updateMany({
@@ -139,7 +143,7 @@ export async function reconcileManagedConnection(
   run: { spaceId: string; userId: string },
   context: AdapterContext,
   connectionId: string,
-): Promise<"connected" | "pending" | "missing"> {
+): Promise<RunConfirmationStatus> {
   const row = await prisma.connection.findFirst({
     where: {
       id: connectionId,
@@ -313,7 +317,7 @@ export async function tryCompleteConnectionWithCode(
   context: AdapterContext,
   connectionId: string,
   code: string,
-): Promise<{ connected: boolean; error?: string }> {
+): Promise<{ connected: boolean; awaitingConfirmation?: true; error?: string }> {
   const row = await prisma.connection.findFirst({
     where: {
       id: connectionId,
@@ -331,9 +335,10 @@ export async function tryCompleteConnectionWithCode(
   const state = row.providerRef ?? row.provider;
   try {
     await connector.complete({ state, code }, context);
-    return {
-      connected: (await confirmRunConnection(prisma, connector, row, context)) === "connected",
-    };
+    const status = await confirmRunConnection(prisma, connector, row, context);
+    return status === "awaiting_confirmation"
+      ? { connected: false, awaitingConfirmation: true }
+      : { connected: status === "connected" };
   } catch {
     return {
       connected: false,
