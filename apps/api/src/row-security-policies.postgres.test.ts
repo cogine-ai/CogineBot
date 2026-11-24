@@ -26,7 +26,7 @@ import {
   verifyRuntimeDatabase,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ROW_SECURITY_POLICIES } from "../../../packages/db/src/row-security-policies.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -182,6 +182,177 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         metadata: {},
       })),
     );
+  });
+
+  describe("Webhook credential audit", () => {
+    const botId = id("webhook-audit-bot");
+    const scope = { userId: userA, spaceId: spaceA };
+    const secretScope = { ...scope, kind: "webhook" };
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetType: "webhook", targetId: botId },
+        orderBy: { action: "desc" },
+        select: {
+          action: true,
+          actorId: true,
+          actorType: true,
+          organizationId: true,
+          spaceId: true,
+          outcome: true,
+          metadata: true,
+        },
+      });
+
+    beforeEach(async () => {
+      await owner.prisma.bot.create({
+        data: { id: botId, ...scope, name: "Webhook fixture", color: "ink" },
+      });
+    });
+
+    afterEach(async () => {
+      await owner.prisma.auditEvent.deleteMany({
+        where: { targetType: "webhook", targetId: botId },
+      });
+      await owner.prisma.bot.delete({ where: { id: botId } });
+      await owner.prisma.secret.deleteMany({ where: secretScope });
+    });
+
+    it("records first issue and concurrent replacement from the actual committed predecessor", async () => {
+      const client = (await auditRouterFor(userA, spaceA)).bots;
+      const peer = (await auditRouterFor(userB, spaceA)).bots;
+      const otherSpace = (await auditRouterFor(userA, spaceC)).bots;
+      await expect(
+        runAsTenant({ userId: userB, spaceId: spaceA }, () => peer.rotateWebhookSecret({ botId })),
+      ).rejects.toThrow();
+      await expect(
+        runAsTenant({ userId: userA, spaceId: spaceC }, () =>
+          otherSpace.rotateWebhookSecret({ botId }),
+        ),
+      ).rejects.toThrow();
+      expect(await audit()).toEqual([]);
+
+      const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
+      const put = EncryptedSecretStore.prototype.put;
+      const ready = Promise.withResolvers<void>();
+      let preparations = 0;
+      const holding = vi
+        .spyOn(EncryptedSecretStore.prototype, "put")
+        .mockImplementation(async function (
+          this: InstanceType<typeof EncryptedSecretStore>,
+          ...args
+        ) {
+          if (++preparations === 2) ready.resolve();
+          await ready.promise;
+          return put.apply(this, args);
+        });
+      const secondRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+      try {
+        const second = (await auditRouterFor(userA, spaceA, secondRuntime.prisma)).bots;
+        const results = await Promise.all([
+          inA(() => client.rotateWebhookSecret({ botId })),
+          inA(() => second.rotateWebhookSecret({ botId })),
+        ]);
+        expect(results[0].secret).not.toBe(results[1].secret);
+        const bot = await owner.prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+        const secrets = await owner.prisma.secret.findMany({ where: secretScope });
+        expect(secrets).toHaveLength(1);
+        expect(secrets[0]!.id).toBe(bot.webhookSecretId);
+        const store = new EncryptedSecretStore("synthetic-audit-fixture-key");
+        expect(results.map(({ secret }) => secret)).toContain(
+          await store.load(secrets[0]!.ciphertext, secrets[0]!.id),
+        );
+        expect(await audit()).toEqual(
+          ["credential.created", "credential.changed"].map((action) => ({
+            action,
+            actorId: userA,
+            actorType: "user",
+            organizationId: orgA,
+            spaceId: spaceA,
+            outcome: "success",
+            metadata: {},
+          })),
+        );
+        expect(await inA(() => runtime!.prisma.auditEvent.findMany())).toEqual([]);
+      } finally {
+        holding.mockRestore();
+        await secondRuntime.pool.end();
+      }
+    });
+
+    it("leaves the old key and audit intact when replacement rolls back", async () => {
+      const client = (await auditRouterFor(userA, spaceA)).bots;
+      await inA(() => client.rotateWebhookSecret({ botId }));
+      const previous = await owner.prisma.secret.findMany({ where: secretScope });
+      const grant = escapeIdentifier(groupRole!);
+      await owner.pool.query(`REVOKE DELETE ON public.secrets FROM ${grant}`);
+      try {
+        await expect(inA(() => client.rotateWebhookSecret({ botId }))).rejects.toThrow();
+      } finally {
+        await owner.pool.query(`GRANT DELETE ON public.secrets TO ${grant}`);
+      }
+      expect(await owner.prisma.secret.findMany({ where: secretScope })).toEqual(previous);
+      expect(await owner.prisma.bot.findUnique({ where: { id: botId } })).toMatchObject({
+        webhookSecretId: previous[0]!.id,
+      });
+      expect(await audit()).toEqual([expect.objectContaining({ action: "credential.created" })]);
+    });
+
+    it("discards only the prepared key when an archive wins before replacement", async () => {
+      const client = (await auditRouterFor(userA, spaceA)).bots;
+      await inA(() => client.rotateWebhookSecret({ botId }));
+      const previous = await owner.prisma.secret.findMany({ where: secretScope });
+      const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
+      const put = EncryptedSecretStore.prototype.put;
+      const prepare = vi
+        .spyOn(EncryptedSecretStore.prototype, "put")
+        .mockImplementationOnce(async function (
+          this: InstanceType<typeof EncryptedSecretStore>,
+          ...args
+        ) {
+          const stored = await put.apply(this, args);
+          await owner.prisma.bot.update({ where: { id: botId }, data: { archivedAt: new Date() } });
+          return stored;
+        });
+      const discard = vi.spyOn(EncryptedSecretStore.prototype, "delete");
+      try {
+        await expect(inA(() => client.rotateWebhookSecret({ botId }))).rejects.toThrow();
+        const prepared = await prepare.mock.results[0]!.value;
+        expect(discard.mock.calls).toEqual([[prepared.ciphertext, prepared.id]]);
+        expect(await owner.prisma.secret.findMany({ where: secretScope })).toEqual(previous);
+        expect(await owner.prisma.bot.findUniqueOrThrow({ where: { id: botId } })).toMatchObject({
+          webhookSecretId: previous[0]!.id,
+          archivedAt: expect.any(Date),
+        });
+        expect(await audit()).toEqual([expect.objectContaining({ action: "credential.created" })]);
+      } finally {
+        discard.mockRestore();
+        prepare.mockRestore();
+      }
+    });
+
+    it("returns the committed new key and logs a content-free audit gap if append fails", async () => {
+      const client = (await auditRouterFor(userA, spaceA)).bots;
+      const grant = escapeIdentifier(groupRole!);
+      const warn = vi.spyOn(getLogger(), "warn");
+      await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+      try {
+        const result = await inA(() => client.rotateWebhookSecret({ botId }));
+        const bot = await owner.prisma.bot.findUniqueOrThrow({ where: { id: botId } });
+        const active = await owner.prisma.secret.findUniqueOrThrow({
+          where: { id: bot.webhookSecretId! },
+        });
+        const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
+        const store = new EncryptedSecretStore("synthetic-audit-fixture-key");
+        expect(await store.load(active.ciphertext, active.id)).toBe(result.secret);
+        expect(await audit()).toEqual([]);
+        expect(
+          warn.mock.calls.filter(([message]) => message === "audit.event.write_failed"),
+        ).toEqual([["audit.event.write_failed", { action: "credential.created" }]]);
+      } finally {
+        warn.mockRestore();
+        await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+      }
+    });
   });
 
   it("audits confirmed managed grants once across callbacks and polls", async () => {

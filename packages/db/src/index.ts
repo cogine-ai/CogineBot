@@ -7,10 +7,10 @@ export {
   recordApprovalRuleAudit,
   recordAutomaticApprovalAudit,
   recordAutoReviewPreferenceAudit,
-  recordBotCredentialAudit,
   recordCloudAgentApprovalAudit,
   recordConnectionActivationAudit,
   recordConnectionRevocationAudit,
+  recordCredentialAudit,
 } from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";

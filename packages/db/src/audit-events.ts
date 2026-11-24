@@ -133,10 +133,10 @@ export function recordAutoReviewPreferenceAudit(
   ]);
 }
 
-export function recordBotCredentialAudit(
+export function recordCredentialAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   actor: AuditUser,
-  credentialId: string,
+  target: { type: "bot_secret" | "webhook"; id: string },
   action: "credential.created" | "credential.changed" | "credential.deleted",
   happenedAt: Date,
 ): Promise<void> {
@@ -147,8 +147,8 @@ export function recordBotCredentialAudit(
       actorType: "user",
       actorId: actor.userId,
       action,
-      targetType: "bot_secret",
-      targetId: credentialId,
+      targetType: target.type,
+      targetId: target.id,
       outcome: "success",
       metadata: {},
     },
