@@ -135,6 +135,7 @@ function makeDisconnectDeps(
   const modelCount = vi.fn().mockResolvedValue(overrides.modelReferences ?? 0);
   const voiceCount = vi.fn().mockResolvedValue(overrides.voiceReferences ?? 0);
   const secretDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+  const appendAudit = vi.fn();
   const prisma = {
     userVoiceCredential: {
       findMany,
@@ -144,6 +145,8 @@ function makeDisconnectDeps(
     spaceVoicePreference: { deleteMany: preferenceDeleteMany },
     userModelCredential: { count: modelCount },
     secret: { deleteMany: secretDeleteMany },
+    space: { findUniqueOrThrow: vi.fn().mockResolvedValue({ organizationId: "org-1" }) },
+    auditEvent: { createMany: appendAudit },
     $queryRaw: lockCredentials,
     $transaction: vi.fn(),
   };
@@ -161,6 +164,7 @@ function makeDisconnectDeps(
     preferenceDeleteMany,
     credentialDeleteMany,
     secretDeleteMany,
+    appendAudit,
     transaction: prisma.$transaction,
   };
 }
@@ -207,7 +211,7 @@ describe("disconnectVoiceCredential", () => {
   });
 
   it("removes every actor credential for that provider", async () => {
-    const { deps, preferenceDeleteMany, credentialDeleteMany, secretDeleteMany } =
+    const { deps, preferenceDeleteMany, credentialDeleteMany, secretDeleteMany, appendAudit } =
       makeDisconnectDeps({
         existing: [
           {
@@ -239,6 +243,16 @@ describe("disconnectVoiceCredential", () => {
     });
     expect(secretDeleteMany).toHaveBeenCalledWith({ where: { id: "secret-new" } });
     expect(secretDeleteMany).toHaveBeenCalledWith({ where: { id: "secret-old" } });
+    expect(appendAudit).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: ["cred-new", "cred-old"].map((targetId) =>
+        expect.objectContaining({
+          action: "credential.deleted",
+          targetType: "voice_credential",
+          targetId,
+        }),
+      ),
+    });
   });
 
   it("keeps a secret while another credential still references it", async () => {
