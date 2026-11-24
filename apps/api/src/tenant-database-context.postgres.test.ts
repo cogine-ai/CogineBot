@@ -62,6 +62,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     ["computers", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["boards", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["connections", tenantPredicate],
+    ["space_memory_configs", "\"spaceId\" = NULLIF(current_setting('app.space_id', true), '')"],
     ["messaging_outbound", "false"],
     ["ai_data_consents", tenantPredicate],
     ["deployment_identities", "false"],
@@ -97,6 +98,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let rejectConsent: string | undefined;
   let rejectRevocation = false;
   let retryVoiceCreateFor: string | undefined;
+  let retryMemorySaveFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -139,6 +141,18 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     const instrumented = runtime.prisma.$extends({
       query: {
+        spaceMemoryConfig: {
+          async upsert({ args, query }) {
+            const row = await query(args);
+            if (row.spaceId === retryMemorySaveFor) {
+              retryMemorySaveFor = undefined;
+              throw Object.assign(new Error("Synthetic memory configuration conflict"), {
+                code: "P2034",
+              });
+            }
+            return row;
+          },
+        },
         userVoiceCredential: {
           async create({ args, query }) {
             const row = await query(args);
@@ -634,6 +648,113 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     });
     expect((await request(screenSecret)).status).toBe(403);
     expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("audits only committed memory provider credential changes for the Space", async () => {
+    const { actor, cookie } = await account("Memory-audit");
+    const config = () =>
+      owner.prisma.spaceMemoryConfig.findUnique({
+        where: { spaceId: actor.spaceId },
+        include: { secret: true },
+      });
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { spaceId: actor.spaceId, targetType: "memory_credential" },
+        select: {
+          action: true,
+          actorType: true,
+          actorId: true,
+          organizationId: true,
+          targetId: true,
+          outcome: true,
+          metadata: true,
+        },
+        orderBy: { action: "asc" },
+      });
+    const input = {
+      provider: "supermemory",
+      settings: { mode: "cloud" },
+      credentials: { apiKey: "fixture-memory-key" },
+      defaultMemoryScope: "isolated",
+    };
+    const classify = vi
+      .spyOn(adapters, "classifyMemoryProviderSettings")
+      .mockResolvedValue(input.settings);
+    const prepare = vi
+      .spyOn(adapters, "prepareMemoryProviderConnection")
+      .mockImplementation(async (draft) => {
+        if (draft.credentials.apiKey === "fixture-rejected-key")
+          throw new Error("Fixture rejected");
+        return {
+          provider: draft.provider,
+          credentials: draft.credentials,
+          settings: draft.settings,
+        };
+      });
+    try {
+      expect(
+        (await raw(second.cookie, "memory/connectProvider", input, actor.spaceId)).status,
+      ).toBe(403);
+      expect(prepare).not.toHaveBeenCalled();
+      expect(
+        (
+          await raw(cookie, "memory/connectProvider", {
+            ...input,
+            credentials: { apiKey: "fixture-rejected-key" },
+          })
+        ).status,
+      ).toBe(400);
+      expect(await config()).toBeNull();
+      expect(await audit()).toEqual([]);
+
+      retryMemorySaveFor = actor.spaceId;
+      await rpc(cookie, "memory/connectProvider", input);
+      expect(retryMemorySaveFor).toBeUndefined();
+      const saved = (await config())!;
+      expect(deleted.mock.calls.some(([ref]) => ref === saved.secret.ciphertext)).toBe(false);
+      expect(await store.load(saved.secret.ciphertext, saved.secretId)).toBe(
+        JSON.stringify(input.credentials),
+      );
+      const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+        where: { id: actor.spaceId },
+      });
+      const expected = (action: string) => ({
+        action,
+        actorType: "user",
+        actorId: actor.userId,
+        organizationId,
+        targetId: saved.id,
+        outcome: "success",
+        metadata: {},
+      });
+      await rpc(cookie, "memory/setDefaultScope", { defaultMemoryScope: "shared" });
+      expect((await config())?.secretId).toBe(saved.secretId);
+      expect(await audit()).toEqual([expected("credential.created")]);
+
+      const credentials = { apiKey: "fixture-memory-replacement" };
+      await rpc(cookie, "memory/connectProvider", { ...input, credentials });
+      const replacement = (await config())!;
+      expect(replacement.id).toBe(saved.id);
+      expect(await store.load(replacement.secret.ciphertext, replacement.secretId)).toBe(
+        JSON.stringify(credentials),
+      );
+      expect(await owner.prisma.secret.findUnique({ where: { id: saved.secretId } })).toBeNull();
+      await rpc(cookie, "memory/disconnectProvider");
+      await rpc(cookie, "memory/disconnectProvider");
+      expect(await config()).toBeNull();
+      expect(
+        await owner.prisma.secret.findUnique({ where: { id: replacement.secretId } }),
+      ).toBeNull();
+      expect(await audit()).toEqual([
+        expected("credential.changed"),
+        expected("credential.created"),
+        expected("credential.deleted"),
+      ]);
+    } finally {
+      retryMemorySaveFor = undefined;
+      classify.mockRestore();
+      prepare.mockRestore();
+    }
   });
 
   it("audits each committed voice credential change in the initiating Space", async () => {

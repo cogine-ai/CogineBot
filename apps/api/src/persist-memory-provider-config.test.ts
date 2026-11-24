@@ -1,4 +1,4 @@
-import { MemoryProviderDeploymentOwnerRequiredError } from "@rakazo/adapters";
+import { EncryptedSecretStore, MemoryProviderDeploymentOwnerRequiredError } from "@rakazo/adapters";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -39,6 +39,7 @@ function makeDeps(
   const findUnique = vi.fn().mockResolvedValue(overrides.existing ?? null);
   const upsert = vi.fn().mockResolvedValue(
     overrides.upsertResult ?? {
+      id: "cfg-1",
       provider: "supermemory",
       settings: { mode: "cloud", baseUrl: "https://api.supermemory.ai" },
       defaultMemoryScope: "isolated",
@@ -63,15 +64,23 @@ function makeDeps(
         ),
     },
     spaceMemoryConfig: { findUnique, update, upsert, delete: deleteConfig },
-    secret: { create: secretCreate, deleteMany: secretDeleteMany },
+    secret: {
+      create: secretCreate,
+      deleteMany: secretDeleteMany,
+      count: vi.fn().mockResolvedValue(1),
+    },
+    space: { findUniqueOrThrow: vi.fn().mockResolvedValue({ organizationId: "org-1" }) },
+    auditEvent: { createMany: vi.fn() },
     $transaction: vi.fn(),
   };
   prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) =>
     callback(prisma),
   );
+  const secrets = new EncryptedSecretStore("fixture-store-key");
+  vi.spyOn(secrets, "put").mockResolvedValue({ id: "secret-new", ciphertext: "cipher" });
   const deps = {
     prisma: prisma as unknown as PrismaClient,
-    secrets: { put: vi.fn().mockResolvedValue({ id: "secret-new", ciphertext: "cipher" }) },
+    secrets,
   };
   return {
     deps,
@@ -299,7 +308,7 @@ describe("persistMemoryProviderConfig", () => {
       defaultMemoryScope: "isolated",
       updatedAt: "2026-08-19T00:00:00.000Z",
     });
-    expect(transaction).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 
@@ -389,7 +398,8 @@ describe("disconnectMemoryProvider", () => {
 
     await expect(disconnectMemoryProvider(deps, actor)).resolves.toEqual({ ok: true });
 
-    expect(transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), {
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
       isolationLevel: "Serializable",
     });
     expect(deleteConfig).toHaveBeenCalledWith({ where: { id: "cfg-1" } });

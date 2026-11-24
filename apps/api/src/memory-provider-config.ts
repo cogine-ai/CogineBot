@@ -4,16 +4,18 @@ import {
   classifyMemoryProviderSettings,
   MemoryProviderDeploymentOwnerRequiredError,
   memoryProviderRequiresDeploymentOwner,
+  persistPreparedSecret,
   prepareMemoryProviderConnection,
   toStringRecord,
 } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
-import { findSpaceMemoryConfig, Prisma, type PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { findSpaceMemoryConfig, Prisma, recordCredentialAudit } from "@rakazo/db";
 import { withSerializableRetry } from "./serializable-retry.js";
 
 export interface MemoryProviderConfigDeps {
   prisma: PrismaClient;
-  secrets: Pick<SecretStore, "put">;
+  secrets: SecretStore;
   /** Test seam: override DNS/trust classification without probing. */
   classifySettings?: (
     provider: string,
@@ -92,7 +94,7 @@ export async function persistMemoryProviderConfig(
     userId: actor.userId,
     signal: new AbortController().signal,
   });
-  const config = await withSerializableRetry(() =>
+  const save = () =>
     deps.prisma.$transaction(
       async (tx) => {
         const existing = await findSpaceMemoryConfig(tx, actor.spaceId);
@@ -126,10 +128,19 @@ export async function persistMemoryProviderConfig(
         if (existing && existing.secretId !== secret.id) {
           await tx.secret.deleteMany({ where: { id: existing.secretId } });
         }
-        return updated;
+        return { config: updated, created: !existing };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    ),
+    );
+  const { config, created } = await persistPreparedSecret(deps.prisma, deps.secrets, stored, () =>
+    withSerializableRetry(save),
+  );
+  await recordCredentialAudit(
+    deps.prisma,
+    actor,
+    { type: "memory_credential", ids: [config.id] },
+    created ? "credential.created" : "credential.changed",
+    config.updatedAt,
   );
   return serializeSpaceMemoryConfig(config);
 }
@@ -165,16 +176,24 @@ export function serializeSpaceMemoryConfig(config: {
 
 export async function disconnectMemoryProvider(deps: MemoryProviderConfigDeps, actor: Actor) {
   await requireSpaceOwner(deps.prisma, actor);
-  await withSerializableRetry(() =>
+  const configIds = await withSerializableRetry(() =>
     deps.prisma.$transaction(
       async (tx) => {
         const existing = await findSpaceMemoryConfig(tx, actor.spaceId);
-        if (!existing) return;
-        await tx.spaceMemoryConfig.delete({ where: { id: existing.id } });
+        if (!existing) return [];
+        const removed = await tx.spaceMemoryConfig.delete({ where: { id: existing.id } });
         await tx.secret.deleteMany({ where: { id: existing.secretId } });
+        return [removed.id];
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     ),
+  );
+  await recordCredentialAudit(
+    deps.prisma,
+    actor,
+    { type: "memory_credential", ids: configIds },
+    "credential.deleted",
+    new Date(),
   );
   return { ok: true as const };
 }

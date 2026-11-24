@@ -133,7 +133,12 @@ export function recordAutoReviewPreferenceAudit(
   ]);
 }
 
-type CredentialAuditTarget = "bot_secret" | "webhook" | "model_credential" | "voice_credential";
+type CredentialAuditTarget =
+  | "bot_secret"
+  | "webhook"
+  | "model_credential"
+  | "voice_credential"
+  | "memory_credential";
 type CredentialAuditAction = "credential.created" | "credential.changed" | "credential.deleted";
 
 function credentialAuditRow(
