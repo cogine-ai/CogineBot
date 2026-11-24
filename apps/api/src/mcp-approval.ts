@@ -1,6 +1,11 @@
 import type { Actor, MessageBlock } from "@rakazo/contracts";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { appendEventInTransaction, IsolationError, withTransactionRetry } from "@rakazo/db";
+import {
+  appendEventInTransaction,
+  IsolationError,
+  recordMcpApprovalAudit,
+  withTransactionRetry,
+} from "@rakazo/db";
 import { requireBotThread } from "./bot-thread.js";
 
 /** Dependencies for resolving pending MCP approval cards in a bot's threads. */
@@ -164,7 +169,10 @@ export async function resolveMcpApprovalCards<T>(
   deps: McpApprovalDeps,
   actor: Actor,
   input: McpApprovalResolution,
-  effect?: (tx: Prisma.TransactionClient, decision: McpApprovalDecision) => Promise<T>,
+  effect?: (
+    tx: Prisma.TransactionClient,
+    decision: McpApprovalDecision,
+  ) => Promise<{ value: T; sharedPolicyChanged: boolean }>,
   admit?: (tx: Prisma.TransactionClient) => Promise<void>,
 ): Promise<T | undefined> {
   const threads = await threadsForDecision(deps, actor, input);
@@ -174,23 +182,43 @@ export async function resolveMcpApprovalCards<T>(
         // Managed resource admission precedes card/thread locks, matching uninstall order.
         await admit?.(tx);
         const settingsDecision = input.threadId === undefined && input.serverRevision === undefined;
-        const selectable = settingsDecision
-          ? (block: ApprovalBlock) => block.status !== "connected"
-          : isOpen;
+        const selectable =
+          settingsDecision && input.status === "connected"
+            ? (block: ApprovalBlock) => block.status !== "connected"
+            : isOpen;
         const painted = await rewriteCards(tx, actor, threads, input, selectable);
         // Only a card decision can lose to a dismissal that already committed.
         // Settings and onboarding approve without a threadId and can still enable tools.
         const assign = settingsDecision || painted.flipped > 0 || painted.connected;
-        const value = effect ? await effect(tx, { assign }) : undefined;
+        const result = await effect?.(tx, { assign });
         const sharedSeqs =
           input.status === "connected" && assign && effect
             ? await connectPendingMcpApprovals(tx, actor, { serverId: input.serverId })
             : [];
-        return { seqs: [...painted.seqs, ...sharedSeqs], value };
+        return {
+          seqs: [...painted.seqs, ...sharedSeqs],
+          value: result?.value,
+          cardChanged: painted.flipped > 0,
+          sharedPolicyChanged: result?.sharedPolicyChanged ?? false,
+        };
       },
       { isolationLevel: "Serializable" },
     ),
   );
+  if (committed.cardChanged || committed.sharedPolicyChanged) {
+    await recordMcpApprovalAudit(
+      deps.prisma,
+      actor,
+      {
+        serverId: input.serverId,
+        botId: input.botId,
+        threadId: input.threadId,
+        decision: input.status === "connected" ? "allow" : "dismiss",
+        sharedPolicyChanged: committed.sharedPolicyChanged,
+      },
+      new Date(),
+    );
+  }
   for (const event of committed.seqs) await deps.events.notify(event.threadId, event.seq);
   return committed.value;
 }

@@ -6850,11 +6850,12 @@ export function createRouter(deps: RouterDeps) {
                   message: "MCP server changed; open its shared settings",
                 });
               // An old card must never widen an already configured shared allowlist.
-              if (hasMcpTools(server)) return server;
-              return tx.mcpServer.update({
+              if (hasMcpTools(server)) return { value: server, sharedPolicyChanged: false };
+              const value = await tx.mcpServer.update({
                 where: { id: server.id },
                 data: { allowAllTools: true, allowedTools: [], revision: { increment: 1 } },
               });
+              return { value, sharedPolicyChanged: true };
             },
             async (tx) => {
               const server = await tx.mcpServer.findFirst({

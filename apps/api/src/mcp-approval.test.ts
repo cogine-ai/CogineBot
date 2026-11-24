@@ -11,6 +11,7 @@ import {
 vi.mock("@rakazo/db", async (original) => ({
   ...(await original<typeof db>()),
   appendEventInTransaction: vi.fn(async () => ({ seq: 1 })),
+  recordMcpApprovalAudit: vi.fn(async () => undefined),
 }));
 
 /** PostgreSQL jsonb `@>` containment, which Prisma `array_contains` compiles to. */
@@ -162,7 +163,7 @@ describe("resolveMcpApprovalCards", () => {
   it("writes the assignment in the same transaction when a card connects", async () => {
     const blocks = [{ kind: "mcp_approval", name: "A", serverId: "srv-a", status: "pending" }];
     const { deps, actor, tx } = fixture(blocks);
-    const effect = vi.fn(async () => "saved");
+    const effect = vi.fn(async () => ({ value: "saved", sharedPolicyChanged: true }));
     await expect(
       resolveMcpApprovalCards(
         deps,
@@ -181,7 +182,7 @@ describe("resolveMcpApprovalCards", () => {
   it("does not assign when a dismissed card already won", async () => {
     const blocks = [{ kind: "mcp_approval", name: "A", serverId: "srv-a", status: "dismissed" }];
     const { deps, actor, tx } = fixture(blocks);
-    const effect = vi.fn(async () => "saved");
+    const effect = vi.fn(async () => ({ value: "saved", sharedPolicyChanged: false }));
     await resolveMcpApprovalCards(
       deps,
       actor,
@@ -271,7 +272,7 @@ describe("resolveMcpApprovalCards", () => {
   it("still assigns from settings after a card was dismissed", async () => {
     const blocks = [{ kind: "mcp_approval", name: "A", serverId: "srv-a", status: "dismissed" }];
     const { deps, actor, tx } = fixture(blocks);
-    const effect = vi.fn(async () => "saved");
+    const effect = vi.fn(async () => ({ value: "saved", sharedPolicyChanged: true }));
     await expect(
       resolveMcpApprovalCards(
         deps,

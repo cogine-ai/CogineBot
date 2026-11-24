@@ -99,6 +99,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let rejectRevocation = false;
   let retryVoiceCreateFor: string | undefined;
   let retryMemorySaveFor: string | undefined;
+  let rejectMcpApprovalFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -141,6 +142,14 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     runtime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
     const instrumented = runtime.prisma.$extends({
       query: {
+        mcpServer: {
+          async update({ args, query }) {
+            const row = await query(args);
+            if (row.id === rejectMcpApprovalFor && args.data.allowAllTools === true)
+              throw new Error("Synthetic MCP approval rollback");
+            return row;
+          },
+        },
         spaceMemoryConfig: {
           async upsert({ args, query }) {
             const row = await query(args);
@@ -648,6 +657,121 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     });
     expect((await request(screenSecret)).status).toBe(403);
     expect(runtime.pool.waitingCount).toBe(0);
+  });
+
+  it("audits actual MCP card decisions and distinguishes shared permission changes", async () => {
+    const { actor, cookie } = await account("Mcp-audit");
+    const { spaceId, userId } = actor;
+    const bot = await owner.prisma.bot.create({
+      data: { spaceId, userId, name: "Approval fixture", color: "blue" },
+    });
+    const thread = await owner.prisma.thread.create({
+      data: { spaceId, userId, botId: bot.id },
+    });
+    const addCard = async (slug: string, seq: number, allowedTools: string[]) => {
+      const server = await owner.prisma.mcpServer.create({
+        data: {
+          spaceId,
+          userId,
+          slug,
+          name: slug,
+          transport: "streamable_http",
+          endpoint: "https://mcp.example.test/tools",
+          allowedTools,
+        },
+      });
+      const block = {
+        kind: "mcp_approval",
+        serverId: server.id,
+        serverRevision: server.revision,
+        status: "pending",
+        name: slug,
+        transport: server.transport,
+        endpoint: server.endpoint,
+        needsOAuth: false,
+      };
+      const message = await owner.prisma.message.create({
+        data: { threadId: thread.id, botId: bot.id, seq, role: "bot", blocks: [block] },
+      });
+      const input = {
+        botId: bot.id,
+        serverId: server.id,
+        threadId: thread.id,
+        revision: server.revision,
+      };
+      return { id: server.id, input, message, block };
+    };
+    const grant = await addCard("fixture-grant", 1, []);
+    const existing = await addCard("fixture-existing", 2, ["read"]);
+    const dismissed = await addCard("fixture-dismiss", 3, ["read"]);
+    const audits = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { actorId: userId, spaceId, targetType: "mcp_server", action: "approval.decided" },
+        select: {
+          targetId: true,
+          threadId: true,
+          metadata: true,
+          outcome: true,
+          organizationId: true,
+        },
+      });
+    const approve = (input: typeof grant.input) => rpc(cookie, "mcp/assignments/approve", input);
+    const dismiss = (
+      input: Omit<typeof dismissed.input, "revision" | "threadId"> & { threadId?: string },
+    ) => rpc(cookie, "mcp/assignments/dismiss", input);
+    expect((await raw(second.cookie, "mcp/assignments/approve", grant.input, spaceId)).status).toBe(
+      403,
+    );
+    rejectMcpApprovalFor = grant.id;
+    try {
+      expect((await raw(cookie, "mcp/assignments/approve", grant.input)).status).toBe(500);
+    } finally {
+      rejectMcpApprovalFor = undefined;
+    }
+    expect(
+      (await owner.prisma.message.findUniqueOrThrow({ where: { id: grant.message.id } })).blocks,
+    ).toEqual([grant.block]);
+    expect(await audits()).toEqual([]);
+    await approve(grant.input);
+    expect((await raw(cookie, "mcp/assignments/approve", grant.input)).status).toBe(409);
+
+    await Promise.all([approve(existing.input), approve(existing.input)]);
+    await dismiss(dismissed.input);
+    await dismiss({ botId: bot.id, serverId: dismissed.id });
+    expect((await raw(cookie, "mcp/assignments/approve", dismissed.input)).status).toBe(409);
+
+    const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    const receipts = await audits();
+    const event = (
+      targetId: string,
+      decision: "allow" | "dismiss",
+      sharedPolicyChanged: boolean,
+    ) => ({
+      targetId,
+      threadId: thread.id,
+      organizationId,
+      metadata: { botId: bot.id, decision, sharedPolicyChanged },
+      outcome: decision === "allow" ? "success" : "denied",
+    });
+    expect(receipts).toHaveLength(3);
+    expect(receipts).toEqual(
+      expect.arrayContaining([
+        event(grant.id, "allow", true),
+        event(existing.id, "allow", false),
+        event(dismissed.id, "dismiss", false),
+      ]),
+    );
+    expect(await owner.prisma.mcpServer.findUnique({ where: { id: grant.id } })).toMatchObject({
+      allowAllTools: true,
+    });
+    for (const id of [existing.id, dismissed.id]) {
+      expect(await owner.prisma.mcpServer.findUnique({ where: { id } })).toMatchObject({
+        allowAllTools: false,
+        allowedTools: ["read"],
+      });
+    }
   });
 
   it("audits only committed memory provider credential changes for the Space", async () => {
