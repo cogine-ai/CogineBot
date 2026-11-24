@@ -89,7 +89,7 @@ describe("buildMcpUpdateMaterial", () => {
     });
     expect(result).toEqual({
       action: "store",
-      material: { secret: "new-token", oauth: { tokens: { access_token: "t" } }, headers: {} },
+      material: { secret: "new-token", oauth: { tokens: { access_token: "t" } } },
     });
   });
 
@@ -138,21 +138,26 @@ describe("buildMcpUpdateMaterial", () => {
     expect(result).toEqual({ action: "store", material: {} });
   });
 
-  it("clears endpoint-bound OAuth state while preserving static credentials", () => {
+  it("keeps only explicitly supplied credentials after moving to another target", () => {
     const result = buildMcpUpdateMaterial(
-      { secret: "token", oauth: { tokens: { access_token: "endpoint-token" } } },
+      {
+        secret: "token",
+        headers: { Authorization: "old" },
+        oauth: { tokens: { access_token: "endpoint-token", refresh_token: "refresh-token" } },
+      },
       {
         transport: "streamable_http",
         slug: "x",
         name: "x",
         endpoint: "https://new-mcp.example.test",
-        headers: {},
+        secret: "new-token",
+        headers: { Authorization: " ", "X-New": "new" },
       },
-      { clearOAuth: true },
+      { replaceCredentials: true },
     );
     expect(result).toEqual({
       action: "store",
-      material: { secret: "token", headers: {} },
+      material: { secret: "new-token", headers: { "X-New": "new" } },
     });
   });
 
@@ -166,9 +171,55 @@ describe("buildMcpUpdateMaterial", () => {
         endpoint: "https://new-mcp.example.test",
         headers: {},
       },
-      { clearOAuth: true },
+      { replaceCredentials: true },
     );
     expect(result).toEqual({ action: "store", material: {} });
+  });
+
+  it("keeps omitted stdio client settings for the same issuer and ID", () => {
+    const oauthClient = {
+      clientId: "fixture",
+      authorizationServer: "https://login.example.test/",
+      clientSecret: "fixture-secret",
+      scope: "read",
+      authorizationParams: "prompt=consent",
+    };
+    const existing = {
+      oauthClient,
+      oauth: { tokens: { access_token: "fixture" } },
+    };
+    const edit = {
+      transport: "stdio" as const,
+      slug: "x",
+      name: "x",
+      command: "/bin/mcp",
+      oauthClient: { clientId: "fixture", authorizationServer: "https://login.example.test" },
+    };
+    expect(buildMcpUpdateMaterial(existing, edit)).toEqual({ action: "keep" });
+    expect(
+      buildMcpUpdateMaterial(existing, {
+        ...edit,
+        oauthClient: { ...edit.oauthClient, scope: "", authorizationParams: "" },
+      }),
+    ).toEqual({
+      action: "store",
+      material: {
+        oauthClient: {
+          clientId: oauthClient.clientId,
+          clientSecret: oauthClient.clientSecret,
+          authorizationServer: oauthClient.authorizationServer,
+        },
+      },
+    });
+    for (const client of [
+      { ...edit.oauthClient, clientId: "other" },
+      { ...edit.oauthClient, authorizationServer: "https://login.example.test/other" },
+    ]) {
+      expect(buildMcpUpdateMaterial(existing, { ...edit, oauthClient: client })).toEqual({
+        action: "store",
+        material: { oauthClient: client },
+      });
+    }
   });
 
   it("replaces headers on update and leaves env untouched when the transport cannot express it", () => {

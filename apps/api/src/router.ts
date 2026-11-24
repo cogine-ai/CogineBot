@@ -185,6 +185,7 @@ import type {
   ComputerStatus,
   ExportManifest,
   McpServer,
+  McpServerUpdateConfigInput,
   McpStdioOAuthClient,
   Me,
   NativeRoutineTrigger,
@@ -214,6 +215,7 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
   resolveThinkingDefault,
+  sameMcpEndpoint,
   ThinkingLevelSchema,
   UsagePricingSnapshotSchema,
   usableModelId,
@@ -393,6 +395,7 @@ import {
   buildMcpStdioMaterial,
   buildMcpUpdateMaterial,
   parseMcpConnectionMaterial,
+  parseMcpRemoteMaterial,
   parseMcpStdioMaterial,
 } from "./mcp-material.js";
 import {
@@ -6213,6 +6216,7 @@ export function createRouter(deps: RouterDeps) {
               existingSecret,
               nextArgs,
               replaceCredentials,
+              endpointChanged,
               disableOnly,
               disableAndClear,
             } = await deps.prisma.$transaction(async (tx) => {
@@ -6238,6 +6242,12 @@ export function createRouter(deps: RouterDeps) {
                   existing.command?.trim() === stdio.command.trim(),
               );
               const nextArgs = stdio?.args ?? (sameCommand ? previousArgs : []);
+              const endpointChanged =
+                "config" in input &&
+                !sameMcpEndpoint(
+                  existing.endpoint,
+                  "endpoint" in input.config ? input.config.endpoint : null,
+                );
               const replaceCredentials =
                 (existing.transport === "stdio") !== Boolean(stdio) ||
                 Boolean(
@@ -6303,14 +6313,26 @@ export function createRouter(deps: RouterDeps) {
                 existingSecret,
                 nextArgs,
                 replaceCredentials,
+                endpointChanged,
                 disableOnly,
                 disableAndClear,
               };
             });
             let existingMaterial: McpSecretMaterial = {};
             let clearFailure: "unavailable" | "unreadable" | undefined;
+            const remoteEndpointMoved = existing.transport !== "stdio" && endpointChanged;
+            const clearsRemoteCredentials =
+              "config" in input && input.config.clearCredential === true;
+            const editsRemoteCredentials =
+              "secret" in input ||
+              ("config" in input &&
+                input.config.transport !== "stdio" &&
+                (Boolean(input.config.secret?.trim()) || input.config.headers !== undefined));
             const requireStoredMaterial =
               (connection && patchHeaders) ||
+              (existing.transport !== "stdio" &&
+                !clearsRemoteCredentials &&
+                (remoteEndpointMoved || editsRemoteCredentials)) ||
               (existing.transport === "stdio" &&
                 !disableOnly &&
                 !replaceCredentials &&
@@ -6330,7 +6352,7 @@ export function createRouter(deps: RouterDeps) {
             if (
               existingSecret &&
               !disableOnly &&
-              !replaceCredentials &&
+              (!replaceCredentials || remoteEndpointMoved) &&
               !clearAllStdioCredentials
             ) {
               let plaintext: string | undefined;
@@ -6346,17 +6368,15 @@ export function createRouter(deps: RouterDeps) {
                   if (connection) existingMaterial = parseMcpConnectionMaterial(plaintext);
                   else if (existing.transport === "stdio")
                     existingMaterial = parseMcpStdioMaterial(plaintext);
-                  else {
-                    const value = JSON.parse(plaintext);
-                    if (value && typeof value === "object" && !Array.isArray(value))
-                      existingMaterial = value as McpSecretMaterial;
-                  }
+                  else existingMaterial = parseMcpRemoteMaterial(plaintext);
                 } catch {
-                  credentialReadFailed("unreadable");
+                  // Misformatted plaintext cannot follow a move. A failed load
+                  // above remains a storage failure, even on a move.
+                  if (!remoteEndpointMoved) credentialReadFailed("unreadable");
                 }
               }
             }
-            const config =
+            const config: McpServerUpdateConfigInput =
               "config" in input
                 ? input.config
                 : {
@@ -6367,14 +6387,13 @@ export function createRouter(deps: RouterDeps) {
                     verbatimResults: existing.verbatimResults,
                     transport: existing.transport as "streamable_http" | "sse",
                     endpoint: existing.endpoint!,
-                    headers: (existingMaterial.headers ?? {}) as Record<string, string>,
                     ...("secret" in input ? { secret: input.secret } : {}),
                   };
             if (!("config" in input) && existing.transport === "stdio") {
               throw new ORPCError("BAD_REQUEST", { message: "A remote MCP server is required" });
             }
             const nextEndpoint = "endpoint" in config ? config.endpoint : null;
-            if (existing.endpoint !== nextEndpoint) {
+            if (endpointChanged) {
               await assertMcpRemoteEndpoint(nextEndpoint, context.actor, deps);
             }
             let update: McpMaterialUpdate;
@@ -6392,8 +6411,7 @@ export function createRouter(deps: RouterDeps) {
               }
             } else {
               update = buildMcpUpdateMaterial(existingMaterial, config, {
-                clearOAuth: existing.endpoint !== nextEndpoint,
-                replaceCredentials,
+                replaceCredentials: replaceCredentials || endpointChanged,
               });
             }
             const nextMaterial = update.action === "store" ? update.material : existingMaterial;
@@ -6536,11 +6554,16 @@ export function createRouter(deps: RouterDeps) {
                                           ]),
                                         )
                                       : {}) as Prisma.InputJsonValue,
-                                  headers: ("headers" in config
-                                    ? Object.fromEntries(
-                                        Object.keys(config.headers).map((key) => [key, true]),
-                                      )
-                                    : {}) as Prisma.InputJsonValue,
+                                  headers: (config.transport === "stdio"
+                                    ? {}
+                                    : update.action === "store" || config.headers !== undefined
+                                      ? Object.fromEntries(
+                                          Object.keys(nextMaterial.headers ?? {}).map((key) => [
+                                            key,
+                                            true,
+                                          ]),
+                                        )
+                                      : current.headers) as Prisma.InputJsonValue,
                                 }),
                           enabled: config.enabled,
                           ...(replaceCredentials ? { allowAllTools: false, allowedTools: [] } : {}),
@@ -6584,6 +6607,14 @@ export function createRouter(deps: RouterDeps) {
                       await tx.secret.deleteMany({
                         where: {
                           id: existing.secretId,
+                          spaceId: context.actor.spaceId,
+                          userId: context.actor.userId,
+                        },
+                      });
+                    if (endpointChanged)
+                      await tx.mcpOAuthSession.deleteMany({
+                        where: {
+                          serverId: current.id,
                           spaceId: context.actor.spaceId,
                           userId: context.actor.userId,
                         },

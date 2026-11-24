@@ -81,6 +81,7 @@ function fixture({ stdio = false, stdioEnabled = true } = {}) {
       findFirst: vi.fn(async () => structuredClone(parent)),
       update: vi.fn(async ({ data }: { data: { cleanupRefs: [] } }) => Object.assign(parent, data)),
     },
+    mcpOAuthSession: { deleteMany: vi.fn(async () => ({ count: 1 })) },
     secret: {
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null),
       create: vi.fn(async ({ data }: { data: { id: string; ciphertext: string } }) => {
@@ -138,7 +139,7 @@ function fixture({ stdio = false, stdioEnabled = true } = {}) {
   };
   const materialStatus = new McpOAuthBroker(prisma as never, secrets as never);
   const mcpOAuth = {
-    statusFor: vi.fn(async () => "connected"),
+    statusFor: vi.fn((row: typeof server) => materialStatus.statusFor(row, actor)),
     statusForMaterial: vi.fn((value: unknown) => materialStatus.statusForMaterial(value)),
     reservePluginCredential: vi.fn(async () => undefined),
     resolvePluginCredential: vi.fn(),
@@ -610,6 +611,144 @@ describe("deployment-managed MCP stdio registration", () => {
       code: "BAD_REQUEST",
     });
     expect(disabled.prisma.mcpServer.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCP remote endpoint updates", () => {
+  const config = {
+    transport: "streamable_http" as const,
+    slug: "demo",
+    name: "Demo",
+    endpoint: "https://tools.example.test/mcp",
+  };
+
+  it("keeps the same target's credential and header names on ordinary edits", async () => {
+    const f = fixture();
+    f.server.endpoint = "https://tools.example.test";
+    const saved = await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: {
+        ...config,
+        endpoint: "https://TOOLS.example.test:443/",
+        transport: "sse",
+        name: "Edited",
+        description: "Fixture",
+        enabled: true,
+        verbatimResults: false,
+      },
+    });
+    expect(saved).toMatchObject({
+      name: "Edited",
+      transport: "sse",
+      oauthStatus: "connected",
+      headerKeys: ["Authorization", "X-Static"],
+      verbatimResults: false,
+    });
+    expect(f.server.secretId).toBe("old");
+    expect(f.secrets.put).not.toHaveBeenCalled();
+    expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps named blank headers and replaces the supplied header set for the same target", async () => {
+    const f = fixture();
+    const saved = await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, headers: { authorization: "", "X-New": "new" } },
+    });
+    expect(saved).toMatchObject({
+      oauthStatus: "connected",
+      headerKeys: ["authorization", "X-New"],
+    });
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
+      ...f.material,
+      headers: { authorization: "old", "X-New": "new" },
+    });
+  });
+
+  it.each(["/mcp/", "/other", "/mcp?mode=new"])(
+    "moves to %s with only the new material",
+    async (path) => {
+      const f = fixture();
+      const endpoint = new URL(path, config.endpoint).href;
+      const saved = await f.client.mcp.servers.update({
+        id: f.server.id,
+        config: { ...config, endpoint, headers: { Authorization: "", "X-New": "fresh" } },
+      });
+      expect(saved).toMatchObject({ endpoint, oauthStatus: "none", headerKeys: ["X-New"] });
+      expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({
+        headers: { "X-New": "fresh" },
+      });
+      expect(f.rows.has("old")).toBe(true); // Managed removal uses the pending cleanup entry.
+      expect(f.parent.cleanupRefs).toEqual([{ id: "old", ref: "old-ref" }]);
+      expect(f.prisma.mcpOAuthSession.deleteMany).toHaveBeenCalledWith({
+        where: { serverId: f.server.id, userId: actor.userId, spaceId: actor.spaceId },
+      });
+    },
+  );
+
+  it.each(["not json", "null", '{"headers":{"X-Key":false}}'])(
+    "drops malformed decrypted material when moving (%s)",
+    async (plaintext) => {
+      const f = fixture();
+      f.values.set("old-ref", plaintext);
+      const next = { ...config, endpoint: "https://another.example.test/mcp" };
+      const saved = await f.client.mcp.servers.update({ id: f.server.id, config: next });
+      expect(saved).toMatchObject({
+        endpoint: next.endpoint,
+        hasSecret: false,
+        headerKeys: [],
+        oauthStatus: "none",
+      });
+      expect(f.server.secretId).toBeNull();
+      expect(f.secrets.put).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["move", "replace"] as const)(
+    "does not commit a %s while the old credential cannot load",
+    async (change) => {
+      const f = fixture();
+      f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError(503));
+      const next =
+        change === "move"
+          ? { ...config, endpoint: "https://another.example.test/mcp" }
+          : { ...config, secret: "replacement-fixture" };
+      await expect(
+        f.client.mcp.servers.update({ id: f.server.id, config: next }),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      expect(f.server).toMatchObject({ endpoint: config.endpoint, secretId: "old", revision: 1 });
+      expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
+      expect(f.secrets.put).not.toHaveBeenCalled();
+    },
+  );
+
+  it("can explicitly clear during a move when the credential store cannot load the old value", async () => {
+    const f = fixture();
+    f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError(503));
+    const endpoint = "https://another.example.test/mcp";
+    const saved = await f.client.mcp.servers.update({
+      id: f.server.id,
+      config: { ...config, endpoint, clearCredential: true },
+    });
+    expect(saved).toMatchObject({
+      endpoint,
+      hasSecret: false,
+      oauthStatus: "none",
+      headerKeys: [],
+    });
+  });
+
+  it("keeps the old target and credential when preparing the replacement fails", async () => {
+    const f = fixture();
+    f.secrets.put.mockRejectedValue(new SecretStoreUnavailableError(503));
+    await expect(
+      f.client.mcp.servers.update({
+        id: f.server.id,
+        config: { ...config, endpoint: "https://another.example.test/mcp", secret: "fresh" },
+      }),
+    ).rejects.toThrow();
+    expect(f.server).toMatchObject({ endpoint: config.endpoint, secretId: "old", revision: 1 });
+    expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
   });
 });
 

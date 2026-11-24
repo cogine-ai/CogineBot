@@ -597,6 +597,61 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     return { failures: () => failures };
   }
 
+  it.each(["confirmed", "lost-reply", "rolled-back"] as const)(
+    "reports a restored sign-in according to its %s save acknowledgement",
+    async (outcome) => {
+      const f = await fixture({ expired: false, poolMax: 1, withStaticCredential: false });
+      const previous = await f.read();
+      const redirectUri = "https://app.example.test/callback";
+      const oauth = {
+        clientInformation: previous.material.oauth!.clientInformation,
+        discoveryState: previous.material.oauth!.discoveryState,
+        codeVerifier: "fixture-persisted-verifier",
+        redirectUri,
+      };
+      f.entries.set(previous.row.ciphertext, JSON.stringify({ oauth }));
+      const sessionId = randomUUID();
+      const sessionRef = `fixture-session-${sessionId}`;
+      f.entries.set(sessionRef, JSON.stringify({ oauth, revision: f.server.revision }));
+      await f.prisma.mcpOAuthSession.create({
+        data: {
+          id: sessionId,
+          serverId: f.server.id,
+          ...f.context,
+          endpoint: f.server.endpoint!,
+          redirectUri,
+          oauthCiphertext: sessionRef,
+        },
+      });
+      const requests: Array<{ url: string; verifier: string | null }> = [];
+      const exchange = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        if (request.method === "GET") return new Response(null, { status: 404 });
+        requests.push({
+          url: request.url,
+          verifier: new URLSearchParams(await request.text()).get("code_verifier"),
+        });
+        return Response.json({ access_token: "fixture-new-access", token_type: "Bearer" });
+      };
+      const restarted = f.makeBroker(f.db, undefined, exchange);
+      const fault = outcome === "confirmed" ? null : failSecretCommit(f.db.pool, outcome);
+      const complete = runAsTenant(f.context, () =>
+        restarted.complete({ ...f.context, sessionId, state: sessionId, code: "fixture-code" }),
+      );
+      if (outcome === "confirmed") await complete;
+      else await expect(complete).rejects.toThrow();
+      expect(requests).toEqual([{ url: `${issuer}/token`, verifier: oauth.codeVerifier }]);
+      if (fault) expect(fault.failures()).toBe(1);
+      expect((await f.read()).material.oauth?.tokens?.access_token).toBe(
+        outcome === "rolled-back" ? undefined : "fixture-new-access",
+      );
+      const current = await f.prisma.mcpServer.findUniqueOrThrow({ where: { id: f.server.id } });
+      expect(current.revision).toBe(f.server.revision + (outcome === "confirmed" ? 1 : 0));
+      expect(await f.prisma.mcpOAuthSession.findUnique({ where: { id: sessionId } })).toBeNull();
+    },
+    30_000,
+  );
+
   it.each([
     { outcome: "lost-reply", stdio: false },
     { outcome: "rolled-back", stdio: false },

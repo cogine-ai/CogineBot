@@ -29,6 +29,13 @@ export const McpRemoteEndpointSchema = z
     }
   }, "MCP remote endpoint must be an HTTP(S) URL without credentials or a fragment");
 
+/** Compare the entire remote target, including its path and query. */
+export function sameMcpEndpoint(left: string | null, right: string | null): boolean {
+  if (left === right) return true;
+  const target = left && URL.parse(left);
+  return Boolean(target && right && target.href === URL.parse(right)?.href);
+}
+
 export const McpHeadersSchema = z
   .record(z.string().regex(/^[A-Za-z0-9-]+$/), z.string().max(4096))
   .superRefine((value, ctx) => {
