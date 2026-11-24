@@ -7239,6 +7239,85 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
+  it.each(["created", "acknowledged", "rejected", "lost effect settlement"] as const)(
+    "audits an automatic semantic save only for confirmed creation with a settled effect (%s)",
+    async (outcome) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const save = vi.fn<SemanticMemoryProvider["save"]>().mockResolvedValue(
+        outcome === "rejected"
+          ? { ok: false, error: "Synthetic save failure" }
+          : {
+              ok: true,
+              value: undefined,
+              ...(outcome !== "acknowledged" && { written: true }),
+            },
+      );
+      const f = fixture({
+        name: "save_memory",
+        builtin: true,
+        autoReview: true,
+        trigger: "routine",
+        routineInstructions: "Save this synthetic preference.",
+        semanticTarget: { scope: "isolated", connectionId: "synthetic-connection" },
+        semanticMemory: {
+          describe: () => ({
+            id: "synthetic-memory",
+            contractVersion: "1",
+            adapterVersion: "1",
+            capabilities: { recall: true, save: true, purgeHistory: true, sharedScope: true },
+          }),
+          save,
+          recall: async () => ({ ok: true, value: [] }),
+          purgeHistory: async () => ({ ok: true, value: undefined }),
+        },
+      });
+      if (outcome === "lost effect settlement") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "completed" ? { count: 0 } : update(input),
+        );
+      }
+      const args = { content: "Synthetic semantic memory" };
+      if (outcome === "created") {
+        save.mockResolvedValueOnce({ ok: true, value: undefined, written: true });
+        save.mockResolvedValue({ ok: true, value: undefined });
+      }
+      f.setCalls([
+        { args, executionId: "save" },
+        ...(outcome === "created" ? [{ args, executionId: "repeat-request" }] : []),
+      ]);
+      await f.run();
+      const requests = outcome === "created" ? 2 : 1;
+      expect(reviewMock).toHaveBeenCalledTimes(requests);
+      expect(save).toHaveBeenCalledTimes(requests);
+      if (outcome === "created") {
+        const publicResult = { ok: true, value: undefined };
+        expect(f.effects.map(({ status, result }) => ({ status, result }))).toEqual([
+          { status: "completed", result: publicResult },
+          { status: "completed", result: publicResult },
+        ]);
+        expect(f.results).toEqual([publicResult, publicResult]);
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              id: `approval.auto_reviewed:${f.effects[0]?.id}`,
+              outcome: "success",
+              metadata: { decision: "pass" },
+            }),
+          ],
+        });
+      } else {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        expect(f.results.at(-1)).toMatchObject(
+          outcome === "lost effect settlement"
+            ? { uncertain: true }
+            : { ok: outcome === "acknowledged" },
+        );
+      }
+    },
+  );
+
   it.each([
     { scenario: "confirmed", value: { id: "fact-1", expired: true, reason: null }, audit: 1 },
     { scenario: "different fact", value: { id: "fact-2", expired: true, reason: null }, audit: 0 },

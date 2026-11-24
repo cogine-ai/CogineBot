@@ -292,6 +292,81 @@ describe("saveSupermemoryMemory", () => {
     vi.unstubAllGlobals();
   });
 
+  const creation = {
+    documentId: null,
+    memories: [{ id: "synthetic-memory-id", memory: "fact", isStatic: false }],
+  };
+
+  it.each([
+    { status: 201, body: creation, written: true },
+    { status: 200, body: creation, written: false },
+    { status: 202, body: { id: "synthetic-doc", status: "queued" }, written: false },
+    { status: 201, body: { ...creation, memories: [] }, written: false },
+    {
+      status: 201,
+      body: { ...creation, memories: [{ ...creation.memories[0], memory: "another fact" }] },
+      written: false,
+    },
+    {
+      status: 201,
+      body: { ...creation, memories: [{ ...creation.memories[0], id: "" }] },
+      written: false,
+    },
+  ])(
+    "only confirms matching created memories from status $status ($written)",
+    async ({ status, body, written }) => {
+      const fetch = vi.fn(async () => Response.json(body, { status }));
+      expect(
+        await saveSupermemoryMemory(
+          "  fact  ",
+          "synthetic",
+          { ...config, fetch },
+          { confirmCreation: true },
+        ),
+      ).toEqual({
+        ok: true,
+        ...(written ? { written: true } : {}),
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    new Response("not json", { status: 201 }),
+    new Response("too large", {
+      status: 201,
+      headers: { "content-length": String(MAX_SUPERMEMORY_RESPONSE_BYTES + 1) },
+    }),
+  ])(
+    "keeps the accepted request result when the creation response cannot be parsed",
+    async (response) => {
+      const fetch = vi.fn(async () => response);
+      await expect(
+        saveSupermemoryMemory("fact", "synthetic", { ...config, fetch }, { confirmCreation: true }),
+      ).resolves.toEqual({ ok: true });
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("abandons a stalled creation receipt on cancellation without repeating the request", async () => {
+    const controller = new AbortController();
+    const body = new ReadableStream(
+      { pull: () => controller.abort(new Error("Fixture cancellation")) },
+      { highWaterMark: 0 },
+    );
+    const fetch = vi.fn(async () => new Response(body, { status: 201 }));
+    await expect(
+      saveSupermemoryMemory(
+        "fact",
+        "synthetic",
+        { ...config, fetch },
+        { signal: controller.signal, confirmCreation: true },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(controller.signal.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("reports a non-OK response instead of throwing", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 401 })));
     const result = await saveSupermemoryMemory("fact", "rakazo:bot-123", config);
@@ -311,6 +386,40 @@ describe("saveSupermemoryMemoryToContainers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
+
+  it.each([201, 202, 503])(
+    "requires a creation receipt from each requested container (%s)",
+    async (status) => {
+      const creationResponse = () =>
+        Response.json(
+          {
+            documentId: null,
+            memories: [{ id: "synthetic-memory-id", memory: "fact", isStatic: false }],
+          },
+          { status: 201 },
+        );
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockImplementationOnce(async () => creationResponse())
+        .mockImplementationOnce(async () =>
+          status === 201 ? creationResponse() : new Response(null, { status }),
+        );
+      const result = await saveSupermemoryMemoryToContainers(
+        "fact",
+        ["space-tag", "bot-tag"],
+        { ...config, fetch },
+        { confirmCreation: true },
+      );
+      expect(result).toEqual(
+        status === 201
+          ? { ok: true, written: true }
+          : status === 202
+            ? { ok: true }
+            : { ok: false, error: expect.stringContaining("503") },
+      );
+      expect(fetch).toHaveBeenCalledTimes(2);
+    },
+  );
 });
 
 describe("deleteSupermemoryContainer", () => {

@@ -282,7 +282,7 @@ describe("SerenityMemoryProvider", () => {
       context,
     );
 
-    expect(result).toEqual({ ok: true, value: undefined });
+    expect(result).toEqual({ ok: true, value: undefined, written: true });
     expect(rememberSerenityMock.mock.calls.map((call) => call[3]?.entity)).toEqual([
       "rakazo-space/workspace-1",
     ]);
@@ -308,10 +308,10 @@ describe("SerenityMemoryProvider", () => {
   });
 
   it("keys retried saves within a run so Serenity replays instead of duplicating", async () => {
-    rememberSerenityMock.mockResolvedValue({
-      ok: true,
-      value: { id: "fact-2", status: "inserted" },
-    });
+    rememberSerenityMock
+      .mockResolvedValueOnce({ ok: true, value: { id: "fact-2", status: "inserted" } })
+      .mockResolvedValueOnce({ ok: true, value: { id: "fact-2", status: "duplicate" } })
+      .mockResolvedValueOnce({ ok: true, value: { id: "fact-3", status: "inserted" } });
     const request = {
       content: "Use metric units.",
       scope: "isolated" as const,
@@ -319,13 +319,46 @@ describe("SerenityMemoryProvider", () => {
       source: { kind: "durable" as const },
     };
     const run = { ...context, runId: "run-1" };
-    await provider().save(request, { ...run, operationId: "op-1" });
-    await provider().save(request, { ...run, operationId: "op-2" });
-    await provider().save({ ...request, content: "Use imperial units." }, run);
+    const memory = provider();
+    await expect(memory.save(request, { ...run, operationId: "op-1" })).resolves.toEqual({
+      ok: true,
+      value: undefined,
+      written: true,
+    });
+    await expect(memory.save(request, { ...run, operationId: "op-2" })).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+    await expect(memory.save({ ...request, content: "Use imperial units." }, run)).resolves.toEqual(
+      {
+        ok: true,
+        value: undefined,
+        written: true,
+      },
+    );
     const keys = rememberSerenityMock.mock.calls.map((call) => call[3]?.operationKey);
     expect(keys[0]).toMatch(/^rakazo:[0-9a-f]{48}$/);
     expect(keys[1]).toBe(keys[0]);
     expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it.each([
+    { id: "fact", status: "queued", statusText: "inserted" },
+    { id: "fact", status: "superseded" },
+    { id: " ", status: "inserted" },
+  ])("does not confirm a write without a new fact receipt (%j)", async (value) => {
+    rememberSerenityMock.mockResolvedValue({ ok: true, value });
+    await expect(
+      provider().save(
+        {
+          content: "Use metric units.",
+          scope: "isolated",
+          botId: "bot-1",
+          source: { kind: "durable" },
+        },
+        context,
+      ),
+    ).resolves.toEqual({ ok: true, value: undefined });
   });
 
   it("scopes shared durable saves by brain label when configured", async () => {

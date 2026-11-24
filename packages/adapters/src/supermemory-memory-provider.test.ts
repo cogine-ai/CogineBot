@@ -180,23 +180,63 @@ describe("SupermemoryMemoryProvider", () => {
     expect(init?.signal.aborted).toBe(true);
   });
 
-  it("mirrors shared durable saves so a later scope change retains bot memory", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it.each([200, 201])(
+    "mirrors shared durable saves and keeps confirmed creation (%s)",
+    async (status) => {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json(
+          {
+            documentId: null,
+            memories: [{ id: "fixture-memory", memory: "Use metric units.", isStatic: false }],
+          },
+          { status },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
 
-    await provider().save(
-      {
-        content: "Use metric units.",
-        scope: "shared",
-        botId: "bot-1",
-        source: { kind: "durable" },
-      },
-      context,
+      const result = await provider().save(
+        {
+          content: "Use metric units.",
+          scope: "shared",
+          botId: "bot-1",
+          source: { kind: "durable" },
+        },
+        context,
+      );
+      expect(result).toEqual({
+        ok: true,
+        value: undefined,
+        ...(status === 201 ? { written: true } : {}),
+      });
+
+      expect(
+        fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).containerTag),
+      ).toEqual(["rakazo:workspace:workspace-1", "rakazo:bot-1"]);
+    },
+  );
+
+  it("settles a history save without waiting for a creation response body", async () => {
+    const controller = new AbortController();
+    const pull = vi.fn(() => controller.abort(new Error("Unexpected receipt read")));
+    const cancel = vi.fn();
+    const body = new ReadableStream({ pull, cancel }, { highWaterMark: 0 });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(body, { status: 201 })),
     );
-
-    expect(
-      fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).containerTag),
-    ).toEqual(["rakazo:workspace:workspace-1", "rakazo:bot-1"]);
+    await expect(
+      provider().save(
+        {
+          content: "Synthetic summary",
+          scope: "isolated",
+          botId: "bot-1",
+          source: { kind: "history", generation: 1 },
+        },
+        { ...context, signal: controller.signal },
+      ),
+    ).resolves.toEqual({ ok: true, value: undefined });
+    expect(pull).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("purges only requested history generations", async () => {

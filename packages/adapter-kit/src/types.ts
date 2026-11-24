@@ -473,6 +473,9 @@ export type SemanticMemoryResponse<T = void> =
   | { ok: true; value: T }
   | { ok: false; error: string };
 
+/** Only a provider-confirmed new write carries the internal written receipt. */
+export type SemanticMemorySaveResponse = SemanticMemoryResponse & { written?: true };
+
 export type SemanticMemoryRecallResponse =
   | {
       ok: true;
