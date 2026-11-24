@@ -10147,16 +10147,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
           }
           if (name === "save_memory") {
             context.signal.throwIfAborted();
+            const admission = appliedReviewAdmission();
+            const result = await semanticMemory!.save(
+              {
+                content: String(args.content ?? ""),
+                scope: memoryScope!,
+                botId: bot.id,
+                source: { kind: "durable" },
+              },
+              context,
+            );
             return finish(
-              await semanticMemory!.save(
-                {
-                  content: String(args.content ?? ""),
-                  scope: memoryScope!,
-                  botId: bot.id,
-                  source: { kind: "durable" },
-                },
-                context,
-              ),
+              result.ok ? { ok: true, value: result.value } : result,
+              undefined,
+              result.ok && result.written === true ? admission : undefined,
             );
           }
           if (name === "forget_memory") {

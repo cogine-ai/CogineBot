@@ -8,6 +8,7 @@ import type {
   SemanticMemoryRecallResponse,
   SemanticMemoryResponse,
   SemanticMemorySaveRequest,
+  SemanticMemorySaveResponse,
 } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost } from "@rakazo/contracts";
 import type { ResolvedAddress, ResolveHostname } from "./network-address.js";
@@ -282,7 +283,7 @@ export class SupermemoryMemoryProvider implements SemanticMemoryProvider {
   async save(
     request: SemanticMemorySaveRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse> {
+  ): Promise<SemanticMemorySaveResponse> {
     const blocked = await this.localBaseUrlBlock();
     if (blocked) return { ok: false, error: blocked };
     const tags =
@@ -293,9 +294,9 @@ export class SupermemoryMemoryProvider implements SemanticMemoryProvider {
       request.content,
       tags,
       this.connectionForRequest(),
-      context.signal,
+      { signal: context.signal, confirmCreation: request.source.kind === "durable" },
     );
-    return result.ok ? { ok: true, value: undefined } : result;
+    return result.ok ? { ...result, value: undefined } : result;
   }
 
   async purgeHistory(

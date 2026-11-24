@@ -9,6 +9,7 @@ import type {
   SemanticMemoryResponse,
   SemanticMemoryResult,
   SemanticMemorySaveRequest,
+  SemanticMemorySaveResponse,
 } from "@rakazo/adapter-kit";
 import {
   classifySerenityEndpointTrust,
@@ -308,7 +309,7 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
   async save(
     request: SemanticMemorySaveRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse> {
+  ): Promise<SemanticMemorySaveResponse> {
     if (request.source.kind === "history") {
       // Conversation summaries stay out of the user-owned Serenity brain.
       return { ok: true, value: undefined };
@@ -336,7 +337,12 @@ export class SerenityMemoryProvider implements SemanticMemoryProvider {
       ),
       signal: context.signal,
     });
-    return result.ok ? { ok: true, value: undefined } : { ok: false, error: result.error };
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      value: undefined,
+      ...(result.value.status === "inserted" && result.value.id.trim() && { written: true }),
+    };
   }
 
   async purgeHistory(

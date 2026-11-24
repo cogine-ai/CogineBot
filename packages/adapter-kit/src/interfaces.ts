@@ -74,6 +74,7 @@ import type {
   SemanticMemoryRecallResponse,
   SemanticMemoryResponse,
   SemanticMemorySaveRequest,
+  SemanticMemorySaveResponse,
   SnapshotRef,
   SpeechClip,
   StreamedPortableFile,
@@ -293,7 +294,7 @@ export interface SemanticMemoryProvider {
   save(
     request: SemanticMemorySaveRequest,
     context: AdapterContext,
-  ): Promise<SemanticMemoryResponse>;
+  ): Promise<SemanticMemorySaveResponse>;
   purgeHistory(
     request: SemanticMemoryPurgeHistoryRequest,
     context: AdapterContext,

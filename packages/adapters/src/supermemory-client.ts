@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isLocalMcpHost } from "@rakazo/contracts";
+import { z } from "zod";
 import { sanitizeConnectorError } from "./connector-safety.js";
 import type { ResolvedAddress, ResolveHostname } from "./network-address.js";
 import { createPrivateNetworkFetch } from "./remote-mcp.js";
@@ -9,7 +10,7 @@ import { readBodyCapped, withAbort } from "./web-ssrf.js";
 const SUPERMEMORY_TIMEOUT_MS = 15_000;
 export const SUPERMEMORY_CLOUD_BASE_URL = "https://api.supermemory.ai";
 
-/** Bound for search results, cleanup acknowledgments and the first probe-list entry. */
+/** Bound for search results, write acknowledgments and the first probe-list entry. */
 export const MAX_SUPERMEMORY_RESPONSE_BYTES = 1024 * 1024;
 
 /** How many recalled memories a search asks for, and the most that are ever injected into a run. */
@@ -28,8 +29,14 @@ export type SupermemorySearchResponse =
   | { ok: true; results: SupermemoryResult[]; partial?: true }
   | { ok: false; error: string };
 
-export type SupermemorySaveResponse = { ok: true } | { ok: false; error: string };
+export type SupermemorySaveResponse = { ok: true; written?: true } | { ok: false; error: string };
 export type SupermemoryProbeResponse = { ok: true } | { ok: false; error: string };
+
+const SupermemoryCreationSchema = z.object({
+  memories: z.tuple([
+    z.object({ id: z.string().trim().min(1), memory: z.string(), isStatic: z.literal(false) }),
+  ]),
+});
 
 export interface SupermemoryConnectionConfig {
   baseUrl: string;
@@ -44,6 +51,11 @@ export interface SupermemoryConnectionConfig {
   /** Test seam. Production uses the runtime fetch paired with the private-host dispatcher. */
   fetch?: typeof globalThis.fetch;
 }
+
+type SupermemorySaveOptions = {
+  signal?: AbortSignal;
+  confirmCreation?: boolean;
+};
 
 /** Base URLs are route prefixes, never credentials or request query/fragment state. */
 export function parseSupermemoryBaseUrl(baseUrl: string): URL {
@@ -362,23 +374,31 @@ export async function saveSupermemoryMemory(
   content: string,
   containerTag: string,
   config: SupermemoryConnectionConfig,
-  signal?: AbortSignal,
+  { signal, confirmCreation }: SupermemorySaveOptions = {},
 ): Promise<SupermemorySaveResponse> {
   const memory = content.trim().slice(0, MAX_MEMORY_CONTENT_CHARS);
   if (!memory) {
     return { ok: false, error: "Supermemory save skipped: memory content is empty." };
   }
   try {
+    const requestAbort = requestSignal(signal);
     const response = await fetchSupermemory(config, requestUrl(config.baseUrl, "/v4/memories"), {
       method: "POST",
       headers: authHeaders(config),
       body: JSON.stringify({ containerTag, memories: [{ content: memory, isStatic: false }] }),
       redirect: "error",
-      signal: requestSignal(signal),
+      signal: requestAbort,
     });
     try {
       if (!response.ok) {
         return { ok: false, error: `Supermemory save failed: ${response.status}` };
+      }
+      if (confirmCreation && response.status === 201) {
+        const value = await readSupermemoryJson(response, requestAbort).catch(() => undefined);
+        const creation = SupermemoryCreationSchema.safeParse(value);
+        if (creation.success && creation.data.memories[0].memory === memory) {
+          return { ok: true, written: true };
+        }
       }
       return { ok: true };
     } finally {
@@ -393,12 +413,12 @@ export async function saveSupermemoryMemoryToContainers(
   content: string,
   containerTags: string[],
   config: SupermemoryConnectionConfig,
-  signal?: AbortSignal,
+  options?: SupermemorySaveOptions,
 ): Promise<SupermemorySaveResponse> {
   const results = await Promise.all(
     containerTags.map(async (containerTag) => ({
       containerTag,
-      result: await saveSupermemoryMemory(content, containerTag, config, signal),
+      result: await saveSupermemoryMemory(content, containerTag, config, options),
     })),
   );
   const failures = results.filter(
@@ -406,7 +426,11 @@ export async function saveSupermemoryMemoryToContainers(
       !entry.result.ok,
   );
   return failures.length === 0
-    ? { ok: true }
+    ? {
+        ok: true,
+        ...(results.length > 0 &&
+          results.every(({ result }) => result.ok && result.written === true) && { written: true }),
+      }
     : {
         ok: false,
         error: failures
