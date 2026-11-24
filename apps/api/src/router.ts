@@ -92,6 +92,7 @@ import {
   kickModelCredentialRefresh,
   LOCAL_PROVIDER_ID,
   LocalAgentHomeStore,
+  lacksProviderAuthorization,
   listAvailablePiCatalog,
   listBotSecretMetadata,
   listNativeRoutineTriggers,
@@ -609,19 +610,8 @@ async function lockProviderConnectionScope(
   provider: string,
 ): Promise<void> {
   // Avoid NUL separators in the lock key; text params may truncate at a zero byte and break begin.
-  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider.toLowerCase()}`;
+  const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider.trim().toLowerCase()}`;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
-}
-
-function lacksProviderAuthorization(row: { providerRef: string | null; metadata?: unknown }) {
-  const { metadata } = row;
-  return (
-    !row.providerRef &&
-    metadata !== null &&
-    typeof metadata === "object" &&
-    "authRevision" in metadata &&
-    typeof metadata.authRevision === "string"
-  );
 }
 
 async function lockMcpConnectionScope(
@@ -7444,7 +7434,7 @@ export function createRouter(deps: RouterDeps) {
         const prepared =
           existing.status !== "connected"
             ? await prepareManagedConnectorForTransaction(connector)
-            : { provider: connector, recheck: undefined };
+            : { provider: connector, resolveConnectedAccountId: undefined, recheck: undefined };
         const transactionConnector = prepared.provider;
         if (!transactionConnector)
           throw new ORPCError("BAD_REQUEST", { message: "Integration provider is not configured" });
@@ -7597,21 +7587,7 @@ export function createRouter(deps: RouterDeps) {
               // begin. Resolve it to the connected-account id so revoke deletes the
               // right remote authorization. Prefer an account id not already used
               // by a sibling row for the same provider.
-              const resolveAccountId = (
-                transactionConnector as {
-                  resolveConnectedAccountId?: (
-                    userId: string,
-                    slug: string,
-                    currentRef: string | null | undefined,
-                    excludeIds?: string[],
-                    spaceId?: string,
-                  ) => Promise<string | undefined>;
-                  connectedAccountId?: (
-                    userId: string,
-                    slug: string,
-                  ) => Promise<string | undefined>;
-                }
-              ).resolveConnectedAccountId;
+              const resolveAccountId = prepared.resolveConnectedAccountId;
               const fallbackAccountId = (
                 transactionConnector as {
                   connectedAccountId?: (
@@ -7619,32 +7595,42 @@ export function createRouter(deps: RouterDeps) {
                     slug: string,
                   ) => Promise<string | undefined>;
                 }
-              ).connectedAccountId;
+              ).connectedAccountId?.bind(transactionConnector);
+              const siblingScope = {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                connectorId: existing.connectorId,
+                id: { not: existing.id },
+                status: { in: ["connected", "pending", "error"] },
+              };
+              const app = existing.provider.trim().toLowerCase();
+              const matchesApp = (row: { provider: string }) =>
+                row.provider.trim().toLowerCase() === app;
               let resolvedAccountId: string | undefined;
               if (resolveAccountId || fallbackAccountId) {
-                const siblings = await tx.connection.findMany({
-                  where: {
-                    spaceId: context.actor.spaceId,
-                    userId: context.actor.userId,
-                    connectorId: existing.connectorId,
-                    provider: existing.provider,
-                    id: { not: existing.id },
-                    status: { in: ["connected", "pending", "error"] },
-                  },
-                  select: { providerRef: true, status: true },
-                });
+                const siblings = (
+                  await tx.connection.findMany({
+                    where: siblingScope,
+                    select: { provider: true, providerRef: true, status: true },
+                  })
+                ).filter(matchesApp);
                 // Exclude concrete account ids only. A pending sibling may still
                 // store a slug or authorization-request id; passing those raw refs
                 // would not match remote account ids and can let this row adopt the
                 // sibling's account. If a sibling ref cannot be resolved yet, leave
                 // this row pending so a later complete can re-resolve safely.
                 const excludeIds: string[] = [];
+                const currentRef = current.providerRef?.trim();
+                const needsAccountChoice =
+                  !resolveAccountId || !currentRef || currentRef.toLowerCase() === app;
                 let unresolvedSibling = false;
                 for (const sibling of siblings) {
                   const ref = sibling.providerRef?.trim();
-                  // Slug-only refs cannot identify a concrete remote account; resolving
-                  // them would pick an arbitrary ACTIVE id and over-exclude.
-                  if (!ref || ref === existing.provider) continue;
+                  if (!ref || ref.toLowerCase() === app) {
+                    // A live sibling with only an app reference could own any candidate.
+                    if (needsAccountChoice && sibling.status !== "error") unresolvedSibling = true;
+                    continue;
+                  }
                   if (resolveAccountId) {
                     const resolvedSiblingId = await resolveAccountId(
                       context.actor.userId,
@@ -7690,19 +7676,11 @@ export function createRouter(deps: RouterDeps) {
 
               const providerRef = resolvedAccountId ?? current.providerRef;
               if (providerRef) {
-                const taken = await tx.connection.findFirst({
-                  where: {
-                    spaceId: context.actor.spaceId,
-                    userId: context.actor.userId,
-                    connectorId: existing.connectorId,
-                    provider: existing.provider,
-                    id: { not: existing.id },
-                    status: { in: ["connected", "pending", "error"] },
-                    providerRef,
-                  },
-                  select: { id: true },
+                const referringRows = await tx.connection.findMany({
+                  where: { ...siblingScope, providerRef },
+                  select: { provider: true },
                 });
-                if (taken) {
+                if (referringRows.some(matchesApp)) {
                   // Do not mark connected with a request-scoped or shared ref —
                   // leave pending so a later complete can re-resolve an unused id.
                   return current;

@@ -30,6 +30,21 @@ export function connectionAuthorizationRevision(row: {
   return row.updatedAt?.toISOString();
 }
 
+/** A local reservation cannot identify an active grant before begin saves its reference. */
+export function lacksProviderAuthorization(row: {
+  providerRef: string | null;
+  metadata?: unknown;
+}) {
+  const { metadata } = row;
+  return (
+    !row.providerRef &&
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "authRevision" in metadata &&
+    typeof metadata.authRevision === "string"
+  );
+}
+
 /** A concrete grant generation cannot be inferred from an app-level live slug. */
 export function allowsLegacyConnectorRecovery<T extends { provider?: string; metadata?: unknown }>(
   row: T,

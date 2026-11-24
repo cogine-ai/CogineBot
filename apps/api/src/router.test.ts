@@ -1806,6 +1806,7 @@ describe("connections.complete", () => {
       };
       const sibling = {
         id: "old-grant",
+        provider: current.provider,
         providerRef: "old-unresolvable-ref",
         status: siblingStatus,
       };
@@ -1831,7 +1832,9 @@ describe("connections.complete", () => {
                 ? sibling
                 : null,
           ),
-          findMany: vi.fn(async () => [sibling]),
+          findMany: vi.fn(async ({ where }: { where: { providerRef?: string } }) =>
+            !where.providerRef || where.providerRef === sibling.providerRef ? [sibling] : [],
+          ),
           updateManyAndReturn: update,
         },
       };
@@ -1869,11 +1872,10 @@ describe("connections.complete", () => {
           spaceId: actor.spaceId,
           userId: actor.userId,
           connectorId: current.connectorId,
-          provider: current.provider,
           id: { not: current.id },
           status: { in: ["connected", "pending", "error"] },
         },
-        select: { providerRef: true, status: true },
+        select: { provider: true, providerRef: true, status: true },
       });
       expect(resolveConnectedAccountId).toHaveBeenCalledWith(
         actor.userId,
@@ -1932,7 +1934,11 @@ describe("connections.complete", () => {
       $executeRaw: vi.fn(),
       connection: {
         findFirst: vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce(null),
-        findMany: vi.fn(async () => [{ providerRef: "failed-request", status: "error" }]),
+        findMany: vi.fn(async ({ where }: { where: { providerRef?: string } }) =>
+          where.providerRef
+            ? []
+            : [{ provider: current.provider, providerRef: "failed-request", status: "error" }],
+        ),
         updateManyAndReturn: update,
       },
     };

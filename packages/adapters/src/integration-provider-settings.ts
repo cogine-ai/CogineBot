@@ -153,6 +153,10 @@ class ConfiguredIntegrationProvider implements ManagedConnectorProvider {
       provider: prepared.provider
         ? new ConfiguredIntegrationProvider(this.id, this.settings, prepared.provider)
         : undefined,
+      // Expose lookup for confirmation on the same prepared configuration snapshot.
+      resolveConnectedAccountId: prepared.provider?.resolveConnectedAccountId?.bind(
+        prepared.provider,
+      ),
       recheck: async (client: Pick<PrismaClient, "integrationProviderConfig" | "$queryRaw">) => {
         const current = await runAsSystemInTransaction(
           client,
@@ -218,5 +222,9 @@ class ConfiguredIntegrationProvider implements ManagedConnectorProvider {
 export async function prepareManagedConnectorForTransaction(connector: ManagedConnectorProvider) {
   return connector instanceof ConfiguredIntegrationProvider
     ? connector.prepareForTransaction()
-    : { provider: connector, recheck: undefined };
+    : {
+        provider: connector,
+        resolveConnectedAccountId: connector.resolveConnectedAccountId?.bind(connector),
+        recheck: undefined,
+      };
 }

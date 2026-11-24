@@ -134,11 +134,14 @@ describe("reconcileManagedConnection", () => {
       connection: {
         findFirst: vi.fn().mockResolvedValue({
           id: "conn-1",
+          spaceId: "workspace-1",
+          userId: "user-1",
           connectorId: "composio",
           provider: "gmail",
+          providerRef: "gmail-state",
           status: "pending",
         }),
-        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const connectors = {
@@ -156,8 +159,16 @@ describe("reconcileManagedConnection", () => {
     ).resolves.toBe("connected");
 
     expect(connectionReady).toHaveBeenCalled();
-    expect(prisma.connection.update).toHaveBeenCalledWith({
-      where: { id: "conn-1" },
+    expect(prisma.connection.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "conn-1",
+        spaceId: "workspace-1",
+        userId: "user-1",
+        connectorId: "composio",
+        provider: "gmail",
+        providerRef: "gmail-state",
+        status: "pending",
+      },
       data: { status: "connected" },
     });
   });
@@ -179,12 +190,14 @@ describe("tryCompleteConnectionWithCode", () => {
       connection: {
         findFirst: vi.fn().mockResolvedValue({
           id: "conn-1",
+          spaceId: "workspace-1",
+          userId: "user-1",
           connectorId: "composio",
           provider: "gmail",
           providerRef: "gmail-state",
           status: "pending",
         }),
-        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const connectors = {
@@ -211,8 +224,16 @@ describe("tryCompleteConnectionWithCode", () => {
       },
     });
     expect(complete).toHaveBeenCalledWith({ state: "gmail-state", code: "123456" }, context);
-    expect(prisma.connection.update).toHaveBeenCalledWith({
-      where: { id: "conn-1" },
+    expect(prisma.connection.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "conn-1",
+        spaceId: "workspace-1",
+        userId: "user-1",
+        connectorId: "composio",
+        provider: "gmail",
+        providerRef: "gmail-state",
+        status: "pending",
+      },
       data: { status: "connected" },
     });
   });
@@ -223,12 +244,14 @@ describe("tryCompleteConnectionWithCode", () => {
       connection: {
         findFirst: vi.fn().mockResolvedValue({
           id: "conn-1",
+          spaceId: "workspace-1",
+          userId: "user-1",
           connectorId: "composio",
           provider: "gmail",
           providerRef: "gmail-state",
           status: "connected",
         }),
-        update: vi.fn(),
+        updateMany: vi.fn(),
       },
     };
     const connectors = {
@@ -247,7 +270,7 @@ describe("tryCompleteConnectionWithCode", () => {
     ).resolves.toEqual({ connected: true });
 
     expect(complete).not.toHaveBeenCalled();
-    expect(prisma.connection.update).not.toHaveBeenCalled();
+    expect(prisma.connection.updateMany).not.toHaveBeenCalled();
   });
 
   it("returns a connector error instead of throwing", async () => {
@@ -256,12 +279,14 @@ describe("tryCompleteConnectionWithCode", () => {
       connection: {
         findFirst: vi.fn().mockResolvedValue({
           id: "conn-1",
+          spaceId: "workspace-1",
+          userId: "user-1",
           connectorId: "composio",
           provider: "gmail",
           providerRef: "gmail-state",
           status: "pending",
         }),
-        update: vi.fn(),
+        updateMany: vi.fn(),
       },
     };
     const connectors = {
@@ -278,5 +303,104 @@ describe("tryCompleteConnectionWithCode", () => {
         "bad",
       ),
     ).resolves.toEqual({ connected: false, error: "Connection could not be completed." });
+  });
+});
+
+describe.each(["otp", "missing-secret"] as const)("Run connection commit with %s", (entry) => {
+  const scope = { spaceId: "space", userId: "user" };
+  const context = {
+    ...scope,
+    operationId: "run",
+    traceId: "run",
+    signal: new AbortController().signal,
+  };
+  const pending = {
+    ...scope,
+    id: "connection",
+    connectorId: "composio",
+    provider: "mail",
+    status: "pending",
+    providerRef: "request-fixture",
+    metadata: { authRevision: "fixture-revision" },
+  };
+
+  function fixture(accountAware = false) {
+    const connection = {
+      findFirst: vi.fn().mockResolvedValueOnce(pending),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    };
+    const complete = vi.fn().mockResolvedValue({ connectionRef: pending.providerRef });
+    const connectionReady = vi.fn().mockResolvedValue(true);
+    const resolveConnectedAccountId = vi.fn().mockResolvedValue("existing-sibling-account");
+    const connectors = {
+      managed: () => ({
+        complete,
+        connectionReady,
+        ...(accountAware ? { resolveConnectedAccountId } : {}),
+      }),
+    };
+    const settle = async () => {
+      const prisma = { connection } as never;
+      return entry === "otp"
+        ? (
+            await tryCompleteConnectionWithCode(
+              prisma,
+              connectors as never,
+              scope,
+              context,
+              pending.id,
+              "synthetic-code",
+            )
+          ).connected
+        : await reconcileManagedConnection(prisma, connectors as never, scope, context, pending.id);
+    };
+    return { connection, complete, connectionReady, settle };
+  }
+
+  it.each(["revoked", "pending", "connected", null] as const)(
+    "uses the committed state after a lost activation write (%s)",
+    async (status) => {
+      const f = fixture();
+      f.connection.findFirst.mockResolvedValueOnce(status ? { status } : null);
+      const result = status === "connected" || status === "pending" ? status : "missing";
+      await expect(f.settle()).resolves.toBe(entry === "otp" ? result === "connected" : result);
+      expect(f.connection.updateMany).toHaveBeenCalledExactlyOnceWith({
+        where: {
+          ...scope,
+          id: pending.id,
+          connectorId: pending.connectorId,
+          provider: pending.provider,
+          providerRef: pending.providerRef,
+          status: "pending",
+        },
+        data: { status: "connected" },
+      });
+      expect(f.connection.findFirst).toHaveBeenLastCalledWith({
+        where: { ...scope, id: pending.id },
+        select: { status: true },
+      });
+      expect(f.complete).toHaveBeenCalledTimes(entry === "otp" ? 1 : 0);
+    },
+  );
+
+  it.each(["pending", "connected"] as const)(
+    "uses the saved account-aware status (%s), even if another account is ready",
+    async (status) => {
+      const f = fixture(true);
+      f.connection.findFirst.mockResolvedValueOnce({ status });
+      await expect(f.settle()).resolves.toBe(entry === "otp" ? status === "connected" : status);
+      expect(f.connectionReady).not.toHaveBeenCalled();
+      expect(f.connection.updateMany).not.toHaveBeenCalled();
+      expect(f.complete).toHaveBeenCalledTimes(entry === "otp" ? 1 : 0);
+    },
+  );
+
+  it("waits for begin to save a reference before contacting the provider", async () => {
+    const f = fixture();
+    f.connection.findFirst.mockReset().mockResolvedValueOnce({ ...pending, providerRef: null });
+    await expect(f.settle()).resolves.toBe(entry === "otp" ? false : "pending");
+    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.connectionReady).not.toHaveBeenCalled();
+    expect(f.connection.updateMany).not.toHaveBeenCalled();
   });
 });

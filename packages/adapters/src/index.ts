@@ -63,6 +63,7 @@ export * from "./computer-support.js";
 export * from "./computer-tools.js";
 export * from "./computer-update.js";
 export * from "./computer-workspace.js";
+export { lacksProviderAuthorization } from "./connector-account-binding.js";
 export * from "./createos-sandbox.js";
 export { credentialDigest } from "./credential-digest.js";
 export * from "./current-time.js";

@@ -85,7 +85,11 @@ function fixture(
             if (typeof where.id === "string") return { ...transactionRow };
             return siblings.find((row) => row.providerRef === where.providerRef) ?? null;
           },
-          findMany: vi.fn(async () => siblings),
+          findMany: vi.fn(async ({ where }: { where: { providerRef?: string } }) =>
+            where.providerRef
+              ? siblings.filter((row) => row.providerRef === where.providerRef)
+              : siblings,
+          ),
           updateManyAndReturn: async ({ data }: { data: Partial<ConnectionRow> }) => {
             transactionUpdate(data);
             transactionRow = { ...transactionRow, ...data };
@@ -209,6 +213,24 @@ describe("connection completion grant lifecycle", () => {
     expect(f.row().status).toBe("error");
     expect(f.complete).not.toHaveBeenCalled();
     expect(f.connectionReady).not.toHaveBeenCalled();
+    expect(f.resolveConnectedAccountId).not.toHaveBeenCalled();
+    expect(f.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it("leaves a slug-only request pending when a live sibling could own the account", async () => {
+    const f = fixture({ providerRef: "gmail" });
+    f.siblings.push({
+      ...f.row(),
+      id: "legacy-account",
+      provider: " GMAIL ",
+      providerRef: "GMAIL",
+      status: "connected",
+    });
+    f.resolveConnectedAccountId.mockResolvedValue("existing-account");
+    expect(await f.client.connections.complete({ connectionId: "target" })).toMatchObject({
+      status: "pending",
+      remoteAccountId: null,
+    });
     expect(f.resolveConnectedAccountId).not.toHaveBeenCalled();
     expect(f.transactionUpdate).not.toHaveBeenCalled();
   });
