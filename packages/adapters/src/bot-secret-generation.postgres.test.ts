@@ -240,6 +240,25 @@ describe.skipIf(!enabled).sequential("generated credential receipts (PostgreSQL)
     expect(await secretStore.load(row.ciphertext, row.id)).toBe(value);
   });
 
+  it("reports one committed removal for overlapping calls and preserves the revision check", async () => {
+    const name = "fixture-removal";
+    await (await action(name)).generate();
+    await expect(
+      forgetBotSecret(prisma, scope, name, {
+        expectedRevision: "stale-revision",
+        requireBotOwner: true,
+      }),
+    ).rejects.toThrow("The saved credential changed");
+    expect(await prisma.botSecret.count({ where: { ...scope, name } })).toBe(1);
+
+    const results = await Promise.all([
+      forgetBotSecret(prisma, scope, name),
+      forgetBotSecret(prisma, scope, name),
+    ]);
+    expect(results.filter(({ removed }) => removed)).toHaveLength(1);
+    expect(await prisma.botSecret.count({ where: { ...scope, name } })).toBe(0);
+  });
+
   it("does not commit a receipt on an environment alias conflict", async () => {
     await (await action("fixture-duplicate")).generate();
     const alias = await action("fixture_duplicate");

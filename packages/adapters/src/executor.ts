@@ -10219,7 +10219,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (name === "forget_secret") {
             const parsed = BotSecretName.safeParse(args.name);
             if (!parsed.success) return finish({ error: "A valid credential name is required." });
-            return finish(await forgetBotSecret(deps.prisma, run, parsed.data));
+            const admission = appliedReviewAdmission();
+            const { removed } = await forgetBotSecret(deps.prisma, run, parsed.data);
+            return finish({ removed: true }, undefined, removed ? admission : undefined);
           }
           if (generation?.success) {
             if (!applied) return uncertainEffectResult(name);
