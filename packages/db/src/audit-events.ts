@@ -138,7 +138,8 @@ type CredentialAuditTarget =
   | "webhook"
   | "model_credential"
   | "voice_credential"
-  | "memory_credential";
+  | "memory_credential"
+  | "mcp_oauth";
 type CredentialAuditAction = "credential.created" | "credential.changed" | "credential.deleted";
 
 function credentialAuditRow(

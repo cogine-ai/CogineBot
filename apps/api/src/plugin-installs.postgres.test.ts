@@ -148,9 +148,10 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   const organizations: string[] = [];
   const fixtures = new Map<string, Fixture>();
   const secrets = new FixtureSecretStore("offline-plugin-http-fixture-key");
-  const outbound = vi.fn(async () => {
+  const outbound = vi.fn<typeof fetch>(async () => {
     throw new Error("Plugin installation must not contact an MCP transport");
   });
+  let oauthOutbound: typeof fetch | undefined;
   let pauseRead: Barrier | undefined;
   let secondChildFailure = false;
   let pauseFailureRead: Barrier | undefined;
@@ -469,7 +470,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       pluginRead: read,
       remoteConnectors: {
         resolveHostname: async () => [{ address: "93.184.216.34", family: 4 }],
-        fetch: outbound,
+        fetch: (...args) => (oauthOutbound ?? outbound)(...args),
       },
     });
   });
@@ -486,6 +487,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     secondChildFailure = false;
     pauseFailureRead = undefined;
     loseUpdateCommitAck = false;
+    oauthOutbound = undefined;
     expect(outbound).not.toHaveBeenCalled();
   });
 
@@ -647,6 +649,144 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     );
   });
 
+  it("audits one MCP OAuth event per confirmed grant change through the settings RPCs", async () => {
+    const owner = await account();
+    const outsider = await account();
+    const { spaceId, userId } = owner.actor;
+    const issuer = "https://issuer.example.test";
+    const endpoint = "https://mcp.example.test/resource";
+    const scope = { spaceId, userId };
+    const redirectUri = new URL("/mcp/oauth/callback", origin).href;
+    const server = await call<McpServer>(owner, "mcp/servers/create", {
+      slug: "fixture-audit",
+      name: "Audit fixture",
+      transport: "streamable_http",
+      endpoint,
+      headers: { "X-Fixture": "fixture-static-credential" },
+    });
+    const audit = () =>
+      database.prisma.auditEvent.findMany({
+        where: { targetType: "mcp_oauth", targetId: server.id },
+        select: {
+          action: true,
+          actorType: true,
+          actorId: true,
+          spaceId: true,
+          organizationId: true,
+          outcome: true,
+          metadata: true,
+        },
+        orderBy: { action: "asc" },
+      });
+    const context = {
+      ...scope,
+      operationId: "fixture-oauth-session",
+      traceId: "fixture-oauth-session",
+      signal: AbortSignal.timeout(5_000),
+    };
+    const prepareCallback = async () => {
+      const current = await database.prisma.mcpServer.findUniqueOrThrow({
+        where: { id: server.id },
+        include: { secret: true },
+      });
+      const previous = JSON.parse(
+        await secrets.load(current.secret!.ciphertext, current.secret!.id),
+      );
+      const oauth = {
+        ...previous.oauth,
+        redirectUri,
+        codeVerifier: "fixture-verifier",
+        clientInformation: { client_id: "fixture-client", issuer },
+        discoveryState: {
+          authorizationServerUrl: issuer,
+          resourceMetadata: { resource: endpoint, authorization_servers: [issuer] },
+          authorizationServerMetadata: {
+            issuer,
+            authorization_endpoint: `${issuer}/authorize`,
+            token_endpoint: `${issuer}/token`,
+            response_types_supported: ["code"],
+          },
+        },
+      };
+      const stored = await secrets.put(JSON.stringify({ ...previous, oauth }), context, {
+        recordId: current.secret!.id,
+      });
+      await database.prisma.secret.update({
+        where: { id: stored.id },
+        data: { ciphertext: stored.ciphertext },
+      });
+      const sessionId = randomUUID();
+      const prepared = await secrets.put(
+        JSON.stringify({ revision: current.revision, oauth }),
+        context,
+        { recordId: sessionId, ephemeral: true },
+      );
+      await database.prisma.mcpOAuthSession.create({
+        data: {
+          ...scope,
+          id: sessionId,
+          serverId: server.id,
+          endpoint,
+          redirectUri,
+          oauthCiphertext: prepared.ciphertext,
+        },
+      });
+      return { sessionId, state: sessionId, code: "fixture-code" };
+    };
+    const disconnect = (actor = owner) =>
+      call(actor, "mcp/oauth/disconnect", { serverId: server.id });
+    let accessToken = "fixture-first-access";
+    const exchange = vi.fn<typeof fetch>(async (input, init) => {
+      const outboundRequest = new Request(input, init);
+      const target = new URL(outboundRequest.url);
+      target.host = outboundRequest.headers.get("host") ?? target.host;
+      expect(target.href).toBe(`${issuer}/token`);
+      expect(outboundRequest.method).toBe("POST");
+      return Response.json({ access_token: accessToken, token_type: "Bearer" });
+    });
+    oauthOutbound = exchange;
+    await disconnect();
+    const first = await prepareCallback();
+    expect((await request(outsider, "mcp/oauth/complete", first)).status).toBe(400);
+    expect(await audit()).toEqual([]);
+    expect(exchange).not.toHaveBeenCalled();
+    await expect(call(owner, "mcp/oauth/complete", first)).resolves.toEqual({ ok: true });
+    const { organizationId } = await database.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    const expected = (action: string) => ({
+      action,
+      actorType: "user",
+      actorId: userId,
+      spaceId,
+      organizationId,
+      outcome: "success",
+      metadata: {},
+    });
+    expect((await request(owner, "mcp/oauth/complete", first)).status).toBe(400);
+    await disconnect(outsider);
+    expect(await audit()).toEqual([expected("credential.created")]);
+
+    const replacement = await prepareCallback();
+    accessToken = "fixture-second-access";
+    await call(owner, "mcp/oauth/complete", replacement);
+    await Promise.all([disconnect(), disconnect()]);
+    const current = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id: server.id },
+      include: { secret: true },
+    });
+    expect(JSON.parse(await secrets.load(current.secret!.ciphertext, current.secret!.id))).toEqual({
+      env: {},
+      headers: { "X-Fixture": "fixture-static-credential" },
+    });
+    expect(await audit()).toEqual([
+      expected("credential.changed"),
+      expected("credential.created"),
+      expected("credential.deleted"),
+    ]);
+    expect(exchange).toHaveBeenCalledTimes(2);
+  });
+
   it("replaces the credential and invalidates the durable sign-in when the remote path changes", async () => {
     const actor = await account();
     const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
@@ -708,6 +848,9 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(restoredTarget).toMatchObject({ oauthStatus: "none", hasSecret: false, headerKeys: [] });
     expect((await complete()).status).toBe(400);
     expect(outbound.mock.calls.length).toBe(calls);
+    expect(
+      await database.prisma.auditEvent.count({ where: { targetType: "mcp_oauth", targetId: id } }),
+    ).toBe(0);
   });
 
   it("D01.2 rejects a concurrent revision without retrying and compensates the prepared loser", async () => {

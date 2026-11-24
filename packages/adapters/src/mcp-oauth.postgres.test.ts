@@ -353,6 +353,60 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
     expect(await first).toMatchObject({ access_token: "access-1" });
   });
 
+  it("returns a stdio authorization receipt only for the committed replacement", async () => {
+    const f = await fixture({ stdio: true });
+    const where = { id: "default" };
+    const previous = await f.prisma.deploymentSettings.findUnique({ where });
+    await f.prisma.deploymentSettings.upsert({
+      where,
+      create: { ...where, ownerUserId: f.context.userId },
+      update: { ownerUserId: f.context.userId },
+    });
+    try {
+      const broker = f.makeBroker(f.db, undefined, async (input) =>
+        new URL(new Request(input).url).pathname === "/token"
+          ? Response.json({ access_token: "fixture-new-grant", token_type: "Bearer" })
+          : Response.json({
+              issuer,
+              authorization_endpoint: `${issuer}/authorize`,
+              token_endpoint: `${issuer}/token`,
+              response_types_supported: ["code"],
+              code_challenge_methods_supported: ["S256"],
+            }),
+      );
+      const started = await runAsTenant(f.context, () =>
+        broker.begin({
+          ...f.context,
+          serverId: f.server.id,
+          redirectUri: "https://app.example.test/callback",
+        }),
+      );
+      if (started.status !== "authorization_required") throw new Error("Expected authorization");
+      const complete = () =>
+        runAsTenant(f.context, () =>
+          broker.complete({
+            ...f.context,
+            sessionId: started.sessionId,
+            state: started.sessionId,
+            code: "fixture-code",
+          }),
+        );
+      await expect(complete()).resolves.toEqual({
+        serverId: f.server.id,
+        action: "credential.changed",
+      });
+      expect((await f.read()).material.oauth?.tokens?.access_token).toBe("fixture-new-grant");
+      await expect(complete()).rejects.toThrow("MCP OAuth session is invalid or expired");
+    } finally {
+      if (previous)
+        await f.prisma.deploymentSettings.update({
+          where,
+          data: { ownerUserId: previous.ownerUserId },
+        });
+      else await f.prisma.deploymentSettings.deleteMany({ where });
+    }
+  });
+
   it("serializes stdio callback persistence with deployment ownership changes", async () => {
     const f = await fixture({ stdio: true });
     const where = { id: "default" };
@@ -631,14 +685,23 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
           url: request.url,
           verifier: new URLSearchParams(await request.text()).get("code_verifier"),
         });
-        return Response.json({ access_token: "fixture-new-access", token_type: "Bearer" });
+        return Response.json({
+          access_token: "fixture-new-access",
+          refresh_token: "fixture-new-refresh",
+          token_type: "Bearer",
+          expires_in: 1,
+        });
       };
       const restarted = f.makeBroker(f.db, undefined, exchange);
       const fault = outcome === "confirmed" ? null : failSecretCommit(f.db.pool, outcome);
       const complete = runAsTenant(f.context, () =>
         restarted.complete({ ...f.context, sessionId, state: sessionId, code: "fixture-code" }),
       );
-      if (outcome === "confirmed") await complete;
+      if (outcome === "confirmed")
+        await expect(complete).resolves.toEqual({
+          serverId: f.server.id,
+          action: "credential.created",
+        });
       else await expect(complete).rejects.toThrow();
       expect(requests).toEqual([{ url: `${issuer}/token`, verifier: oauth.codeVerifier }]);
       if (fault) expect(fault.failures()).toBe(1);
@@ -646,7 +709,7 @@ describePostgres("MCP OAuth save recovery (PostgreSQL)", () => {
         outcome === "rolled-back" ? undefined : "fixture-new-access",
       );
       const current = await f.prisma.mcpServer.findUniqueOrThrow({ where: { id: f.server.id } });
-      expect(current.revision).toBe(f.server.revision + (outcome === "confirmed" ? 1 : 0));
+      expect(current.revision).toBe(f.server.revision + (outcome === "rolled-back" ? 0 : 1));
       expect(await f.prisma.mcpOAuthSession.findUnique({ where: { id: sessionId } })).toBeNull();
     },
     30_000,

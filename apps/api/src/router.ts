@@ -6906,11 +6906,19 @@ export function createRouter(deps: RouterDeps) {
         }),
         complete: authed.mcp.oauth.complete.handler(async ({ context, input }) => {
           try {
-            await mcpOAuth.complete({
+            const completed = await mcpOAuth.complete({
               ...input,
               spaceId: context.actor.spaceId,
               userId: context.actor.userId,
             });
+            if (completed)
+              await recordCredentialAudit(
+                deps.prisma,
+                context.actor,
+                { type: "mcp_oauth", ids: [completed.serverId] },
+                completed.action,
+                new Date(),
+              );
             return { ok: true as const };
           } catch (error) {
             throw new ORPCError("BAD_REQUEST", {
@@ -6919,11 +6927,19 @@ export function createRouter(deps: RouterDeps) {
           }
         }),
         disconnect: authed.mcp.oauth.disconnect.handler(async ({ context, input }) => {
-          await mcpOAuth.disconnect({
+          const removed = await mcpOAuth.disconnect({
             ...input,
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
           });
+          if (removed)
+            await recordCredentialAudit(
+              deps.prisma,
+              context.actor,
+              { type: "mcp_oauth", ids: [input.serverId] },
+              "credential.deleted",
+              new Date(),
+            );
           return { ok: true as const };
         }),
       },

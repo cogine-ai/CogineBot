@@ -219,6 +219,8 @@ export function matchesMcpOAuthIssuer(issuer: string | undefined, expected: stri
 }
 
 type StoredOAuthMaterial = { id: string; ref: string; material: OAuthMaterial };
+type OAuthCredentialChange = "credential.created" | "credential.changed" | "credential.deleted";
+type OAuthCompletion = { serverId: string; action: OAuthCredentialChange };
 
 type ProviderOptions = {
   redirectUri?: string;
@@ -242,6 +244,7 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
   private refreshing?: Promise<void>;
   private storedOAuth: OAuthState | undefined;
   private persistenceConflict?: McpOAuthCredentialsChangedError;
+  private grantExchange?: { saved: boolean; action?: OAuthCredentialChange };
 
   constructor(
     readonly serverId: string,
@@ -250,7 +253,8 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
       material: OAuthMaterial,
       storedOAuth: OAuthState | undefined,
       recoverSave: boolean,
-    ) => Promise<void>,
+      finalizeGrant: boolean,
+    ) => Promise<OAuthCredentialChange | undefined> | Promise<void>,
     private readonly options: ProviderOptions = {},
   ) {
     this.storedOAuth = structuredClone(material.oauth);
@@ -394,8 +398,13 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
 
   async saveTokens(value: OAuthTokens): Promise<void> {
     const runtimeRefresh = !this.options.state && Boolean(this.storedOAuth?.tokens?.refresh_token);
+    const exchange = this.grantExchange;
     try {
-      await this.storeTokens(value, runtimeRefresh);
+      const action = await this.storeTokens(value, runtimeRefresh, exchange !== undefined);
+      if (exchange) {
+        exchange.saved = true;
+        exchange.action = action || undefined;
+      }
     } catch (error) {
       // The SDK treats an ordinary save error as permission to start authorization.
       if (runtimeRefresh && !(error instanceof McpReauthorizationRequiredError))
@@ -404,11 +413,24 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     }
   }
 
-  private async storeTokens(value: OAuthTokens, recoverSave: boolean): Promise<void> {
+  /** Finalize only the token save from this exchange. SDK metadata writes keep the revision. */
+  async exchangeGrant(exchange: () => Promise<void>): Promise<OAuthCredentialChange | undefined> {
+    const result: { saved: boolean; action?: OAuthCredentialChange } = { saved: false };
+    this.grantExchange = result;
+    try {
+      await exchange();
+      if (!result.saved) throw new Error("MCP OAuth authorization failed");
+      return result.action;
+    } finally {
+      this.grantExchange = undefined;
+    }
+  }
+
+  private async storeTokens(value: OAuthTokens, recoverSave: boolean, finalizeGrant = false) {
     const oauth = this.oauth();
     oauth.tokens = value;
     oauth.obtainedAt = Date.now();
-    await this.persist(recoverSave);
+    return this.persist(recoverSave, finalizeGrant);
   }
   async redirectToAuthorization(url: URL): Promise<void> {
     let authorizationUrl: URL;
@@ -483,13 +505,19 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
     return this.material.oauth;
   }
 
-  private async persist(recoverSave = false): Promise<void> {
+  private async persist(recoverSave = false, finalizeGrant = false) {
     const snapshot = structuredClone(this.material);
     const next = this.persistQueue.then(async () => {
       if (this.persistenceConflict) throw this.persistenceConflict;
       try {
-        await this.persistMaterial(snapshot, structuredClone(this.storedOAuth), recoverSave);
+        const change = await this.persistMaterial(
+          snapshot,
+          structuredClone(this.storedOAuth),
+          recoverSave,
+          finalizeGrant,
+        );
         this.storedOAuth = structuredClone(snapshot.oauth);
+        return change;
       } catch (error) {
         if (error instanceof McpOAuthCredentialsChangedError) {
           this.persistenceConflict = error;
@@ -501,8 +529,11 @@ export class StoredMcpOAuthProvider implements OAuthClientProvider {
         throw error;
       }
     });
-    this.persistQueue = next.catch(() => undefined);
-    await next;
+    this.persistQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 }
 
@@ -1168,7 +1199,7 @@ export class McpOAuthBroker {
     state: string;
     spaceId: string;
     userId: string;
-  }): Promise<void> {
+  }): Promise<OAuthCompletion | undefined> {
     await this.sweepExpiredPending();
     if (input.state !== input.sessionId) {
       throw new Error("MCP OAuth session is invalid or expired");
@@ -1260,27 +1291,21 @@ export class McpOAuthBroker {
       authProvider: pending.provider,
       fetch: networkFetch.fetch,
     });
+    let action: OAuthCredentialChange | undefined;
     try {
-      await transport.finishAuth(input.code);
+      action = await pending.provider.exchangeGrant(() => transport.finishAuth(input.code));
     } catch (error) {
       throw networkFetch.publicError(error, "Could not complete MCP OAuth");
     } finally {
       await transport.close().catch(() => undefined);
       await networkFetch.close().catch(() => undefined);
     }
-    if (!(await pending.provider.tokens())) throw new Error("MCP OAuth authorization failed");
-    // Bump the revision so cached runtime sessions rebuild with the fresh tokens.
-    await this.withActiveRemoteServer(expectedServer, input, (tx) =>
-      tx.mcpServer.update({
-        where: { id: pending.serverId, revision: expectedServer.revision },
-        data: { revision: { increment: 1 } },
-      }),
-    );
+    if (action) return { serverId: pending.serverId, action };
   }
 
   private async completeStdio(
     input: ActorRef & { sessionId: string; code: string },
-  ): Promise<void> {
+  ): Promise<OAuthCompletion | undefined> {
     await this.assertStdioOwner(input.userId);
     const session = await this.prisma.mcpOAuthSession.findFirst({
       where: {
@@ -1333,7 +1358,7 @@ export class McpOAuthBroker {
     } finally {
       await network.close().catch(() => undefined);
     }
-    await this.replaceMaterial(
+    const action = await this.replaceMaterial(
       session.serverId,
       {
         oauth: {
@@ -1357,6 +1382,7 @@ export class McpOAuthBroker {
         stdioClient: pending.client,
       },
     );
+    if (action) return { serverId: session.serverId, action };
   }
 
   private async assertStdioOwner(userId: string, tx?: Prisma.TransactionClient): Promise<void> {
@@ -1428,18 +1454,18 @@ export class McpOAuthBroker {
     this.pending.delete(sessionId);
   }
 
-  async disconnect(input: { serverId: string; spaceId: string; userId: string }): Promise<void> {
+  async disconnect(input: { serverId: string; spaceId: string; userId: string }): Promise<boolean> {
     const server = await this.prisma.mcpServer.findFirst({
       where: { id: input.serverId, spaceId: input.spaceId, userId: input.userId },
     });
-    if (!server?.secretId) return;
+    if (!server?.secretId) return false;
     const row = await this.prisma.secret.findFirst({
       where: { id: server.secretId, spaceId: input.spaceId, userId: input.userId },
     });
-    if (!row) return;
+    if (!row) return false;
     const material = await this.read(row.ciphertext, row.id);
     delete material.oauth;
-    await this.replaceMaterial(server.id, material, input, true);
+    return (await this.replaceMaterial(server.id, material, input, true)) === "credential.deleted";
   }
 
   private async loadMaterial(
@@ -1535,25 +1561,30 @@ export class McpOAuthBroker {
     return new StoredMcpOAuthProvider(
       server.id,
       loaded.material,
-      async (material, oauth, recoverSave) => {
+      async (material, oauth, recoverSave, finalizeGrant) => {
         const save = () =>
-          this.replaceMaterial(server.id, material, context, false, endpoint, options.onPersisted, {
-            oauth,
-            revision,
-            stdioRefreshClient: stdioClient,
-          });
-        if (!recoverSave) {
-          await save();
-          return;
-        }
+          this.replaceMaterial(
+            server.id,
+            material,
+            context,
+            finalizeGrant,
+            endpoint,
+            options.onPersisted,
+            {
+              oauth,
+              revision,
+              stdioRefreshClient: stdioClient,
+            },
+          );
+        if (!recoverSave) return save();
         // Keep retirement notifications behind adoption even when the first commit
         // loses its reply. The existing conditional save confirms this exact grant.
-        await deferPreparedSecretCleanup(this.prisma, async () => {
+        return deferPreparedSecretCleanup(this.prisma, async () => {
           try {
-            await save();
+            return await save();
           } catch (error) {
             if (error instanceof McpOAuthCredentialsChangedError) throw error;
-            await save();
+            return save();
           }
         });
       },
@@ -1603,7 +1634,7 @@ export class McpOAuthBroker {
       stdioClient?: McpStdioOAuthClient;
       stdioRefreshClient?: McpStdioOAuthClient;
     },
-  ): Promise<string | undefined> {
+  ): Promise<OAuthCredentialChange | undefined> {
     // Take a DB-only snapshot, then do provider I/O with no transaction open.
     // Recheck both the pointer and ciphertext under the existing advisory lock.
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -1659,6 +1690,8 @@ export class McpOAuthBroker {
         throw new McpOAuthCredentialsChangedError(serverId);
       }
       const oauthUnchanged = isDeepStrictEqual(nextMaterial.oauth, material.oauth);
+      const hadGrant = Boolean(nextMaterial.oauth?.tokens?.access_token);
+      const hasGrant = Boolean(material.oauth?.tokens?.access_token);
       // An acknowledgement may have been lost after this exact intent committed.
       // Confirm that no-op under the same commit fence before adopting its record.
       // Pending sign-ins own their PKCE state, so another flow's metadata does
@@ -1819,7 +1852,10 @@ export class McpOAuthBroker {
         );
         if (committed) {
           if (retired && installId) await this.releasePluginCredential(installId, context, retired);
-          return stored?.id;
+          if (oauthUnchanged) return undefined;
+          if (hasGrant) return hadGrant ? "credential.changed" : "credential.created";
+          if (hadGrant && material.oauth === undefined) return "credential.deleted";
+          return undefined;
         }
       } finally {
         if (reservation && installId)
