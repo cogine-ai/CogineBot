@@ -176,26 +176,24 @@ export function serializeSpaceMemoryConfig(config: {
 
 export async function disconnectMemoryProvider(deps: MemoryProviderConfigDeps, actor: Actor) {
   await requireSpaceOwner(deps.prisma, actor);
-  const configId = await withSerializableRetry(() =>
+  const configIds = await withSerializableRetry(() =>
     deps.prisma.$transaction(
       async (tx) => {
         const existing = await findSpaceMemoryConfig(tx, actor.spaceId);
-        if (!existing) return null;
+        if (!existing) return [];
         const removed = await tx.spaceMemoryConfig.delete({ where: { id: existing.id } });
         await tx.secret.deleteMany({ where: { id: existing.secretId } });
-        return removed.id;
+        return [removed.id];
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     ),
   );
-  if (configId) {
-    await recordCredentialAudit(
-      deps.prisma,
-      actor,
-      { type: "memory_credential", ids: [configId] },
-      "credential.deleted",
-      new Date(),
-    );
-  }
+  await recordCredentialAudit(
+    deps.prisma,
+    actor,
+    { type: "memory_credential", ids: configIds },
+    "credential.deleted",
+    new Date(),
+  );
   return { ok: true as const };
 }
