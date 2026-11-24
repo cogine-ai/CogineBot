@@ -7523,7 +7523,7 @@ export function createRouter(deps: RouterDeps) {
                           pendingRef,
                           [],
                           context.actor.spaceId,
-                        ).catch(() => undefined);
+                        );
                         revokeRef = resolved ?? "";
                       }
                       if (revokeRef) {

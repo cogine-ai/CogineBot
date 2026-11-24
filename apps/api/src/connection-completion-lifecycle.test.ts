@@ -68,6 +68,7 @@ function fixture(
     ): Promise<string | undefined> => undefined,
   );
   const cancelAuthorizationRequest = vi.fn(async () => undefined);
+  const revoke = vi.fn(async () => undefined);
   const complete = vi.fn(async () => ({ connectionRef: "unused" }));
   const transactionUpdate = vi.fn();
   const beforeTransaction = vi.fn();
@@ -103,6 +104,7 @@ function fixture(
     connectionReady,
     resolveConnectedAccountId,
     cancelAuthorizationRequest,
+    revoke,
     complete,
   };
   const deps = {
@@ -127,6 +129,8 @@ function fixture(
     resolveConnectedAccountId,
     cancelAuthorizationRequest,
     complete,
+    connector,
+    revoke,
     transactionUpdate,
     beforeTransaction,
     row: () => stored,
@@ -239,6 +243,44 @@ describe("connection completion grant lifecycle", () => {
     });
     expect(f.rootConnection.updateMany).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "distinguishes an absent remote grant from a failed lookup (failed: %s)",
+    async (failed) => {
+      const f = fixture({ status: "revoked", providerRef: "original-request" });
+      Object.assign(f.connector, { cancelAuthorizationRequest: undefined });
+      if (failed) {
+        f.resolveConnectedAccountId.mockRejectedValue(
+          new Error("Synthetic resolver failure with ?code=fixture-only&state=fixture-only"),
+        );
+      }
+      const error = vi.spyOn(getLogger(), "error");
+      try {
+        await expect(f.client.connections.complete({ connectionId: "target" })).rejects.toThrow();
+        expect(f.resolveConnectedAccountId).toHaveBeenCalledExactlyOnceWith(
+          "user",
+          "gmail",
+          "original-request",
+          [],
+          "space",
+        );
+        expect(error.mock.calls).toEqual(
+          failed
+            ? [
+                [
+                  "connections.complete remote cleanup failed for revoked row",
+                  { connectionId: "target" },
+                ],
+              ]
+            : [],
+        );
+        expect(f.revoke).not.toHaveBeenCalled();
+        expect(f.row().status).toBe("revoked");
+      } finally {
+        error.mockRestore();
+      }
+    },
+  );
 
   it("never reopens a revoked grant after remote cleanup failure or a repeated late callback", async () => {
     const f = fixture({ status: "revoked", providerRef: "original-request" });
