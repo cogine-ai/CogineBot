@@ -58,6 +58,9 @@ describe("run connection selection", () => {
         updateMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => ({
           count: where.id.in.length,
         })),
+        updateManyAndReturn: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+          where.id.in.map((id) => ({ id })),
+        ),
       },
     } as unknown as PrismaClient;
     const liveSlugs = ["gmail", "slack"];
@@ -109,18 +112,20 @@ describe("run connection selection", () => {
         displayName: "Gmail",
         status: "error",
       };
-      const updateMany = vi.fn(async () => {
+      const update = vi.fn(async () => {
         row.status = operation === "connect" ? "revoked" : "connected";
-        return { count: 0 };
+        return operation === "connect" ? [] : { count: 0 };
       });
-      const prisma = { connection: { updateMany } } as unknown as PrismaClient;
+      const prisma = {
+        connection: { [operation === "connect" ? "updateManyAndReturn" : "updateMany"]: update },
+      } as unknown as PrismaClient;
       await persistLivePluginConnections(
         prisma,
         { userId: "owner", spaceId: "space" },
         [row],
         operation === "connect" ? ["gmail"] : [],
       );
-      expect(updateMany).toHaveBeenCalledWith({
+      expect(update).toHaveBeenCalledWith({
         where: {
           id: { in: [row.id] },
           userId: "owner",
@@ -128,11 +133,59 @@ describe("run connection selection", () => {
           status: { in: ["pending", "error"] },
         },
         data: { status: operation === "connect" ? "connected" : "revoked" },
+        ...(operation === "connect" && { select: { id: true } }),
       });
       expect(row.status).toBe(operation === "connect" ? "revoked" : "connected");
       expect(selectRunConnections([row], ["gmail"])).toEqual(operation === "connect" ? [] : [row]);
     },
   );
+
+  it("audits committed activations after attempting duplicate revocation", async () => {
+    const active = {
+      id: "legacy-active",
+      connectorId: "composio",
+      provider: "mail",
+      displayName: "Mail",
+      status: "pending",
+    };
+    const duplicate = { ...active, id: "legacy-duplicate" };
+    const updateMany = vi.fn().mockRejectedValue(new Error("revocation interrupted"));
+    const createMany = vi.fn().mockResolvedValue({ count: 1 });
+    const tx = {
+      space: { findUniqueOrThrow: async () => ({ organizationId: "organization" }) },
+      auditEvent: { createMany },
+    };
+    const prisma = {
+      connection: {
+        updateMany,
+        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: active.id }]),
+      },
+      $transaction: vi.fn(async (fn: (db: typeof tx) => Promise<unknown>) => fn(tx)),
+    } as unknown as PrismaClient;
+
+    await expect(
+      persistLivePluginConnections(
+        prisma,
+        { userId: "owner", spaceId: "space" },
+        [active, duplicate],
+        ["mail"],
+      ),
+    ).rejects.toThrow("revocation interrupted");
+    expect(active.status).toBe("connected");
+    expect(duplicate.status).toBe("pending");
+    expect(updateMany).toHaveBeenCalledBefore(createMany);
+    expect(createMany).toHaveBeenCalledWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          action: "connection.connected",
+          targetId: active.id,
+          actorType: "system",
+          metadata: {},
+        }),
+      ],
+    });
+  });
 
   it("does not send revoked accounts alongside a reconnected toolkit", () => {
     const oldAccount = {

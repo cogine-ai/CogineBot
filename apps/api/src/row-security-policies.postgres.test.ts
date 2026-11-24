@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import type { ConnectorProvider } from "@rakazo/adapter-kit";
 import type { Prisma, RowSecurityPolicyStatus } from "@rakazo/db";
 import {
   answerRunInput,
@@ -87,7 +88,12 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     runtime!.prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `SELECT id FROM public.${escapeIdentifier(table)} ORDER BY id`,
     );
-  async function auditRouterFor(userId: string, spaceId: string, prisma = runtime!.prisma) {
+  async function auditRouterFor(
+    userId: string,
+    spaceId: string,
+    prisma = runtime!.prisma,
+    connector?: Partial<ConnectorProvider>,
+  ) {
     const { createRouterClient } = await import("@orpc/server");
     const { EncryptedSecretStore } = await import("../../../packages/adapters/src/secrets.js");
     const { createRouter } = await import("./router.js");
@@ -95,6 +101,10 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       createRouter({
         prisma,
         secrets: new EncryptedSecretStore("synthetic-audit-fixture-key"),
+        connectors: {
+          managed: () => connector,
+          managedProviders: () => (connector ? [connector] : []),
+        },
         env: {
           defaultProvider: "fake",
           defaultModel: "fake-model",
@@ -173,6 +183,256 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       })),
     );
   });
+
+  it("audits confirmed managed grants once across callbacks and polls", async () => {
+    const connectionReady = vi.fn(async () => false);
+    const begin = vi.fn<ConnectorProvider["begin"]>(async ({ provider }) => ({
+      state: "synthetic-provider-grant",
+      authorizationUrl: provider.includes("-oauth-")
+        ? "https://authorization.example.test/connect?code=synthetic"
+        : null,
+    }));
+    const connector = { begin, connectionReady };
+    const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, connector);
+    const peer = (await auditRouterFor(userB, spaceA, runtime!.prisma, connector)).connections;
+    const connect = (provider: string) =>
+      inA(() =>
+        connections.begin({
+          connectorId: "composio",
+          provider,
+          displayName: "Synthetic account",
+        }),
+      );
+    const { connectionId } = await connect(id("managed-oauth"));
+    const audit = (targetIds: string[]) =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetId: { in: targetIds } },
+        select: {
+          organizationId: true,
+          spaceId: true,
+          actorType: true,
+          actorId: true,
+          action: true,
+          targetType: true,
+          targetId: true,
+          outcome: true,
+          metadata: true,
+        },
+      });
+    await expect(
+      runAsTenant({ spaceId: spaceA, userId: userB }, () => peer.complete({ connectionId })),
+    ).rejects.toThrow();
+    const poll = () => inA(() => connections.complete({ connectionId }));
+    expect(await poll()).toMatchObject({ status: "pending" });
+    expect(await audit([connectionId])).toEqual([]);
+    connectionReady.mockResolvedValue(true);
+    const secondRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+    try {
+      const second = await auditRouterFor(userA, spaceA, secondRuntime.prisma, connector);
+      expect(
+        await Promise.all([poll(), inA(() => second.connections.complete({ connectionId }))]),
+      ).toMatchObject([{ status: "connected" }, { status: "connected" }]);
+    } finally {
+      await secondRuntime.pool.end();
+    }
+    expect(await poll()).toMatchObject({ status: "connected" });
+    expect(connectionReady).toHaveBeenCalledTimes(2);
+
+    const immediate = await connect(id("managed-immediate"));
+    const expectedAudit = (targetId: string) => ({
+      organizationId: orgA,
+      spaceId: spaceA,
+      actorType: "user",
+      actorId: userA,
+      action: "connection.connected",
+      targetType: "connection",
+      targetId,
+      outcome: "success",
+      metadata: {},
+    });
+    const activations = await audit([connectionId, immediate.connectionId]);
+    expect(activations).toEqual(
+      expect.arrayContaining([expectedAudit(connectionId), expectedAudit(immediate.connectionId)]),
+    );
+    expect(activations).toHaveLength(2);
+
+    const missing = await connect(id("missing-card-oauth"));
+    await expect(
+      inA(() =>
+        connections.complete({
+          connectionId: missing.connectionId,
+          card: { botId: id("bot-a"), messageId: id("missing-connect-message") },
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(
+      await owner.prisma.connection.findUnique({ where: { id: missing.connectionId } }),
+    ).toMatchObject({ status: "connected" });
+    expect(await audit([missing.connectionId])).toEqual([expectedAudit(missing.connectionId)]);
+
+    const grant = escapeIdentifier(groupRole!);
+    await owner.pool.query(`REVOKE INSERT ON cogine_audit.audit_events FROM ${grant}`);
+    try {
+      const unlogged = await connect(id("unlogged-immediate"));
+      expect(
+        await owner.prisma.connection.findUnique({ where: { id: unlogged.connectionId } }),
+      ).toMatchObject({ status: "connected" });
+      expect(await audit([unlogged.connectionId])).toEqual([]);
+    } finally {
+      await owner.pool.query(`GRANT INSERT ON cogine_audit.audit_events TO ${grant}`);
+    }
+  });
+
+  it.each(["connected", "revoked"] as const)(
+    "keeps catalog's %s decision when it wins during confirmation",
+    async (status) => {
+      const slug = id(`legacy-catalog-${status}`);
+      const connectorId = "composio";
+      const grantId = "synthetic-exact-account";
+      const requestId = "synthetic-authorization-request";
+      const { id: connectionId } = await owner.prisma.connection.create({
+        data: {
+          spaceId: spaceA,
+          userId: userA,
+          connectorId,
+          provider: slug,
+          displayName: "Synthetic legacy account",
+          status: "pending",
+          providerRef: status === "revoked" ? requestId : slug,
+          createdAt: new Date(1),
+        },
+      });
+      const winner =
+        status === "revoked"
+          ? await owner.prisma.connection.create({
+              data: {
+                spaceId: spaceA,
+                userId: userA,
+                connectorId,
+                provider: slug,
+                displayName: "Synthetic older legacy account",
+                status: "pending",
+                createdAt: new Date(0),
+              },
+              select: { id: true },
+            })
+          : { id: connectionId };
+      const observing = Promise.withResolvers<void>();
+      const ready = Promise.withResolvers<boolean>();
+      const connectionReady = vi.fn(() => {
+        observing.resolve();
+        return ready.promise;
+      });
+      const cancelAuthorizationRequest = vi.fn(async () => undefined);
+      const connector = {
+        describe: () => ({
+          id: connectorId,
+          contractVersion: "1",
+          adapterVersion: "1",
+          capabilities: { discover: true, oauth: true, secretsBrokered: true },
+        }),
+        catalog: async () => [
+          { connectorId, slug, name: "Synthetic", logo: null, connected: true, noAuth: false },
+        ],
+        connectionReady,
+        cancelAuthorizationRequest,
+        resolveConnectedAccountId: async () => grantId,
+      };
+      const current = await auditRouterFor(userA, spaceA, runtime!.prisma, connector);
+      const catalogRuntime = createDb(runtimeUrl, { poolMax: 1, rowSecurity: true });
+      const catalog = await auditRouterFor(userA, spaceA, catalogRuntime.prisma, connector);
+      const completed = inA(() => current.connections.complete({ connectionId }));
+      const audit = () =>
+        owner.prisma.auditEvent.findMany({
+          where: { targetId: { in: [winner.id, connectionId] }, action: "connection.connected" },
+          select: { targetId: true },
+        });
+      try {
+        await Promise.race([observing.promise, completed]);
+        expect(connectionReady).toHaveBeenCalledOnce();
+        await inA(() => catalog.connections.catalog({}));
+        expect(await audit()).toEqual([{ targetId: winner.id }]);
+        ready.resolve(true);
+        if (status === "connected") {
+          expect(await completed).toMatchObject({ status, remoteAccountId: grantId });
+          expect(cancelAuthorizationRequest).not.toHaveBeenCalled();
+        } else {
+          await expect(completed).rejects.toThrow();
+          expect(cancelAuthorizationRequest).toHaveBeenCalledExactlyOnceWith(
+            requestId,
+            expect.objectContaining({ spaceId: spaceA, userId: userA }),
+          );
+        }
+        expect(await audit()).toEqual([{ targetId: winner.id }]);
+      } finally {
+        ready.resolve(true);
+        await completed.catch(() => undefined);
+        await catalogRuntime.pool.end();
+      }
+    },
+  );
+
+  it.each(["pending", "error"])(
+    "audits only the legacy %s connections activated by worker reconciliation",
+    async (status) => {
+      const { persistLivePluginConnections } = await import("@rakazo/adapters");
+      const scope = { spaceId: spaceA, userId: userA };
+      const rows = await owner.prisma.connection.createManyAndReturn({
+        data: ["winner", "lost"].map((kind) => ({
+          ...scope,
+          connectorId: "composio",
+          provider: id(`legacy-worker-${status}-${kind}`),
+          displayName: "Synthetic legacy account",
+          status,
+        })),
+      });
+      const winner = rows.find(
+        ({ provider }) => provider === id(`legacy-worker-${status}-winner`),
+      )!;
+      const lost = rows.find(({ provider }) => provider === id(`legacy-worker-${status}-lost`))!;
+      await owner.prisma.connection.update({
+        where: { id: lost.id },
+        data: { status: "revoked" },
+      });
+      const sync = () =>
+        inA(() =>
+          persistLivePluginConnections(
+            runtime!.prisma,
+            scope,
+            rows,
+            rows.map(({ provider }) => provider),
+          ),
+        );
+      await sync();
+      await sync();
+      const { connections } = await auditRouterFor(userA, spaceA, runtime!.prisma, {});
+      expect(await inA(() => connections.complete({ connectionId: winner.id }))).toMatchObject({
+        status: "connected",
+      });
+      expect(
+        await owner.prisma.auditEvent.findMany({
+          where: { targetId: { in: rows.map(({ id }) => id) } },
+          select: {
+            actorType: true,
+            actorId: true,
+            action: true,
+            outcome: true,
+            targetId: true,
+            metadata: true,
+          },
+        }),
+      ).toEqual([
+        {
+          actorType: "system",
+          actorId: "connection_reconciler",
+          action: "connection.connected",
+          outcome: "success",
+          targetId: winner.id,
+          metadata: {},
+        },
+      ]);
+    },
+  );
 
   it("records a saved approval rule under its organization with metadata only", async () => {
     const { approvalRules: rules } = await auditRouterFor(userA, spaceA);
