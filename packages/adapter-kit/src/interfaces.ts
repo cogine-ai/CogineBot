@@ -244,10 +244,13 @@ export interface ConnectionAuthProvider {
 /** A connector that also owns an end-user app catalog and connection lifecycle. */
 export interface ManagedConnectorProvider
   extends ConnectorProvider,
-    Omit<ConnectionAuthProvider, "describe"> {
+    Omit<ConnectionAuthProvider, "describe" | "revoke"> {
   catalog(context: AdapterContext, query?: string): Promise<ConnectorCatalogItem[]>;
   listConnectedExternalIds(context: AdapterContext): Promise<string[]>;
   connectionReady(context: AdapterContext, externalId: string): Promise<boolean>;
+  /** A deletion receipt is specific to this call and the exact managed account reference. */
+  // biome-ignore lint/suspicious/noConfusingVoidType: Existing providers may complete without a receipt.
+  revoke(connectionRef: string, context: AdapterContext): Promise<"account_deleted" | void>;
   warmDirectory?(): Promise<void>;
   /** Resolve a stored grant or app reference to a remote account, excluding other grants. */
   resolveConnectedAccountId?(

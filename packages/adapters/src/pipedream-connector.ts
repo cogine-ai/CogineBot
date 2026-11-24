@@ -516,7 +516,7 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     );
   }
 
-  async revoke(externalId: string, context: AdapterContext): Promise<void> {
+  async revoke(externalId: string, context: AdapterContext) {
     let accounts: PipedreamAccount[];
     try {
       accounts = await this.accounts(context);
@@ -530,15 +530,23 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     const targets = accounts.filter(
       (account) => account.id === externalId || account.app?.name_slug === externalId,
     );
-    await Promise.all(
+    const responses = await Promise.all(
       targets.map((account) =>
-        this.request(
+        this.requestWithStatus(
           `/v1/connect/${encodeURIComponent(this.config.projectId)}/accounts/${encodeURIComponent(account.id)}`,
           { method: "DELETE" },
           context.signal,
         ),
       ),
     );
+    const [receipt] = responses;
+    if (
+      targets.length === 1 &&
+      targets[0]?.id === externalId &&
+      receipt?.status === 204 &&
+      !receipt.redirected
+    )
+      return "account_deleted" as const;
   }
 
   /**
@@ -647,6 +655,14 @@ export class PipedreamConnector implements ManagedConnectorProvider {
     init: RequestInit = {},
     signal?: AbortSignal,
   ): Promise<T> {
+    return (await this.requestWithStatus<T>(path, init, signal)).body;
+  }
+
+  private async requestWithStatus<T = unknown>(
+    path: string,
+    init: RequestInit,
+    signal?: AbortSignal,
+  ): Promise<{ body: T; status: number; redirected: boolean }> {
     const token = await this.token();
     const requestAbort = combineSignals(signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
     const response = await (this.dependencies.fetch ?? globalThis.fetch)(`${API_BASE}${path}`, {
@@ -666,7 +682,11 @@ export class PipedreamConnector implements ManagedConnectorProvider {
         sanitizeConnectorError(`Pipedream returned HTTP ${response.status}: ${body}`, [token]),
       );
     }
-    return (body ? JSON.parse(body) : {}) as T;
+    return {
+      body: (body ? JSON.parse(body) : {}) as T,
+      status: response.status,
+      redirected: response.redirected,
+    };
   }
 
   private async token(): Promise<string> {
