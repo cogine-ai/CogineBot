@@ -788,8 +788,8 @@ describe("MCP OAuth", () => {
           .some((value) => value.oauth?.tokens?.access_token === "access-token"),
       ).toBe(true);
       expect(tx.mcpServer.update).toHaveBeenCalledWith({
-        where: { id: "server-1", revision: server.revision },
-        data: { revision: { increment: 1 } },
+        where: { id: "server-1" },
+        data: { secretId: server.secretId, revision: { increment: 1 } },
       });
     },
   );
@@ -1267,8 +1267,8 @@ describe("MCP OAuth", () => {
     });
     expect(new URLSearchParams(tokenRequestBody).get("code_verifier")).toBe("persisted-verifier");
     expect(prisma.mcpServer.update).toHaveBeenCalledWith({
-      where: { id: "server-1", revision: 1 },
-      data: { revision: { increment: 1 } },
+      where: { id: "server-1" },
+      data: { secretId: "secret-2", revision: { increment: 1 } },
     });
   });
 
