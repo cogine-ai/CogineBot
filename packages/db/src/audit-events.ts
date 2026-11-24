@@ -190,6 +190,7 @@ export function recordConnectionRevocationAudit(
 ): Promise<void> {
   return writeAuditEvents(prisma, actor.spaceId, ["connection.revoked"], async (tx) => {
     if (expectedVersion !== undefined) {
+      await tx.$executeRaw`SET LOCAL lock_timeout = '500ms'`;
       // Compensation may have committed even when its response was lost.
       const [current] = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM connections
