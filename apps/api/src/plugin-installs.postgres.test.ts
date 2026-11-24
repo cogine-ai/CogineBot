@@ -647,6 +647,69 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     );
   });
 
+  it("replaces the credential and invalidates the durable sign-in when the remote path changes", async () => {
+    const actor = await account();
+    const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));
+    const id = receipt.mcpServers[0]!.id;
+    const before = await database.prisma.mcpServer.findUniqueOrThrow({ where: { id } });
+    const sessionId = randomUUID();
+    await database.prisma.mcpOAuthSession.create({
+      data: {
+        id: sessionId,
+        serverId: id,
+        spaceId: before.spaceId,
+        userId: before.userId,
+        endpoint: before.endpoint!,
+        redirectUri: new URL("/mcp/oauth/callback", origin).href,
+        oauthCiphertext: "fixture-unused-session-reference",
+      },
+    });
+    const config = {
+      slug: before.slug,
+      name: before.name,
+      endpoint: new URL("new-service", before.endpoint!).href,
+      transport: "streamable_http",
+      headers: { Authorization: "", "X-New": "fixture-new" },
+    };
+    const saved = await call<McpServer>(actor, "mcp/servers/update", {
+      id,
+      config,
+      revision: before.revision,
+    });
+    expect(saved).toMatchObject({
+      endpoint: config.endpoint,
+      headerKeys: ["X-New"],
+      oauthStatus: "none",
+    });
+    const after = await database.prisma.mcpServer.findUniqueOrThrow({
+      where: { id },
+      include: { secret: true },
+    });
+    expect(after.secretId).not.toBe(before.secretId);
+    expect(JSON.parse(await secrets.load(after.secret!.ciphertext, after.secret!.id))).toEqual({
+      headers: { "X-New": "fixture-new" },
+    });
+    expect(
+      await database.prisma.mcpOAuthSession.findUnique({ where: { id: sessionId } }),
+    ).toBeNull();
+    const complete = () =>
+      request(actor, "mcp/oauth/complete", {
+        sessionId,
+        state: sessionId,
+        code: "fixture-code",
+      });
+    const calls = outbound.mock.calls.length;
+    expect((await complete()).status).toBe(400);
+    const restoredTarget = await call<McpServer>(actor, "mcp/servers/update", {
+      id,
+      config: { ...config, endpoint: before.endpoint, headers: undefined },
+      revision: saved.revision,
+    });
+    expect(restoredTarget).toMatchObject({ oauthStatus: "none", hasSecret: false, headerKeys: [] });
+    expect((await complete()).status).toBe(400);
+    expect(outbound.mock.calls.length).toBe(calls);
+  });
+
   it("D01.2 rejects a concurrent revision without retrying and compensates the prepared loser", async () => {
     const actor = await account();
     const receipt = await install(actor, intent(await preview(actor, fixture({ servers: 1 }))));

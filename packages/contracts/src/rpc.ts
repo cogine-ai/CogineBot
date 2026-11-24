@@ -99,6 +99,7 @@ import {
   McpServerConfigInput,
   McpServerHealthSchema,
   McpServerSchema,
+  McpServerUpdateConfigInput,
   MemoryDocumentSchema,
   MemoryScopeSchema,
   MeSchema,
@@ -1037,7 +1038,7 @@ export const appContract = {
           z.union([
             z.object({
               id: Id,
-              config: McpServerConfigInput,
+              config: McpServerUpdateConfigInput,
               revision: z.number().int().positive().optional(),
             }),
             z.object({ id: Id, secret: z.string().min(1).max(16384) }),

@@ -25,7 +25,12 @@ import {
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import type { McpStdioOAuthClient } from "@rakazo/contracts";
-import { isLocalMcpHost, McpStdioFilesSchema, McpStdioOAuthClientSchema } from "@rakazo/contracts";
+import {
+  isLocalMcpHost,
+  McpStdioFilesSchema,
+  McpStdioOAuthClientSchema,
+  sameMcpEndpoint,
+} from "@rakazo/contracts";
 import { readBoundedResponseBytes } from "@rakazo/core";
 import type { Pool, Prisma, PrismaClient } from "@rakazo/db";
 import {
@@ -506,6 +511,7 @@ type Pending = {
   spaceId: string;
   userId: string;
   endpoint: string;
+  revision: number;
   provider: StoredMcpOAuthProvider;
   createdAt: number;
   expiry?: ReturnType<typeof setTimeout>;
@@ -515,6 +521,11 @@ const PENDING_TTL_MS = 10 * 60_000;
 const MAX_PENDING_SESSIONS = 100;
 const STDIO_OAUTH_STATE_PREFIX = "stdio-";
 const STDIO_OAUTH_TIMEOUT_MS = 15_000;
+
+// Older sessions carry no proof of the configuration that started them.
+const RemoteAuthorizationSessionSchema = z.object({
+  revision: z.number().int().positive(),
+});
 
 const StdioAuthorizationSessionSchema = z.object({
   revision: z.number().int().positive(),
@@ -714,19 +725,34 @@ export class McpOAuthBroker {
   }
 
   /** Parent lock precedes the existing OAuth material lock on every managed write. */
-  private async withActiveServer<T>(
-    server: ServerRef,
+  private async withActiveRemoteServer<T>(
+    server: ServerRef & { revision: number },
     actor: ActorRef,
-    effect: (tx: Prisma.TransactionClient | PrismaClient) => Promise<T>,
+    effect: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
-    if (!server.installId) return effect(this.prisma);
     return this.prisma.$transaction(async (tx) => {
-      await lockPluginInstall(tx, server.installId!);
-      await assertManagedPluginActive(tx, server.installId!, actor);
+      if (server.installId) {
+        await lockPluginInstall(tx, server.installId);
+        await assertManagedPluginActive(tx, server.installId, actor);
+      }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${server.id}))`;
       const current = await tx.mcpServer.findFirst({
-        where: { id: server.id, ...actor, installId: server.installId, enabled: true },
+        where: {
+          id: server.id,
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          installId: server.installId,
+          enabled: true,
+          revision: server.revision,
+        },
       });
-      if (!current?.enabled) throw new Error("MCP server is unavailable");
+      if (
+        !current?.endpoint ||
+        current.transport === "stdio" ||
+        !sameMcpEndpoint(current.endpoint, server.endpoint)
+      ) {
+        throw new Error("MCP OAuth session is invalid or expired");
+      }
       return effect(tx);
     });
   }
@@ -1001,13 +1027,13 @@ export class McpOAuthBroker {
       await networkFetch.close().catch(() => undefined);
     }
     if (!authorizationUrl) {
-      if (await provider.tokens()) {
-        return { status: "already_connected" };
-      }
-      return { status: "authorization_not_requested" };
+      const tokens = await provider.tokens();
+      return this.withActiveRemoteServer(server, context, async () => ({
+        status: tokens ? "already_connected" : "authorization_not_requested",
+      }));
     }
     const sessionMaterial = await this.secrets.put(
-      JSON.stringify(loaded.material),
+      JSON.stringify({ ...loaded.material, revision: server.revision }),
       {
         operationId: "mcp.oauth.session",
         traceId: "mcp.oauth.session",
@@ -1018,7 +1044,7 @@ export class McpOAuthBroker {
       },
       { recordId: sessionId, ephemeral: true },
     );
-    await this.withActiveServer(server, context, (tx) =>
+    await this.withActiveRemoteServer(server, context, (tx) =>
       tx.mcpOAuthSession.create({
         data: {
           id: sessionId,
@@ -1043,6 +1069,7 @@ export class McpOAuthBroker {
       spaceId: input.spaceId,
       userId: input.userId,
       endpoint: server.endpoint,
+      revision: server.revision,
       provider,
       createdAt: Date.now(),
       expiry,
@@ -1169,10 +1196,20 @@ export class McpOAuthBroker {
           enabled: true,
         },
       });
-      if (!server?.endpoint) throw new Error("MCP OAuth session is invalid or expired");
+      if (
+        !server?.endpoint ||
+        server.transport === "stdio" ||
+        !sameMcpEndpoint(server.endpoint, session.endpoint)
+      ) {
+        throw new Error("MCP OAuth session is invalid or expired");
+      }
       const context = { spaceId: input.spaceId, userId: input.userId };
+      const material = await this.read(session.oauthCiphertext, session.id);
+      const saved = RemoteAuthorizationSessionSchema.safeParse(material);
+      if (!saved.success) throw new Error("MCP OAuth session is invalid or expired");
+      const { revision } = saved.data;
       const loaded = {
-        material: await this.read(session.oauthCiphertext, session.id),
+        material,
         ...(server.secretId ? { secretId: server.secretId } : {}),
       };
       pending = {
@@ -1180,7 +1217,8 @@ export class McpOAuthBroker {
         spaceId: input.spaceId,
         userId: input.userId,
         endpoint: session.endpoint,
-        provider: this.createProvider(server, context, loaded, {
+        revision,
+        provider: this.createProvider({ ...server, revision }, context, loaded, {
           redirectUri: session.redirectUri,
           state: session.id,
         }),
@@ -1192,11 +1230,16 @@ export class McpOAuthBroker {
       where: { id: pending.serverId, spaceId: input.spaceId, userId: input.userId, enabled: true },
     });
     if (!activeServer) throw new Error("MCP OAuth session is invalid or expired");
+    const expectedServer = {
+      ...activeServer,
+      endpoint: pending.endpoint,
+      revision: pending.revision,
+    };
     // Consume the session up front so a failed token exchange cannot be
     // retried with a replayed code; the user starts a fresh flow instead.
     this.pending.delete(input.sessionId);
     if (pending.expiry) clearTimeout(pending.expiry);
-    const consumed = await this.withActiveServer(activeServer, input, (tx) =>
+    const consumed = await this.withActiveRemoteServer(expectedServer, input, (tx) =>
       tx.mcpOAuthSession.deleteMany({
         where: {
           id: input.sessionId,
@@ -1227,9 +1270,9 @@ export class McpOAuthBroker {
     }
     if (!(await pending.provider.tokens())) throw new Error("MCP OAuth authorization failed");
     // Bump the revision so cached runtime sessions rebuild with the fresh tokens.
-    await this.withActiveServer(activeServer, input, (tx) =>
+    await this.withActiveRemoteServer(expectedServer, input, (tx) =>
       tx.mcpServer.update({
-        where: { id: pending.serverId },
+        where: { id: pending.serverId, revision: expectedServer.revision },
         data: { revision: { increment: 1 } },
       }),
     );

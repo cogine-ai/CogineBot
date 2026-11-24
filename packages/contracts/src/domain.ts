@@ -836,40 +836,46 @@ const McpServerBaseInput = z.object({
   /** Keep this server's tool results whole. Omitted updates keep the stored preference. */
   verbatimResults: z.boolean().optional(),
   /** Update-only: drop the stored static credential (secret/env/headers).
-   * OAuth state survives so a connected server stays connected. */
+   * A grant for the same target can remain usable. */
   clearCredential: z.boolean().optional(),
 });
+const McpHttpConfig = McpServerBaseInput.extend({
+  transport: z.literal("streamable_http"),
+  endpoint: McpRemoteEndpointSchema,
+  headers: McpHeadersSchema.default({}),
+  secret: z.string().max(16384).optional(),
+});
+const McpSseConfig = McpHttpConfig.extend({ transport: z.literal("sse") });
+const McpStdioConfig = McpServerBaseInput.extend({
+  transport: z.literal("stdio"),
+  command: z.string().min(1).max(512),
+  args: z.array(z.string().max(2048)).max(64).optional(),
+  env: z
+    .record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4096))
+    .superRefine((value, ctx) => {
+      if (Object.keys(value).length > 32) {
+        ctx.addIssue({ code: "custom", message: "At most 32 environment variables are allowed" });
+      }
+    })
+    .optional(),
+  files: McpStdioFilesSchema.optional(),
+  oauthClient: McpStdioOAuthClientSchema.nullish(),
+  secret: z.string().max(16384).optional(),
+});
 export const McpServerConfigInput = z.discriminatedUnion("transport", [
-  McpServerBaseInput.extend({
-    transport: z.literal("streamable_http"),
-    endpoint: McpRemoteEndpointSchema,
-    headers: McpHeadersSchema.default({}),
-    secret: z.string().max(16384).optional(),
-  }),
-  McpServerBaseInput.extend({
-    transport: z.literal("sse"),
-    endpoint: McpRemoteEndpointSchema,
-    headers: McpHeadersSchema.default({}),
-    secret: z.string().max(16384).optional(),
-  }),
-  McpServerBaseInput.extend({
-    transport: z.literal("stdio"),
-    command: z.string().min(1).max(512),
-    args: z.array(z.string().max(2048)).max(64).optional(),
-    env: z
-      .record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/), z.string().max(4096))
-      .superRefine((value, ctx) => {
-        if (Object.keys(value).length > 32) {
-          ctx.addIssue({ code: "custom", message: "At most 32 environment variables are allowed" });
-        }
-      })
-      .optional(),
-    files: McpStdioFilesSchema.optional(),
-    oauthClient: McpStdioOAuthClientSchema.nullish(),
-    secret: z.string().max(16384).optional(),
-  }),
+  McpHttpConfig,
+  McpSseConfig,
+  McpStdioConfig,
+]);
+// In a complete update, omitting headers keeps the existing set at the same
+// address. An explicit empty set removes them.
+export const McpServerUpdateConfigInput = z.discriminatedUnion("transport", [
+  McpHttpConfig.extend({ headers: McpHeadersSchema.optional() }),
+  McpSseConfig.extend({ headers: McpHeadersSchema.optional() }),
+  McpStdioConfig,
 ]);
 export type McpServerConfigInput = z.infer<typeof McpServerConfigInput>;
+export type McpServerUpdateConfigInput = z.infer<typeof McpServerUpdateConfigInput>;
 
 export const MCP_OAUTH_CLIENT_REQUIRED = "MCP_OAUTH_CLIENT_REQUIRED";
 export const McpServerHealthSchema = z.object({
