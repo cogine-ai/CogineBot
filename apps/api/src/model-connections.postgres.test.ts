@@ -47,12 +47,19 @@ describePostgres("model connection HTTP acceptance", () => {
   let afterSecretCreate:
     | ((record: { id: string; ciphertext: string }) => Promise<void>)
     | undefined;
+  let beforeAuditInsert: (() => Promise<void>) | undefined;
   let ordinal = 0;
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "model-connection-"));
     database = createDb(process.env.DATABASE_URL!);
     const instrumented = database.prisma.$extends({
       query: {
+        auditEvent: {
+          async createMany({ args, query }) {
+            await beforeAuditInsert?.();
+            return query(args);
+          },
+        },
         secret: {
           async create({ args, query }) {
             const row = await query(args);
@@ -83,6 +90,7 @@ describePostgres("model connection HTTP acceptance", () => {
   afterEach(() => {
     afterSecretRead = undefined;
     afterSecretCreate = undefined;
+    beforeAuditInsert = undefined;
     vi.restoreAllMocks();
   });
   afterAll(async () => {
@@ -163,6 +171,21 @@ describePostgres("model connection HTTP acceptance", () => {
       ...overrides,
     });
   }
+  function credentialAudit(targetId: string) {
+    return database.prisma.auditEvent.findMany({
+      where: { targetType: "model_credential", targetId },
+      orderBy: { action: "asc" },
+      select: {
+        action: true,
+        actorType: true,
+        actorId: true,
+        spaceId: true,
+        organizationId: true,
+        outcome: true,
+        metadata: true,
+      },
+    });
+  }
   async function bot(cookie: string) {
     return rpc<{ id: string }>(cookie, "bots/create", {
       name: "Bound bot",
@@ -210,6 +233,74 @@ describePostgres("model connection HTTP acceptance", () => {
       },
     };
   }
+
+  it("audits committed model credential generations and removal in the initiating Space", async () => {
+    const { cookie, actor } = await account();
+    const { cookie: peer } = await account();
+    const otherSpace = await rpc<{ id: string }>(cookie, "spaces/create", {
+      name: "Audit fixture",
+    });
+    const spaces = await database.prisma.space.findMany({
+      where: { id: { in: [actor.spaceId, otherSpace.id] } },
+    });
+    const expected = (action: string, spaceId = actor.spaceId) => ({
+      action,
+      actorType: "user",
+      actorId: actor.userId,
+      spaceId,
+      organizationId: spaces.find((space) => space.id === spaceId)!.organizationId,
+      outcome: "success",
+      metadata: {},
+    });
+    const saved = await rpc<ModelCredential>(cookie, "models/connect", input());
+    await rpc(cookie, "models/saveModelSettings", {
+      credentialId: saved.id,
+      modelId: "same-model",
+      settings: { maxTokens: 2000 },
+    });
+    expect((await raw(peer, "models/connect", edit(saved))).status).toBe(404);
+    expect(await credentialAudit(saved.id)).toEqual([expected("credential.created")]);
+
+    const replacement = await rpc<ModelCredential>(
+      cookie,
+      "models/connect",
+      edit(saved, { apiKey: "synthetic-model-audit-replacement" }),
+      otherSpace.id,
+    );
+    expect(replacement.connectionRevision).toBe(saved.connectionRevision! + 1);
+    const remove = (credential: ModelCredential) => ({
+      provider,
+      credentialId: credential.id,
+      expectedRevision: credential.connectionRevision,
+    });
+    expect((await raw(cookie, "models/disconnect", remove(saved))).status).toBe(409);
+    await rpc(cookie, "models/disconnect", remove(replacement));
+    expect((await raw(cookie, "models/disconnect", remove(replacement))).status).toBe(404);
+    expect(await credentialAudit(saved.id)).toEqual([
+      expected("credential.changed", otherSpace.id),
+      expected("credential.created"),
+      expected("credential.deleted"),
+    ]);
+  });
+
+  it("keeps a committed model credential when the audit append fails", async () => {
+    const { cookie, actor } = await account();
+    const warn = vi.spyOn(getLogger(), "warn");
+    let visibleCredential: string | undefined;
+    beforeAuditInsert = async () => {
+      const row = await database.prisma.userModelCredential.findFirst({
+        where: { userId: actor.userId, provider },
+      });
+      visibleCredential = row?.id;
+      throw new Error("synthetic-private-audit-error");
+    };
+    const saved = await rpc<ModelCredential>(cookie, "models/connect", input());
+    expect(visibleCredential).toBe(saved.id);
+    expect(await credentialAudit(saved.id)).toEqual([]);
+    expect(warn.mock.calls.filter(([message]) => message === "audit.event.write_failed")).toEqual([
+      ["audit.event.write_failed", { action: "credential.created" }],
+    ]);
+  });
 
   it("saves independent model settings across connections and Spaces and resets legacy limits without clearing effort", async () => {
     const { cookie } = await account();
@@ -430,6 +521,10 @@ describePostgres("model connection HTTP acceptance", () => {
     expect(vault.values.size).toBe(1);
     expect([...vault.values.values()][0]).toContain("winning-fake-key");
     expect(vault.deleted).toContain(vault.writes[1]);
+    expect((await credentialAudit(credential.id)).map(({ action }) => action)).toEqual([
+      "credential.changed",
+      "credential.created",
+    ]);
   });
 
   it("cleans staged external material when an in-use model prevents shrinking", async () => {
@@ -501,6 +596,10 @@ describePostgres("model connection HTTP acceptance", () => {
     expect(vault.values.size).toBe(1);
     expect(vault.values.get(vault.writes[1]!)).toContain("retried-fake-key");
     expect(vault.deleted).not.toContain(vault.writes[1]);
+    expect((await credentialAudit(credential.id)).map(({ action }) => action)).toEqual([
+      "credential.changed",
+      "credential.created",
+    ]);
   });
 
   it("retains externally stored material when a committed write loses its acknowledgement", async () => {
@@ -602,6 +701,19 @@ describePostgres("model connection HTTP acceptance", () => {
     expect(
       await handles.prisma.userModelCredential.findUniqueOrThrow({ where: { id: first.id } }),
     ).toMatchObject({ secretId: original.secretId, connectionRevision: first.connectionRevision });
+    const actions = async (targetId: string) =>
+      (await credentialAudit(targetId)).map(({ action }) => action);
+    expect(await actions(first.id)).toEqual(["credential.created"]);
+    // The limits-only connect kept the key above, while installing a new credential revision.
+    expect(await actions(sibling.id)).toEqual(["credential.changed", "credential.changed"]);
+    await rpc(cookie, "models/disconnect", { provider: "xai" });
+    await rpc(cookie, "models/disconnect", { provider: "xai" });
+    expect(await actions(first.id)).toEqual(["credential.created", "credential.deleted"]);
+    expect(await actions(sibling.id)).toEqual([
+      "credential.changed",
+      "credential.changed",
+      "credential.deleted",
+    ]);
   });
 
   it("creates distinct connections and keeps same-name model bindings separate", async () => {

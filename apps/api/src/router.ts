@@ -1217,7 +1217,7 @@ export function createRouter(deps: RouterDeps) {
     await recordCredentialAudit(
       deps.prisma,
       actor,
-      { type: "bot_secret", id: row.credentialId },
+      { type: "bot_secret", ids: [row.credentialId] },
       row.created ? "credential.created" : "credential.changed",
       row.updatedAt,
     );
@@ -1238,7 +1238,7 @@ export function createRouter(deps: RouterDeps) {
       await recordCredentialAudit(
         deps.prisma,
         actor,
-        { type: "bot_secret", id: result.credentialId },
+        { type: "bot_secret", ids: [result.credentialId] },
         "credential.deleted",
         new Date(),
       );
@@ -2567,6 +2567,7 @@ export function createRouter(deps: RouterDeps) {
         let prepared:
           | Awaited<ReturnType<typeof deps.prisma.userModelCredential.findMany>>
           | undefined;
+        let removedIds: string[] = [];
         const validateRemoval = async (tx: Prisma.TransactionClient) => {
           const subscription = Object.hasOwn(SUBSCRIPTION_SIGN_IN_PROVIDERS, input.provider);
           if (subscription) await lockModelOAuthProvider(tx, slot);
@@ -2626,9 +2627,11 @@ export function createRouter(deps: RouterDeps) {
           await tx.spaceModelPreference.deleteMany({
             where: { userId: context.actor.userId, credentialId: { in: ids } },
           });
-          await tx.userModelCredential.deleteMany({
+          const removed = await tx.userModelCredential.deleteMany({
             where: { userId: context.actor.userId, id: { in: ids } },
           });
+          // Only attribute a bulk deletion to known IDs when its receipt covers the full set.
+          removedIds = removed.count === ids.length ? ids : [];
           for (const row of existing)
             await deleteUnreferencedCredentialSecret(tx, {
               credentialKind: "model",
@@ -2666,6 +2669,13 @@ export function createRouter(deps: RouterDeps) {
             context.signal,
           );
         }
+        await recordCredentialAudit(
+          deps.prisma,
+          context.actor,
+          { type: "model_credential", ids: removedIds },
+          "credential.deleted",
+          new Date(),
+        );
         return {
           ok: true as const,
           ...(remoteRevocation ? { remoteRevocationConfirmed: remoteRevocation.confirmed } : {}),
@@ -3311,7 +3321,7 @@ export function createRouter(deps: RouterDeps) {
         await recordCredentialAudit(
           deps.prisma,
           actor,
-          { type: "webhook", id: bot.id },
+          { type: "webhook", ids: [bot.id] },
           changed.replaced ? "credential.changed" : "credential.created",
           changed.updatedAt,
         );
@@ -9978,7 +9988,7 @@ async function persistModelCredential(
     userId: actor.userId,
     signal: input.signal ?? new AbortController().signal,
   });
-  const cred = await persistPreparedSecret(deps.prisma, deps.secrets, stored, async () => {
+  const commit = await persistPreparedSecret(deps.prisma, deps.secrets, stored, async () => {
     throwIfAborted(input.signal);
     return withSerializableRetry(() =>
       deps.prisma.$transaction(
@@ -10151,13 +10161,21 @@ async function persistModelCredential(
               input.oauthSession,
               modelCredentialDto(saved, input.plaintext),
             );
-          return saved;
+          return { credential: saved, created: !existing };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),
     );
   });
-  return modelCredentialDto(cred, input.plaintext);
+  const { credential, created } = commit;
+  await recordCredentialAudit(
+    deps.prisma,
+    actor,
+    { type: "model_credential", ids: [credential.id] },
+    created ? "credential.created" : "credential.changed",
+    credential.updatedAt,
+  );
+  return modelCredentialDto(credential, input.plaintext);
 }
 
 function throwIfAborted(signal?: AbortSignal) {

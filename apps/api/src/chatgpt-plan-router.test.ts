@@ -42,6 +42,14 @@ function fixture(options: { webOrigin?: string; billed?: boolean; provider?: str
   const provider = options.provider ?? "chatgpt-plan";
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: "credential-one" }]),
+    space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "organization-one" })) },
+    auditEvent: {
+      createMany: vi.fn(async (_args: unknown) => {
+        expect(inRemovalHook).toBe(false);
+        steps.push("audit");
+        return { count: 1 };
+      }),
+    },
     bot: { findMany: vi.fn(async () => []) },
     routine: { findMany: vi.fn(async () => []) },
     run: { findMany: vi.fn(async () => []) },
@@ -250,8 +258,19 @@ describe("optional ChatGPT model provider router", () => {
       expect.any(Function),
       expect.objectContaining({ validateRemoval: expect.any(Function) }),
     );
-    expect(f.prisma.$transaction).not.toHaveBeenCalled();
-    expect(f.steps).toEqual(["cancel", "revoke", "preferences", "credential", "secret"]);
+    expect(f.prisma.$transaction).toHaveBeenCalledOnce();
+    expect(f.steps).toEqual(["cancel", "revoke", "preferences", "credential", "secret", "audit"]);
+    expect(f.tx.auditEvent.createMany).toHaveBeenCalledWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          action: "credential.deleted",
+          targetType: "model_credential",
+          targetId: "credential-one",
+          metadata: {},
+        }),
+      ],
+    });
     expect(f.tx.spaceBackupModel.deleteMany).not.toHaveBeenCalled();
     expect(f.tx.secret.deleteMany).toHaveBeenCalledWith({ where: { id: "secret-one" } });
   });
@@ -262,8 +281,8 @@ describe("optional ChatGPT model provider router", () => {
       ok: true,
     });
     expect(helper.disconnect).not.toHaveBeenCalled();
-    expect(f.prisma.$transaction).toHaveBeenCalledOnce();
-    expect(f.steps).toEqual(["cancel", "preferences", "credential", "secret"]);
+    expect(f.prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(f.steps).toEqual(["cancel", "preferences", "credential", "secret", "audit"]);
   });
   it("checks the selected connection revision before remote revocation", async () => {
     const f = fixture();

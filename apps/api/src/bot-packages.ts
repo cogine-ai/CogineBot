@@ -38,6 +38,7 @@ import {
   botCreationComputerKind,
   createBotRecordsInTransaction,
   lockSpaceForContentCreation,
+  recordCredentialAudit,
   Prisma as Sql,
   withTransactionRetry,
 } from "@rakazo/db";
@@ -324,9 +325,20 @@ export function createBotPackagesService(deps: Deps) {
       }
       const commit = (tx: Prisma.TransactionClient) =>
         finishTransaction(tx, context, clientNonce, kind, prepared);
-      const row = await persistPreparedSecret(deps.prisma, deps.secrets, prepared, () =>
-        transact(context, commit, modelKey !== undefined),
+      const { row, createdModelCredentialId } = await persistPreparedSecret(
+        deps.prisma,
+        deps.secrets,
+        prepared,
+        () => transact(context, commit, modelKey !== undefined),
       );
+      if (createdModelCredentialId)
+        await recordCredentialAudit(
+          deps.prisma,
+          context.actor,
+          { type: "model_credential", ids: [createdModelCredentialId] },
+          "credential.created",
+          row.updatedAt,
+        );
       return receipt(context.actor, row);
     } catch (error) {
       // An acknowledgement failure may follow a successful commit. Never turn it into a new write.
@@ -350,14 +362,18 @@ export function createBotPackagesService(deps: Deps) {
     clientNonce: string,
     kind: string,
     prepared: Awaited<ReturnType<typeof prepareBackupModelKey>> | undefined,
-  ) {
+  ): Promise<{ row: Row; createdModelCredentialId?: string }> {
     const marker = await lockedNonce(tx, context.actor, clientNonce);
     if (!marker) throw new ORPCError("NOT_FOUND");
-    if (marker.status !== "importing" && marker.status !== "failed") return marker;
+    if (marker.status !== "importing" && marker.status !== "failed") return { row: marker };
     if (marker.botId || !marker.plan)
       throw new ORPCError("CONFLICT", { message: "This import cannot be resumed." });
     const document = packagePlanSchema.parse(marker.plan);
     const binding = document.backupModelBinding;
+    const createdModel =
+      !binding && document.backupModelKey && prepared
+        ? await createBackupModelKey(tx, context.actor, document.backupModelKey, prepared)
+        : null;
     const model = binding
       ? await validateBackupModelBinding(
           tx,
@@ -367,9 +383,7 @@ export function createBotPackagesService(deps: Deps) {
           deps.codexCatalog,
           true,
         )
-      : document.backupModelKey && prepared
-        ? await createBackupModelKey(tx, context.actor, document.backupModelKey, prepared)
-        : null;
+      : createdModel;
     const reviewedModel = binding ?? document.backupModelKey;
     const modelOmission =
       reviewedModel && !model
@@ -381,8 +395,8 @@ export function createBotPackagesService(deps: Deps) {
             "model",
           )
         : null;
-    if (document.modelOnly && !model)
-      return tx.botPackageImport.update({
+    if (document.modelOnly && !model) {
+      const row = await tx.botPackageImport.update({
         where: { id: marker.id },
         data: {
           status: "cancelled",
@@ -392,6 +406,8 @@ export function createBotPackagesService(deps: Deps) {
         },
         include: includeChildren,
       });
+      return { row };
+    }
     const bot = await createBotRecordsInTransaction(
       tx,
       context.actor,
@@ -456,7 +472,7 @@ export function createBotPackagesService(deps: Deps) {
           },
         });
     }
-    return tx.botPackageImport.update({
+    const row = await tx.botPackageImport.update({
       where: { id: marker.id },
       data: {
         status: "completed",
@@ -467,6 +483,7 @@ export function createBotPackagesService(deps: Deps) {
       },
       include: includeChildren,
     });
+    return { row, createdModelCredentialId: createdModel?.modelCredentialId };
   }
   return {
     async preview(context: Context, input: BotPackagePreviewInput) {

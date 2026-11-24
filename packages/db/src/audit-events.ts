@@ -136,23 +136,26 @@ export function recordAutoReviewPreferenceAudit(
 export function recordCredentialAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   actor: AuditUser,
-  target: { type: "bot_secret" | "webhook"; id: string },
+  target: { type: "bot_secret" | "webhook" | "model_credential"; ids: readonly string[] },
   action: "credential.created" | "credential.changed" | "credential.deleted",
   happenedAt: Date,
 ): Promise<void> {
-  return appendAuditEvents(prisma, actor.spaceId, [
-    {
+  if (!target.ids.length) return Promise.resolve();
+  return appendAuditEvents(
+    prisma,
+    actor.spaceId,
+    target.ids.map((id) => ({
       id: randomUUID(),
       createdAt: happenedAt,
       actorType: "user",
       actorId: actor.userId,
       action,
       targetType: target.type,
-      targetId: target.id,
+      targetId: id,
       outcome: "success",
       metadata: {},
-    },
-  ]);
+    })),
+  );
 }
 
 export function recordConnectionActivationAudit(

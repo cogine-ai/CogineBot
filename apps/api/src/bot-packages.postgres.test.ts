@@ -106,17 +106,18 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
           }
           return (Reflect.apply(client.$transaction, client, args) as Promise<unknown>).then(
             async (value) => {
-              if (value && typeof value === "object" && "status" in value) {
-                if (value.status === "importing" && afterMarkerAccepted) {
+              const row = value && typeof value === "object" && "row" in value ? value.row : value;
+              if (row && typeof row === "object" && "status" in row) {
+                if (row.status === "importing" && afterMarkerAccepted) {
                   const effect = afterMarkerAccepted;
                   afterMarkerAccepted = undefined;
                   await effect();
                 }
-                if (loseClaimAck && value.status === "importing") {
+                if (loseClaimAck && row.status === "importing") {
                   loseClaimAck = false;
                   throw new Error("Synthetic accepted marker acknowledgement lost");
                 }
-                if (loseCommitAck && value.status === "completed") {
+                if (loseCommitAck && row.status === "completed") {
                   loseCommitAck = false;
                   throw new Error("Synthetic committed Bot acknowledgement lost");
                 }
@@ -357,6 +358,13 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(outbound).not.toHaveBeenCalled();
   });
 
+  function modelCredentialAudit(owner: Account) {
+    return database.prisma.auditEvent.findMany({
+      where: { actorId: owner.actor.userId, targetType: "model_credential" },
+      select: { action: true, targetId: true, spaceId: true, metadata: true },
+    });
+  }
+
   it("imports a reviewed model key only on confirm and replays its committed receipt", async () => {
     const owner = await account();
     const apiKey = "synthetic-key-for-model-backup";
@@ -397,7 +405,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     outbound.mockImplementationOnce(check);
     loseCommitAck = true;
     const imported = await call<BotPackageReceipt>(owner, "import", confirm);
+    expect(loseCommitAck).toBe(false);
     expect(await call<BotPackageReceipt>(owner, "import", confirm)).toEqual(imported);
+    expect(await modelCredentialAudit(owner)).toEqual([]);
     expect(outbound).toHaveBeenCalledTimes(1);
     outbound.mockClear();
     const row = await database.prisma.userModelCredential.findFirstOrThrow({
@@ -468,11 +478,26 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     expect(
       await database.prisma.secret.count({ where: { userId: owner.actor.userId, kind: "model" } }),
     ).toBe(0);
+    expect(await modelCredentialAudit(owner)).toEqual([]);
     outbound.mockResolvedValueOnce(succeed());
     const imported = await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey });
     expect(imported).toMatchObject({ status: "completed", importId: failed.importId, clientNonce });
     expect(imported.modelKey).toBeUndefined();
     expect(await database.prisma.userModelCredential.count({ where: accountFilter })).toBe(1);
+    const committed = await database.prisma.userModelCredential.findFirstOrThrow({
+      where: accountFilter,
+    });
+    expect(await call<BotPackageReceipt>(owner, "resume", { clientNonce, apiKey })).toEqual(
+      imported,
+    );
+    expect(await modelCredentialAudit(owner)).toEqual([
+      {
+        action: "credential.created",
+        targetId: committed.id,
+        spaceId: owner.actor.spaceId,
+        metadata: {},
+      },
+    ]);
     expect(outbound).toHaveBeenCalledTimes(4);
     outbound.mockClear();
   });
@@ -519,6 +544,14 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
       where: { userId: owner.actor.userId, provider: model.provider },
     });
     expect(credentials).toHaveLength(1);
+    expect(await modelCredentialAudit(owner)).toEqual([
+      {
+        action: "credential.created",
+        targetId: credentials[0]!.id,
+        spaceId: sibling.id,
+        metadata: {},
+      },
+    ]);
     expect(
       await database.prisma.bot.findUnique({ where: { id: competing!.botId! } }),
     ).toMatchObject({
