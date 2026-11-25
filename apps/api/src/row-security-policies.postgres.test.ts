@@ -2371,7 +2371,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       assertEndpoint: async () => {
         throw new Error("Unexpected endpoint access");
       },
-      uninstall: async () => {
+      cleanupFailedInstall: async () => {
         throw new Error("Unexpected uninstall");
       },
     });

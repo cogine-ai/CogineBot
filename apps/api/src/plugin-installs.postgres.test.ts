@@ -155,6 +155,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   let pauseRead: Barrier | undefined;
   let secondChildFailure = false;
   let pauseFailureRead: Barrier | undefined;
+  let pauseUninstallCommit: Barrier | undefined;
   const held: Barrier[] = [];
   let registrySource: string | undefined;
   let loseUpdateCommitAck = false;
@@ -279,7 +280,19 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
             };
           }
           return (Reflect.apply(client.$transaction, client, args) as Promise<unknown>).then(
-            (value) => {
+            async (value) => {
+              const paused = pauseUninstallCommit;
+              if (
+                paused &&
+                value &&
+                typeof value === "object" &&
+                "started" in value &&
+                value.started === true
+              ) {
+                pauseUninstallCommit = undefined;
+                paused.enter();
+                await paused.released;
+              }
               if (loseUpdateCommitAck && value && typeof value === "object" && "server" in value) {
                 loseUpdateCommitAck = false;
                 throw new Error("Synthetic committed connection acknowledgement lost");
@@ -486,6 +499,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     secrets.inlineRecovery = false;
     secondChildFailure = false;
     pauseFailureRead = undefined;
+    pauseUninstallCommit = undefined;
     loseUpdateCommitAck = false;
     oauthOutbound = undefined;
     expect(outbound).not.toHaveBeenCalled();
@@ -1384,6 +1398,25 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toBe(403);
     const removed = await uninstall(owner, listing.managed[0]!.receipt);
     expect(removed).toMatchObject({ id: other.id, status: "removed" });
+    const { organizationId } = await database.prisma.space.findUniqueOrThrow({
+      where: { id: owner.actor.spaceId },
+    });
+    expect(
+      await database.prisma.auditEvent.findMany({
+        where: { targetId: other.id },
+        orderBy: { id: "asc" },
+      }),
+    ).toMatchObject(
+      ["started", "removed"].map((status) => ({
+        action: `plugin.uninstall.${status}`,
+        actorType: "user",
+        actorId: owner.actor.userId,
+        organizationId,
+        spaceId: owner.actor.spaceId,
+        targetType: "plugin_install",
+        targetId: other.id,
+      })),
+    );
     expect(
       await database.prisma.capabilityInstall.findUnique({ where: { id: own.id } }),
     ).toMatchObject({ status: "installed" });
@@ -1408,6 +1441,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(
       await database.prisma.capabilityInstall.findUnique({ where: { id: next.id } }),
     ).toMatchObject({ status: "installed" });
+    expect(await database.prisma.auditEvent.count({ where: { targetId: next.id } })).toBe(0);
   });
 
   it("cleans an interrupted durable claim without replaying its installation", async () => {
@@ -1640,8 +1674,16 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(read.mock.calls).toHaveLength(reads);
     expect(secrets.puts).toBe(puts);
     secrets.failDelete = false;
+    expect(await database.prisma.auditEvent.count({ where: { targetId: failed.id } })).toBe(0);
     const removed = await uninstall(actor, failed);
     expect(removed).toMatchObject({ status: "removed", installedAt: null });
+    expect(
+      await database.prisma.auditEvent.findMany({
+        where: { targetId: failed.id },
+        select: { action: true },
+        orderBy: { action: "asc" },
+      }),
+    ).toEqual([{ action: "plugin.uninstall.removed" }, { action: "plugin.uninstall.started" }]);
     expect(
       (await database.prisma.capabilityInstall.findUniqueOrThrow({ where: { id: failed.id } }))
         .cleanupRefs,
@@ -1691,6 +1733,60 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toEqual([]);
     expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);
     expect(await install(actor, input)).toEqual(failed);
+  });
+
+  it("keeps an explicit uninstall in charge after its disable commit", async () => {
+    const actor = await account();
+    const input = intent(await preview(actor, fixture({ servers: 1 })));
+    const write = barrier();
+    const disable = barrier();
+    held.push(write, disable);
+    secrets.nextPut = write;
+    const installing = install(actor, input);
+    void installing.catch(() => undefined);
+    await write.entered;
+    const pending = (await listOwned(actor))[0]!;
+    pauseUninstallCommit = disable;
+    const removing = uninstall(actor, pending);
+    void removing.catch(() => undefined);
+    try {
+      await disable.entered;
+      write.release();
+      expect(await installing).toMatchObject({ id: pending.id, status: "uninstalling" });
+    } finally {
+      write.release();
+      disable.release();
+    }
+    expect(await removing).toMatchObject({ id: pending.id, status: "removed" });
+    expect(
+      await database.prisma.auditEvent.findMany({
+        where: { targetId: pending.id },
+        select: { action: true },
+        orderBy: { action: "asc" },
+      }),
+    ).toEqual([{ action: "plugin.uninstall.removed" }, { action: "plugin.uninstall.started" }]);
+  });
+
+  it("keeps a removed receipt observed after the install failure snapshot", async () => {
+    const actor = await account();
+    const input = intent(await preview(actor, fixture({ servers: 2 })));
+    const snapshot = barrier();
+    held.push(snapshot);
+    secondChildFailure = true;
+    pauseFailureRead = snapshot;
+    const installing = install(actor, input);
+    void installing.catch(() => undefined);
+    let removed: PluginInstallReceipt;
+    try {
+      await snapshot.entered;
+      removed = await uninstall(actor, (await listOwned(actor))[0]!);
+      expect(removed.status).toBe("removed");
+    } finally {
+      snapshot.release();
+    }
+    expect(await installing).toEqual(removed);
+    expect(await uninstall(actor, removed)).toEqual(removed);
+    expect(await install(actor, input)).toEqual(removed);
   });
 
   it.each([true, false])(

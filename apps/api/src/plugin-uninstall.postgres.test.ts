@@ -136,6 +136,26 @@ postgres("managed plugin uninstall acceptance", () => {
   it("keeps a durable disabled tombstone on secret deletion failure and resumes exact cleanup", async () => {
     const actor = await account();
     const f = await installation(actor);
+    const { organizationId } = await database.prisma.space.findUniqueOrThrow({
+      where: { id: actor.spaceId },
+    });
+    const audits = () =>
+      database.prisma.auditEvent.findMany({
+        where: { targetId: f.install.id },
+        orderBy: { id: "asc" },
+      });
+    const event = (revision: number, action: string, outcome: string) => ({
+      id: `plugin.uninstall:${f.install.id}:${revision}`,
+      organizationId,
+      spaceId: actor.spaceId,
+      actorType: "user",
+      actorId: actor.userId,
+      action: `plugin.uninstall.${action}`,
+      outcome,
+      targetType: "plugin_install",
+      targetId: f.install.id,
+      metadata: { revision },
+    });
     const remove = vi
       .spyOn(f.store, "delete")
       .mockRejectedValue(new Error("synthetic store outage"));
@@ -153,6 +173,11 @@ postgres("managed plugin uninstall acceptance", () => {
       where: { id: f.install.id },
     });
     expect(tombstone.cleanupRefs).toEqual([{ id: f.secret.id, ref: f.secret.ciphertext }]);
+    const failedEvents = [
+      event(2, "started", "pending"),
+      { ...event(failed.revision, "cleanup_failed", "error"), createdAt: tombstone.updatedAt },
+    ];
+    expect(await audits()).toMatchObject(failedEvents);
     remove.mockResolvedValue();
     const removed = await f.service.uninstall(actor, {
       installId: f.install.id,
@@ -170,6 +195,62 @@ postgres("managed plugin uninstall acceptance", () => {
       await f.service.uninstall(actor, { installId: f.install.id, expectedRevision: 1 }),
     ).toEqual(removed);
     expect(remove).toHaveBeenCalledTimes(deletes);
+    expect(await audits()).toMatchObject([
+      ...failedEvents,
+      event(failed.revision + 1, "started", "pending"),
+      event(removed.revision, "removed", "success"),
+    ]);
+  });
+
+  it("audits only the final transition when resuming an already-started uninstall", async () => {
+    const actor = await account();
+    const f = await installation(actor);
+    const started = await database.prisma.capabilityInstall.update({
+      where: { id: f.install.id },
+      data: { status: "uninstalling", revision: { increment: 1 } },
+    });
+    const input = { installId: f.install.id, expectedRevision: started.revision };
+    const removed = await f.service.uninstall(actor, input);
+    expect(removed.status).toBe("removed");
+    expect(await f.service.uninstall(actor, input)).toEqual(removed);
+    expect(
+      await database.prisma.auditEvent.findMany({
+        where: { targetId: f.install.id },
+        select: { action: true, metadata: true },
+      }),
+    ).toEqual([{ action: "plugin.uninstall.removed", metadata: { revision: removed.revision } }]);
+  });
+
+  it("leaves no audit when the transaction starting uninstall rolls back", async () => {
+    const actor = await account();
+    const f = await installation(actor);
+    const instrumented = database.prisma.$extends({
+      query: {
+        capabilityInstall: {
+          async update({ args, query }) {
+            const row = await query(args);
+            if (row.id === f.install.id && row.status === "uninstalling")
+              throw new Error("Synthetic uninstall rollback");
+            return row;
+          },
+        },
+      },
+    }) as unknown as typeof database.prisma;
+    const service = createPluginUninstaller({
+      prisma: withSecretPersistence(instrumented, f.store),
+      secrets: f.store,
+      events: f.events,
+    });
+    await expect(
+      service.uninstall(actor, { installId: f.install.id, expectedRevision: f.install.revision }),
+    ).rejects.toThrow("Synthetic uninstall rollback");
+    expect(
+      await database.prisma.capabilityInstall.findUnique({ where: { id: f.install.id } }),
+    ).toMatchObject({ status: "installed", revision: f.install.revision });
+    expect(
+      await database.prisma.mcpServer.findUnique({ where: { id: f.server.id } }),
+    ).toMatchObject({ enabled: true, secretId: f.secret.id });
+    expect(await database.prisma.auditEvent.count({ where: { targetId: f.install.id } })).toBe(0);
   });
 
   it("preserves a secret and unrelated server still sharing its exact row", async () => {
