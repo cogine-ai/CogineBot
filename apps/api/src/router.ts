@@ -401,6 +401,7 @@ import {
   parseMcpConnectionMaterial,
   parseMcpRemoteMaterial,
   parseMcpStdioMaterial,
+  remoteStaticCredentialChange,
 } from "./mcp-material.js";
 import {
   disconnectMemoryProvider,
@@ -6702,33 +6703,34 @@ export function createRouter(deps: RouterDeps) {
                               { serverId: updated.id, status: "pending" },
                               tx,
                             );
-                    const movedCredential =
-                      remoteEndpointMoved &&
+                    let credentialAction: ReturnType<typeof remoteStaticCredentialChange>;
+                    if (
                       current.endpoint !== null &&
                       updated.endpoint !== null &&
-                      current.secretId !== updated.secretId &&
-                      (secret || updated.secretId)
-                        ? {
-                            hadCredential: Boolean(secret),
-                            hasCredential: updated.secretId !== null,
-                          }
-                        : null;
-                    return { server: updated, seqs, movedCredential };
+                      current.secretId !== updated.secretId
+                    ) {
+                      if (updated.secretId === null && secret) {
+                        credentialAction = "credential.deleted";
+                      } else if (remoteEndpointMoved && updated.secretId !== null) {
+                        credentialAction = secret ? "credential.changed" : "credential.created";
+                      } else if (update.action === "store") {
+                        credentialAction = remoteStaticCredentialChange(
+                          existingMaterial,
+                          update.material,
+                        );
+                      }
+                    }
+                    return { server: updated, seqs, credentialAction };
                   });
                 },
               );
               if (row) {
-                if (row.movedCredential) {
-                  const { hadCredential, hasCredential } = row.movedCredential;
+                if (row.credentialAction) {
                   await recordCredentialAudit(
                     deps.prisma,
                     context.actor,
                     { type: "mcp_server", ids: [row.server.id] },
-                    hasCredential
-                      ? hadCredential
-                        ? "credential.changed"
-                        : "credential.created"
-                      : "credential.deleted",
+                    row.credentialAction,
                     row.server.updatedAt,
                   );
                 }

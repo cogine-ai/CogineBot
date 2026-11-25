@@ -677,7 +677,10 @@ describe("MCP remote endpoint updates", () => {
       ...f.material,
       headers: { authorization: "old", "X-New": "new" },
     });
-    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [expect.objectContaining({ action: "credential.changed", metadata: {} })],
+    });
   });
 
   it.each(["/mcp/", "/other", "/mcp?mode=new"])(
@@ -760,21 +763,27 @@ describe("MCP remote endpoint updates", () => {
     },
   );
 
-  it("can explicitly clear during a move when the credential store cannot load the old value", async () => {
-    const f = fixture();
-    f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError(503));
-    const endpoint = "https://another.example.test/mcp";
-    const saved = await f.client.mcp.servers.update({
-      id: f.server.id,
-      config: { ...config, endpoint, clearCredential: true },
-    });
-    expect(saved).toMatchObject({
-      endpoint,
-      hasSecret: false,
-      oauthStatus: "none",
-      headerKeys: [],
-    });
-  });
+  it.each([config.endpoint, "https://another.example.test/mcp"])(
+    "audits explicitly clearing the local association at %s despite a load failure",
+    async (endpoint) => {
+      const f = fixture();
+      f.secrets.load.mockRejectedValue(new SecretStoreUnavailableError(503));
+      const saved = await f.client.mcp.servers.update({
+        id: f.server.id,
+        config: { ...config, endpoint, clearCredential: true },
+      });
+      expect(saved).toMatchObject({
+        endpoint,
+        hasSecret: false,
+        oauthStatus: "none",
+        headerKeys: [],
+      });
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [expect.objectContaining({ action: "credential.deleted", metadata: {} })],
+      });
+    },
+  );
 
   it("keeps the old target and credential when preparing the replacement fails", async () => {
     const f = fixture();
@@ -893,6 +902,38 @@ describe("revision-bound MCP connection patches", () => {
     });
     expect(JSON.stringify(result)).not.toContain("replacement");
     expect(f.secrets.put).toHaveBeenCalledTimes(1);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          action: "credential.changed",
+          targetType: "mcp_server",
+          targetId: "server",
+          metadata: {},
+        }),
+      ],
+    });
+  });
+
+  it("does not audit replacing the casing of a header with the same value", async () => {
+    const f = fixture();
+    await f.client.mcp.servers.update({
+      id: "server",
+      connection: { revision: 1, enabled: true, headerUpdates: { "x-static": "preserved" } },
+    });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it("audits changes to how a configured Authorization header combines with a bearer", async () => {
+    const f = fixture();
+    await f.client.mcp.servers.update({
+      id: "server",
+      connection: { revision: 1, enabled: true, headerUpdates: { authorization: "old" } },
+    });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [expect.objectContaining({ action: "credential.changed", metadata: {} })],
+    });
   });
 
   it("rejects an acknowledged edit's replay before any new credential write", async () => {
@@ -927,6 +968,7 @@ describe("revision-bound MCP connection patches", () => {
     expect(f.secrets.put).toHaveBeenCalledTimes(1);
     expect(f.values.has("late")).toBe(false);
     expect(f.server).toMatchObject({ enabled: false, secretId: "old", revision: 2 });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it.each(["unloadable", "malformed", "missing"])(
@@ -1003,5 +1045,37 @@ describe("revision-bound MCP connection patches", () => {
       f.client.mcp.servers.update({ id: "server", connection: { revision: 1, enabled: true } }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(f.secrets.put).not.toHaveBeenCalled();
+  });
+});
+
+describe("static credentials on an existing remote MCP endpoint", () => {
+  it("audits adding and clearing a static credential while preserving an OAuth grant", async () => {
+    const f = fixture();
+    f.values.set("old-ref", JSON.stringify({ oauth: f.material.oauth }));
+    const initial = { id: f.server.id, secret: "fixture-static-key" };
+    await f.client.mcp.servers.update(initial);
+    await f.client.mcp.servers.update(initial);
+    const clear = {
+      id: f.server.id,
+      config: {
+        slug: f.server.slug,
+        name: f.server.name,
+        transport: "streamable_http" as const,
+        endpoint: f.server.endpoint!,
+        clearCredential: true,
+      },
+    };
+    expect(await f.client.mcp.servers.update(clear)).toMatchObject({ oauthStatus: "connected" });
+    await f.client.mcp.servers.update(clear);
+    expect(JSON.parse(f.values.get(f.server.secretId!)!)).toEqual({ oauth: f.material.oauth });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(1, {
+      skipDuplicates: true,
+      data: [expect.objectContaining({ action: "credential.created" })],
+    });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(2, {
+      skipDuplicates: true,
+      data: [expect.objectContaining({ action: "credential.deleted" })],
+    });
   });
 });
