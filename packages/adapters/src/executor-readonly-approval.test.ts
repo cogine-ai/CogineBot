@@ -6484,14 +6484,18 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it.each(["normal", "audit unavailable", "no status receipt", "stopped before return"])(
+  it.each(["normal", "audit unavailable", "no status receipt", "early stop", "HTTP error"])(
     "preserves direct fetch content and requires a completion receipt (%s)",
     async (scenario) => {
       const url = "https://docs.example.org/report?item=synthetic-query";
       const body = "Synthetic page content";
       const shutdown = new AbortController();
       const fetch = vi.fn(
-        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
+        async () =>
+          new Response(body, {
+            headers: { "content-type": "text/plain" },
+            status: scenario === "HTTP error" ? 404 : 200,
+          }),
       );
       const provider = new KeylessHttpWebProvider({
         resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
@@ -6512,7 +6516,7 @@ describe("connector read-only metadata and approval enforcement", () => {
                 : request,
               context,
             );
-            if (scenario === "stopped before return") shutdown.abort();
+            if (scenario === "early stop") shutdown.abort();
             return result;
           },
         },
@@ -6525,8 +6529,12 @@ describe("connector read-only metadata and approval enforcement", () => {
 
       expect(fetch).toHaveBeenCalledOnce();
       expect(f.effects).toEqual([]);
-      expect(f.results).toEqual([expect.objectContaining({ url, text: body })]);
-      if (scenario === "no status receipt" || scenario === "stopped before return") {
+      expect(f.results).toEqual([
+        scenario === "HTTP error"
+          ? { error: "Request failed: HTTP 404" }
+          : expect.objectContaining({ url, text: body }),
+      ]);
+      if (scenario === "no status receipt" || scenario === "early stop") {
         expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
         return;
       }
@@ -6548,7 +6556,7 @@ describe("connector read-only metadata and approval enforcement", () => {
             targetId: executionId,
             runId: f.runRecord.id,
             threadId: f.runRecord.threadId,
-            outcome: "success",
+            outcome: scenario === "HTTP error" ? "error" : "success",
             metadata: {
               name: "web_fetch",
               executionId,
@@ -6560,13 +6568,26 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it.each(["approved", "completed"])(
-    "audits a resumed fetch only when dispatched (%s)",
-    async (status) => {
+  it.each([
+    { status: "approved", httpStatus: 200 },
+    { status: "approved", httpStatus: 403 },
+    { status: "completed", httpStatus: 200 },
+    { status: "completed", httpStatus: 403 },
+  ])(
+    "audits a resumed fetch only when dispatched ($status, HTTP $httpStatus)",
+    async ({ status, httpStatus }) => {
       const url = "https://docs.example.org/report";
-      const cached = { url, title: "Report", text: "Previously fetched content", truncated: false };
+      const httpError = { error: "Request failed: HTTP 403" };
+      const cached =
+        httpStatus === 403
+          ? httpError
+          : { url, title: "Report", text: "Previously fetched content", truncated: false };
       const fetch = vi.fn(
-        async () => new Response("New content", { headers: { "content-type": "text/plain" } }),
+        async () =>
+          new Response("New content", {
+            headers: { "content-type": "text/plain" },
+            status: httpStatus,
+          }),
       );
       const f = fixture({
         name: "web_fetch",
@@ -6597,14 +6618,16 @@ describe("connector read-only metadata and approval enforcement", () => {
         return;
       }
       expect(fetch).toHaveBeenCalledOnce();
-      expect(f.results).toEqual([expect.objectContaining({ url, text: "New content" })]);
+      expect(f.results).toEqual([
+        httpStatus === 403 ? httpError : expect.objectContaining({ url, text: "New content" }),
+      ]);
       expect(f.effects[0]!.status).toBe("completed");
       expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
         skipDuplicates: true,
         data: [
           expect.objectContaining({
             id: "tool.completed:recorded-fetch",
-            outcome: "success",
+            outcome: httpStatus === 403 ? "error" : "success",
             metadata: {
               name: "web_fetch",
               executionId: "recorded-fetch",
@@ -6618,24 +6641,41 @@ describe("connector read-only metadata and approval enforcement", () => {
 
   it.each([
     { scenario: "late deny", status: 200 },
-    { scenario: "HTTP error", status: 403 },
+    { scenario: "HTTP error", status: 403, auditError: true },
+    { scenario: "HTTP error after redirect", status: 502, auditError: true },
+    { scenario: "stopped during error body cleanup", status: 503, auditError: true },
+    { scenario: "stopped before response", status: 503 },
+    { scenario: "transport error with HTTP-like message", status: 503 },
     { scenario: "HTTP accepted", status: 202 },
     { scenario: "HTTP partial", status: 206 },
     { scenario: "HTTP multi-status", status: 207 },
-    { scenario: "lost receipt", status: 200 },
+    { scenario: "lost success receipt", status: 200 },
+    { scenario: "lost error receipt", status: 503 },
   ])(
-    "keeps an unconfirmed reviewed web fetch out of the audit ($scenario)",
-    async ({ scenario, status }) => {
+    "audits reviewed fetch errors only with a final HTTP response and claimed receipt ($scenario)",
+    async ({ scenario, status, auditError }) => {
       reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
       const rules: ActionApprovalRule[] = [];
-      const fetch = vi.fn(
-        async () =>
-          new Response("Synthetic content", { status, headers: { "content-type": "text/plain" } }),
-      );
+      const shutdown = new AbortController();
+      const fetch = vi.fn(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+        if (scenario === "HTTP error after redirect" && String(input).endsWith("/report")) {
+          return new Response(null, { status: 302, headers: { location: "/final" } });
+        }
+        if (scenario === "transport error with HTTP-like message") {
+          throw new Error("Request failed: HTTP 503");
+        }
+        if (scenario === "stopped before response") shutdown.abort();
+        const body =
+          scenario === "stopped during error body cleanup"
+            ? new ReadableStream({ cancel: () => shutdown.abort() })
+            : "Synthetic content";
+        return new Response(body, { status, headers: { "content-type": "text/plain" } });
+      });
       const f = fixture({
         name: "web_fetch",
         builtin: true,
         autoReview: true,
+        shutdownSignal: shutdown.signal,
         rules,
         webProvider: new KeylessHttpWebProvider({
           resolveHostname: async () => {
@@ -6646,7 +6686,7 @@ describe("connector read-only metadata and approval enforcement", () => {
           fetch,
         }),
       });
-      if (scenario === "lost receipt") {
+      if (scenario === "lost success receipt" || scenario === "lost error receipt") {
         const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
         f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
           input.data.status === "completed" ? { count: 0 } : update(input),
@@ -6655,8 +6695,32 @@ describe("connector read-only metadata and approval enforcement", () => {
       f.setCalls([{ args: { url: "https://new.example.org/report" }, executionId: "new-site" }]);
       await f.run();
       expect(reviewMock).toHaveBeenCalledOnce();
-      expect(fetch).toHaveBeenCalledTimes(scenario === "late deny" ? 0 : 1);
-      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledTimes(
+        scenario === "late deny" ? 0 : scenario === "HTTP error after redirect" ? 2 : 1,
+      );
+      expect(shutdown.signal.aborted).toBe(scenario.startsWith("stopped"));
+      if (scenario.startsWith("lost")) expect(f.results.at(-1)).toMatchObject({ uncertain: true });
+      if (scenario === "transport error with HTTP-like message") {
+        expect(f.results.at(-1)).toEqual({ error: "Request failed: HTTP 503" });
+      }
+      if (auditError) {
+        expect(f.results.at(-1)).toEqual({ error: `Request failed: HTTP ${status}` });
+        const executionId = f.effects[0]!.id;
+        expect(f.effects[0]).toMatchObject({ status: "completed", result: f.results.at(-1) });
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              id: `tool.completed:${executionId}`,
+              action: "tool.completed",
+              outcome: "error",
+              metadata: { name: "web_fetch", executionId, durationMs: expect.any(Number) },
+            }),
+          ],
+        });
+      } else {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      }
     },
   );
 

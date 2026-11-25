@@ -33,6 +33,7 @@ export interface SafeWebFetchOptions {
   /** Caller authority for each redirect, checked before the next hop's DNS or HTTP request. */
   assertRedirectAllowed?: (url: string) => void | Promise<void>;
   beforeRequest?: (url: string) => void | Promise<void>;
+  onHttpErrorStatus?: (status: number) => void;
   /**
    * Test seam for dispatcher teardown. Defaults to `Agent.close()`.
    * Always raced against the shared operation deadline.
@@ -153,6 +154,7 @@ export async function fetchSafeWebBytes(
       allowedPorts: options.allowedPorts,
       assertRedirectAllowed: options.assertRedirectAllowed,
       beforeRequest: options.beforeRequest,
+      onHttpErrorStatus: options.onHttpErrorStatus,
     });
   } finally {
     // Race graceful close against the shared deadline. Do not wait unbounded on close().
@@ -187,6 +189,7 @@ async function followRedirects(
     allowedPorts?: readonly number[];
     assertRedirectAllowed?: (url: string) => void | Promise<void>;
     beforeRequest?: (url: string) => void | Promise<void>;
+    onHttpErrorStatus?: (status: number) => void;
     redirected?: boolean;
   },
 ): Promise<SafeWebResponse<Uint8Array>> {
@@ -259,6 +262,9 @@ async function followRedirects(
   }
 
   if (!response.ok) {
+    if (!state.signal.aborted && response.status >= 400 && response.status < 600) {
+      state.onHttpErrorStatus?.(response.status);
+    }
     await cancelResponseBody(response, state.signal);
     throw new Error(`Request failed: HTTP ${response.status}`);
   }
