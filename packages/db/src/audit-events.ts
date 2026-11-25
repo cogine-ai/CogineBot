@@ -471,7 +471,7 @@ export function recordToolCompletionAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   run: { id: string; spaceId: string; threadId: string; botId: string },
   completion: {
-    name: "shell" | "web_fetch";
+    name: "shell" | "web_fetch" | "secret_request";
     executionId: string;
     happenedAt: Date;
     durationMs: number;

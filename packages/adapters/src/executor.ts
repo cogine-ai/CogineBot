@@ -10463,8 +10463,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (authenticatedRequest) {
             if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             let reviewAdmission: Date | undefined;
+            let result: Awaited<ReturnType<typeof requestWithBotSecret>>;
+            let observedResponse:
+              | {
+                  receiptState: ReturnType<typeof approvedActionReceipt>["state"];
+                  happenedAt: Date;
+                  durationMs: number;
+                }
+              | undefined;
+            const startedAt = performance.now();
             try {
-              const result = await requestWithBotSecret({
+              result = await requestWithBotSecret({
                 prisma: deps.prisma,
                 secretStore: deps.secretStore,
                 scope: run,
@@ -10498,13 +10507,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     throw new BotSecretHttpRequestError("The run no longer owns this request.");
                   reviewAdmission ??= appliedReviewAdmission();
                 },
+                onResponse: (receiptState) => {
+                  observedResponse = {
+                    receiptState,
+                    happenedAt: new Date(),
+                    durationMs: Math.round(performance.now() - startedAt),
+                  };
+                },
               });
-              const confirmed =
-                "status" in result &&
-                isConfirmedHttpResponse(result.status) &&
-                approvedActionReceipt({ data: result.body, truncated: result.truncated }, "result")
-                  .state === "succeeded";
-              return finish(result, undefined, confirmed ? reviewAdmission : undefined);
             } catch (error) {
               if (error instanceof ActionRuleDispatchError) {
                 trust.invalidateDestinationTrust();
@@ -10512,6 +10522,30 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return finish({ error: "Invalid authenticated request." });
             }
+            const status = "status" in result ? result.status : undefined;
+            const receiptState = isConfirmedHttpResponse(status)
+              ? observedResponse?.receiptState
+              : undefined;
+            const responseFailed =
+              receiptState === "failed" || (status !== undefined && status >= 400 && status < 600);
+            const outcome =
+              receiptState === "succeeded" ? "success" : responseFailed ? "error" : undefined;
+            const completed = await finish(
+              result,
+              undefined,
+              outcome === "success" ? reviewAdmission : undefined,
+            );
+            // Receipt readback and uncertain settlement must not record another execution.
+            if (applied && claimedEffect && observedResponse && outcome && completed === result) {
+              await recordToolCompletionAudit(deps.prisma, run, {
+                name: "secret_request",
+                executionId: applied.effect.id,
+                happenedAt: observedResponse.happenedAt,
+                durationMs: observedResponse.durationMs,
+                outcome,
+              });
+            }
+            return completed;
           }
           if (secretDestination) {
             const resolvedSecret = secretDestination;

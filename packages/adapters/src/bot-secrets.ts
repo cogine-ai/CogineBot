@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { SecretStore } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import type { BotSecretDestination, GenerateSecretInput } from "@rakazo/contracts";
+import type { ApprovalReceipt, BotSecretDestination, GenerateSecretInput } from "@rakazo/contracts";
 import {
   BOT_SECRET_VALUE_MAX_LENGTH,
   BotSecretAuth,
@@ -22,9 +22,10 @@ import { BOT_SECRET_HTTP_REQUEST_KIND } from "@rakazo/core";
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { runLoginKind, withTransactionRetry } from "@rakazo/db";
 import * as z from "zod";
+import { approvedActionReceipt } from "./approval-effect.js";
 import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import { ActionRuleDispatchError } from "./connector-dispatch.js";
-import { combineSignals, redactConnectorPayload } from "./connector-safety.js";
+import { combineSignals, tryRedactConnectorPayload } from "./connector-safety.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import { createPrivateNetworkFetch, createSafeRemoteFetch } from "./remote-mcp.js";
 import { generateSecretValue } from "./secret-generator.js";
@@ -906,6 +907,7 @@ export async function requestWithBotSecret(input: {
   signal: AbortSignal;
   remote?: RemoteTransportDependencies;
   beforeDispatch?: (tx?: Prisma.TransactionClient) => Promise<void>;
+  onResponse?: (receiptState: ApprovalReceipt["state"]) => void;
   credentialBinding?: BotSecretHttpBinding;
   registerRedactions?: (values: string[]) => void;
 }): Promise<{ error: string } | { status: number; body: unknown; truncated: boolean }> {
@@ -986,11 +988,21 @@ export async function requestWithBotSecret(input: {
       /* Plain text responses are supported. */
     }
     // Redact before truncating, so an output boundary cannot expose part of a value.
-    const safe = JSON.stringify(redactConnectorPayload(body, redactions));
+    const redacted = tryRedactConnectorPayload(body, redactions);
+    const safe = JSON.stringify(redacted.ok ? redacted.value : { error: redacted.error });
+    const truncated = safe.length > 20_000;
+    if (input.onResponse && !signal.aborted) {
+      // Redaction can mask status keys or values. Classify the body inside this boundary.
+      input.onResponse(
+        redacted.ok && !truncated
+          ? approvedActionReceipt({ data: body }, "result").state
+          : "unknown",
+      );
+    }
     return {
       status: response.status,
-      body: safe.length > 20_000 ? safe.slice(0, 20_000) : JSON.parse(safe),
-      truncated: safe.length > 20_000,
+      body: truncated ? safe.slice(0, 20_000) : JSON.parse(safe),
+      truncated,
     };
   } catch (error) {
     if (error instanceof BotSecretHttpRequestError) return { error: error.message };
