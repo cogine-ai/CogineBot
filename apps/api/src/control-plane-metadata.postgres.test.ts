@@ -1082,7 +1082,7 @@ postgres("control-plane metadata with complete row policies", () => {
       config: { auth: { type: "bearer" } },
       credential: "synthetic-api-credential",
     };
-    await inTenant(async () => {
+    const installId = await inTenant(async () => {
       const preview = await service.preview({ actor: actor() }, input);
       expect(preview.status).toBe("ready");
       const result = await service.confirm(
@@ -1090,18 +1090,35 @@ postgres("control-plane metadata with complete row policies", () => {
         { ...input, reviewToken: preview.reviewToken! },
       );
       expect(result.status).toBe("installed");
+      if (result.status !== "installed") throw new Error("Expected an install");
       expect(await service.receipt({ actor: actor() }, preview.reviewToken!)).toMatchObject({
         status: "installed",
         replayed: true,
       });
       expect(await runtime.prisma.deploymentSettings.count()).toBe(0);
       assertTenant();
+      return result.install.id;
     });
     expect(fetch).toHaveBeenCalledTimes(2);
     const member = await inTenant(() => service.preview({ actor: actor(userB) }, input), userB);
     expect(member.status).toBe("invalid");
     expect(fetch).toHaveBeenCalledTimes(2);
-    assertRestored(observed.observations);
+    expect(observed.observations).toHaveLength(3);
+    const [claim, install, audit] = observed.observations;
+    assertRestored([claim!, install!]);
+    expect(audit!.after).toEqual(audit!.before);
+    expect(audit!.before[0]).toMatchObject({
+      space: "",
+      user: "",
+      bypass: "on",
+      key: true,
+    });
+    expect(
+      await owner.prisma.auditEvent.findMany({
+        where: { targetType: "capability_install", targetId: installId },
+        select: { action: true, spaceId: true, actorId: true, metadata: true },
+      }),
+    ).toEqual([{ action: "credential.created", spaceId: spaceA, actorId: userA, metadata: {} }]);
   });
 
   it.each(["owner", "membership"] as const)(
