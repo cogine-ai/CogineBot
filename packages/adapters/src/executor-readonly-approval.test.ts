@@ -489,7 +489,14 @@ function fixture({
     },
     spaceMember: { findUnique: vi.fn(async () => null) },
     space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "org-1" })) },
-    auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
+    auditEvent: {
+      createMany: vi.fn<
+        (input: {
+          data: DbModule.Prisma.AuditEventCreateManyInput[];
+          skipDuplicates?: boolean;
+        }) => Promise<{ count: number }>
+      >(async () => ({ count: 1 })),
+    },
     spaceModelPreference: { findFirst: vi.fn(async () => null) },
     userModelCredential: {
       findFirst: vi.fn(async () => null),
@@ -6217,83 +6224,112 @@ describe("connector read-only metadata and approval enforcement", () => {
     },
   );
 
-  it("keeps the initial automatically passed site authorized for its relative redirects", async () => {
-    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
-    const requested: string[] = [];
-    const f = fixture({
-      name: "web_fetch",
-      builtin: true,
-      autoReview: true,
-      webProvider: new KeylessHttpWebProvider({
-        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
-        fetch: async (input) => {
-          const url = String(input);
-          requested.push(url);
-          return url.endsWith("/start")
-            ? new Response(null, { status: 302, headers: { location: "/final" } })
-            : new Response("Authorized result. ".repeat(30), {
-                headers: { "content-type": "text/plain" },
-              });
-        },
-      }),
-    });
-    f.setCalls([
-      { args: { url: "https://trusted.example.org/start", maxChars: 100 }, executionId: "start" },
-    ]);
-    await f.run();
-    expect(requested).toEqual([
-      "https://trusted.example.org/start",
-      "https://trusted.example.org/final",
-    ]);
-    expect(reviewMock).toHaveBeenCalledOnce();
-    expect(f.effects).toHaveLength(1);
-    expect(f.effects[0]!.status).toBe("completed");
-    expect(f.pauseRunForInput).not.toHaveBeenCalled();
-    expect(f.results.at(-1)).toMatchObject({ truncated: true });
-    expect(f.results.at(-1)).not.toHaveProperty("status");
-    const executionId = f.effects[0]!.id;
-    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
-    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(1, {
-      skipDuplicates: true,
-      data: [
-        expect.objectContaining({
-          id: `approval.auto_reviewed:${executionId}`,
-          outcome: "success",
-          metadata: { decision: "pass" },
-        }),
-      ],
-    });
-    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(2, {
-      skipDuplicates: true,
-      data: [
-        expect.objectContaining({
-          id: `tool.completed:${executionId}`,
-          action: "tool.completed",
-          outcome: "success",
-          metadata: { name: "web_fetch", executionId, durationMs: expect.any(Number) },
-        }),
-      ],
-    });
-  });
-
   it.each([false, true])(
-    "audits direct fetches without changing their result (audit fails=%s)",
-    async (auditFails) => {
-      const url = "https://docs.example.org/report?item=synthetic-query";
-      const body = "Synthetic page content";
-      const fetch = vi.fn(
-        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
-      );
+    "keeps the initial automatically passed site authorized for relative redirects (late stop=%s)",
+    async (lateStop) => {
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      const requested: string[] = [];
+      const shutdown = new AbortController();
       const f = fixture({
         name: "web_fetch",
         builtin: true,
-        rules: [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }],
+        autoReview: true,
+        shutdownSignal: shutdown.signal,
         webProvider: new KeylessHttpWebProvider({
           resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
-          fetch,
+          fetch: async (input) => {
+            const url = String(input);
+            requested.push(url);
+            return url.endsWith("/start")
+              ? new Response(null, { status: 302, headers: { location: "/final" } })
+              : new Response("Authorized result. ".repeat(30), {
+                  headers: { "content-type": "text/plain" },
+                });
+          },
         }),
       });
-      if (auditFails)
+      if (lateStop) {
+        f.prisma.auditEvent.createMany.mockImplementationOnce(async () => {
+          expect(f.effects[0]?.status).toBe("completed");
+          shutdown.abort();
+          return { count: 1 };
+        });
+      }
+      f.setCalls([
+        { args: { url: "https://trusted.example.org/start", maxChars: 100 }, executionId: "start" },
+      ]);
+      await f.run();
+      expect(shutdown.signal.aborted).toBe(lateStop);
+      expect(requested).toEqual([
+        "https://trusted.example.org/start",
+        "https://trusted.example.org/final",
+      ]);
+      expect(reviewMock).toHaveBeenCalledOnce();
+      expect(f.effects).toHaveLength(1);
+      expect(f.effects[0]!.status).toBe("completed");
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.results.at(-1)).toMatchObject({ truncated: true });
+      expect(f.results.at(-1)).not.toHaveProperty("status");
+      const executionId = f.effects[0]!.id;
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+      expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(1, {
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({
+            id: `approval.auto_reviewed:${executionId}`,
+            outcome: "success",
+            metadata: { decision: "pass" },
+          }),
+        ],
+      });
+      expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(2, {
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({
+            id: `tool.completed:${executionId}`,
+            action: "tool.completed",
+            outcome: "success",
+            metadata: { name: "web_fetch", executionId, durationMs: expect.any(Number) },
+          }),
+        ],
+      });
+    },
+  );
+
+  it.each(["normal", "audit unavailable", "no status receipt", "stopped before return"])(
+    "preserves direct fetch content and requires a completion receipt (%s)",
+    async (scenario) => {
+      const url = "https://docs.example.org/report?item=synthetic-query";
+      const body = "Synthetic page content";
+      const shutdown = new AbortController();
+      const fetch = vi.fn(
+        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
+      );
+      const provider = new KeylessHttpWebProvider({
+        resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+        fetch,
+      });
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        shutdownSignal: shutdown.signal,
+        rules: [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }],
+        webProvider: {
+          describe: () => provider.describe(),
+          search: vi.fn(),
+          fetch: async (request, context) => {
+            const result = await provider.fetch(
+              scenario === "no status receipt"
+                ? { ...request, onResponseStatus: undefined }
+                : request,
+              context,
+            );
+            if (scenario === "stopped before return") shutdown.abort();
+            return result;
+          },
+        },
+      });
+      if (scenario === "audit unavailable")
         f.prisma.auditEvent.createMany.mockRejectedValueOnce(new Error("Audit unavailable"));
       f.setCalls([{ args: { url }, executionId: "model-supplied-id" }]);
 
@@ -6302,13 +6338,18 @@ describe("connector read-only metadata and approval enforcement", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(f.effects).toEqual([]);
       expect(f.results).toEqual([expect.objectContaining({ url, text: body })]);
+      if (scenario === "no status receipt" || scenario === "stopped before return") {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        return;
+      }
       expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
-      const uuid = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/;
+      const executionId = f.prisma.auditEvent.createMany.mock.calls[0]![0].data[0]!.targetId;
+      expect(executionId).toMatch(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
       expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
         skipDuplicates: true,
         data: [
           {
-            id: expect.stringMatching(new RegExp(`^tool\\.completed:${uuid.source}$`)),
+            id: `tool.completed:${executionId}`,
             createdAt: expect.any(Date),
             organizationId: expect.any(String),
             spaceId: f.runRecord.spaceId,
@@ -6316,13 +6357,13 @@ describe("connector read-only metadata and approval enforcement", () => {
             actorId: f.runRecord.botId,
             action: "tool.completed",
             targetType: "tool_execution",
-            targetId: expect.stringMatching(uuid),
+            targetId: executionId,
             runId: f.runRecord.id,
             threadId: f.runRecord.threadId,
             outcome: "success",
             metadata: {
               name: "web_fetch",
-              executionId: expect.stringMatching(uuid),
+              executionId,
               durationMs: expect.any(Number),
             },
           },

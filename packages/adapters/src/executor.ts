@@ -9471,7 +9471,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               },
             );
             if (blockedRequest) return finishPolicyBlock();
-            const confirmed = "url" in result && isConfirmedHttpResponse(responseStatus);
+            const confirmed =
+              !context.signal.aborted && "url" in result && isConfirmedHttpResponse(responseStatus);
             const happenedAt = new Date();
             const durationMs = Math.round(performance.now() - startedAt);
             const completed = await finish(
@@ -9479,8 +9480,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               undefined,
               confirmed ? reviewAdmission : undefined,
             );
-            // A lost effect receipt returns a different result. Replays exit before transport.
-            if (confirmed && completed === result && !context.signal.aborted) {
+            // A lost effect receipt returns a different result. A later Stop does not undo it.
+            if (confirmed && completed === result) {
               await recordToolCompletionAudit(deps.prisma, run, {
                 name: "web_fetch",
                 executionId: applied?.effect.id ?? randomUUID(),
