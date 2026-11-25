@@ -2,12 +2,26 @@ import { randomUUID } from "node:crypto";
 import type { BackgroundJob } from "@rakazo/adapter-kit";
 import { ONCE_ROUTINE_CRON } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { appendEvent, createDb, createGroupRepos, Prisma, sendUserMessage } from "@rakazo/db";
+import {
+  appendEvent,
+  createDb,
+  createGroupRepos,
+  lockRoutineRetryThread,
+  Prisma,
+  revokePendingRoutineRetries,
+  sendUserMessage,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createBackgroundJobHandlers } from "./background-job-handlers.js";
 import { createRunExecutor } from "./executor.js";
 import { createJobReconciler } from "./job-reconciler.js";
 import { requireRoutineTrigger } from "./native-connectors/events/store.js";
 import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
+import {
+  pauseRoutineAfterRepeatedFailures,
+  ROUTINE_MODEL_CONNECTION_FAILURE,
+} from "./routine-failure-pause.js";
+import { patchRoutineTiming } from "./routine-timing.js";
 import {
   cancelScheduleFromTool,
   createScheduleFromTool,
@@ -34,6 +48,12 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       data: { id: organizationId, name: "Fixture", slug: organizationId, createdAt: new Date() },
     });
     await system.space.create({ data: { id: spaceId, organizationId, name: "Fixture" } });
+    await system.member.create({
+      data: { id: randomUUID(), organizationId, userId, role: "owner", createdAt: new Date() },
+    });
+    await system.spaceMember.create({
+      data: { id: randomUUID(), spaceId, organizationId, userId, createdAt: new Date() },
+    });
     const bot = await system.bot.create({
       data: {
         spaceId,
@@ -57,11 +77,11 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       await db.pool.end();
     }
   });
-  async function fixture() {
+  async function fixture(name = "timer fixture") {
     const routine = await system.routine.create({
       data: {
         ...identity,
-        name: "timer fixture",
+        name,
         prompt: "fixture",
         authorizedInstructions: "fixture",
         crons: ["* * * * *"],
@@ -103,6 +123,285 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     }
     return { routine, config, create };
   }
+
+  async function failingRoutine() {
+    const { routine, create } = await fixture("failure pause fixture");
+    const first = new Date("2027-03-02T00:00:00Z");
+    let at = first.getTime();
+    const append = vi.fn((event: Parameters<typeof appendEvent>[1]) => appendEvent(system, event));
+    const notify = vi.fn(async () => undefined);
+    const deps = { prisma: system, events: { append, notify } };
+    const read = () => system.routine.findUniqueOrThrow({ where: { id: routine.id } });
+    const record = (data: Partial<Prisma.RunUncheckedCreateInput> = {}, timer = true) => {
+      at += 60_000;
+      const createdAt = new Date(at);
+      return create(system, timer ? routineTimerNonce(routine.id, createdAt.toISOString()) : null, {
+        createdAt,
+        status: "failed",
+        error: "Connect that model provider first",
+        routineFailureCause: ROUTINE_MODEL_CONNECTION_FAILURE,
+        ...data,
+      });
+    };
+    const check = (run: { id: string; retryOfRunId: string | null }) =>
+      pauseRoutineAfterRepeatedFailures(
+        deps,
+        { ...identity, routineId: routine.id, ...run },
+        new Date(at + 1),
+      );
+    const noticeCount = () => system.message.count({ where: { threadId: identity.threadId } });
+    const before = await noticeCount();
+    return {
+      routine,
+      record,
+      check,
+      read,
+      deps,
+      notices: async () => (await noticeCount()) - before,
+    };
+  }
+
+  it("pauses on the fifth scheduled failure, once, then resumes only a future occurrence", async () => {
+    const f = await failingRoutine();
+    for (let i = 0; i < 4; i++) await f.check(await f.record());
+    await f.record({ status: "cancelled" });
+    await f.check(await f.record({ clientNonce: "native-event:fixture" }, false));
+    expect(await f.read()).toMatchObject({ active: true, failurePausedAt: null });
+    const fifth = await f.record();
+    await Promise.all([f.check(fifth), f.check(fifth)]);
+    const paused = await f.read();
+    expect(paused).toMatchObject({ active: false, nextRunAt: null, latestRunId: null });
+    expect(paused.failurePausedAt).toBeInstanceOf(Date);
+    expect(f.deps.events.append).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        type: "routine.updated",
+        payload: { routineId: f.routine.id, active: false },
+      }),
+    );
+    expect(f.deps.events.notify).toHaveBeenCalledOnce();
+    expect(await f.notices()).toBe(1);
+
+    const jobs = {
+      enqueue: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      close: async () => undefined,
+    };
+    const schedule = { ...f.deps, jobs } as Parameters<typeof updateScheduleFromTool>[0];
+    const target = {
+      ...identity,
+      directThread: true,
+      routineId: f.routine.id,
+      schedule: {},
+      active: true,
+    };
+    const resumeAt = new Date(paused.failurePausedAt!.getTime() + 5 * 60_000);
+    const wakeups = createRunExecutor(schedule as Parameters<typeof createRunExecutor>[0]);
+    vi.useFakeTimers({ toFake: ["Date"], now: resumeAt });
+    try {
+      await updateScheduleFromTool(schedule, target);
+      await updateScheduleFromTool(schedule, target);
+      const resumed = await f.read();
+      expect(resumed).toMatchObject({ active: true, failurePausedAt: paused.failurePausedAt });
+      expect(resumed.nextRunAt!.getTime()).toBeGreaterThan(resumeAt.getTime());
+      expect(jobs.enqueue).toHaveBeenCalledOnce();
+      await f.check(fifth);
+      expect((await f.read()).active).toBe(true);
+      const previous = await system.run.count({ where: { routineId: f.routine.id } });
+      await wakeups.wakeRoutine(f.routine.id, fifth.createdAt.toISOString());
+      expect(await system.run.count({ where: { routineId: f.routine.id } })).toBe(previous);
+      vi.setSystemTime(resumed.nextRunAt!);
+      await Promise.all([
+        wakeups.wakeRoutine(f.routine.id, resumed.nextRunAt!.toISOString()),
+        wakeups.wakeRoutine(f.routine.id, resumed.nextRunAt!.toISOString()),
+      ]);
+      expect(await system.run.count({ where: { routineId: f.routine.id } })).toBe(previous + 1);
+      expect(await f.notices()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      await system.run.deleteMany({ where: { routineId: f.routine.id, status: "queued" } });
+      await system.routine.update({
+        where: { id: f.routine.id },
+        data: { active: false, nextRunAt: null },
+      });
+    }
+  });
+
+  it.each([
+    { status: "completed", error: null, routineFailureCause: null },
+    { status: "failed", error: "Deployment unavailable", routineFailureCause: null },
+    { status: "failed", error: "Request timed out", routineFailureCause: "timeout" },
+  ])("breaks a failure streak on a different outcome ($error)", async (outcome) => {
+    const f = await failingRoutine();
+    for (let i = 0; i < 4; i++) await f.record();
+    await f.record(outcome);
+    for (let i = 0; i < 4; i++) await f.check(await f.record());
+    expect((await f.read()).active).toBe(true);
+    await f.check(await f.record());
+    expect((await f.read()).active).toBe(false);
+  });
+
+  it("preserves the next interval day when changing timezone after an automatic pause", async () => {
+    const f = await failingRoutine();
+    const nextRunAt = new Date("2027-03-04T00:00:00Z");
+    await system.routine.update({
+      where: { id: f.routine.id },
+      data: {
+        crons: ["0 0 */2 * *"],
+        intervalBased: true,
+        timezone: "UTC",
+        intervalAnchorAt: new Date("2027-02-26T00:00:00Z"),
+        nextRunAt,
+      },
+    });
+    for (let i = 0; i < 4; i++) await f.record();
+    await f.check(await f.record());
+    const paused = await f.read();
+    expect(paused).toMatchObject({ active: false, nextRunAt: null, intervalAnchorAt: nextRunAt });
+    const now = new Date("2027-03-02T00:06:00Z");
+    const moved = patchRoutineTiming(paused, { timezone: "America/Los_Angeles" }, now).data;
+    expect(
+      patchRoutineTiming({ ...paused, ...moved }, { active: true }, now).data.nextRunAt,
+    ).toEqual(new Date("2027-03-04T08:00:00Z"));
+  });
+
+  it.each([false, true])(
+    "rechecks a late retry only if its intent was not revoked (%s)",
+    async (revoked) => {
+      const f = await failingRoutine();
+      const due = new Date("2027-03-02T00:20:00Z");
+      for (let i = 0; i < 4; i++) await f.record();
+      const fifth = await f.record({ routineRetryAt: due });
+      await system.routine.update({
+        where: { id: f.routine.id },
+        data: {
+          crons: ["0 * * * *"],
+          latestRunId: fifth.id,
+          nextRunAt: new Date("2027-03-02T01:00:00Z"),
+        },
+      });
+      const jobs = {
+        enqueue: vi.fn(async () => undefined),
+        cancel: vi.fn(async () => undefined),
+        close: async () => undefined,
+      };
+      const handlers = createBackgroundJobHandlers({ ...f.deps, jobs } as unknown as Parameters<
+        typeof createBackgroundJobHandlers
+      >[0]);
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date(due.getTime() - 1) });
+      try {
+        await handlers["routine.retry"]({ runId: fifth.id });
+        expect((await f.read()).active).toBe(true);
+        if (revoked) {
+          await system.$transaction(async (tx) => {
+            await lockRoutineRetryThread(tx, identity.threadId);
+            await revokePendingRoutineRetries(tx, identity);
+          });
+        }
+        vi.setSystemTime(new Date("2027-03-02T00:35:00Z"));
+        await handlers["routine.retry"]({ runId: fifth.id });
+        await handlers["routine.retry"]({ runId: fifth.id });
+        expect((await f.read()).active).toBe(revoked);
+        expect(await f.notices()).toBe(revoked ? 0 : 1);
+        expect(await system.run.findUniqueOrThrow({ where: { id: fifth.id } })).toMatchObject({
+          routineRetryAt: null,
+        });
+        expect(jobs.enqueue).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["completed", "failed"] as const)(
+    "uses the final retry result for its original scheduled round (%s)",
+    async (status) => {
+      const f = await failingRoutine();
+      for (let i = 0; i < 3; i++) await f.record();
+      const source = await f.record({ routineRetryAt: new Date("2027-03-02T00:30:00Z") });
+      await f.check(await f.record());
+      expect((await f.read()).active).toBe(true);
+      const child = await f.record({ retryOfRunId: source.id, status: "queued" }, false);
+      await system.run.update({ where: { id: source.id }, data: { routineRetryAt: null } });
+      await f.check(child);
+      expect((await f.read()).active).toBe(true);
+      await system.run.update({
+        where: { id: child.id },
+        data: { status, ...(status === "completed" && { error: null, routineFailureCause: null }) },
+      });
+      await f.check(child);
+      expect((await f.read()).active).toBe(status === "completed");
+      expect(await f.notices()).toBe(status === "completed" ? 0 : 1);
+    },
+  );
+
+  it("keeps a committed pause even if notification fails", async () => {
+    const f = await failingRoutine();
+    f.deps.events.notify.mockRejectedValueOnce(new Error("Synthetic notification failure"));
+    let releaseUpdate!: () => void;
+    const waitingUpdate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    f.deps.events.append.mockImplementationOnce(async (event) => {
+      await waitingUpdate;
+      return appendEvent(system, event);
+    });
+    for (let i = 0; i < 4; i++) await f.record();
+    const fifth = await f.record();
+    const checked = f.check(fifth);
+    try {
+      await vi.waitFor(() => expect(f.deps.events.notify).toHaveBeenCalledOnce());
+    } finally {
+      releaseUpdate();
+      await checked;
+    }
+    await f.check(fifth);
+    expect((await f.read()).active).toBe(false);
+    expect(f.deps.events.notify).toHaveBeenCalledOnce();
+    expect(await f.notices()).toBe(1);
+  });
+
+  it.each([true, false])(
+    "uses the original group only while the bot can post there (%s)",
+    async (groupAvailable) => {
+      const f = await failingRoutine();
+      const group = await system.chatGroup.create({
+        data: {
+          spaceId,
+          userId,
+          name: "Original schedule chat",
+          thread: { create: { spaceId, userId } },
+          ...(groupAvailable && { members: { create: { botId: identity.botId } } }),
+        },
+        include: { thread: true },
+      });
+      const threadId = group.thread!.id;
+      await system.routine.update({
+        where: { id: f.routine.id },
+        data: { threadId, groupScoped: true },
+      });
+      for (let i = 0; i < 4; i++) await f.record({ threadId });
+      await f.check(await f.record({ threadId }));
+      expect((await f.read()).active).toBe(false);
+      expect(f.deps.events.notify).toHaveBeenCalledExactlyOnceWith(
+        groupAvailable ? threadId : identity.threadId,
+        expect.any(Number),
+      );
+      expect(await system.message.count({ where: { threadId } })).toBe(groupAvailable ? 1 : 0);
+      expect(await f.notices()).toBe(groupAvailable ? 0 : 1);
+    },
+  );
+
+  it.each([{ crons: [] }, { crons: [ONCE_ROUTINE_CRON] }])(
+    "leaves non-repeating schedules alone ($crons)",
+    async ({ crons }) => {
+      const f = await failingRoutine();
+      await system.routine.update({ where: { id: f.routine.id }, data: { crons } });
+      for (let i = 0; i < 4; i++) await f.record();
+      await f.check(await f.record());
+      expect((await f.read()).active).toBe(true);
+      expect(await f.notices()).toBe(0);
+    },
+  );
 
   it("recovers an edited first occurrence after a lost enqueue receipt without firing it twice", async () => {
     const { routine } = await fixture();

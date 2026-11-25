@@ -231,7 +231,13 @@ export type FinalizeRunInput = FinalizeRunBase &
         /** Cross-chat evidence requires the same live human source under the thread lock. */
         historyGrantSourceId?: string | null;
       }
-    | { outcome: "failed"; error: string; partialText?: string; retryRoutine?: boolean }
+    | {
+        outcome: "failed";
+        error: string;
+        partialText?: string;
+        retryRoutine?: boolean;
+        routineFailureCause?: string;
+      }
   );
 
 export interface PauseRunForInput {
@@ -2741,6 +2747,8 @@ async function finalizeRunOnce(
       data: {
         status: input.outcome,
         error: input.outcome === "failed" ? input.error : null,
+        ...(input.outcome === "failed" &&
+          input.routineFailureCause && { routineFailureCause: input.routineFailureCause }),
         completedAt: now,
         leaseOwner: null,
         leaseExpiresAt: null,

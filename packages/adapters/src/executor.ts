@@ -1,7 +1,11 @@
 import { runReadsThreadHistory } from "@rakazo/core";
 import type { RunLease } from "@rakazo/db";
 import { lockActiveRoutineGroup } from "@rakazo/db";
-import { findPendingRoutineTick, routineTimerNonce } from "./routine-coalescing.js";
+import {
+  findPendingRoutineTick,
+  routineTimerNonce,
+  routineTimerScheduledFor,
+} from "./routine-coalescing.js";
 import {
   computerRetryDelay,
   mayOpenModelStream,
@@ -456,6 +460,7 @@ import {
 } from "./memory-tools.js";
 import {
   ModelOutputRecoveryError,
+  ModelProviderRunError,
   ModelQuotaWaitError,
   redactInterruptedOutput,
   TransientModelError,
@@ -553,6 +558,11 @@ import {
   resolveReplyContext,
   scriptedSteeringText,
 } from "./reply-context.js";
+import {
+  pauseRoutineAfterRepeatedFailures,
+  ROUTINE_MODEL_CONNECTION_FAILURE,
+  ROUTINE_MODEL_MISSING,
+} from "./routine-failure-pause.js";
 import { publishRoutineTiming } from "./routine-timing.js";
 import { lazyRunComputer } from "./run-computer.js";
 import {
@@ -4496,11 +4506,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
       };
 
       const runSecrets = [...deps.secrets];
+      const failurePauseSource =
+        run.trigger === "routine" &&
+        run.routineId &&
+        (run.retryOfRunId || routineTimerScheduledFor(run.routineId, run.clientNonce))
+          ? { ...run, routineId: run.routineId }
+          : undefined;
       const settleRunFailure = async (
         message: string,
         knownBot?: { id: string; name: string },
         partialText?: string,
         retryRoutine?: boolean,
+        failureCause?: string,
       ) => {
         const failed = await deps.events.finalizeRun({
           spaceId: run.spaceId,
@@ -4515,6 +4532,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           error: message,
           ...(partialText ? { partialText } : {}),
           ...(retryRoutine ? { retryRoutine } : {}),
+          ...(failurePauseSource && failureCause && { routineFailureCause: failureCause }),
         });
         if (!failed) return;
         endRunAfterFinalization();
@@ -4524,6 +4542,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             getLogger().warn("routine.retry_wakeup_failed", { "run.id": runId });
           });
         }
+        if (
+          failurePauseSource &&
+          failureCause &&
+          !failed.routineRetryAt &&
+          !failed.continuationRunId
+        )
+          await pauseRoutineAfterRepeatedFailures(deps, failurePauseSource);
         await settleLocalPeerDelivery();
         if (failed.continuationRunId) {
           await deps.jobs
@@ -5087,7 +5112,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const { credential, thinkingLevel } = selected;
         const runModelProvider = selected.provider ?? runtimeFallback?.provider;
         const runModelId = selected.id ?? runtimeFallback?.id;
-        const failRunBeforeModel = async (message: string) => {
+        const failRunBeforeModel = async (message: string, failureCause?: string) => {
           const failed = await deps.events.finalizeRun({
             spaceId: run.spaceId,
             threadId: thread.id,
@@ -5099,9 +5124,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
             leaseFence: fence,
             outcome: "failed",
             error: message,
+            ...(failurePauseSource && failureCause && { routineFailureCause: failureCause }),
           });
           if (!failed) return;
           endRunAfterFinalization();
+          if (failurePauseSource && failureCause && !failed.continuationRunId)
+            await pauseRoutineAfterRepeatedFailures(deps, failurePauseSource);
           await settleLocalPeerDelivery();
           if (failed.continuationRunId) {
             await deps.jobs
@@ -5144,26 +5172,32 @@ export function createRunExecutor(deps: ExecutorDeps) {
           settingsSnapshot?.connectionRevision != null &&
           overrideCredential?.connectionRevision !== settingsSnapshot.connectionRevision
         ) {
-          await failRunBeforeModel("The model connection for this run changed. Start a new run.");
+          await failRunBeforeModel(
+            "The model connection for this run changed. Start a new run.",
+            ROUTINE_MODEL_CONNECTION_FAILURE,
+          );
           return;
         }
         if (pinError) {
-          await failRunBeforeModel(pinError);
+          await failRunBeforeModel(pinError, ROUTINE_MODEL_CONNECTION_FAILURE);
           return;
         }
         if (usesAccountModel && defaultSelection?.unavailable) {
-          await failRunBeforeModel(UNAVAILABLE_PERSONAL_MODEL);
+          await failRunBeforeModel(UNAVAILABLE_PERSONAL_MODEL, ROUTINE_MODEL_CONNECTION_FAILURE);
           return;
         }
         if (
           (run.modelPinned || settingsSnapshot || quotaTarget) &&
           (selected.provider !== modelChoice.modelProvider || selected.id !== modelChoice.modelId)
         ) {
-          await failRunBeforeModel("Connect that model provider first");
+          await failRunBeforeModel(
+            "Connect that model provider first",
+            ROUTINE_MODEL_CONNECTION_FAILURE,
+          );
           return;
         }
         if (!runModelProvider || !runModelId) {
-          await failRunBeforeModel(MISSING_MODEL_MESSAGE);
+          await failRunBeforeModel(MISSING_MODEL_MESSAGE, ROUTINE_MODEL_MISSING);
           return;
         }
         const firstSettingsModelAttempt =
@@ -5206,6 +5240,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (!isTerminalModelSetupError(error)) throw error;
           await failRunBeforeModel(
             error instanceof Error ? error.message : "Connect the provider again.",
+            error instanceof Error && error.message === CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE
+              ? undefined
+              : ROUTINE_MODEL_CONNECTION_FAILURE,
           );
           return;
         }
@@ -12764,6 +12801,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const text = redactInterruptedOutput(assembled, runSecrets, precedingProgress()).trim();
             if (text && !containsSecret(text, runSecrets)) partialText = text;
           }
+          const routineError =
+            failurePauseSource && error instanceof ModelProviderRunError && error.ownCredential
+              ? normalizeRunError(message)
+              : undefined;
           await settleRunFailure(
             message,
             bot,
@@ -12775,6 +12816,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
               leaseValid &&
               !handedOff &&
               !assembled,
+            // An unclassified outage or a timeout does not establish a user-fixable cause.
+            routineError?.kind === "timeout" ? undefined : routineError?.kind,
           );
         }
       } catch (setupError) {

@@ -28,6 +28,7 @@ import {
   nativeTriggerScope,
   verifyRoutineRetryNativeSource,
 } from "./native-connectors/events/store.js";
+import { pauseRoutineAfterRepeatedFailures } from "./routine-failure-pause.js";
 import { expireTaughtSkillTeaching } from "./teaching-session.js";
 
 type Tenant = { spaceId: string; userId: string };
@@ -184,7 +185,10 @@ export function createBackgroundJobHandlers(deps: {
         verifyRoutineRetryNativeSource,
       );
       // A committed queued Run is recovered by the ordinary Run reconciler.
-      if (retry) await deps.jobs.enqueue(runContinueJob(retry.runId));
+      if (retry?.runId) await deps.jobs.enqueue(runContinueJob(retry.runId));
+      // Only the transaction that consumed an expired, authorized intent may
+      // use it as evidence. A revoked intent has no such result.
+      if (retry?.expiredSource) await pauseRoutineAfterRepeatedFailures(deps, retry.expiredSource);
     }),
     "computer.update": asOwner(updatedComputer, async ({ updateId }) => {
       await performComputerUpdate(deps, updateId);

@@ -45,6 +45,9 @@ import {
   createStreamingRedactor,
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
   MODEL_IMAGE_INPUT_ERROR,
+  MODEL_OUTPUT_CUT_ERROR,
+  MODEL_OUTPUT_LIMIT_ERROR,
+  normalizeRunError,
   redactSecrets,
 } from "@rakazo/core";
 import { MAX_SELF_RECOVERIES_PER_RUN } from "@rakazo/db";
@@ -89,6 +92,7 @@ import {
 } from "./model-context.js";
 import {
   ModelOutputRecoveryError,
+  ModelProviderRunError,
   ModelQuotaWaitError,
   redactInterruptedOutput,
   TransientModelError,
@@ -190,8 +194,6 @@ function catalogModels(): Models {
 }
 const MAX_PARALLEL_SUBAGENTS = 4;
 const MODEL_PARTIAL_FAILURE_ERROR = "The model failed after writing a response.";
-const MODEL_OUTPUT_CUT_ERROR = "The model hit its output limit before finishing its reply.";
-const MODEL_OUTPUT_LIMIT_ERROR = "The model hit its output limit before writing a response.";
 const MODEL_PROVIDER_RETRY_DELAYS_MS = [2_000, 8_000, 20_000] as const;
 // Some OpenAI-compatible models return EOS immediately after a tool result
 // instead of taking another assistant turn. A bounded internal follow-up keeps
@@ -1170,8 +1172,9 @@ export class PiAgentRuntime implements AgentRuntime {
             : undefined);
         if (error && !budgetExceeded && (!host.pausePending || signal.aborted)) {
           const message = sanitizeProviderError(activeStreamTarget.model.provider, error);
+          const ownCredential = activeStreamTarget.config.modelCredentialId != null;
           if (!signal.aborted && (lastRecoveryKind || fallbackState.outputRecoveryFailed))
-            throw new ModelOutputRecoveryError(message);
+            throw new ModelOutputRecoveryError(message, ownCredential);
           const quotaWait =
             !signal.aborted && !streamed && !toolCalls && terminalMessage?.role === "assistant"
               ? quotaTerminals.get(terminalMessage.content)
@@ -1184,7 +1187,10 @@ export class PiAgentRuntime implements AgentRuntime {
             terminalMessage?.role === "assistant" &&
             transientTerminals.has(terminalMessage.content)
           )
-            throw new TransientModelError(message);
+            throw new TransientModelError(message, ownCredential);
+          if (!signal.aborted && providerFailure && ownCredential) {
+            if (normalizeRunError(message).kind) throw new ModelProviderRunError(message, true);
+          }
           throw new Error(message);
         }
         if (
@@ -1245,10 +1251,12 @@ export class PiAgentRuntime implements AgentRuntime {
           error instanceof ModelQuotaWaitError
             ? new ModelQuotaWaitError(message, error.until, error.target)
             : error instanceof ModelOutputRecoveryError
-              ? new ModelOutputRecoveryError(message)
+              ? new ModelOutputRecoveryError(message, error.ownCredential)
               : error instanceof TransientModelError
-                ? new TransientModelError(message)
-                : new Error(message),
+                ? new TransientModelError(message, error.ownCredential)
+                : error instanceof ModelProviderRunError
+                  ? new ModelProviderRunError(message, error.ownCredential)
+                  : new Error(message),
         );
       } finally {
         queue.close();

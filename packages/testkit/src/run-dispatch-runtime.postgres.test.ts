@@ -199,6 +199,78 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     await migrateJobQueue(process.env.DATABASE_URL!);
   });
 
+  it("auto-pauses a repeating routine on its fifth model setup failure", async () => {
+    const f = await openApp(new ScriptedAgentRuntime(), { wakeupDriver: "memory" });
+    try {
+      const { prisma, executor } = f.handles;
+      const { run, userId, spaceId, botId, threadId } = await seed(
+        f.handles,
+        "routine model setup",
+      );
+      const scope = { userId, spaceId, botId, threadId };
+      const routine = await prisma.routine.create({
+        data: {
+          ...scope,
+          name: "Check the weekly summary",
+          prompt: "Summarize fixture updates.",
+          active: true,
+          crons: ["0 * * * *"],
+          nextRunAt: new Date(Date.now() + 3_600_000),
+        },
+      });
+      for (let i = 4; i > 0; i--) {
+        const at = new Date(run.createdAt.getTime() - i * 3_600_000);
+        const task = await prisma.task.create({
+          data: { ...scope, prompt: routine.prompt, status: "failed" },
+        });
+        await prisma.run.create({
+          data: {
+            ...scope,
+            taskId: task.id,
+            routineId: routine.id,
+            trigger: "routine",
+            clientNonce: `routine-timer:${routine.id}:${at.toISOString()}`,
+            createdAt: at,
+            completedAt: at,
+            status: "failed",
+            error: "Connect that model provider first",
+            routineFailureCause: "setup:model-connection",
+          },
+        });
+      }
+      await prisma.run.update({
+        where: { id: run.id },
+        data: {
+          trigger: "routine",
+          routineId: routine.id,
+          clientNonce: `routine-timer:${routine.id}:${run.createdAt.toISOString()}`,
+          modelPinned: true,
+          modelProvider: "openrouter",
+          modelId: "fixture-model",
+          modelCredentialId: "fixture-removed-connection",
+        },
+      });
+      await executor.continueRun(run.id, "routine-failure-fixture");
+      expect(await prisma.run.findUniqueOrThrow({ where: { id: run.id } })).toMatchObject({
+        status: "failed",
+        routineFailureCause: "setup:model-connection",
+      });
+      expect(await prisma.routine.findUniqueOrThrow({ where: { id: routine.id } })).toMatchObject({
+        active: false,
+        nextRunAt: null,
+        failurePausedAt: expect.any(Date),
+      });
+      const messages = await prisma.message.findMany({ where: { threadId, role: "bot" } });
+      expect(
+        messages.filter((message) =>
+          JSON.stringify(message.blocks).includes("I paused “Check the weekly summary”"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("audits Bot MCP credentials only when registration commits", async () => {
     const database = createDb(process.env.DATABASE_URL!);
     const runtime = new ScriptedAgentRuntime();

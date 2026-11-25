@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
   MODEL_CONTEXT_TOO_SMALL_ERROR,
+  MODEL_OUTPUT_CUT_ERROR,
+  MODEL_OUTPUT_LIMIT_ERROR,
   normalizeRunError,
   sanitizeRunErrorDetails,
   VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR,
@@ -29,6 +31,25 @@ describe("context capacity failures", () => {
     );
     expect(failure).not.toHaveProperty("action");
   });
+});
+
+it.each([MODEL_OUTPUT_CUT_ERROR, MODEL_OUTPUT_LIMIT_ERROR])(
+  "keeps the model's known output limit distinct from a provider outage (%s)",
+  (details) => {
+    expect(normalizeRunError(details)).toEqual({ summary: details, details, kind: "output" });
+    expect(normalizeRunError("503: Service unavailable").kind).toBeUndefined();
+  },
+);
+
+it.each([
+  "503: The model is temporarily unavailable",
+  "HTTP 503 The model is temporarily unavailable",
+  "Provider API error (503): The model is temporarily unavailable",
+  '{"status":503,"error":{"code":"model_not_found"}}',
+  "The model is temporarily unavailable",
+])("does not infer a missing model from a provider outage (%s)", (details) => {
+  expect(normalizeRunError(details).kind).toBeUndefined();
+  expect(normalizeRunError("404: Model fixture-model was not found").kind).toBe("model");
 });
 
 describe("platform model policy recovery", () => {
@@ -66,18 +87,24 @@ describe("ChatGPT plan usage recovery", () => {
     [
       "subscription_sharing_usage_limit_exceeded",
       "Your ChatGPT plan usage limit was reached. Review your usage settings.",
+      "plan",
     ],
     [
       "subscription_sharing_usage_unavailable",
       "ChatGPT plan usage is unavailable. Review your usage settings or reconnect ChatGPT.",
+      undefined,
     ],
-  ])("exposes a fixed usage action for %s without provider-supplied links", (code, summary) => {
-    const normalized = normalizeRunError(
-      `chatgpt-plan API error (429): {"code":"${code}","message":"ChatGPT plan request failed"}`,
-    );
-    expect(normalized).toMatchObject({ summary, action: "chatgpt-usage" });
-    expect(normalized.summary).not.toContain("http");
-  });
+  ])(
+    "exposes a fixed usage action for %s without provider-supplied links",
+    (code, summary, kind) => {
+      const normalized = normalizeRunError(
+        `chatgpt-plan API error (429): {"code":"${code}","message":"ChatGPT plan request failed"}`,
+      );
+      expect(normalized).toMatchObject({ summary, action: "chatgpt-usage" });
+      expect(normalized.kind).toBe(kind);
+      expect(normalized.summary).not.toContain("http");
+    },
+  );
   it("does not offer ChatGPT actions for generic rate limits or lookalike codes", () => {
     expect(normalizeRunError('429: {"code":"rate_limit_error"}')).not.toHaveProperty("action");
     expect(
@@ -179,6 +206,7 @@ describe("run failure diagnostics", () => {
       '403: {"message":"Key limit exceeded (weekly); resets 2026-10-12T00:00:00.000Z. Manage https://openrouter.ai/keys/fake-id","metadata":{"limit_source":"openrouter_key_limit"}}';
     expect(normalizeRunError(details)).toEqual({
       summary: "Your OpenRouter key hit its weekly limit. Resets Oct 12.",
+      kind: "key",
       details,
     });
   });

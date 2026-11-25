@@ -48,7 +48,7 @@ export function routineIntervalMode(crons: string[], requested?: boolean): boole
 type Timing = Pick<
   Routine,
   "crons" | "timezone" | "active" | "nextRunAt" | "startAt" | "intervalBased" | "intervalAnchorAt"
->;
+> & { failurePausedAt?: Date | null };
 
 /** Recompute only when the schedule changes. Metadata edits leave worker progress alone. */
 export function patchRoutineTiming(
@@ -109,6 +109,8 @@ export function patchRoutineTiming(
   }
 
   const activating = active && !current.active;
+  const resumingAfterFailure = activating && current.failurePausedAt != null;
+  const nextFloor = resumingAfterFailure && startAt?.getTime() === now.getTime() ? null : startAt;
   let nextRunAt = current.nextRunAt;
 
   if (oneShot) {
@@ -142,14 +144,15 @@ export function patchRoutineTiming(
       }
     } else {
       const fromInterval = intervalAnchorAt
-        ? intervalAnchorAt >= now
+        ? intervalAnchorAt > now ||
+          (!resumingAfterFailure && intervalAnchorAt.getTime() === now.getTime())
           ? intervalAnchorAt
           : nextRoutineOccurrence(crons, intervalAnchorAt, now, timezone, true)
         : null;
       nextRunAt =
         fromInterval && (!startAt || fromInterval >= startAt)
           ? fromInterval
-          : routineNextRepeat(crons, timezone, now, startAt);
+          : routineNextRepeat(crons, timezone, now, nextFloor);
     }
   } else if (!repeating) nextRunAt = null;
 

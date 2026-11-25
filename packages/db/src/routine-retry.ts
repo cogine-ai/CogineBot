@@ -92,20 +92,31 @@ async function readRetryRoutine(tx: Prisma.TransactionClient, source: RetrySourc
   });
 }
 
+function routineOwnsRetry(
+  routine: Awaited<ReturnType<typeof readRetryRoutine>>,
+  sourceId: string,
+  latestRunId = sourceId,
+): routine is NonNullable<Awaited<ReturnType<typeof readRetryRoutine>>> {
+  return Boolean(
+    routine?.latestRunId === latestRunId &&
+      (routine.active ||
+        (routine.autoCompletedRunId === sourceId &&
+          routine.nextRunAt === null &&
+          isOneShotRoutineCrons(routine.crons))),
+  );
+}
+
+function retryWindowOpen(routine: { nextRunAt: Date | null }, at: Date): boolean {
+  return !routine.nextRunAt || routine.nextRunAt.getTime() - at.getTime() > NEXT_RUN_WINDOW_MS;
+}
+
 function canRetryRoutine(
   routine: Awaited<ReturnType<typeof readRetryRoutine>>,
   sourceId: string,
   at: Date,
   latestRunId = sourceId,
 ): boolean {
-  return Boolean(
-    routine?.latestRunId === latestRunId &&
-      (routine.active ||
-        (routine.autoCompletedRunId === sourceId &&
-          routine.nextRunAt === null &&
-          isOneShotRoutineCrons(routine.crons))) &&
-      (!routine.nextRunAt || routine.nextRunAt.getTime() - at.getTime() > NEXT_RUN_WINDOW_MS),
-  );
+  return routineOwnsRetry(routine, sourceId, latestRunId) && retryWindowOpen(routine, at);
 }
 
 async function lockRetryTarget(tx: Prisma.TransactionClient, candidate: RetryTarget) {
@@ -225,7 +236,11 @@ export async function claimRoutineRetry(
   originalRunId: string,
   now?: Date,
   verifyNativeSource?: VerifyRoutineRetryNativeSource,
-): Promise<{ runId: string } | null> {
+): Promise<
+  | { runId: string; expiredSource?: never }
+  | { runId?: never; expiredSource: RetrySource & { routineId: string; retryOfRunId: null } }
+  | null
+> {
   return withTransactionRetry(() =>
     prisma.$transaction(async (tx) => {
       const intent = {
@@ -253,6 +268,7 @@ export async function claimRoutineRetry(
           threadId: true,
           routineId: true,
           clientNonce: true,
+          routineFailureCause: true,
           modelPinned: true,
           modelProvider: true,
           modelId: true,
@@ -272,11 +288,28 @@ export async function claimRoutineRetry(
 
       const routine = await readRetryRoutine(tx, source);
       const scope = { spaceId: source.spaceId, userId: source.userId };
-      if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
+      if (
+        !routineOwnsRetry(routine, source.id) ||
+        (!source.routineFailureCause && !retryWindowOpen(routine, now ?? new Date()))
+      )
+        return null;
       if (!(await retryAuthorizationIsCurrent(tx, candidate, source, verifyNativeSource)))
         return null;
       // Authorization can wait on locks long enough to enter the next-run window.
-      if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
+      if (!retryWindowOpen(routine, now ?? new Date())) {
+        return source.routineFailureCause
+          ? {
+              expiredSource: {
+                ...scope,
+                id: source.id,
+                botId: source.botId,
+                threadId: source.threadId,
+                routineId: source.routineId,
+                retryOfRunId: null,
+              },
+            }
+          : null;
+      }
 
       const destination = {
         ...scope,
