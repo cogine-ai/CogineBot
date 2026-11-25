@@ -1191,6 +1191,7 @@ describe("MCP server deletion", () => {
       .fn()
       .mockResolvedValue({ count: secretId === "rotated-secret" ? 1 : 0 });
     const lockMaterial = vi.fn().mockResolvedValue(1);
+    const appendAudit = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       mcpServer: {
         findFirst: vi.fn().mockResolvedValue({ id: "server-1", secretId: "old-secret" }),
@@ -1198,6 +1199,8 @@ describe("MCP server deletion", () => {
       },
       secret: { deleteMany: deleteSecrets },
       message: { findMany: vi.fn().mockResolvedValue([]) },
+      space: { findUniqueOrThrow: vi.fn().mockResolvedValue({ organizationId: "org-1" }) },
+      auditEvent: { createMany: appendAudit },
       $executeRaw: lockMaterial,
       $transaction: vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run(prisma)),
     } as unknown as PrismaClient;
@@ -1246,6 +1249,28 @@ describe("MCP server deletion", () => {
         where: { id: secretId, spaceId: actor.spaceId, userId: actor.userId },
       });
     else expect(deleteSecrets).not.toHaveBeenCalled();
+    if (secretId === "rotated-secret") {
+      expect(appendAudit).toHaveBeenCalledTimes(1);
+      expect(deleteSecrets).toHaveBeenCalledBefore(appendAudit);
+      expect(appendAudit).toHaveBeenCalledWith({
+        skipDuplicates: true,
+        data: [
+          {
+            id: expect.any(String),
+            createdAt: expect.any(Date),
+            organizationId: "org-1",
+            spaceId: actor.spaceId,
+            actorId: actor.userId,
+            actorType: "user",
+            action: "credential.deleted",
+            targetType: "mcp_server",
+            targetId: "server-1",
+            outcome: "success",
+            metadata: {},
+          },
+        ],
+      });
+    } else expect(appendAudit).not.toHaveBeenCalled();
   });
 });
 
