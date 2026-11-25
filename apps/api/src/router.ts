@@ -5945,32 +5945,43 @@ export function createRouter(deps: RouterDeps) {
         const digest = `sha256:${createHash("sha256")
           .update(JSON.stringify({ kind: input.kind, source, config }))
           .digest("hex")}`;
-        const row = await deps.prisma.$transaction(async (tx) => {
-          if (stored) {
-            await tx.secret.create({
+        const row = await persistPreparedSecret(deps.prisma, deps.secrets, stored, () =>
+          deps.prisma.$transaction(async (tx) => {
+            if (stored) {
+              await tx.secret.create({
+                data: {
+                  id: stored.id,
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  kind: "connector",
+                  ciphertext: stored.ciphertext,
+                },
+              });
+            }
+            return tx.capabilityInstall.create({
               data: {
-                id: stored.id,
                 spaceId: context.actor.spaceId,
                 userId: context.actor.userId,
-                kind: "connector",
-                ciphertext: stored.ciphertext,
+                kind: input.kind,
+                name: input.name.trim(),
+                source,
+                secretId: stored?.id,
+                config: config as Prisma.InputJsonValue,
+                digest,
+                version: "1.0.0",
               },
             });
-          }
-          return tx.capabilityInstall.create({
-            data: {
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-              kind: input.kind,
-              name: input.name.trim(),
-              source,
-              secretId: stored?.id,
-              config: config as Prisma.InputJsonValue,
-              digest,
-              version: "1.0.0",
-            },
-          });
-        });
+          }),
+        );
+        if (row.secretId) {
+          await recordCredentialAudit(
+            deps.prisma,
+            context.actor,
+            { type: "capability_install", ids: [row.id] },
+            "credential.created",
+            row.createdAt,
+          );
+        }
         return {
           id: row.id,
           kind: row.kind as "skill" | "plugin" | "mcp" | "api" | "connection",
@@ -5984,35 +5995,46 @@ export function createRouter(deps: RouterDeps) {
         };
       }),
       remove: authed.capabilities.remove.handler(async ({ context, input }) => {
-        await deps.prisma.$transaction(async (tx) => {
-          const existing = await tx.capabilityInstall.findFirst({
-            where: {
-              id: input.id,
-              spaceId: context.actor.spaceId,
-              userId: context.actor.userId,
-            },
-          });
-          if (!existing) return;
-          if (existing.kind === "plugin" && existing.clientNonce !== null)
-            throw new ORPCError("BAD_REQUEST", {
-              message: "Use plugin uninstall to remove this installation.",
+        const { spaceId, userId } = context.actor;
+        const deletion = await deps.prisma.$transaction(
+          async (tx) => {
+            const where = { id: input.id, spaceId, userId };
+            const existing = await tx.capabilityInstall.findFirst({
+              where,
+              select: { kind: true, clientNonce: true, secretId: true },
             });
-          await tx.capabilityInstall.delete({ where: { id: existing.id } });
-          if (existing.secretId) {
-            const shared = await tx.capabilityInstall.count({
-              where: { secretId: existing.secretId },
-            });
-            if (shared === 0) {
-              await tx.secret.deleteMany({
-                where: {
-                  id: existing.secretId,
-                  spaceId: context.actor.spaceId,
-                  userId: context.actor.userId,
-                },
+            if (!existing) return null;
+            if (existing.kind === "plugin" && existing.clientNonce !== null)
+              throw new ORPCError("BAD_REQUEST", {
+                message: "Use plugin uninstall to remove this installation.",
               });
-            }
-          }
-        });
+            const { secretId } = existing;
+            // Lock the credential before unlinking so shared removals and Space cleanup use the same order.
+            if (secretId)
+              await tx.$queryRaw`
+                SELECT id FROM secrets WHERE id = ${secretId}
+                  AND "spaceId" = ${spaceId} AND "userId" = ${userId} FOR UPDATE`;
+            const unlinked = await tx.capabilityInstall.deleteMany({ where });
+            if (unlinked.count !== 1 || !secretId) return null;
+            const shared = await tx.capabilityInstall.count({ where: { secretId } });
+            if (shared > 0) return null;
+            const removed = await tx.secret.deleteMany({
+              where: { id: secretId, spaceId, userId },
+            });
+            return removed.count === 1 ? { id: input.id, happenedAt: new Date() } : null;
+          },
+          // After waiting for the credential lock, count references against the latest commits.
+          { isolationLevel: "ReadCommitted" },
+        );
+        if (deletion) {
+          await recordCredentialAudit(
+            deps.prisma,
+            context.actor,
+            { type: "capability_install", ids: [deletion.id] },
+            "credential.deleted",
+            deletion.happenedAt,
+          );
+        }
         return { ok: true as const };
       }),
     },

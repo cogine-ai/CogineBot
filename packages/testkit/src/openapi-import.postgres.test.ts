@@ -353,6 +353,25 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     return { installs, secretRows, receipts, puts: secrets.puts.length };
   }
 
+  function legacyApiInput(credential?: string) {
+    return {
+      kind: "api",
+      name: "Legacy API fixture",
+      source: target,
+      credential,
+      config: {
+        auth: { type: credential ? "bearer" : "none" },
+        operations: [{ id: "list_items", method: "GET", path: "/items" }],
+      },
+    };
+  }
+
+  function legacyCredentialAudits() {
+    return handles.prisma.auditEvent.findMany({
+      where: { spaceId: space.id, targetType: "capability_install" },
+    });
+  }
+
   function pauseNext(source: string, reply?: Reply) {
     const entered = deferred();
     const release = deferred();
@@ -476,6 +495,152 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     secrets.failDelete = false;
     transactionFailure = undefined;
     if (space) await handles.prisma.space.delete({ where: { id: space.id } });
+  });
+
+  it("audits each committed legacy capability credential creation", async () => {
+    const request = legacyApiInput("synthetic-bearer");
+    const first = await rpc<{ id: string }>("capabilities/install", request);
+    const second = await rpc<{ id: string }>("capabilities/install", request);
+    const anonymous = await rpc<{ id: string }>("capabilities/install", legacyApiInput());
+    expect(first.id).not.toBe(second.id);
+    expect(await counts()).toMatchObject({ installs: 3, secretRows: 2 });
+    await rpc("capabilities/remove", anonymous);
+    const { organizationId } = await handles.prisma.space.findUniqueOrThrow({
+      where: { id: space.id },
+    });
+    const events = await legacyCredentialAudits();
+    expect(events).toHaveLength(2);
+    expect(events).toEqual(
+      expect.arrayContaining(
+        [first.id, second.id].map((targetId) =>
+          expect.objectContaining({
+            organizationId,
+            spaceId: space.id,
+            actorType: "user",
+            actorId: actor.userId,
+            action: "credential.created",
+            targetId,
+            outcome: "success",
+            metadata: {},
+          }),
+        ),
+      ),
+    );
+  });
+
+  it("audits legacy capability credential removal only on the committed delete", async () => {
+    const { id } = await rpc<{ id: string }>(
+      "capabilities/install",
+      legacyApiInput("synthetic-bearer"),
+    );
+    const request = { id };
+    await expect(
+      rpc("capabilities/remove", request, { cookie: otherCookie, spaceId: otherActor.spaceId }),
+    ).resolves.toEqual({ ok: true });
+    expect(await counts()).toMatchObject({ installs: 1, secretRows: 1 });
+    expect(
+      await handles.prisma.auditEvent.count({
+        where: { targetId: id, targetType: "capability_install", action: "credential.deleted" },
+      }),
+    ).toBe(0);
+    const removes = await Promise.all([
+      rpc("capabilities/remove", request),
+      rpc("capabilities/remove", request),
+    ]);
+    expect(removes).toEqual([{ ok: true }, { ok: true }]);
+    expect(await rpc("capabilities/remove", request)).toEqual({ ok: true });
+    expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
+    const removals = (await legacyCredentialAudits()).filter(
+      (event) => event.action === "credential.deleted",
+    );
+    expect(removals).toEqual([
+      expect.objectContaining({
+        targetId: id,
+        actorId: actor.userId,
+        outcome: "success",
+        metadata: {},
+      }),
+    ]);
+  });
+
+  it.each(["sequential", "concurrent"] as const)(
+    "audits the last shared legacy capability credential removal with %s requests",
+    async (order) => {
+      const { id } = await rpc<{ id: string }>(
+        "capabilities/install",
+        legacyApiInput("synthetic-shared"),
+      );
+      const { userId, spaceId, secretId, kind, name, source } =
+        await handles.prisma.capabilityInstall.findUniqueOrThrow({ where: { id } });
+      const sibling = await handles.prisma.capabilityInstall.create({
+        data: { userId, spaceId, secretId, kind, name, source },
+      });
+      if (order === "sequential") {
+        await rpc("capabilities/remove", { id });
+        expect(await counts()).toMatchObject({ installs: 1, secretRows: 1 });
+        expect((await legacyCredentialAudits()).map((event) => event.action)).toEqual([
+          "credential.created",
+        ]);
+        await rpc("capabilities/remove", { id: sibling.id });
+      } else {
+        await Promise.all([
+          rpc("capabilities/remove", { id }),
+          rpc("capabilities/remove", { id: sibling.id }),
+        ]);
+      }
+      expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
+      const removals = (await legacyCredentialAudits()).filter(
+        (event) => event.action === "credential.deleted",
+      );
+      expect(removals).toHaveLength(1);
+      expect(order === "sequential" ? [sibling.id] : [id, sibling.id]).toContain(
+        removals[0]?.targetId,
+      );
+    },
+  );
+
+  it("does not audit removal of a dangling legacy capability credential reference", async () => {
+    const { id } = await handles.prisma.capabilityInstall.create({
+      data: {
+        spaceId: space.id,
+        userId: actor.userId,
+        kind: "api",
+        name: "Legacy API fixture",
+        source: target,
+        secretId: randomUUID(),
+      },
+    });
+    await expect(rpc("capabilities/remove", { id })).resolves.toEqual({ ok: true });
+    expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
+    expect(await legacyCredentialAudits()).toEqual([]);
+  });
+
+  it.each(["start", "rollback"] as const)(
+    "compensates a legacy capability credential after transaction %s failure",
+    async (failure) => {
+      secrets.afterPut = () => {
+        transactionFailure = failure;
+      };
+      const response = await raw("capabilities/install", legacyApiInput("synthetic-rollback"));
+      expect(response.status).toBe(500);
+      expect(await counts()).toMatchObject({ installs: 0, secretRows: 0, puts: 1 });
+      expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(false);
+      expect(await legacyCredentialAudits()).toEqual([]);
+    },
+  );
+
+  it("keeps the legacy capability credential and its audit history after a rolled back removal", async () => {
+    const { id } = await rpc<{ id: string }>(
+      "capabilities/install",
+      legacyApiInput("synthetic-rollback"),
+    );
+    transactionFailure = "rollback";
+    expect((await raw("capabilities/remove", { id })).status).toBe(500);
+    expect(await counts()).toMatchObject({ installs: 1, secretRows: 1 });
+    expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(true);
+    expect((await legacyCredentialAudits()).map((event) => event.action)).toEqual([
+      "credential.created",
+    ]);
   });
 
   it("previews partial YAML imports without creating an intent, install, or secret", async () => {
