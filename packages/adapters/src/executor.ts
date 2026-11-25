@@ -10464,6 +10464,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             let reviewAdmission: Date | undefined;
             let result: Awaited<ReturnType<typeof requestWithBotSecret>>;
+            let observedResponse:
+              | {
+                  receiptState: ReturnType<typeof approvedActionReceipt>["state"];
+                  happenedAt: Date;
+                  durationMs: number;
+                }
+              | undefined;
             const startedAt = performance.now();
             try {
               result = await requestWithBotSecret({
@@ -10500,6 +10507,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     throw new BotSecretHttpRequestError("The run no longer owns this request.");
                   reviewAdmission ??= appliedReviewAdmission();
                 },
+                onResponse: (receiptState) => {
+                  observedResponse = {
+                    receiptState,
+                    happenedAt: new Date(),
+                    durationMs: Math.round(performance.now() - startedAt),
+                  };
+                },
               });
             } catch (error) {
               if (error instanceof ActionRuleDispatchError) {
@@ -10508,34 +10522,26 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return finish({ error: "Invalid authenticated request." });
             }
-            const response = "status" in result ? result : undefined;
-            const receipt =
-              response && isConfirmedHttpResponse(response.status)
-                ? approvedActionReceipt(
-                    { data: response.body, truncated: response.truncated },
-                    "result",
-                  ).state
-                : undefined;
+            const status = "status" in result ? result.status : undefined;
+            const receiptState = isConfirmedHttpResponse(status)
+              ? observedResponse?.receiptState
+              : undefined;
             const responseFailed =
-              receipt === "failed" || (response && response.status >= 400 && response.status < 600);
+              receiptState === "failed" || (status !== undefined && status >= 400 && status < 600);
             const outcome =
-              receipt === "succeeded" ? "success" : responseFailed ? "error" : undefined;
-            const executionId =
-              claimedEffect && !context.signal.aborted ? applied?.effect.id : undefined;
-            const happenedAt = new Date();
-            const durationMs = Math.round(performance.now() - startedAt);
+              receiptState === "succeeded" ? "success" : responseFailed ? "error" : undefined;
             const completed = await finish(
               result,
               undefined,
               outcome === "success" ? reviewAdmission : undefined,
             );
             // Receipt readback and uncertain settlement must not record another execution.
-            if (executionId && outcome && completed === result) {
+            if (applied && claimedEffect && observedResponse && outcome && completed === result) {
               await recordToolCompletionAudit(deps.prisma, run, {
                 name: "secret_request",
-                executionId,
-                happenedAt,
-                durationMs,
+                executionId: applied.effect.id,
+                happenedAt: observedResponse.happenedAt,
+                durationMs: observedResponse.durationMs,
                 outcome,
               });
             }

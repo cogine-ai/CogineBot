@@ -4927,6 +4927,38 @@ describe("authenticated request destination policy", () => {
     );
   });
 
+  it.each([
+    { credentialValue: "ok", body: { ok: false }, auditOutcome: "error" as const },
+    { credentialValue: "partial", body: { write_outcome: "partial" } },
+  ])(
+    "classifies the application response before redacting a colliding credential (%#)",
+    async ({ credentialValue, body, auditOutcome }) => {
+      const f = authFixture({
+        autoReview: true,
+        secretStore: { load: vi.fn(async () => credentialValue) },
+      });
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      f.fetch.mockResolvedValueOnce(Response.json(body));
+
+      await f.run();
+
+      const result = f.results[0];
+      expect(result).toEqual({
+        status: 200,
+        body: auditOutcome ? { "[redacted]": false } : { write_outcome: "[redacted]" },
+        truncated: false,
+      });
+      expect(f.effects[0]).toMatchObject({ status: "completed", result });
+      if (auditOutcome) {
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
+          completion(f.effects[0]!.id, auditOutcome),
+        );
+      } else {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("keeps distinct authenticated responses associated with their own execution receipts", async () => {
     const f = authFixture({ rules: [siteAllow, toolAllow] });
     const second = { ...args, url: `${url}&item=second` };
@@ -4958,7 +4990,30 @@ describe("authenticated request destination policy", () => {
     );
   });
 
-  it.each(["lost receipt", "transport failed", "audit unavailable", "late stop"])(
+  it("keeps a local response redaction failure out of the completion audit", async () => {
+    const f = authFixture({ autoReview: true });
+    reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+    let body: unknown = { ok: true };
+    for (let depth = 0; depth < 70; depth++) body = { data: body };
+    f.fetch.mockResolvedValueOnce(Response.json(body));
+
+    await f.run();
+
+    expect(f.results[0]).toEqual({
+      status: 200,
+      body: { error: "redaction_error" },
+      truncated: false,
+    });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "lost receipt",
+    "transport failed",
+    "audit unavailable",
+    "late stop",
+    "stop while closing",
+  ])(
     "keeps authenticated tool completion tied to its acknowledged dispatch (%s)",
     async (scenario) => {
       const shutdown = new AbortController();
@@ -4973,14 +5028,24 @@ describe("authenticated request destination policy", () => {
       if (scenario === "transport failed") {
         f.fetch.mockRejectedValueOnce(new Error("Synthetic connection error"));
       }
-      if (scenario === "audit unavailable" || scenario === "late stop") {
+      const auditError = new Error("Audit unavailable");
+      if (scenario === "audit unavailable") {
+        f.prisma.auditEvent.createMany
+          .mockResolvedValueOnce({ count: 1 })
+          .mockRejectedValueOnce(auditError);
+      }
+      if (scenario === "late stop") {
         f.prisma.auditEvent.createMany.mockImplementationOnce(async () => {
-          if (scenario === "late stop") shutdown.abort();
+          shutdown.abort();
           return { count: 1 };
         });
-        if (scenario === "audit unavailable") {
-          f.prisma.auditEvent.createMany.mockRejectedValueOnce(new Error("Audit unavailable"));
-        }
+      }
+      if (scenario === "stop while closing") {
+        f.fetch.mockImplementationOnce(async (_url, init) => {
+          // The request aborts its own transport signal when it starts cleanup.
+          init?.signal?.addEventListener("abort", () => shutdown.abort(), { once: true });
+          return Response.json({ ok: true });
+        });
       }
 
       await f.run();
@@ -4993,14 +5058,27 @@ describe("authenticated request destination policy", () => {
         );
         return;
       }
-      expect(shutdown.signal.aborted).toBe(scenario === "late stop");
+      expect(shutdown.signal.aborted).toBe(
+        scenario === "late stop" || scenario === "stop while closing",
+      );
       expect(f.results[0]).toEqual({ status: 200, body: { ok: true }, truncated: false });
       expect(f.effects[0]!.status).toBe("completed");
+      if (scenario === "stop while closing") {
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
+          completion(f.effects[0]!.id, "success"),
+        );
+        return;
+      }
       expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
       expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
         2,
         completion(f.effects[0]!.id, "success"),
       );
+      if (scenario === "audit unavailable") {
+        await expect(f.prisma.auditEvent.createMany.mock.results[1]!.value).rejects.toBe(
+          auditError,
+        );
+      }
     },
   );
 
