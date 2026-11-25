@@ -48,13 +48,18 @@ it.each([
     await dev.listen();
     built = await preview(config);
     for (const server of [dev.httpServer!, built.httpServer]) {
-      const response = await fetch(`${origin(server)}/rpc/approvalRules/set`, {
-        method: "POST",
-        headers: test.chain ? { "x-forwarded-for": test.chain } : {},
-        body: "{}",
-      });
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ ip: test.expected, method: "POST" });
+      for (const [path, method] of [
+        ["/rpc/approvalRules/set", "POST"],
+        ["/rpc/approvalRules/set/?view=fixture", "PUT"],
+      ]) {
+        const response = await fetch(`${origin(server)}${path}`, {
+          method,
+          headers: test.chain ? { "x-forwarded-for": test.chain } : {},
+          body: "{}",
+        });
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ ip: test.expected, method });
+      }
       const lookups = resolve.mock.calls.length;
       const stopped = await fetch(`${origin(server)}/rpc/threads/stop`, {
         method: "POST",

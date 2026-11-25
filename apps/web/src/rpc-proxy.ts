@@ -16,11 +16,8 @@ export function createRpcProxy(api: string, resolveClientIp: ClientIpResolver): 
       const forwarded = request.headers["x-forwarded-for"];
       delete request.headers["x-forwarded-for"];
       // Other RPCs do not need address resolution before dispatch.
-      if (
-        request.method !== "POST" ||
-        !auditedApprovalPaths.has(request.url?.split("?", 1)[0] ?? "")
-      )
-        return;
+      const path = new URL(request.url ?? "/", "http://localhost").pathname.replace(/\/$/, "");
+      if (!auditedApprovalPaths.has(path)) return;
       const ip = await resolveClientIpForAudit(resolveClientIp, {
         peer: request.socket.remoteAddress,
         forwarded: Array.isArray(forwarded) ? forwarded.join(",") : forwarded,

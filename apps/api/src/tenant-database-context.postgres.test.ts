@@ -812,11 +812,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       input: unknown,
       peer?: string,
       forwarded?: string,
+      method = "POST",
     ) {
       const response = await handles.app.request(
         `/rpc/${procedure}`,
         {
-          method: "POST",
+          method,
           headers: {
             "content-type": "application/json",
             cookie,
@@ -850,7 +851,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
 
     await request("autoReview/set", { enabled: true }, "203.0.113.24", "192.0.2.21");
     await request("autoReview/set", { enabled: true }, "203.0.113.22");
-    await request("autoReview/set", { enabled: false }, "198.51.100.5", "198.51.100.30");
+    await request("autoReview/set/", { enabled: false }, "198.51.100.5", "198.51.100.30", "PUT");
     await request("autoReview/set", { enabled: true }, "198.51.100.5");
     const rows = await owner.prisma.auditEvent.findMany({
       where: { spaceId, actorId: userId },
