@@ -14,6 +14,7 @@ export {
   recordImportedModelCredentialAudit,
   recordMcpApprovalAudit,
   recordMcpToolPolicyAudit,
+  recordOpenApiCredentialAudit,
   recordPluginUninstallAudit,
   recordToolCompletionAudit,
 } from "./audit-events.js";

@@ -17,7 +17,12 @@ import type {
 } from "@rakazo/contracts";
 import { containsSecret } from "@rakazo/core";
 import type { CapabilityInstall as InstallRow, Prisma } from "@rakazo/db";
-import { runAsSystem, runAsSystemInTransaction, Prisma as Sql } from "@rakazo/db";
+import {
+  recordOpenApiCredentialAudit,
+  runAsSystem,
+  runAsSystemInTransaction,
+  Prisma as Sql,
+} from "@rakazo/db";
 import { z } from "zod";
 import type { RouterDeps } from "./router.js";
 
@@ -312,13 +317,21 @@ export function createOpenApiImportService(deps: Dependencies) {
     if (!row) return terminal(claims.expiresAt <= now() ? "expired" : "pending");
     if (!matches(row, claims)) return terminal("invalid");
     if (row.state === "installed") {
-      if (!row.install) return terminal("removed");
       if (
-        row.install.spaceId !== context.actor.spaceId ||
-        row.install.userId !== context.actor.userId ||
-        row.install.digest !== claims.planDigest
+        row.install &&
+        (row.install.spaceId !== context.actor.spaceId ||
+          row.install.userId !== context.actor.userId ||
+          row.install.digest !== claims.planDigest)
       )
         return terminal("stale");
+      if (row.pendingCredentialAuditAt)
+        await recordOpenApiCredentialAudit(
+          deps.prisma,
+          context.actor,
+          row.id,
+          row.pendingCredentialAuditAt,
+        );
+      if (!row.install) return terminal("removed");
       return { status: "installed", install: installView(row.install), replayed: true };
     }
     if (row.state === "stale" || row.state === "invalid") return terminal(row.state);
@@ -510,9 +523,9 @@ export function createOpenApiImportService(deps: Dependencies) {
               signal: context.signal ?? new AbortController().signal,
             })
           : undefined;
-        return await persistPreparedSecret(deps.prisma, deps.secrets, written, async () => {
+        const row = await persistPreparedSecret(deps.prisma, deps.secrets, written, async () => {
           await sessionAuthorized(context);
-          const row = await deps.prisma.$transaction(async (tx) => {
+          return deps.prisma.$transaction(async (tx) => {
             if ((await scope(context, tx)) !== claims.privateEndpointsAllowed)
               throw new ChangedReview();
             if (!(await live(context, claims, lease!, tx))) throw new LostLease();
@@ -553,6 +566,7 @@ export function createOpenApiImportService(deps: Dependencies) {
               data: {
                 state: "installed",
                 installId: install.id,
+                pendingCredentialAuditAt: written ? install.createdAt : null,
                 leaseOwner: null,
                 leaseExpiresAt: null,
               },
@@ -560,8 +574,10 @@ export function createOpenApiImportService(deps: Dependencies) {
             if (settled.count !== 1) throw new LostLease();
             return install;
           });
-          return { status: "installed", install: installView(row), replayed: false } as const;
         });
+        if (written)
+          await recordOpenApiCredentialAudit(deps.prisma, context.actor, row.id, row.createdAt);
+        return { status: "installed", install: installView(row), replayed: false };
       } catch (error) {
         const invalid = error instanceof CredentialInPublicPlan;
         const changed =

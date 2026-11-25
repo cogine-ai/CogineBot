@@ -18,8 +18,8 @@ import type {
   Space,
 } from "@rakazo/contracts";
 import { OpenApiImportConfirmationSchema, OpenApiImportPreviewSchema } from "@rakazo/contracts";
-import type { PrismaClient } from "@rakazo/db";
-import { createDb } from "@rakazo/db";
+import type { Prisma, PrismaClient } from "@rakazo/db";
+import { createDb, pruneAuditEvents } from "@rakazo/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { createApp } from "../../../apps/api/src/app.ts";
 import { parametersFor } from "../../adapters/src/pi-runtime.js";
@@ -229,7 +229,8 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
   const sourceRequests: string[] = [];
   const outbound: Array<{ url: string; method: string; headers: Headers; body?: BodyInit | null }> =
     [];
-  let transactionFailure: "start" | "rollback" | undefined;
+  let transactionFailure: "start" | "rollback" | "committed" | undefined;
+  let failNextAuditAppend = false;
 
   // Only the transaction boundary faults; every model/query uses real Prisma/PG.
   function faultablePrisma(prisma: PrismaClient): PrismaClient {
@@ -243,14 +244,35 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
           const failure = transactionFailure;
           transactionFailure = undefined;
           if (failure === "start") throw new Error("Synthetic transaction start failure");
-          if (failure === "rollback" && typeof args[0] === "function") {
-            const callback = args[0] as (tx: unknown) => Promise<unknown>;
-            args[0] = async (tx: unknown) => {
-              await callback(tx);
-              throw new Error("Synthetic transaction rollback");
+          if (typeof args[0] === "function" && (failure === "rollback" || failNextAuditAppend)) {
+            const callback = args[0] as (tx: Prisma.TransactionClient) => Promise<unknown>;
+            args[0] = async (tx: Prisma.TransactionClient) => {
+              const connection = failNextAuditAppend
+                ? new Proxy(tx, {
+                    get(target, key, receiver) {
+                      if (key !== "auditEvent" || !failNextAuditAppend)
+                        return Reflect.get(target, key, receiver);
+                      return new Proxy(target.auditEvent, {
+                        get(model, operation, modelReceiver) {
+                          if (operation !== "createMany")
+                            return Reflect.get(model, operation, modelReceiver);
+                          return async () => {
+                            failNextAuditAppend = false;
+                            throw new Error("Synthetic audit append failure");
+                          };
+                        },
+                      });
+                    },
+                  })
+                : tx;
+              const result = await callback(connection);
+              if (failure === "rollback") throw new Error("Synthetic transaction rollback");
+              return result;
             };
           }
-          return Reflect.apply(client.$transaction, client, args);
+          const result = await Reflect.apply(client.$transaction, client, args);
+          if (failure === "committed") throw new Error("Synthetic lost commit acknowledgement");
+          return result;
         };
       },
     });
@@ -366,7 +388,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     };
   }
 
-  function legacyCredentialAudits() {
+  function capabilityCredentialAudits() {
     return handles.prisma.auditEvent.findMany({
       where: { spaceId: space.id, targetType: "capability_install" },
     });
@@ -471,6 +493,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     secrets.beforePut = undefined;
     secrets.afterPut = undefined;
     transactionFailure = undefined;
+    failNextAuditAppend = false;
     sourceRequests.length = 0;
     outbound.length = 0;
     replies.clear();
@@ -494,6 +517,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     secrets.afterPut = undefined;
     secrets.failDelete = false;
     transactionFailure = undefined;
+    failNextAuditAppend = false;
     if (space) await handles.prisma.space.delete({ where: { id: space.id } });
   });
 
@@ -508,7 +532,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     const { organizationId } = await handles.prisma.space.findUniqueOrThrow({
       where: { id: space.id },
     });
-    const events = await legacyCredentialAudits();
+    const events = await capabilityCredentialAudits();
     expect(events).toHaveLength(2);
     expect(events).toEqual(
       expect.arrayContaining(
@@ -550,7 +574,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect(removes).toEqual([{ ok: true }, { ok: true }]);
     expect(await rpc("capabilities/remove", request)).toEqual({ ok: true });
     expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
-    const removals = (await legacyCredentialAudits()).filter(
+    const removals = (await capabilityCredentialAudits()).filter(
       (event) => event.action === "credential.deleted",
     );
     expect(removals).toEqual([
@@ -578,7 +602,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       if (order === "sequential") {
         await rpc("capabilities/remove", { id });
         expect(await counts()).toMatchObject({ installs: 1, secretRows: 1 });
-        expect((await legacyCredentialAudits()).map((event) => event.action)).toEqual([
+        expect((await capabilityCredentialAudits()).map((event) => event.action)).toEqual([
           "credential.created",
         ]);
         await rpc("capabilities/remove", { id: sibling.id });
@@ -589,7 +613,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
         ]);
       }
       expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
-      const removals = (await legacyCredentialAudits()).filter(
+      const removals = (await capabilityCredentialAudits()).filter(
         (event) => event.action === "credential.deleted",
       );
       expect(removals).toHaveLength(1);
@@ -612,7 +636,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     });
     await expect(rpc("capabilities/remove", { id })).resolves.toEqual({ ok: true });
     expect(await counts()).toMatchObject({ installs: 0, secretRows: 0 });
-    expect(await legacyCredentialAudits()).toEqual([]);
+    expect(await capabilityCredentialAudits()).toEqual([]);
   });
 
   it.each(["start", "rollback"] as const)(
@@ -625,7 +649,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       expect(response.status).toBe(500);
       expect(await counts()).toMatchObject({ installs: 0, secretRows: 0, puts: 1 });
       expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(false);
-      expect(await legacyCredentialAudits()).toEqual([]);
+      expect(await capabilityCredentialAudits()).toEqual([]);
     },
   );
 
@@ -638,7 +662,7 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect((await raw("capabilities/remove", { id })).status).toBe(500);
     expect(await counts()).toMatchObject({ installs: 1, secretRows: 1 });
     expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(true);
-    expect((await legacyCredentialAudits()).map((event) => event.action)).toEqual([
+    expect((await capabilityCredentialAudits()).map((event) => event.action)).toEqual([
       "credential.created",
     ]);
   });
@@ -1156,6 +1180,9 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     const request = await ready(input());
     const installed = await confirm(request);
     if (installed.status !== "installed") throw new Error("Expected an install");
+    expect(await capabilityCredentialAudits()).toEqual([
+      expect.objectContaining({ action: "credential.created", targetId: installed.install.id }),
+    ]);
     now += 16 * 60_000;
     expect(await receipt(request.reviewToken)).toMatchObject({
       status: "installed",
@@ -1177,6 +1204,129 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
     expect(await confirm(request)).toMatchObject({ status: "removed" });
     expect(sourceRequests).toHaveLength(2);
     expect(await counts()).toEqual({ installs: 0, secretRows: 0, receipts: 1, puts: 1 });
+  });
+
+  it("audits the committed OpenAPI credential when the database acknowledgement is lost", async () => {
+    const request = await ready(input());
+    secrets.afterPut = () => {
+      transactionFailure = "committed";
+    };
+    const start = Date.now();
+    const result = await confirm(request);
+    const end = Date.now();
+    expect(result).toMatchObject({ status: "installed", replayed: true });
+    if (result.status !== "installed") throw new Error("Expected an install");
+    const { id } = result.install;
+    const { createdAt } = await handles.prisma.capabilityInstall.findUniqueOrThrow({
+      where: { id },
+      select: { createdAt: true },
+    });
+    const { organizationId } = await handles.prisma.space.findUniqueOrThrow({
+      where: { id: space.id },
+    });
+    expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(true);
+    expect(await receipt(request.reviewToken)).toMatchObject({
+      status: "installed",
+      replayed: true,
+    });
+    expect(await confirm(request)).toMatchObject({ status: "installed", replayed: true });
+    const audits = await capabilityCredentialAudits();
+    expect(audits).toEqual([
+      expect.objectContaining({
+        targetId: id,
+        action: "credential.created",
+        organizationId,
+        spaceId: space.id,
+        actorType: "user",
+        actorId: actor.userId,
+        outcome: "success",
+        createdAt,
+        metadata: {},
+      }),
+    ]);
+    expect(audits[0]!.createdAt.getTime()).toBeGreaterThanOrEqual(start);
+    expect(audits[0]!.createdAt.getTime()).toBeLessThanOrEqual(end);
+    expect(await counts()).toEqual({ installs: 1, secretRows: 1, receipts: 1, puts: 1 });
+    expect(sourceRequests).toHaveLength(2);
+  });
+
+  it.each(["installed", "removed"] as const)(
+    "replays a pending OpenAPI credential audit once from a %s receipt",
+    async (status) => {
+      const request = await ready(input());
+      failNextAuditAppend = true;
+      const installed = await confirm(request);
+      if (installed.status !== "installed") throw new Error("Expected an install");
+      expect(failNextAuditAppend).toBe(false);
+      expect(await capabilityCredentialAudits()).toEqual([]);
+      const { id } = installed.install;
+      const pending = await handles.prisma.openApiImportReceipt.findUniqueOrThrow({
+        where: { id },
+      });
+      expect(pending.pendingCredentialAuditAt).toBeInstanceOf(Date);
+      await expect(
+        rpc(
+          "capabilities/openApiReceipt",
+          { reviewToken: request.reviewToken },
+          { cookie: otherCookie, spaceId: otherActor.spaceId },
+        ),
+      ).resolves.toMatchObject({ status: "invalid" });
+      expect(await capabilityCredentialAudits()).toEqual([]);
+      expect(await handles.prisma.openApiImportReceipt.findUnique({ where: { id } })).toEqual(
+        pending,
+      );
+      if (status === "removed") await rpc("capabilities/remove", { id });
+      now += 16 * 60_000;
+      const recovered = await Promise.all([
+        receipt(request.reviewToken),
+        receipt(request.reviewToken),
+        confirm(request),
+      ]);
+      expect(recovered.map((result) => result.status)).toEqual([status, status, status]);
+      expect(
+        (await capabilityCredentialAudits()).filter(
+          (event) => event.action === "credential.created",
+        ),
+      ).toEqual([
+        expect.objectContaining({ targetId: id, createdAt: pending.pendingCredentialAuditAt }),
+      ]);
+      expect(await handles.prisma.openApiImportReceipt.findUnique({ where: { id } })).toMatchObject(
+        {
+          pendingCredentialAuditAt: null,
+          ...(status === "installed" ? { updatedAt: pending.updatedAt } : {}),
+        },
+      );
+      expect(sourceRequests).toHaveLength(2);
+      expect(secrets.puts).toHaveLength(1);
+    },
+  );
+
+  it("does not audit an OpenAPI install without a credential", async () => {
+    const { credential: _, ...request } = input();
+    const confirmed = await ready({ ...request, config: { auth: { type: "none" } } });
+    expect(await confirm(confirmed)).toMatchObject({ status: "installed" });
+    expect(await confirm(confirmed)).toMatchObject({ status: "installed", replayed: true });
+    expect(await counts()).toEqual({ installs: 1, secretRows: 0, receipts: 1, puts: 0 });
+    expect(await capabilityCredentialAudits()).toEqual([]);
+  });
+
+  it("prunes an expired OpenAPI audit marker without changing the receipt or restoring the event", async () => {
+    const request = await ready(input());
+    failNextAuditAppend = true;
+    const result = await confirm(request);
+    if (result.status !== "installed") throw new Error("Expected an install");
+    const where = { id: result.install.id };
+    await handles.prisma.openApiImportReceipt.update({
+      where,
+      data: { pendingCredentialAuditAt: new Date("2000-01-01T00:00:00Z") },
+    });
+    expect(await receipt(request.reviewToken)).toMatchObject({ status: "installed" });
+    expect(await capabilityCredentialAudits()).toEqual([]);
+    await pruneAuditEvents(handles.prisma, 365, new Date());
+    expect(await handles.prisma.openApiImportReceipt.findUnique({ where })).toMatchObject({
+      pendingCredentialAuditAt: null,
+      installId: result.install.id,
+    });
   });
 
   it("shares a single pending identity between simultaneous confirms and recovers the winner", async () => {
@@ -1426,6 +1576,10 @@ describe.skipIf(!enabled).sequential("OpenAPI review through the real API and Po
       secrets.afterPut = undefined;
       expect(secrets.puts).toHaveLength(1);
       expect(await counts()).toMatchObject({ installs: 0, secretRows: 0, receipts: 1 });
+      expect(await capabilityCredentialAudits()).toEqual([]);
+      expect(
+        await handles.prisma.openApiImportReceipt.findFirst({ where: { spaceId: space.id } }),
+      ).toMatchObject({ pendingCredentialAuditAt: null });
       expect(secrets.deleted).toContain(secrets.puts[0]!.ciphertext);
       if (failure !== "cleanup")
         expect(secrets.values.has(secrets.puts[0]!.ciphertext)).toBe(false);
