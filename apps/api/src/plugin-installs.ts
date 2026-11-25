@@ -20,6 +20,7 @@ import type { PluginCredentialCleanupEntry, Prisma } from "@rakazo/db";
 import {
   lockPluginInstall,
   readPluginCleanupRefs,
+  recordCredentialAudit,
   runAsSystemInTransaction,
   Prisma as Sql,
 } from "@rakazo/db";
@@ -451,10 +452,12 @@ export function createPluginInstallsService(deps: Deps) {
       // Cover every exit, including a cascade after failure handling read the parent.
       // Committed children retain their refs through the existing adoption checks.
       return persistPreparedSecret(deps.prisma, deps.secrets, written, async () => {
+        let credentialCreation: { ids: string[]; installedAt: Date } | undefined;
+        let receipt: PluginInstallReceipt;
         try {
           const servers = await prepare(context, claimed.row.id, plugin, written);
           await authorized(context);
-          return await deps.prisma.$transaction(async (tx) => {
+          receipt = await deps.prisma.$transaction(async (tx) => {
             await lockScope(tx, context);
             await lockPluginInstall(tx, claimed.row.id);
             const row = await readInstalling(tx, context, claimed.row.id);
@@ -473,6 +476,7 @@ export function createPluginInstallsService(deps: Deps) {
               skills.push({ id: created.id, name: created.name });
             }
             const mcpServers = [];
+            const credentialServerIds: string[] = [];
             for (const { server, stored, index } of servers) {
               if (stored)
                 await tx.secret.create({
@@ -509,6 +513,7 @@ export function createPluginInstallsService(deps: Deps) {
                   env: {},
                 },
               });
+              if (stored) credentialServerIds.push(created.id);
               mcpServers.push({
                 id: created.id,
                 name: created.name,
@@ -517,12 +522,13 @@ export function createPluginInstallsService(deps: Deps) {
               });
             }
             context.signal?.throwIfAborted();
-            return pluginInstallReceipt(
+            const installedAt = new Date();
+            const installed = pluginInstallReceipt(
               await tx.capabilityInstall.update({
                 where: { id: row.id },
                 data: {
                   status: "installed",
-                  installedAt: new Date(),
+                  installedAt,
                   cleanupRefs: [],
                   revision: { increment: 1 },
                   config: { ...publicConfig(plugin), installedChildren: { skills, mcpServers } },
@@ -530,11 +536,27 @@ export function createPluginInstallsService(deps: Deps) {
                 include: includeChildren,
               }),
             );
+            credentialCreation = { ids: credentialServerIds, installedAt };
+            return installed;
           });
         } catch {
           // Read the durable outcome before compensating an uncertain transaction acknowledgement.
-          return fail(context, claimed.row.id);
+          receipt = await fail(context, claimed.row.id);
         }
+        // A recovered receipt proves this install committed even if the response was lost.
+        if (
+          credentialCreation &&
+          receipt.installedAt === credentialCreation.installedAt.toISOString()
+        ) {
+          await recordCredentialAudit(
+            deps.prisma,
+            context.actor,
+            { type: "mcp_server", ids: credentialCreation.ids },
+            "credential.created",
+            credentialCreation.installedAt,
+          );
+        }
+        return receipt;
       });
     },
   };

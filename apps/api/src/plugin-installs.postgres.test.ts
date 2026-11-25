@@ -159,6 +159,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   const held: Barrier[] = [];
   let registrySource: string | undefined;
   let loseUpdateCommitAck = false;
+  let loseInstallCommitAck = false;
+  let failCredentialAudit = false;
   const read = vi.fn<PluginRead>(async (url, maxBytes, signal) => {
     const paused = pauseRead;
     pauseRead = undefined;
@@ -259,6 +261,18 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
               let children = 0;
               const wrapped = new Proxy(tx, {
                 get(target, key, txReceiver) {
+                  if (key === "auditEvent" && failCredentialAudit) {
+                    return new Proxy(target.auditEvent, {
+                      get(model, operation, modelReceiver) {
+                        if (operation !== "createMany")
+                          return Reflect.get(model, operation, modelReceiver);
+                        return () => {
+                          failCredentialAudit = false;
+                          throw new Error("Synthetic audit write outage");
+                        };
+                      },
+                    });
+                  }
                   if (key !== "mcpServer") return Reflect.get(target, key, txReceiver);
                   return new Proxy(target.mcpServer, {
                     get(model, operation, modelReceiver) {
@@ -296,6 +310,16 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
               if (loseUpdateCommitAck && value && typeof value === "object" && "server" in value) {
                 loseUpdateCommitAck = false;
                 throw new Error("Synthetic committed connection acknowledgement lost");
+              }
+              if (
+                loseInstallCommitAck &&
+                value &&
+                typeof value === "object" &&
+                "status" in value &&
+                value.status === "installed"
+              ) {
+                loseInstallCommitAck = false;
+                throw new Error("Synthetic committed installation acknowledgement lost");
               }
               return value;
             },
@@ -358,7 +382,10 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     organizations.push(space.organizationId);
     return { cookie, actor };
   }
-  function fixture(options: { servers?: number; skillName?: string } = {}): Fixture {
+  function fixture(
+    options: { servers?: number; authenticatedServers?: number; skillName?: string } = {},
+  ): Fixture {
+    const { servers = 0, authenticatedServers = servers } = options;
     const suffix = randomUUID();
     const repository = `example/plugin-${suffix}`;
     const skillName = options.skillName ?? `fixture-${suffix}`;
@@ -377,17 +404,19 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       ],
       ["skills/example/SKILL.md", skill],
     ]);
-    if (options.servers) {
+    if (servers) {
       files.set(
         ".mcp.json",
         JSON.stringify({
           mcpServers: Object.fromEntries(
-            Array.from({ length: options.servers }, (_, index) => [
+            Array.from({ length: servers }, (_, index) => [
               `server-${index}`,
               {
                 type: index === 0 ? "http" : "sse",
                 url: `https://tools.example.test/${suffix}/mcp-${index}`,
-                headers: { Authorization: `Bearer ${credential}`, "X-Tenant": "fixture-routing" },
+                ...(index < authenticatedServers && {
+                  headers: { Authorization: `Bearer ${credential}`, "X-Tenant": "fixture-routing" },
+                }),
               },
             ]),
           ),
@@ -415,6 +444,15 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
   });
   const install = (actor: Account, input: PluginInstallInput) =>
     call<PluginInstallReceipt>(actor, "plugins/install", input);
+  const credentialAudits = (account: Account) =>
+    database.prisma.auditEvent.findMany({
+      where: {
+        actorId: account.actor.userId,
+        targetType: "mcp_server",
+        action: "credential.created",
+      },
+      orderBy: { targetId: "asc" },
+    });
   const listOwned = async (actor: Account, spaceId?: string) =>
     (await call<PluginInstallListing>(actor, "plugins/list", {}, { spaceId })).owned;
   const uninstall = (actor: Account, receipt: PluginInstallReceipt) =>
@@ -501,6 +539,8 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     pauseFailureRead = undefined;
     pauseUninstallCommit = undefined;
     loseUpdateCommitAck = false;
+    loseInstallCommitAck = false;
+    failCredentialAudit = false;
     oauthOutbound = undefined;
     expect(outbound).not.toHaveBeenCalled();
   });
@@ -1209,6 +1249,25 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         headers: { Authorization: `Bearer ${f.credential}` },
       });
     }
+    const { organizationId } = await database.prisma.space.findUniqueOrThrow({
+      where: { id: actor.actor.spaceId },
+      select: { organizationId: true },
+    });
+    expect(await credentialAudits(actor)).toMatchObject(
+      servers
+        .map(({ id }) => id)
+        .sort()
+        .map((id) => ({
+          targetId: id,
+          actorType: "user",
+          actorId: actor.actor.userId,
+          spaceId: actor.actor.spaceId,
+          organizationId,
+          createdAt: row.installedAt,
+          outcome: "success",
+          metadata: {},
+        })),
+    );
     expect(
       await database.prisma.connection.count({
         where: { userId: actor.actor.userId, spaceId: actor.actor.spaceId },
@@ -1219,6 +1278,48 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
         .status,
     ).toBe(400);
     expect((await request(actor, "agentSkills/remove", { skillId: saved.id })).status).toBe(400);
+  });
+
+  it("audits only adopted credentials when recovering a committed installation receipt", async () => {
+    const actor = await account();
+    const input = intent(await preview(actor, fixture({ servers: 3, authenticatedServers: 2 })));
+    loseInstallCommitAck = true;
+    const receipt = await install(actor, input);
+    expect(loseInstallCommitAck).toBe(false);
+    expect(receipt.status).toBe("installed");
+    expect(receipt.mcpServers).toHaveLength(3);
+    const servers = await database.prisma.mcpServer.findMany({
+      where: { installId: receipt.id, secretId: { not: null } },
+      orderBy: { id: "asc" },
+    });
+    expect(servers).toHaveLength(2);
+    expect(await credentialAudits(actor)).toMatchObject(
+      servers.map(({ id }) => ({ targetId: id })),
+    );
+    expect(await install(actor, input)).toEqual(receipt);
+    expect(await credentialAudits(actor)).toHaveLength(2);
+  });
+
+  it("keeps the installed credential when the audit write fails", async () => {
+    const actor = await account();
+    const input = intent(await preview(actor, fixture({ servers: 1 })));
+    failCredentialAudit = true;
+    const receipt = await install(actor, input);
+    expect(failCredentialAudit).toBe(false);
+    expect(receipt.status).toBe("installed");
+    expect(
+      await database.prisma.mcpServer.findUnique({
+        where: { id: receipt.mcpServers[0]!.id },
+        include: { secret: true },
+      }),
+    ).toMatchObject({
+      secret: { kind: "mcp" },
+    });
+    expect(await credentialAudits(actor)).toEqual([]);
+    const puts = secrets.puts;
+    expect(await install(actor, input)).toEqual(receipt);
+    expect(secrets.puts).toBe(puts);
+    expect(await credentialAudits(actor)).toEqual([]);
   });
 
   it("rejects a changed digest or conflicting pin without creating a receipt or credential", async () => {
@@ -1328,6 +1429,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
       expect(read.mock.calls).toHaveLength(reads);
       expect((await listOwned(actor))[0]).toEqual(duplicate);
       await noChildren(duplicate.id);
+      expect(await credentialAudits(actor)).toEqual([]);
       expect(secrets.puts).toBe(puts + 1);
     } finally {
       paused.release();
@@ -1343,6 +1445,9 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     ).toBe(1);
     expect(await database.prisma.agentSkill.count({ where: { installId: installed.id } })).toBe(1);
     expect(await database.prisma.mcpServer.count({ where: { installId: installed.id } })).toBe(1);
+    expect(await credentialAudits(actor)).toMatchObject([
+      { targetId: installed.mcpServers[0]!.id },
+    ]);
   });
 
   it("stores configuration-compatible MCP slugs for dotted and maximum-length plugin names", async () => {
@@ -1645,6 +1750,7 @@ postgres("GitHub plugin installation through authenticated application HTTP", ()
     expect(failed).toMatchObject({ status: "failed", installedAt: null });
     await noChildren(failed.id);
     expect(await database.prisma.secret.count({ where: { userId: actor.actor.userId } })).toBe(0);
+    expect(await credentialAudits(actor)).toEqual([]);
     expect(new Set(secrets.records.keys())).toEqual(records);
     const reads = read.mock.calls.length;
     const puts = secrets.puts;
