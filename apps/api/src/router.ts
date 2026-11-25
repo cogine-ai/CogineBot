@@ -6152,6 +6152,15 @@ export function createRouter(deps: RouterDeps) {
                 });
               }),
           );
+          if (stored && row.secretId === stored.id) {
+            await recordCredentialAudit(
+              deps.prisma,
+              context.actor,
+              { type: "mcp_server", ids: [row.id] },
+              "credential.created",
+              row.createdAt,
+            );
+          }
           return mcpServerDto(
             row,
             await mcpOAuth.statusFor(row, context.actor),

@@ -228,6 +228,17 @@ describe("deployment-managed MCP stdio registration", () => {
       files,
       oauthClient,
     });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          action: "credential.created",
+          targetType: "mcp_server",
+          targetId: saved.id,
+          metadata: {},
+        }),
+      ],
+    });
   });
 
   it("keeps a declaration on metadata edits and discards its grant when the client rotates", async () => {

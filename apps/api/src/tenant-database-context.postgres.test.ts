@@ -102,6 +102,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let rejectMcpApprovalFor: string | undefined;
   let rejectMcpToolPolicyFor: string | undefined;
   let rejectMcpCredentialRemovalFor: string | undefined;
+  let rejectMcpCredentialCreationFor: string | undefined;
   let rejectMcpEndpointMoveFor: string | undefined;
   let botReads = 0;
 
@@ -146,6 +147,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     const instrumented = runtime.prisma.$extends({
       query: {
         mcpServer: {
+          async create({ args, query }) {
+            const row = await query(args);
+            if (row.slug === rejectMcpCredentialCreationFor)
+              throw new Error("Synthetic MCP server creation rollback");
+            return row;
+          },
           async update({ args, query }) {
             const row = await query(args);
             if (row.id === rejectMcpEndpointMoveFor)
@@ -794,6 +801,74 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         allowedTools: ["read"],
       });
     }
+  });
+
+  it("audits local credential creation only after the MCP server and material commit", async () => {
+    const { actor, cookie } = await account("Mcp-create-audit");
+    const { spaceId, userId } = actor;
+    const procedure = "mcp/servers/create";
+    const input = {
+      slug: "fixture-mcp-secured",
+      name: "MCP creation fixture",
+      transport: "streamable_http",
+      endpoint: "https://mcp.example.test/tools?mode=synthetic",
+      headers: { Authorization: "Bearer fixture-header" },
+    };
+    const audit = () => owner.prisma.auditEvent.findMany({ where: { spaceId, actorId: userId } });
+    const materialCount = () =>
+      owner.prisma.secret.count({ where: { spaceId, userId, kind: "mcp" } });
+    const { headers: _headers, ...publicServer } = input;
+    const plain = await rpc<McpServer>(cookie, procedure, {
+      ...publicServer,
+      slug: "fixture-mcp-plain",
+    });
+    expect(plain.hasSecret).toBe(false);
+    expect((await raw(second.cookie, procedure, input, spaceId)).status).toBe(403);
+    rejectMcpCredentialCreationFor = input.slug;
+    try {
+      expect((await raw(cookie, procedure, input)).status).toBe(500);
+    } finally {
+      rejectMcpCredentialCreationFor = undefined;
+    }
+    expect(await owner.prisma.mcpServer.count({ where: { spaceId, userId } })).toBe(1);
+    expect(await materialCount()).toBe(0);
+    expect(await audit()).toEqual([]);
+
+    const created = await rpc<McpServer>(cookie, procedure, input);
+    expect(created.hasSecret).toBe(true);
+    const server = await owner.prisma.mcpServer.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { secret: true },
+    });
+    const secret = server.secret!;
+    expect(secret).toMatchObject({ userId, spaceId, kind: "mcp" });
+    expect(JSON.parse(await store.load(secret.ciphertext, secret.id))).toEqual({
+      env: {},
+      headers: input.headers,
+    });
+    expect((await raw(cookie, procedure, input)).ok).toBe(false);
+    expect(await materialCount()).toBe(1);
+
+    const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    expect(await audit()).toEqual([
+      {
+        id: expect.any(String),
+        createdAt: server.createdAt,
+        organizationId,
+        spaceId,
+        actorType: "user",
+        actorId: userId,
+        action: "credential.created",
+        targetType: "mcp_server",
+        targetId: server.id,
+        outcome: "success",
+        runId: null,
+        threadId: null,
+        metadata: {},
+      },
+    ]);
   });
 
   it("audits local credential deletion only after the MCP server removal commits", async () => {
