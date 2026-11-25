@@ -6152,7 +6152,7 @@ export function createRouter(deps: RouterDeps) {
                 });
               }),
           );
-          if (stored && row.secretId === stored.id) {
+          if (stored) {
             await recordCredentialAudit(
               deps.prisma,
               context.actor,
