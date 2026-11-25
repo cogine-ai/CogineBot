@@ -13,6 +13,7 @@ export {
   recordCredentialAudit,
   recordImportedModelCredentialAudit,
   recordMcpApprovalAudit,
+  recordMcpToolPolicyAudit,
 } from "./audit-events.js";
 export * from "./billing.js";
 export * from "./board.js";

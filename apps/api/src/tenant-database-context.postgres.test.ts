@@ -11,7 +11,7 @@ import {
   InMemoryRealtimeFanout,
   MessagingTeamChatEmulator,
 } from "@rakazo/adapters";
-import type { Actor, VoiceCredential } from "@rakazo/contracts";
+import type { Actor, McpServer, VoiceCredential } from "@rakazo/contracts";
 import { SCREEN_TARGET_ENDPOINT } from "@rakazo/core/node/screen-capability";
 import {
   boardEventTopic,
@@ -100,6 +100,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let retryVoiceCreateFor: string | undefined;
   let retryMemorySaveFor: string | undefined;
   let rejectMcpApprovalFor: string | undefined;
+  let rejectMcpToolPolicyFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -148,6 +149,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
             if (row.id === rejectMcpApprovalFor && args.data.allowAllTools === true)
               throw new Error("Synthetic MCP approval rollback");
             return row;
+          },
+          async updateMany({ args, query }) {
+            const updated = await query(args);
+            if (rejectMcpToolPolicyFor && args.where?.id === rejectMcpToolPolicyFor)
+              throw new Error("Synthetic MCP tool policy rollback");
+            return updated;
           },
         },
         spaceMemoryConfig: {
@@ -772,6 +779,101 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         allowedTools: ["read"],
       });
     }
+  });
+
+  it("audits only committed changes to the shared MCP tool policy", async () => {
+    const { actor, cookie } = await account("Mcp-policy-audit");
+    const { spaceId, userId } = actor;
+    const server = await owner.prisma.mcpServer.create({
+      data: {
+        spaceId,
+        userId,
+        slug: "fixture-shared-policy",
+        name: "Shared policy fixture",
+        transport: "streamable_http",
+        endpoint: "https://mcp.example.test/tools",
+        allowedTools: ["fixture-read", "fixture-read", 1],
+      },
+    });
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetId: server.id },
+        select: {
+          actorType: true,
+          actorId: true,
+          spaceId: true,
+          organizationId: true,
+          action: true,
+          targetType: true,
+          outcome: true,
+          metadata: true,
+        },
+      });
+    const input = {
+      id: server.id,
+      revision: server.revision,
+      allowAllTools: false,
+      allowedTools: ["fixture-read", "fixture-write"],
+    };
+    const save = (patch: Partial<typeof input> & { verbatimResults?: boolean } = {}) =>
+      rpc<McpServer>(cookie, "mcp/servers/setTools", { ...input, ...patch });
+    expect((await raw(second.cookie, "mcp/servers/setTools", input, spaceId)).status).toBe(403);
+    rejectMcpToolPolicyFor = server.id;
+    try {
+      expect((await raw(cookie, "mcp/servers/setTools", input)).status).toBe(500);
+    } finally {
+      rejectMcpToolPolicyFor = undefined;
+    }
+    expect(await owner.prisma.mcpServer.findUnique({ where: { id: server.id } })).toEqual(server);
+    expect(await audit()).toEqual([]);
+
+    const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    const event = (allowAllTools: boolean, allowlistCount: number | null) => ({
+      actorType: "user",
+      actorId: userId,
+      spaceId,
+      organizationId,
+      action: "approval.policy.changed",
+      targetType: "mcp_server",
+      outcome: "success",
+      metadata: { allowAllTools, allowlistCount },
+    });
+    const equivalent = await save({ allowedTools: ["fixture-read"] });
+    expect(await audit()).toEqual([]);
+    const saved = await save({ revision: equivalent.revision });
+    expect(saved.allowedTools).toEqual(input.allowedTools);
+    expect(await audit()).toEqual([event(false, 2)]);
+    expect(
+      (await raw(cookie, "mcp/servers/setTools", { ...input, allowAllTools: true })).status,
+    ).toBe(409);
+    const reordered = await save({
+      revision: saved.revision,
+      allowedTools: ["fixture-write", "fixture-read", "fixture-write"],
+      verbatimResults: true,
+    });
+    expect(reordered).toMatchObject({
+      allowedTools: ["fixture-write", "fixture-read"],
+      verbatimResults: true,
+    });
+    expect(await audit()).toEqual([event(false, 2)]);
+
+    const swapped = await save({
+      revision: reordered.revision,
+      allowedTools: ["fixture-read", "fixture-search"],
+    });
+    expect(await audit()).toEqual([event(false, 2), event(false, 2)]);
+    const unrestricted = await save({ revision: swapped.revision, allowAllTools: true });
+    const inert = await save({
+      revision: unrestricted.revision,
+      allowAllTools: true,
+      allowedTools: [],
+    });
+    await save({ revision: inert.revision, allowedTools: [] });
+    const receipts = await audit();
+    expect(receipts).toHaveLength(4);
+    expect(receipts).toEqual(expect.arrayContaining([event(true, null), event(false, 0)]));
   });
 
   it("audits only committed memory provider credential changes for the Space", async () => {
