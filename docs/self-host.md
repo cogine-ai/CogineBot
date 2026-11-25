@@ -263,6 +263,9 @@ to loopback and direct public traffic through the TLS proxy. The proxy must repl
 `X-Forwarded-For` with the visitor's address, as in the direct TLS example above. For direct local
 connections, leave `WEB_TRUSTED_PROXIES` empty.
 
+The web proxy uses this same setting to resolve visitor addresses for approval audit events.
+With no trusted host proxy configured, the audit records the directly observed connection address.
+
 Apply the [bundled Caddy privacy headers and URI/Referer log filter](../infra/compose/Caddyfile.prod)
 at the host proxy too. The outer proxy can log a link or generate its own response when the web
 container is unavailable.

@@ -60,6 +60,7 @@
 	handle /rpc/* {
 		reverse_proxy api:3100 {
 			import deploy_retry
+			header_up X-Forwarded-For {remote_host}
 		}
 	}
 

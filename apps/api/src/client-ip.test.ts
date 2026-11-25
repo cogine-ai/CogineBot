@@ -1,6 +1,11 @@
+import * as dns from "node:dns/promises";
 import { createClientIpResolver, parseTrustedProxies } from "@rakazo/core/node/trusted-proxy";
+import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
+import { createAuditRequestIpReader } from "./client-ip.js";
 import { throttleKey, windowCounter } from "./window-counter.js";
+
+vi.mock("node:dns/promises", { spy: true });
 
 describe("shared Page rate limits", () => {
   it("only consults the chain behind an allowed socket peer", async () => {
@@ -69,5 +74,67 @@ describe("shared Page rate limits", () => {
     expect(count(throttleKey("10.0.0.1"))).toBe(2);
     clock += 60_000;
     expect(count(throttleKey("10.0.0.1"))).toBe(1);
+  });
+});
+
+describe("audit request address", () => {
+  const request = (trustedProxies: string[], forwarded?: string) => {
+    const app = new Hono();
+    const bindIp = createAuditRequestIpReader(trustedProxies);
+    const socket = { remoteAddress: "198.51.100.22" };
+    app.get("/", async (c) => {
+      const readIp = bindIp(c);
+      // The connected peer can disappear before the committed operation is audited.
+      socket.remoteAddress = "";
+      return c.json({ ip: (await readIp()) ?? null });
+    });
+    return app.request(
+      "/",
+      { headers: forwarded ? { "x-forwarded-for": forwarded } : {} },
+      { incoming: { socket } },
+    );
+  };
+
+  it("omits the address when the proxy configuration is invalid", async () => {
+    const response = await request(["invalid proxy!"]);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ip: null });
+  });
+
+  it("retains the original peer while collecting the address after commit", async () => {
+    const response = await request([]);
+    await expect(response.json()).resolves.toEqual({ ip: "198.51.100.22" });
+  });
+
+  it.each([undefined, "invalid", "198.51.100.22"])(
+    "cannot attribute a client behind a trusted socket with forwarding %s",
+    async (forwarded) => {
+      const response = await request(["198.51.100.22"], forwarded);
+      await expect(response.json()).resolves.toEqual({ ip: null });
+    },
+  );
+
+  it("omits the address when the trusted hostname cannot be established", async () => {
+    const lookup = vi.mocked(dns.lookup).mockRejectedValueOnce(new Error("Synthetic DNS failure"));
+    try {
+      const response = await request(["proxy.example.test"], "203.0.113.19");
+      await expect(response.json()).resolves.toEqual({ ip: null });
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it("does not wait for a stalled named-proxy lookup", async () => {
+    vi.useFakeTimers();
+    const lookup = vi.mocked(dns.lookup).mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const response = request(["proxy.example.test"], "203.0.113.19");
+      await vi.advanceTimersByTimeAsync(250);
+      expect(lookup).toHaveBeenCalledWith("proxy.example.test", { all: true });
+      await expect((await response).json()).resolves.toEqual({ ip: null });
+    } finally {
+      lookup.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

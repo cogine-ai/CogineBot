@@ -157,6 +157,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
             actorType: "bot",
             actorId: run.botId,
             actorLabel: null,
+            requestIp: null,
             action: "tool.completed",
             targetType: "tool_execution",
             targetId: executionId,
@@ -649,6 +650,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
             actorType: true,
             actorId: true,
             actorLabel: true,
+            requestIp: true,
             action: true,
             outcome: true,
             targetId: true,
@@ -660,6 +662,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           actorType: "system",
           actorId: "connection_reconciler",
           actorLabel: "Connection reconciler",
+          requestIp: null,
           action: "connection.connected",
           outcome: "success",
           targetId: winner.id,
@@ -1284,6 +1287,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       ),
       "utf8",
     );
+    const addRequestIp = await readFile(
+      new URL(
+        "../../../packages/db/prisma/migrations/20261126064000_audit_request_ip/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
     const prisma = runtime!.prisma;
     await owner.pool.query("ALTER SCHEMA cogine_audit RENAME TO previous_audit_fixture");
     try {
@@ -1305,6 +1315,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       await owner.pool.query(addContext);
       await owner.pool.query(addLabels);
+      await owner.pool.query(addRequestIp);
       await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
         connectionEnforced: true,
       });
@@ -1317,6 +1328,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         threadId: null,
         actorLabel: null,
         targetLabel: null,
+        requestIp: null,
       });
     } finally {
       await owner.pool.query("DROP TABLE IF EXISTS cogine_audit.audit_events");

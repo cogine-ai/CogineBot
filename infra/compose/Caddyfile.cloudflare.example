@@ -78,6 +78,7 @@ http://{$RAKAZO_HOST:app.example.com} {
 	handle /rpc/* {
 		reverse_proxy api:3100 {
 			import deploy_retry
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
 		}
 	}
 

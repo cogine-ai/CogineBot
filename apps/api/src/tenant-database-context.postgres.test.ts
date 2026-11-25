@@ -238,6 +238,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
       wakeupDriver: "memory",
       signupsEnabled: "true",
       ticketBoardEnabled: true,
+      trustedProxies: ["198.51.100.5"],
       secretStore: store,
       remoteConnectors: {
         resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
@@ -803,6 +804,99 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     }
   });
 
+  it("audits approval settings with only the original request's resolved address", async () => {
+    const { actor, cookie } = await account("Approval-IP-audit");
+    const { spaceId, userId } = actor;
+    async function request<T>(
+      procedure: string,
+      input: unknown,
+      peer?: string,
+      forwarded?: string,
+      method = "POST",
+    ) {
+      const response = await handles.app.request(
+        `/rpc/${procedure}`,
+        {
+          method,
+          headers: {
+            "content-type": "application/json",
+            cookie,
+            origin,
+            "x-real-ip": "192.0.2.20",
+            ...(forwarded ? { "x-forwarded-for": forwarded } : {}),
+          },
+          body: JSON.stringify({ json: input }),
+        },
+        peer ? { incoming: { socket: { remoteAddress: peer } } } : undefined,
+      );
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { json: T }).json;
+    }
+
+    const rule = {
+      effect: "always_allow",
+      matchKind: "tool",
+      matchValue: "web_fetch",
+      requestIp: "192.0.2.25",
+    };
+    const created = await request<{ id: string }>(
+      "approvalRules/set",
+      rule,
+      "198.51.100.5",
+      "192.0.2.21, [2001:db8::12]:3000",
+    );
+    expect(await request("approvalRules/set", rule, "203.0.113.22")).toMatchObject(created);
+    await request("approvalRules/remove", { id: created.id }, undefined, "192.0.2.21");
+    await request("approvalRules/remove", { id: created.id }, "203.0.113.24");
+
+    await request("autoReview/set", { enabled: true }, "203.0.113.24", "192.0.2.21");
+    await request("autoReview/set", { enabled: true }, "203.0.113.22");
+    await request("autoReview/set/", { enabled: false }, "198.51.100.5", "198.51.100.30", "PUT");
+    await request("autoReview/set", { enabled: true }, "198.51.100.5");
+    const rows = await owner.prisma.auditEvent.findMany({
+      where: { spaceId, actorId: userId },
+      select: { action: true, targetId: true, requestIp: true, metadata: true },
+    });
+    const preference = await owner.prisma.actionAutoReviewPreference.findUniqueOrThrow({
+      where: { spaceId_userId: { spaceId, userId } },
+    });
+    expect(rows).toHaveLength(5);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        {
+          action: "approval.rule.created",
+          targetId: created.id,
+          requestIp: "2001:db8::12",
+          metadata: { effect: "always_allow", matchKind: "tool" },
+        },
+        {
+          action: "approval.rule.deleted",
+          targetId: created.id,
+          requestIp: null,
+          metadata: { effect: "always_allow", matchKind: "tool" },
+        },
+        {
+          action: "approval.policy.changed",
+          targetId: preference.id,
+          requestIp: "203.0.113.24",
+          metadata: { enabled: true },
+        },
+        {
+          action: "approval.policy.changed",
+          targetId: preference.id,
+          requestIp: "198.51.100.30",
+          metadata: { enabled: false },
+        },
+        {
+          action: "approval.policy.changed",
+          targetId: preference.id,
+          requestIp: null,
+          metadata: { enabled: true },
+        },
+      ]),
+    );
+  });
+
   it("audits local credential creation only after the MCP server and material commit", async () => {
     const { actor, cookie } = await account("Mcp-create-audit");
     const { spaceId, userId } = actor;
@@ -861,6 +955,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         actorType: "user",
         actorId: userId,
         actorLabel: null,
+        requestIp: null,
         action: "credential.created",
         targetType: "mcp_server",
         targetId: server.id,
