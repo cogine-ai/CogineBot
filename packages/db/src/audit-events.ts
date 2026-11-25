@@ -236,6 +236,28 @@ export function recordImportedModelCredentialAudit(
   });
 }
 
+export function recordOpenApiCredentialAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  receiptId: string,
+  happenedAt: Date,
+): Promise<void> {
+  const action = "credential.created";
+  const retention = auditEventRetentionDays(process.env.AUDIT_EVENT_RETENTION_DAYS);
+  if (happenedAt.getTime() < Date.now() - retention * 86_400_000) return Promise.resolve();
+  return writeAuditEvents(prisma, actor.spaceId, [action], async (tx) => {
+    // The import reserves the installation ID as its receipt ID, even if the install is later removed.
+    await tx.$executeRaw`SET LOCAL lock_timeout = '500ms'`;
+    const consumed = await tx.$executeRaw`
+      UPDATE openapi_import_receipts SET "pendingCredentialAuditAt" = null
+      WHERE id = ${receiptId} AND "spaceId" = ${actor.spaceId} AND "userId" = ${actor.userId}
+        AND state = 'installed' AND "pendingCredentialAuditAt" = ${happenedAt}`;
+    return consumed === 1
+      ? [credentialAuditRow(actor, "capability_install", receiptId, action, happenedAt)]
+      : [];
+  });
+}
+
 export function recordConnectionActivationAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   actor: AuditUser | { spaceId: string; system: "connection_reconciler" },
@@ -529,6 +551,16 @@ export function pruneAuditEvents(
           )
           UPDATE bot_package_imports i
           SET "createdModelCredentialId" = null, "modelCredentialCreatedAt" = null
+          FROM expired WHERE i.id = expired.id
+        `;
+        await tx.$executeRaw`
+          WITH expired AS (
+            SELECT id FROM openapi_import_receipts
+            WHERE "pendingCredentialAuditAt" < ${before}
+            ORDER BY "pendingCredentialAuditAt", id
+            LIMIT ${AUDIT_PRUNE_BATCH_SIZE} FOR UPDATE SKIP LOCKED
+          )
+          UPDATE openapi_import_receipts i SET "pendingCredentialAuditAt" = null
           FROM expired WHERE i.id = expired.id
         `;
         return tx.$executeRaw`
