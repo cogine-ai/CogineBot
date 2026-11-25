@@ -891,6 +891,10 @@ model Run {
   routine              Routine?         @relation(fields: [routineId], references: [id], onDelete: SetNull)
   retryOfRunId          String?          @unique
   routineRetryAt       DateTime?
+  /// A claimed retry reached first start after its scheduling eligibility ended.
+  routineRetrySkipped  Boolean          @default(false)
+  /// A confirmed user-fixable cause from the terminal attempt.
+  routineFailureCause  String?
   startedAt            DateTime?
   wakeAt               DateTime?
   quotaWait            Json?
@@ -1068,6 +1072,8 @@ model Routine {
   thinkingLevel  String?
   lastRunAt      DateTime?
   nextRunAt      DateTime?
+  /// Only an automatic failure pause starts a new streak.
+  failurePausedAt DateTime?
   /// Optional earliest occurrence of a repeat, including while paused.
   startAt        DateTime?
   /// True only for a single recurring interval explicitly selected by its author.

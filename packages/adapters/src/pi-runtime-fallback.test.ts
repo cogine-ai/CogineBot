@@ -64,6 +64,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 import { estimateModelContextTokens } from "./model-context.js";
 import {
   ModelOutputRecoveryError,
+  ModelProviderRunError,
   ModelQuotaWaitError,
   TransientModelError,
 } from "./model-output-recovery.js";
@@ -413,6 +414,39 @@ describe("Pi runtime completion recovery", () => {
     await expect(failure).rejects.toThrow("HTTP 503 initial provider failure");
     expect(providerState.stream).toHaveBeenCalledTimes(4);
     expect(providerState.delay.mock.calls.map(([delay]) => delay)).toEqual([2_000, 8_000, 20_000]);
+  });
+
+  it.each([null, "fixture-personal-connection"])(
+    "attributes a refusal to the model connection that made the request (%s)",
+    async (modelCredentialId) => {
+      providerState.stream.mockImplementation(() =>
+        stream(primary, message(primary, [], "error", "401: invalid API key")),
+      );
+      const input = request();
+      input.model.modelCredentialId = modelCredentialId;
+      const failure = run(input);
+      if (modelCredentialId) {
+        await expect(failure).rejects.toBeInstanceOf(ModelProviderRunError);
+        await expect(failure).rejects.toMatchObject({ ownCredential: true });
+      } else {
+        await expect(failure).rejects.not.toBeInstanceOf(ModelProviderRunError);
+      }
+      expect(providerState.stream).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("attributes a confirmed personal plan usage limit to the model connection", async () => {
+    providerState.stream.mockImplementation(() =>
+      stream(
+        primary,
+        message(primary, [], "error", "429: subscription_sharing_usage_limit_exceeded"),
+      ),
+    );
+    const input = request();
+    input.model.modelCredentialId = "fixture-personal-plan";
+    const failure = run(input);
+    await expect(failure).rejects.toBeInstanceOf(ModelProviderRunError);
+    await expect(failure).rejects.toMatchObject({ ownCredential: true });
   });
 
   it("does not type a retained long quota refusal as a transient Routine failure", async () => {

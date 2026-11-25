@@ -10,6 +10,9 @@ export const MODEL_IMAGE_INPUT_UNKNOWN = "Image input is not configured for this
 export const MODEL_IMAGE_INPUT_ERROR =
   "This model cannot read images. Choose a model that supports images.";
 
+export const MODEL_OUTPUT_CUT_ERROR = "The model hit its output limit before finishing its reply.";
+export const MODEL_OUTPUT_LIMIT_ERROR = "The model hit its output limit before writing a response.";
+
 export const MODEL_CONTEXT_TOO_SMALL_ERROR =
   "This model's context window is too small. Choose another model.";
 export const VERBATIM_TOOL_RESULT_TOO_LARGE_ERROR =
@@ -104,12 +107,23 @@ export type RunErrorTranslator = (
 const english: RunErrorTranslator = (message, values) =>
   message.replace(/\{(\w+)\}/g, (match, key: string) => String(values?.[key] ?? match));
 
+type RunErrorKind =
+  | "rate"
+  | "key"
+  | "credit"
+  | "spending"
+  | "auth"
+  | "model"
+  | "timeout"
+  | "plan"
+  | "output";
+
 /** Keep provider diagnostics available without exposing them in the visible summary. */
 export function normalizeRunError(
   details: string,
   translate: RunErrorTranslator = english,
   locale = "en-US",
-): { summary: string; details: string; action?: "chatgpt-usage" | "add_key" } {
+): { summary: string; details: string; kind?: RunErrorKind; action?: "chatgpt-usage" | "add_key" } {
   details = sanitizeRunErrorDetails(details);
   // Only the controlled application token carries policy recovery advice.
   // Provider status/prose must never decide whether a deployment grant exists.
@@ -119,6 +133,9 @@ export function normalizeRunError(
       details,
       action: "add_key",
     };
+  }
+  if (details === MODEL_OUTPUT_CUT_ERROR || details === MODEL_OUTPUT_LIMIT_ERROR) {
+    return { summary: safeSummary(translate(details)), details, kind: "output" };
   }
   if (
     details === MODEL_CONTEXT_TOO_SMALL_ERROR ||
@@ -150,9 +167,14 @@ export function normalizeRunError(
       ),
       details,
       action: "chatgpt-usage",
+      ...(chatgptUsageCode === "limit_exceeded" && { kind: "plan" as const }),
     };
   }
-  const prefix = details.trim().match(/^(\d{3})\s*:\s*/);
+  const prefix = details
+    .trim()
+    .match(
+      /^(?:[^\n():]{1,60} API error \(([45]\d{2})\):\s*|(?:HTTP\s+)?([45]\d{2})(?:\s*:\s*|\s+))/i,
+    );
   const body = details.trim().slice(prefix?.[0].length ?? 0);
   let parsed: unknown;
   try {
@@ -170,7 +192,7 @@ export function normalizeRunError(
   const message = typeof payload.message === "string" ? payload.message : body;
   const metadata = asRecord(payload.metadata ?? record.metadata);
   const signals = `${message} ${JSON.stringify(metadata)} ${String(payload.type ?? "")} ${String(payload.code ?? "")}`;
-  const status = Number(prefix?.[1] ?? record.status ?? record.code ?? payload.code);
+  const status = Number(prefix?.[1] ?? prefix?.[2] ?? record.status ?? record.code ?? payload.code);
   const provider = /\bopenrouter\b|openrouter_/i.test(signals)
     ? translate("Your OpenRouter")
     : /\bopenai\b|openai_/i.test(signals)
@@ -180,10 +202,18 @@ export function normalizeRunError(
         : translate("Your model provider");
 
   let summary = translate("The model provider returned an error.");
-  if (
+  let kind: RunErrorKind | undefined;
+  if (status >= 500 && status < 600 && status !== 504) {
+    return { summary: safeSummary(summary), details };
+  }
+  if (status === 504 || status === 408) {
+    kind = "timeout";
+    summary = translate("{provider} took too long to respond. Try again.", { provider });
+  } else if (
     /rate[_ -]limit|too many requests/i.test(signals) &&
     !/insufficient[_ ]quota/i.test(signals)
   ) {
+    kind = "rate";
     summary = translate("{provider} is rate limiting requests. Try again shortly.", { provider });
   } else if (
     /\b(?:quota|insufficient[_ ](?:quota|credits?|funds)|credit[_ ]balance)\b|(?:key|credit|spend|spending|budget|billing)[\s\S]{0,40}(?:limit|exceed|exhaust|insufficient)|(?:limit|insufficient)[\s\S]{0,30}(?:credit|spend|budget)/i.test(
@@ -197,7 +227,7 @@ export function normalizeRunError(
         : /\bdaily\b/i.test(message)
           ? "daily"
           : "none";
-    const kind = /\bkey\b|key_limit/i.test(signals)
+    kind = /\bkey\b|key_limit/i.test(signals)
       ? "key"
       : /credit|insufficient_quota/i.test(signals)
         ? "credit"
@@ -223,30 +253,28 @@ export function normalizeRunError(
       }
     }
   } else if (status === 429) {
+    kind = "rate";
     summary = translate("{provider} is rate limiting requests. Try again shortly.", { provider });
   } else if (
     status === 401 ||
     ((status === 403 || /invalid[_ -](?:api[_ -])?key|authentication_error/i.test(signals)) &&
       /auth|unauthorized|forbidden|invalid|key|permission|access denied/i.test(signals))
   ) {
+    kind = "auth";
     summary = translate("{provider} rejected the API key. Check your connection settings.", {
       provider,
     });
   } else if (
     (status === 404 && /model/i.test(signals)) ||
-    /model[_ -]not[_ -]found|(?:model[\s\S]{0,40}(?:not found|does not exist|unavailable))/i.test(
-      signals,
-    )
+    /model[_ -]not[_ -]found|(?:model[\s\S]{0,40}(?:not found|does not exist))/i.test(signals)
   ) {
+    kind = "model";
     summary = translate("{provider} could not find the requested model.", { provider });
-  } else if (
-    status === 408 ||
-    status === 504 ||
-    /timed?[_ -]?out|timeout|ETIMEDOUT/i.test(signals)
-  ) {
+  } else if (/timed?[_ -]?out|timeout|ETIMEDOUT/i.test(signals)) {
+    kind = "timeout";
     summary = translate("{provider} took too long to respond. Try again.", { provider });
   }
-  return { summary: safeSummary(summary), details };
+  return { summary: safeSummary(summary), details, ...(kind && { kind }) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

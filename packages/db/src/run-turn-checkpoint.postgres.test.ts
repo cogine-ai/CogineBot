@@ -870,7 +870,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
       const due = terminal === false ? undefined : terminal.routineRetryAt;
       if (!due) throw new Error("Missing routine retry intent");
       const child = await claimRoutineRetry(prisma, f.run.id, due);
-      if (!child) throw new Error("Missing routine retry Run");
+      if (!child?.runId) throw new Error("Missing routine retry Run");
       await prisma.run.update({
         where: { id: child.runId },
         data: {
@@ -947,7 +947,7 @@ describe.skipIf(!enabled).sequential("run turn checkpoint fencing (PostgreSQL)",
     const due = terminal === false ? undefined : terminal.routineRetryAt;
     if (!due) throw new Error("Missing routine retry intent");
     const child = await claimRoutineRetry(prisma, f.run.id, due);
-    if (!child) throw new Error("Missing routine retry Run");
+    if (!child?.runId) throw new Error("Missing routine retry Run");
     await prisma.run.update({
       where: { id: child.runId },
       data: {

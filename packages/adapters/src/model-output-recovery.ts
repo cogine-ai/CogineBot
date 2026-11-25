@@ -1,11 +1,21 @@
 import type { RunQuotaTarget } from "@rakazo/contracts";
 import { createStreamingRedactor, protectedContinuationLength } from "@rakazo/core";
 
+/** The failing call's model connection, including a fallback selected during the Run. */
+export class ModelProviderRunError extends Error {
+  constructor(
+    message: string,
+    readonly ownCredential = false,
+  ) {
+    super(message);
+  }
+}
+
 /** A failed output recovery can keep the reply text already shown to the user. */
-export class ModelOutputRecoveryError extends Error {}
+export class ModelOutputRecoveryError extends ModelProviderRunError {}
 
 /** A provider failure that can clear without changing the request or account. */
-export class TransientModelError extends Error {}
+export class TransientModelError extends ModelProviderRunError {}
 
 /** A verified provider refusal with a timed reset and an exact dispatch target. */
 export class ModelQuotaWaitError extends Error {

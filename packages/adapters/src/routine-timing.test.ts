@@ -13,6 +13,24 @@ const delayed = {
 };
 
 describe("routine timing edits", () => {
+  it("resumes strictly after the current occurrence following a failure pause", () => {
+    const at = new Date("2027-03-04T08:00:00Z");
+    const paused = {
+      ...delayed,
+      crons: ["*/7 * * * *"],
+      timezone: "UTC",
+      active: false,
+      intervalBased: true,
+      intervalAnchorAt: at,
+      startAt: at,
+      nextRunAt: null,
+      failurePausedAt: new Date(at.getTime() - 60_000),
+    };
+    expect(patchRoutineTiming(paused, { active: true }, at).data.nextRunAt).toEqual(
+      new Date("2027-03-04T08:07:00Z"),
+    );
+  });
+
   it("never schedules before the moved first date across multiple cron slots", () => {
     const zone = "America/Chicago";
     const moved = patchRoutineTiming(delayed, { timezone: zone }, now).data;

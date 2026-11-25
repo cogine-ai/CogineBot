@@ -92,20 +92,31 @@ async function readRetryRoutine(tx: Prisma.TransactionClient, source: RetrySourc
   });
 }
 
+function routineOwnsRetry(
+  routine: Awaited<ReturnType<typeof readRetryRoutine>>,
+  sourceId: string,
+  latestRunId = sourceId,
+): routine is NonNullable<Awaited<ReturnType<typeof readRetryRoutine>>> {
+  return Boolean(
+    routine?.latestRunId === latestRunId &&
+      (routine.active ||
+        (routine.autoCompletedRunId === sourceId &&
+          routine.nextRunAt === null &&
+          isOneShotRoutineCrons(routine.crons))),
+  );
+}
+
+function retryWindowOpen(routine: { nextRunAt: Date | null }, at: Date): boolean {
+  return !routine.nextRunAt || routine.nextRunAt.getTime() - at.getTime() > NEXT_RUN_WINDOW_MS;
+}
+
 function canRetryRoutine(
   routine: Awaited<ReturnType<typeof readRetryRoutine>>,
   sourceId: string,
   at: Date,
   latestRunId = sourceId,
 ): boolean {
-  return Boolean(
-    routine?.latestRunId === latestRunId &&
-      (routine.active ||
-        (routine.autoCompletedRunId === sourceId &&
-          routine.nextRunAt === null &&
-          isOneShotRoutineCrons(routine.crons))) &&
-      (!routine.nextRunAt || routine.nextRunAt.getTime() - at.getTime() > NEXT_RUN_WINDOW_MS),
-  );
+  return routineOwnsRetry(routine, sourceId, latestRunId) && retryWindowOpen(routine, at);
 }
 
 async function lockRetryTarget(tx: Prisma.TransactionClient, candidate: RetryTarget) {
@@ -199,6 +210,34 @@ async function retryAuthorizationIsCurrent(
   return lockRetryOwner(tx, target);
 }
 
+/** Both claim and first start must distinguish scheduling expiry from revoked work. */
+async function retryDisposition(
+  tx: Prisma.TransactionClient,
+  target: RetryTarget,
+  source: RetrySource & {
+    clientNonce: string | null;
+    routineFailureCause: string | null;
+    task: { connectionIds: string[] };
+  },
+  latestRunId: string,
+  now?: Date,
+  verifyNativeSource?: VerifyRoutineRetryNativeSource,
+): Promise<"attempt" | "settle" | "discard"> {
+  const routine = await readRetryRoutine(tx, source);
+  const ownsRetry = routineOwnsRetry(routine, source.id, latestRunId);
+  const mayRecheckStreak = Boolean(routine?.active && source.routineFailureCause);
+  if (
+    !routine ||
+    (!mayRecheckStreak && (!ownsRetry || !retryWindowOpen(routine, now ?? new Date()))) ||
+    !(await retryAuthorizationIsCurrent(tx, target, source, verifyNativeSource))
+  )
+    return "discard";
+  // Authorization can wait on locks long enough to close the window. A newer
+  // Run can supersede the retry without changing the completed timer result.
+  if (ownsRetry && retryWindowOpen(routine, now ?? new Date())) return "attempt";
+  return mayRecheckStreak ? "settle" : "discard";
+}
+
 /** The failed Run is the outbox. Call while its terminal transaction still owns its fence. */
 export async function planRoutineRetryInTransaction(
   tx: Prisma.TransactionClient,
@@ -225,7 +264,11 @@ export async function claimRoutineRetry(
   originalRunId: string,
   now?: Date,
   verifyNativeSource?: VerifyRoutineRetryNativeSource,
-): Promise<{ runId: string } | null> {
+): Promise<
+  | { runId: string; settledSource?: never }
+  | { runId?: never; settledSource: RetrySource & { routineId: string; retryOfRunId: null } }
+  | null
+> {
   return withTransactionRetry(() =>
     prisma.$transaction(async (tx) => {
       const intent = {
@@ -253,6 +296,7 @@ export async function claimRoutineRetry(
           threadId: true,
           routineId: true,
           clientNonce: true,
+          routineFailureCause: true,
           modelPinned: true,
           modelProvider: true,
           modelId: true,
@@ -270,13 +314,28 @@ export async function claimRoutineRetry(
       });
       if (!source || !targetLocked || !source.routineId) return null;
 
-      const routine = await readRetryRoutine(tx, source);
       const scope = { spaceId: source.spaceId, userId: source.userId };
-      if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
-      if (!(await retryAuthorizationIsCurrent(tx, candidate, source, verifyNativeSource)))
-        return null;
-      // Authorization can wait on locks long enough to enter the next-run window.
-      if (!canRetryRoutine(routine, source.id, now ?? new Date())) return null;
+      const disposition = await retryDisposition(
+        tx,
+        candidate,
+        source,
+        source.id,
+        now,
+        verifyNativeSource,
+      );
+      if (disposition === "discard") return null;
+      if (disposition === "settle") {
+        return {
+          settledSource: {
+            ...scope,
+            id: source.id,
+            botId: source.botId,
+            threadId: source.threadId,
+            routineId: source.routineId,
+            retryOfRunId: null,
+          },
+        };
+      }
 
       const destination = {
         ...scope,
@@ -336,7 +395,8 @@ export async function lockRoutineRetryExecution(
   if (!child) return null;
   // The start and cancellation writes fence lease changes after this identity read.
   const targetLocked = await lockRetryTarget(tx, child);
-  if (!targetLocked || !child.routineId || !child.retryOfRunId) return { child, allowed: false };
+  if (!targetLocked || !child.routineId || !child.retryOfRunId)
+    return { child, disposition: "discard" as const };
 
   const original = await tx.run.findFirst({
     where: {
@@ -358,17 +418,18 @@ export async function lockRoutineRetryExecution(
       threadId: true,
       routineId: true,
       clientNonce: true,
+      routineFailureCause: true,
       task: { select: { connectionIds: true } },
     },
   });
-  if (!original) return { child, allowed: false };
-  const routine = await readRetryRoutine(tx, child);
-  if (!canRetryRoutine(routine, original.id, new Date(), child.id))
-    return { child, allowed: false };
-  const authorized = await retryAuthorizationIsCurrent(tx, child, original, verifyNativeSource);
-  return {
+  if (!original) return { child, disposition: "discard" as const };
+  const disposition = await retryDisposition(
+    tx,
     child,
-    // The Routine row is locked, but time can pass during authorization.
-    allowed: authorized && canRetryRoutine(routine, original.id, new Date(), child.id),
-  };
+    original,
+    child.id,
+    undefined,
+    verifyNativeSource,
+  );
+  return { child, disposition };
 }

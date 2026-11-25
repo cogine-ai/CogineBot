@@ -1,6 +1,98 @@
 import { expect, test } from "@playwright/test";
-import type { Routine } from "@rakazo/contracts";
+import type { Me, Routine, ThreadSnapshot } from "@rakazo/contracts";
 import { activeBotId, captureScreenshot, completeOnboarding, rpc, signup } from "./helpers";
+
+test("an automatically paused routine explains recovery in its chat", async ({ page }, info) => {
+  expect(process.env.AGENT_RUNTIME).toBe("scripted");
+  expect(process.env.SANDBOX_PROVIDER).toBe("fake");
+  expect(process.env.VERIFY_DATABASE).toBe("1");
+  const database = process.env.VERIFY_ISOLATED_DATABASE;
+  expect(database).toBeTruthy();
+  const url = new URL(process.env.DATABASE_URL!);
+  expect(["127.0.0.1", "localhost", "[::1]"]).toContain(url.hostname);
+  expect(Number(url.port)).toBeGreaterThan(1024);
+  expect(url.port).not.toBe("5432");
+  expect(url.pathname).toBe(`/${database}`);
+  expect(url.search).toBe("");
+
+  await signup(
+    page,
+    `routine-auto-pause-${Date.now()}@example.test`,
+    "password12",
+    "Routine Pause",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const { userId, spaceId } = await rpc<Me>(page, "me", {});
+  const { threadId } = await rpc<ThreadSnapshot>(page, "threads/get", { botId });
+  const scope = { userId, spaceId, botId, threadId };
+  const { createDb } = await import("../../../packages/db/src/client");
+  const { createThreadEvents } = await import("../../../packages/db/src/events");
+  const { pauseRoutineAfterRepeatedFailures, ROUTINE_MODEL_CONNECTION_FAILURE } = await import(
+    "../../../packages/adapters/src/routine-failure-pause"
+  );
+  const db = createDb(url.toString(), {
+    poolMax: 2,
+    applicationName: "routine-pause-browser-fixture",
+  });
+  const name = "Weekly account summary";
+  try {
+    const [identity] = await db.prisma.$queryRaw<Array<{ name: string }>>`
+      SELECT current_database() AS name
+    `;
+    expect(identity?.name).toBe(database);
+    const routine = await db.prisma.routine.create({
+      data: {
+        ...scope,
+        name,
+        prompt: "Review synthetic account updates.",
+        crons: ["0 9 * * 1"],
+        active: true,
+        nextRunAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    for (let i = 5; i > 0; i--) {
+      const at = new Date(Date.now() - i * 86_400_000);
+      const task = await db.prisma.task.create({
+        data: { ...scope, prompt: routine.prompt, status: "failed" },
+      });
+      const run = await db.prisma.run.create({
+        data: {
+          ...scope,
+          taskId: task.id,
+          routineId: routine.id,
+          trigger: "routine",
+          clientNonce: `routine-timer:${routine.id}:${at.toISOString()}`,
+          createdAt: at,
+          completedAt: at,
+          status: "failed",
+          error: "Connect that model provider first",
+          routineFailureCause: ROUTINE_MODEL_CONNECTION_FAILURE,
+        },
+      });
+      if (i === 1)
+        await pauseRoutineAfterRepeatedFailures(
+          { prisma: db.prisma, events: createThreadEvents(db.prisma) },
+          { ...scope, id: run.id, routineId: routine.id, retryOfRunId: null },
+        );
+    }
+    expect(await rpc<Routine[]>(page, "routines/list", { botId })).toContainEqual(
+      expect.objectContaining({ id: routine.id, active: false, nextRunAt: null }),
+    );
+  } finally {
+    await db.prisma.$disconnect();
+    await db.pool.end();
+  }
+  await page.reload();
+  const notice = page.getByTestId("message-bot-bubble").filter({
+    hasText: `I paused “${name}” after 5 scheduled runs failed for the same reason.`,
+  });
+  await expect(notice).toBeVisible();
+  await expect(
+    notice.getByText("After fixing it, resume in Routines or ask me in the original chat."),
+  ).toBeVisible();
+  await captureScreenshot(page, info, "routine-failure-pause");
+});
 
 test("Slack message trigger uses the mounted messaging provider and persists", async ({
   page,
