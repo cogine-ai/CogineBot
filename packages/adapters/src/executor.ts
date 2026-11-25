@@ -5240,7 +5240,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (!isTerminalModelSetupError(error)) throw error;
           await failRunBeforeModel(
             error instanceof Error ? error.message : "Connect the provider again.",
-            error instanceof Error && error.message === CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE
+            error instanceof PlatformModelForbiddenError ||
+              (error instanceof Error && error.message === CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE)
               ? undefined
               : ROUTINE_MODEL_CONNECTION_FAILURE,
           );

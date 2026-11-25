@@ -352,6 +352,25 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     },
   );
 
+  it.each(["queued", "running"] as const)(
+    "waits for a %s scheduled round before counting failures around it",
+    async (status) => {
+      const f = await failingRoutine();
+      for (let i = 0; i < 2; i++) await f.record();
+      const pending = await f.record({ status, error: null, routineFailureCause: null });
+      for (let i = 0; i < 2; i++) await f.record();
+      await f.check(await f.record());
+      expect((await f.read()).active).toBe(true);
+      expect(await f.notices()).toBe(0);
+      await system.run.update({ where: { id: pending.id }, data: { status: "completed" } });
+      await f.check(await f.record());
+      expect((await f.read()).active).toBe(true);
+      await f.check(await f.record());
+      expect((await f.read()).active).toBe(false);
+      expect(await f.notices()).toBe(1);
+    },
+  );
+
   it("keeps a committed pause even if notification fails", async () => {
     const f = await failingRoutine();
     f.deps.events.notify.mockRejectedValueOnce(new Error("Synthetic notification failure"));

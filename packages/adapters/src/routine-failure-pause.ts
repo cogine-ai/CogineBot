@@ -91,7 +91,7 @@ async function failingStreak(
       AND root."spaceId" = ${routine.spaceId} AND root."botId" = ${routine.botId}
       AND root.trigger = 'routine' AND root."retryOfRunId" IS NULL
       AND starts_with(root."clientNonce", ${prefix})
-      AND root.status IN ('completed', 'failed') AND retry.status IS DISTINCT FROM 'cancelled'
+      AND root.status <> 'cancelled' AND retry.status IS DISTINCT FROM 'cancelled'
       ${since ? Prisma.sql`AND root."createdAt" > ${since}` : Prisma.empty}
     ORDER BY root."createdAt" DESC, root.id DESC
     LIMIT ${PAUSE_AFTER}
