@@ -334,9 +334,11 @@ model AuditEvent {
   spaceId        String
   actorType      String
   actorId        String
+  actorLabel     String?  @db.VarChar(200)
   action         String
   targetType     String
   targetId       String
+  targetLabel    String?  @db.VarChar(200)
   outcome        String
   runId          String?
   threadId       String?

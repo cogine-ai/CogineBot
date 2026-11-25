@@ -270,8 +270,13 @@ export function recordConnectionActivationAudit(
     connectionIds.map((connectionId) => ({
       id: `connection.connected:${connectionId}`,
       createdAt: happenedAt,
-      actorType: "userId" in actor ? "user" : "system",
-      actorId: "userId" in actor ? actor.userId : actor.system,
+      ...("userId" in actor
+        ? { actorType: "user", actorId: actor.userId }
+        : {
+            actorType: "system",
+            actorId: actor.system,
+            actorLabel: "Connection reconciler",
+          }),
       action: "connection.connected",
       targetType: "connection",
       targetId: connectionId,
@@ -424,22 +429,23 @@ type AutomaticApproval = {
 );
 
 function automaticApprovalRow(input: AutomaticApproval): AuditRow {
-  const action = input.outcome === "denied" ? "approval.auto_denied" : "approval.auto_reviewed";
+  const denied = input.outcome === "denied";
+  const action = denied ? "approval.auto_denied" : "approval.auto_reviewed";
   return {
     id: `${action}:${input.effectId}`,
     createdAt: input.happenedAt,
     runId: input.runId,
     threadId: input.threadId,
     actorType: "system",
-    actorId: input.outcome === "denied" ? "approval_policy" : "auto_review",
+    actorId: denied ? "approval_policy" : "auto_review",
+    actorLabel: denied ? "Approval policy" : "Auto Review",
     action,
     targetType: "external_effect",
     targetId: input.effectId,
     outcome: input.outcome,
-    metadata:
-      input.outcome === "denied"
-        ? { decision: input.decision, reason: input.reason }
-        : { decision: input.decision },
+    metadata: denied
+      ? { decision: input.decision, reason: input.reason }
+      : { decision: input.decision },
   };
 }
 
@@ -492,11 +498,17 @@ export function recordCloudAgentApprovalAudit(
   });
 }
 
+const toolCompletionLabels = {
+  shell: "Shell",
+  web_fetch: "Web fetch",
+  secret_request: "Secret request",
+} as const;
+
 export function recordToolCompletionAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   run: { id: string; spaceId: string; threadId: string; botId: string },
   completion: {
-    name: "shell" | "web_fetch" | "secret_request";
+    name: keyof typeof toolCompletionLabels;
     executionId: string;
     happenedAt: Date;
     durationMs: number;
@@ -512,6 +524,7 @@ export function recordToolCompletionAudit(
       action: "tool.completed",
       targetType: "tool_execution",
       targetId: completion.executionId,
+      targetLabel: toolCompletionLabels[completion.name],
       runId: run.id,
       threadId: run.threadId,
       outcome: completion.outcome,

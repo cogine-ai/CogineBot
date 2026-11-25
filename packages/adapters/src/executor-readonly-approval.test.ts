@@ -1053,6 +1053,7 @@ describe("delegated shell approval receipts", () => {
           action: "tool.completed",
           targetType: "tool_execution",
           targetId: verifiedExecutionId,
+          targetLabel: "Shell",
           runId: f.runRecord.id,
           threadId: f.runRecord.threadId,
           outcome: "success",
@@ -6518,6 +6519,7 @@ describe("connector read-only metadata and approval enforcement", () => {
         data: [
           expect.objectContaining({
             id: `approval.auto_reviewed:${executionId}`,
+            actorLabel: "Auto Review",
             outcome: "success",
             metadata: { decision: "pass" },
           }),
@@ -6529,6 +6531,7 @@ describe("connector read-only metadata and approval enforcement", () => {
           expect.objectContaining({
             id: `tool.completed:${executionId}`,
             action: "tool.completed",
+            targetLabel: "Web fetch",
             outcome: "success",
             metadata: { name: "web_fetch", executionId, durationMs: expect.any(Number) },
           }),
@@ -6607,6 +6610,7 @@ describe("connector read-only metadata and approval enforcement", () => {
             action: "tool.completed",
             targetType: "tool_execution",
             targetId: executionId,
+            targetLabel: "Web fetch",
             runId: f.runRecord.id,
             threadId: f.runRecord.threadId,
             outcome: scenario === "HTTP error" ? "error" : "success",
@@ -7187,6 +7191,7 @@ describe("connector read-only metadata and approval enforcement", () => {
             id: `approval.auto_denied:${f.effects[0]?.id}`,
             actorType: "system",
             actorId: "approval_policy",
+            actorLabel: "Approval policy",
             action: "approval.auto_denied",
             outcome: "denied",
             metadata: { decision: "deny", reason: "unattended" },

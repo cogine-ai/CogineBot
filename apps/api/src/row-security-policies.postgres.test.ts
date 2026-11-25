@@ -143,6 +143,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           await recordToolCompletionAudit(runtime!.prisma, run, failed);
           await recordToolCompletionAudit(runtime!.prisma, run, verified);
         });
+        expect(await inA(() => runtime!.prisma.auditEvent.findMany({ where }))).toEqual([]);
         const events = await owner.prisma.auditEvent.findMany({
           where,
           orderBy: { targetId: "asc" },
@@ -155,9 +156,15 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
             spaceId: spaceA,
             actorType: "bot",
             actorId: run.botId,
+            actorLabel: null,
             action: "tool.completed",
             targetType: "tool_execution",
             targetId: executionId,
+            targetLabel: {
+              shell: "Shell",
+              web_fetch: "Web fetch",
+              secret_request: "Secret request",
+            }[name],
             outcome,
             runId: run.id,
             threadId: run.threadId,
@@ -641,6 +648,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
           select: {
             actorType: true,
             actorId: true,
+            actorLabel: true,
             action: true,
             outcome: true,
             targetId: true,
@@ -651,6 +659,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         {
           actorType: "system",
           actorId: "connection_reconciler",
+          actorLabel: "Connection reconciler",
           action: "connection.connected",
           outcome: "success",
           targetId: winner.id,
@@ -1268,6 +1277,13 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       ),
       "utf8",
     );
+    const addLabels = await readFile(
+      new URL(
+        "../../../packages/db/prisma/migrations/20261126052000_audit_event_display_labels/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
     const prisma = runtime!.prisma;
     await owner.pool.query("ALTER SCHEMA cogine_audit RENAME TO previous_audit_fixture");
     try {
@@ -1288,13 +1304,20 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         [id("prior-audit"), orgA, spaceA, userA],
       );
       await owner.pool.query(addContext);
+      await owner.pool.query(addLabels);
       await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
         connectionEnforced: true,
       });
       expect(await inA(() => prisma.auditEvent.findMany())).toEqual([]);
       expect(
         await owner.prisma.auditEvent.findUnique({ where: { id: id("prior-audit") } }),
-      ).toMatchObject({ targetId: "prior-rule", runId: null, threadId: null });
+      ).toMatchObject({
+        targetId: "prior-rule",
+        runId: null,
+        threadId: null,
+        actorLabel: null,
+        targetLabel: null,
+      });
     } finally {
       await owner.pool.query("DROP TABLE IF EXISTS cogine_audit.audit_events");
       await owner.pool.query("DROP SCHEMA IF EXISTS cogine_audit");
