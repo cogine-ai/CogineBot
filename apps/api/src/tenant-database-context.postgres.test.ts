@@ -103,7 +103,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let rejectMcpToolPolicyFor: string | undefined;
   let rejectMcpCredentialRemovalFor: string | undefined;
   let rejectMcpCredentialCreationFor: string | undefined;
-  let rejectMcpEndpointMoveFor: string | undefined;
+  let rejectMcpCredentialUpdateFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -155,8 +155,8 @@ describePostgres("trusted request contexts on a restricted single-connection poo
           },
           async update({ args, query }) {
             const row = await query(args);
-            if (row.id === rejectMcpEndpointMoveFor)
-              throw new Error("Synthetic MCP endpoint move rollback");
+            if (row.id === rejectMcpCredentialUpdateFor)
+              throw new Error("Synthetic MCP credential update rollback");
             if (row.id === rejectMcpApprovalFor && args.data.allowAllTools === true)
               throw new Error("Synthetic MCP approval rollback");
             return row;
@@ -993,11 +993,11 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     const where = { id: server.id };
     const audits = () => owner.prisma.auditEvent.findMany({ where: { targetId: server.id } });
     expect((await raw(second.cookie, "mcp/servers/update", input, spaceId)).status).toBe(403);
-    rejectMcpEndpointMoveFor = server.id;
+    rejectMcpCredentialUpdateFor = server.id;
     try {
       expect((await raw(cookie, "mcp/servers/update", input)).status).toBe(500);
     } finally {
-      rejectMcpEndpointMoveFor = undefined;
+      rejectMcpCredentialUpdateFor = undefined;
     }
     expect(await owner.prisma.mcpServer.findUnique({ where })).toEqual(server);
     expect(await owner.prisma.secret.count({ where: { spaceId, userId } })).toBe(1);
@@ -1032,6 +1032,120 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         outcome: "success",
         metadata: {},
       },
+    ]);
+  });
+
+  it("audits committed static credential changes for an existing MCP endpoint", async () => {
+    const { actor, cookie } = await account("Mcp-same-endpoint-audit");
+    const { spaceId, userId } = actor;
+    const server = await owner.prisma.mcpServer.create({
+      data: {
+        spaceId,
+        userId,
+        slug: "fixture-same-endpoint",
+        name: "MCP credential fixture",
+        transport: "streamable_http",
+        endpoint: "https://mcp.example.test/tools",
+      },
+    });
+    const where = { id: server.id };
+    const read = () =>
+      owner.prisma.mcpServer.findUniqueOrThrow({ where, include: { secret: true } });
+    const audits = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetType: "mcp_server", targetId: server.id },
+        orderBy: [{ createdAt: "asc" }, { action: "asc" }],
+      });
+    const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    const event = (action: string, createdAt: Date) => ({
+      action,
+      createdAt,
+      actorType: "user",
+      actorId: userId,
+      spaceId,
+      organizationId,
+      targetType: "mcp_server",
+      targetId: server.id,
+      outcome: "success",
+      metadata: {},
+    });
+    const first = { id: server.id, secret: "fixture-first-key" };
+    expect((await raw(second.cookie, "mcp/servers/update", first, spaceId)).status).toBe(403);
+    rejectMcpCredentialUpdateFor = server.id;
+    try {
+      expect((await raw(cookie, "mcp/servers/update", first)).status).toBe(500);
+    } finally {
+      rejectMcpCredentialUpdateFor = undefined;
+    }
+    expect(await read()).toEqual({ ...server, secret: null });
+    expect(await owner.prisma.secret.count({ where: { spaceId, userId } })).toBe(0);
+    expect(await audits()).toEqual([]);
+
+    await rpc<McpServer>(cookie, "mcp/servers/update", first);
+    const created = await read();
+    expect(await store.load(created.secret!.ciphertext, created.secret!.id)).toBe(
+      JSON.stringify({ secret: first.secret }),
+    );
+    await rpc<McpServer>(cookie, "mcp/servers/update", first);
+    expect((await read()).secretId).toBe(created.secretId);
+
+    const next = { ...first, secret: "fixture-next-key" };
+    const prepared = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const originalPut = store.put.bind(store);
+    const put = vi.spyOn(store, "put").mockImplementationOnce(async (...args) => {
+      const staged = await originalPut(...args);
+      prepared.resolve();
+      await resume.promise;
+      return staged;
+    });
+    const slow = rpc<McpServer>(cookie, "mcp/servers/update", next);
+    let winner: Awaited<ReturnType<typeof read>>;
+    try {
+      await Promise.race([
+        prepared.promise,
+        slow.then(() => {
+          throw new Error("Expected the first request to prepare its write before saving");
+        }),
+      ]);
+      await rpc<McpServer>(cookie, "mcp/servers/update", next);
+      winner = await read();
+    } finally {
+      resume.resolve();
+      await slow.finally(() => put.mockRestore());
+    }
+    const updated = await read();
+    expect(updated.secretId).toBe(winner.secretId);
+    expect(await store.load(updated.secret!.ciphertext, updated.secret!.id)).toBe(
+      JSON.stringify({ secret: next.secret }),
+    );
+    expect(await owner.prisma.secret.count({ where: { spaceId, userId } })).toBe(1);
+    const [added, changed] = await audits();
+    expect(added).toMatchObject(event("credential.created", created.updatedAt));
+    expect(changed).toMatchObject(event("credential.changed", winner.updatedAt));
+    expect(await audits()).toHaveLength(2);
+
+    const clear = {
+      id: server.id,
+      config: {
+        slug: server.slug,
+        name: server.name,
+        transport: "streamable_http",
+        endpoint: server.endpoint,
+        clearCredential: true,
+      },
+    };
+    await rpc<McpServer>(cookie, "mcp/servers/update", clear);
+    const cleared = await read();
+    expect(cleared).toMatchObject({ endpoint: server.endpoint, secretId: null, secret: null });
+    await rpc<McpServer>(cookie, "mcp/servers/update", clear);
+    expect(await owner.prisma.secret.count({ where: { spaceId, userId } })).toBe(0);
+    expect(await audits()).toMatchObject([
+      added,
+      changed,
+      event("credential.deleted", cleared.updatedAt),
     ]);
   });
 

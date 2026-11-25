@@ -57,6 +57,26 @@ export function parseMcpRemoteMaterial(value: string): McpSecretMaterial {
   return RemoteMaterialSchema.parse(JSON.parse(value));
 }
 
+function remoteStaticCredentials(material: McpSecretMaterial) {
+  const headers = Object.entries(material.headers ?? {})
+    .map(([name, value]) => {
+      // The bearer replaces an exact Authorization key before HTTP header normalization.
+      const replacedByBearer = Boolean(material.secret) && name === "Authorization";
+      return [name.toLowerCase(), replacedByBearer, value] as const;
+    })
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return { secret: material.secret || undefined, headers };
+}
+
+export function remoteStaticCredentialChange(previous: McpSecretMaterial, next: McpSecretMaterial) {
+  const before = remoteStaticCredentials(previous);
+  const after = remoteStaticCredentials(next);
+  if (isDeepStrictEqual(before, after)) return undefined;
+  if (!after.secret && after.headers.length === 0) return "credential.deleted" as const;
+  if (!before.secret && before.headers.length === 0) return "credential.created" as const;
+  return "credential.changed" as const;
+}
+
 /** Omitted/empty patches keep the exact stored credential, including OAuth. */
 export function buildMcpConnectionMaterial(
   existing: McpSecretMaterial,
