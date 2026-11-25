@@ -6713,10 +6713,10 @@ export function createRouter(deps: RouterDeps) {
                         credentialAction = "credential.deleted";
                       } else if (remoteEndpointMoved && updated.secretId !== null) {
                         credentialAction = secret ? "credential.changed" : "credential.created";
-                      } else if (update.action === "store") {
+                      } else {
                         credentialAction = remoteStaticCredentialChange(
                           existingMaterial,
-                          update.material,
+                          nextMaterial,
                         );
                       }
                     }
