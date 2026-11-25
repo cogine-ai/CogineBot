@@ -10463,8 +10463,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (authenticatedRequest) {
             if (!credentialBinding) return finish({ error: BOT_SECRET_HTTP_APPROVAL_CHANGED });
             let reviewAdmission: Date | undefined;
+            let result: Awaited<ReturnType<typeof requestWithBotSecret>>;
+            const startedAt = performance.now();
             try {
-              const result = await requestWithBotSecret({
+              result = await requestWithBotSecret({
                 prisma: deps.prisma,
                 secretStore: deps.secretStore,
                 scope: run,
@@ -10499,12 +10501,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   reviewAdmission ??= appliedReviewAdmission();
                 },
               });
-              const confirmed =
-                "status" in result &&
-                isConfirmedHttpResponse(result.status) &&
-                approvedActionReceipt({ data: result.body, truncated: result.truncated }, "result")
-                  .state === "succeeded";
-              return finish(result, undefined, confirmed ? reviewAdmission : undefined);
             } catch (error) {
               if (error instanceof ActionRuleDispatchError) {
                 trust.invalidateDestinationTrust();
@@ -10512,6 +10508,38 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return finish({ error: "Invalid authenticated request." });
             }
+            const response = "status" in result ? result : undefined;
+            const receipt =
+              response && isConfirmedHttpResponse(response.status)
+                ? approvedActionReceipt(
+                    { data: response.body, truncated: response.truncated },
+                    "result",
+                  ).state
+                : undefined;
+            const responseFailed =
+              receipt === "failed" || (response && response.status >= 400 && response.status < 600);
+            const outcome =
+              receipt === "succeeded" ? "success" : responseFailed ? "error" : undefined;
+            const executionId =
+              claimedEffect && !context.signal.aborted ? applied?.effect.id : undefined;
+            const happenedAt = new Date();
+            const durationMs = Math.round(performance.now() - startedAt);
+            const completed = await finish(
+              result,
+              undefined,
+              outcome === "success" ? reviewAdmission : undefined,
+            );
+            // Receipt readback and uncertain settlement must not record another execution.
+            if (executionId && outcome && completed === result) {
+              await recordToolCompletionAudit(deps.prisma, run, {
+                name: "secret_request",
+                executionId,
+                happenedAt,
+                durationMs,
+                outcome,
+              });
+            }
+            return completed;
           }
           if (secretDestination) {
             const resolvedSecret = secretDestination;

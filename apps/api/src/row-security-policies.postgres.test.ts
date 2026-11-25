@@ -123,7 +123,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
   }
 
-  it.each(["shell", "web_fetch"] as const)(
+  it.each(["shell", "web_fetch", "secret_request"] as const)(
     "stores one scoped %s completion per execution",
     async (name) => {
       const run = await owner.prisma.run.findUniqueOrThrow({ where: { id: id("run-a") } });

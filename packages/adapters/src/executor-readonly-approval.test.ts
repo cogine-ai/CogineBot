@@ -4762,6 +4762,20 @@ describe("authenticated request destination policy", () => {
 
   beforeEach(() => reviewMock.mockReset());
 
+  const completion = (executionId: string, outcome: "success" | "error") => ({
+    skipDuplicates: true,
+    data: [
+      expect.objectContaining({
+        id: `tool.completed:${executionId}`,
+        action: "tool.completed",
+        targetType: "tool_execution",
+        targetId: executionId,
+        outcome,
+        metadata: { name: "secret_request", executionId, durationMs: expect.any(Number) },
+      }),
+    ],
+  });
+
   it("blocks a denied destination ahead of trusted owner words and a tool allowance", async () => {
     const f = authFixture({
       prompt: `Send to ${url}`,
@@ -4784,6 +4798,7 @@ describe("authenticated request destination policy", () => {
       select: { name: true, origin: true, auth: true, id: true, revision: true },
     });
     expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
     const [card] = f.pauseRunForInput.mock.calls[0]![0].blocks;
     expect(card).toMatchObject({
       kind: "ask",
@@ -4811,7 +4826,9 @@ describe("authenticated request destination policy", () => {
       expect.objectContaining({ method: "POST", body: args.body, redirect: "manual" }),
     );
     expect(f.effects[0]).toMatchObject({ status: "completed" });
-    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
+      completion(f.effects[0]!.id, "success"),
+    );
   });
 
   it.each([false, true])(
@@ -4847,7 +4864,8 @@ describe("authenticated request destination policy", () => {
     );
     expect(routine.fetch).toHaveBeenCalledOnce();
     expect(routine.pauseRunForInput).not.toHaveBeenCalled();
-    expect(routine.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+    expect(routine.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+    expect(routine.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(1, {
       skipDuplicates: true,
       data: [
         expect.objectContaining({
@@ -4858,20 +4876,25 @@ describe("authenticated request destination policy", () => {
         }),
       ],
     });
+    expect(routine.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
+      2,
+      completion(routine.effects[0]!.id, "success"),
+    );
   });
 
   it.each([
     { status: 202 },
     { status: 206 },
     { status: 207 },
-    { status: 403 },
-    { status: 200, body: { ok: false } },
+    { status: 403, outcome: "error" as const },
+    { status: 500, outcome: "error" as const },
+    { status: 200, body: { data: { ok: false } }, outcome: "error" as const },
     { status: 200, body: { write_outcome: "partial" } },
     { status: 200, body: { deliveryVerified: false } },
     { status: 200, body: { text: "x".repeat(21_000) }, truncated: true },
   ])(
-    "preserves unconfirmed authenticated HTTP result %# without a success audit",
-    async ({ status, body = { synthetic: true }, truncated = false }) => {
+    "records only confirmed authenticated HTTP outcomes (%#)",
+    async ({ status, body = { synthetic: true }, truncated = false, outcome }) => {
       reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
       const f = authFixture({ autoReview: true });
       f.fetch.mockResolvedValueOnce(Response.json(body, { status }));
@@ -4881,7 +4904,13 @@ describe("authenticated request destination policy", () => {
         status: "completed",
         result: { status, truncated, body: truncated ? expect.any(String) : body },
       });
-      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      if (outcome) {
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith(
+          completion(f.effects[0]!.id, outcome),
+        );
+      } else {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      }
     },
   );
 
@@ -4891,8 +4920,89 @@ describe("authenticated request destination policy", () => {
     f.fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
     await f.run();
     expect(f.effects[0]).toMatchObject({ status: "completed", result: { status: 204 } });
-    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
+      2,
+      completion(f.effects[0]!.id, "success"),
+    );
   });
+
+  it("keeps distinct authenticated responses associated with their own execution receipts", async () => {
+    const f = authFixture({ rules: [siteAllow, toolAllow] });
+    const second = { ...args, url: `${url}&item=second` };
+    f.fetch
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(Response.json({ ok: false }));
+    f.setCalls([
+      { args, executionId: "first-request" },
+      { args: second, executionId: "second-request" },
+    ]);
+
+    await f.run();
+
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.effects).toMatchObject([
+      { status: "completed", result: { body: { ok: true } } },
+      { status: "completed", result: { body: { ok: false } } },
+    ]);
+    expect(f.effects[0]!.id).not.toBe(f.effects[1]!.id);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
+      1,
+      completion(f.effects[0]!.id, "success"),
+    );
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
+      2,
+      completion(f.effects[1]!.id, "error"),
+    );
+  });
+
+  it.each(["lost receipt", "transport failed", "audit unavailable", "late stop"])(
+    "keeps authenticated tool completion tied to its acknowledged dispatch (%s)",
+    async (scenario) => {
+      const shutdown = new AbortController();
+      const f = authFixture({ autoReview: true, shutdownSignal: shutdown.signal });
+      reviewMock.mockResolvedValue({ decision: "pass", model: "mock" });
+      if (scenario === "lost receipt") {
+        const update = f.prisma.externalEffect.updateMany.getMockImplementation()!;
+        f.prisma.externalEffect.updateMany.mockImplementation(async (input) =>
+          input.data.status === "completed" ? { count: 0 } : update(input),
+        );
+      }
+      if (scenario === "transport failed") {
+        f.fetch.mockRejectedValueOnce(new Error("Synthetic connection error"));
+      }
+      if (scenario === "audit unavailable" || scenario === "late stop") {
+        f.prisma.auditEvent.createMany.mockImplementationOnce(async () => {
+          if (scenario === "late stop") shutdown.abort();
+          return { count: 1 };
+        });
+        if (scenario === "audit unavailable") {
+          f.prisma.auditEvent.createMany.mockRejectedValueOnce(new Error("Audit unavailable"));
+        }
+      }
+
+      await f.run();
+
+      expect(f.fetch).toHaveBeenCalledOnce();
+      if (scenario === "lost receipt" || scenario === "transport failed") {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        expect(f.results[0]).toMatchObject(
+          scenario === "lost receipt" ? { uncertain: true } : { error: expect.any(String) },
+        );
+        return;
+      }
+      expect(shutdown.signal.aborted).toBe(scenario === "late stop");
+      expect(f.results[0]).toEqual({ status: 200, body: { ok: true }, truncated: false });
+      expect(f.effects[0]!.status).toBe("completed");
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+      expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(
+        2,
+        completion(f.effects[0]!.id, "success"),
+      );
+    },
+  );
 
   it.each(["removed", "already absent", "lost effect settlement"] as const)(
     "audits automatic credential removal only after both writes settle (%s)",
