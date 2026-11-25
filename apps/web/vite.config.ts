@@ -23,6 +23,7 @@ import { resolveScreenProxySecret } from "../../packages/core/src/secrets-guard.
 import { createServiceLogger } from "../../packages/logging/src/env.ts";
 import { collectNovncHtml, MAX_NOVNC_HTML_BYTES } from "./src/novnc-html.js";
 import { pageShareEdge } from "./src/page-share-edge.js";
+import { createRpcProxy } from "./src/rpc-proxy.js";
 import {
   resolveNovncTarget,
   safeProxyHeaders,
@@ -472,14 +473,16 @@ export default defineConfig(({ mode }) => {
   const desktopStackToken =
     process.env.RAKAZO_DESKTOP_STACK_TOKEN ?? rootEnv.RAKAZO_DESKTOP_STACK_TOKEN ?? "";
   const imageTag = process.env.RAKAZO_IMAGE_TAG ?? rootEnv.RAKAZO_IMAGE_TAG ?? "edge";
+  const resolveWebClientIp = createClientIpResolver(
+    parseTrustedProxies(process.env.WEB_TRUSTED_PROXIES ?? rootEnv.WEB_TRUSTED_PROXIES),
+  );
   const sharedPageEdge = pageShareEdge(
     api,
     pageSharePaths,
     () => screenLog.warn("Shared Page proxy unavailable"),
-    createClientIpResolver(
-      parseTrustedProxies(process.env.WEB_TRUSTED_PROXIES ?? rootEnv.WEB_TRUSTED_PROXIES),
-    ),
+    resolveWebClientIp,
   );
+  const rpcProxy = createRpcProxy(api, resolveWebClientIp);
   return {
     plugins: [
       {
@@ -537,7 +540,7 @@ export default defineConfig(({ mode }) => {
       allowedHosts,
       proxy: {
         "/api": { target: api, changeOrigin: true },
-        "/rpc": { target: api, changeOrigin: true },
+        "/rpc": rpcProxy,
       },
     },
     preview: {
@@ -546,7 +549,7 @@ export default defineConfig(({ mode }) => {
       allowedHosts,
       proxy: {
         "/api": { target: api, changeOrigin: true },
-        "/rpc": { target: api, changeOrigin: true },
+        "/rpc": rpcProxy,
       },
     },
   };

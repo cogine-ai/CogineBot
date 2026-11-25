@@ -24,11 +24,15 @@ describe.each(caddyfiles)("%s HSTS", (filename) => {
     expect(httpsSite).not.toContain("frame-ancestors 'none'");
   });
 
-  it("replaces the client-supplied forwarding header on API requests", () => {
-    expect(httpsSite).toContain(
-      filename.startsWith("Caddyfile.cloudflare")
-        ? "header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}"
-        : "header_up X-Forwarded-For {remote_host}",
-    );
-  });
+  it.each(["api", "rpc"])(
+    "replaces the client-supplied forwarding header on %s requests",
+    (route) => {
+      const handler = httpsSite.split(`\n\thandle /${route}/* {`)[1]?.split("\n\thandle ")[0];
+      expect(handler).toContain(
+        filename.startsWith("Caddyfile.cloudflare")
+          ? "header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}"
+          : "header_up X-Forwarded-For {remote_host}",
+      );
+    },
+  );
 });

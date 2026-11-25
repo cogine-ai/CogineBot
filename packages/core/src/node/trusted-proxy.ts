@@ -86,3 +86,26 @@ export function createClientIpResolver(
     return hops[0] ?? ip;
   };
 }
+
+export type ClientIpResolver = ReturnType<typeof createClientIpResolver>;
+
+/** A source address is optional for audit, even when a configured proxy uses DNS. */
+export async function resolveClientIpForAudit(
+  resolve: ClientIpResolver,
+  source: Parameters<ClientIpResolver>[0],
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      resolve(source),
+      new Promise<undefined>((done) => {
+        timer = setTimeout(() => done(undefined), 250);
+        timer.unref();
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
