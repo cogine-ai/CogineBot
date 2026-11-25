@@ -264,9 +264,9 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
     ).toEqual(new Date("2027-03-04T08:00:00Z"));
   });
 
-  it.each([false, true])(
-    "rechecks a late retry only if its intent was not revoked (%s)",
-    async (revoked) => {
+  it.each(["expired", "revoked", "superseded by an event"])(
+    "settles the original round when the retry is %s",
+    async (outcome) => {
       const f = await failingRoutine();
       const due = new Date("2027-03-02T00:20:00Z");
       for (let i = 0; i < 4; i++) await f.record();
@@ -291,13 +291,31 @@ describePostgres("routine timer coalescing (PostgreSQL)", () => {
       try {
         await handlers["routine.retry"]({ runId: fifth.id });
         expect((await f.read()).active).toBe(true);
+        const revoked = outcome === "revoked";
         if (revoked) {
           await system.$transaction(async (tx) => {
             await lockRoutineRetryThread(tx, identity.threadId);
             await revokePendingRoutineRetries(tx, identity);
           });
         }
-        vi.setSystemTime(new Date("2027-03-02T00:35:00Z"));
+        if (outcome === "superseded by an event") {
+          const event = await f.record(
+            {
+              clientNonce: `native-event:fixture:${f.routine.id}`,
+              status: "completed",
+              error: null,
+              routineFailureCause: null,
+            },
+            false,
+          );
+          await system.routine.update({
+            where: { id: f.routine.id },
+            data: { latestRunId: event.id },
+          });
+        }
+        vi.setSystemTime(
+          outcome === "superseded by an event" ? due : new Date("2027-03-02T00:35:00Z"),
+        );
         await handlers["routine.retry"]({ runId: fifth.id });
         await handlers["routine.retry"]({ runId: fifth.id });
         expect((await f.read()).active).toBe(revoked);

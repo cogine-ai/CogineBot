@@ -237,8 +237,8 @@ export async function claimRoutineRetry(
   now?: Date,
   verifyNativeSource?: VerifyRoutineRetryNativeSource,
 ): Promise<
-  | { runId: string; expiredSource?: never }
-  | { runId?: never; expiredSource: RetrySource & { routineId: string; retryOfRunId: null } }
+  | { runId: string; settledSource?: never }
+  | { runId?: never; settledSource: RetrySource & { routineId: string; retryOfRunId: null } }
   | null
 > {
   return withTransactionRetry(() =>
@@ -288,18 +288,21 @@ export async function claimRoutineRetry(
 
       const routine = await readRetryRoutine(tx, source);
       const scope = { spaceId: source.spaceId, userId: source.userId };
+      const ownsRetry = routineOwnsRetry(routine, source.id);
+      const mayRecheckStreak = Boolean(routine?.active && source.routineFailureCause);
       if (
-        !routineOwnsRetry(routine, source.id) ||
-        (!source.routineFailureCause && !retryWindowOpen(routine, now ?? new Date()))
+        !routine ||
+        (!mayRecheckStreak && (!ownsRetry || !retryWindowOpen(routine, now ?? new Date())))
       )
         return null;
       if (!(await retryAuthorizationIsCurrent(tx, candidate, source, verifyNativeSource)))
         return null;
       // Authorization can wait on locks long enough to enter the next-run window.
-      if (!retryWindowOpen(routine, now ?? new Date())) {
-        return source.routineFailureCause
+      // An event can become the latest Run without changing a completed timer round.
+      if (!ownsRetry || !retryWindowOpen(routine, now ?? new Date())) {
+        return mayRecheckStreak
           ? {
-              expiredSource: {
+              settledSource: {
                 ...scope,
                 id: source.id,
                 botId: source.botId,

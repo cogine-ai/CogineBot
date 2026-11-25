@@ -186,9 +186,9 @@ export function createBackgroundJobHandlers(deps: {
       );
       // A committed queued Run is recovered by the ordinary Run reconciler.
       if (retry?.runId) await deps.jobs.enqueue(runContinueJob(retry.runId));
-      // Only the transaction that consumed an expired, authorized intent may
-      // use it as evidence. A revoked intent has no such result.
-      if (retry?.expiredSource) await pauseRoutineAfterRepeatedFailures(deps, retry.expiredSource);
+      // Only the transaction that consumed an authorized intent can settle its
+      // round this way. A revoked intent has no such result.
+      if (retry?.settledSource) await pauseRoutineAfterRepeatedFailures(deps, retry.settledSource);
     }),
     "computer.update": asOwner(updatedComputer, async ({ updateId }) => {
       await performComputerUpdate(deps, updateId);
