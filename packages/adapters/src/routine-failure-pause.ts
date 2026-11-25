@@ -87,6 +87,7 @@ async function failingStreak(
       AND retry."routineId" = root."routineId" AND retry."spaceId" = root."spaceId"
       AND retry."userId" = root."userId" AND retry."botId" = root."botId"
       AND retry."threadId" = root."threadId" AND retry.trigger = 'routine'
+      AND NOT retry."routineRetrySkipped"
     WHERE root."routineId" = ${routine.id} AND root."userId" = ${routine.userId}
       AND root."spaceId" = ${routine.spaceId} AND root."botId" = ${routine.botId}
       AND root.trigger = 'routine' AND root."retryOfRunId" IS NULL

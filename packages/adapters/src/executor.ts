@@ -4399,11 +4399,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             return;
           }
         }
-        const execution: {
-          started: boolean;
-          cancellationSeq?: number;
-          continuationRunId?: string;
-        } =
+        const execution: Awaited<ReturnType<typeof beginRoutineRetryExecution>> =
           run.retryOfRunId && !run.startedAt
             ? await beginRoutineRetryExecution(
                 deps.prisma,
@@ -4426,6 +4422,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               };
         if (!execution.started) {
           await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
+          const pause =
+            execution.settledOriginal && run.routineId
+              ? pauseRoutineAfterRepeatedFailures(deps, { ...run, routineId: run.routineId })
+              : undefined;
           if (execution.cancellationSeq !== undefined) {
             await deps.events
               .notify(run.threadId, execution.cancellationSeq)
@@ -4436,6 +4436,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               .enqueue(runContinueJob(execution.continuationRunId))
               .catch((error) => getLogger().error("steering continuation enqueue", error));
           }
+          await pause;
           return;
         }
         getLogger().info("run.execution_started", {

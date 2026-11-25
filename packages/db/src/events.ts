@@ -2594,13 +2594,18 @@ export async function beginRoutineRetryExecution(
   prisma: PrismaClient,
   input: RoutineRetryExecutionInput,
   verifyNativeSource?: VerifyRoutineRetryNativeSource,
-): Promise<{ started: boolean; cancellationSeq?: number; continuationRunId?: string }> {
+): Promise<{
+  started: boolean;
+  cancellationSeq?: number;
+  continuationRunId?: string;
+  settledOriginal?: true;
+}> {
   return withTransactionRetry(() =>
     prisma.$transaction(async (tx) => {
       const decision = await lockRoutineRetryExecution(tx, input, verifyNativeSource);
       if (!decision) return { started: false };
       const fence = firstRoutineRetryExecutionFence(input);
-      if (decision.allowed) {
+      if (decision.disposition === "attempt") {
         const mark = await tx.run.updateMany({
           where: fence,
           data: { startedAt: input.startedAt },
@@ -2608,6 +2613,7 @@ export async function beginRoutineRetryExecution(
         return { started: mark.count === 1 };
       }
       const { child } = decision;
+      const settledOriginal = decision.disposition === "settle";
       const canContinueSteering = await routineRetrySteeringTargetIsCurrent(tx, child);
       // History writers lock Thread before Run. The prior thread advisory also
       // excludes a concurrent Stop or clear from admitting a replacement.
@@ -2616,6 +2622,7 @@ export async function beginRoutineRetryExecution(
         where: fence,
         data: {
           status: "cancelled",
+          ...(settledOriginal && { routineRetrySkipped: true }),
           completedAt: new Date(),
           leaseOwner: null,
           leaseExpiresAt: null,
@@ -2647,6 +2654,7 @@ export async function beginRoutineRetryExecution(
       return {
         started: false,
         cancellationSeq: event.seq,
+        ...(settledOriginal && { settledOriginal: true as const }),
         ...(continuationRunId ? { continuationRunId } : {}),
       };
     }),
