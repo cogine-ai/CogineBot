@@ -34,10 +34,10 @@ type Context = {
 };
 type Deps = Pick<RouterDeps, "prisma" | "secrets" | "pluginRead"> & {
   assertEndpoint: (endpoint: string, actor: Actor) => Promise<void>;
-  uninstall: (
+  cleanupFailedInstall: (
     actor: Actor,
     input: { installId: string; expectedRevision: number },
-  ) => Promise<PluginInstallReceipt>;
+  ) => Promise<{ receipt: PluginInstallReceipt; removedByCleanup: boolean }>;
 };
 const includeChildren = pluginReceiptChildren;
 type Row = Prisma.CapabilityInstallGetPayload<{ include: typeof includeChildren }>;
@@ -303,16 +303,17 @@ export function createPluginInstallsService(deps: Deps) {
         message: "Could not confirm installation. Check its status before retrying.",
       });
     }
-    if (row.status === "installed" || row.status === "removed" || row.status === "failed")
+    // An explicit uninstall that is still running owns its own settlement.
+    if (row.status !== "installing" && row.status !== "cleanup_failed")
       return pluginInstallReceipt(row);
     try {
-      const result = await deps.uninstall(context.actor, {
+      const { receipt, removedByCleanup } = await deps.cleanupFailedInstall(context.actor, {
         installId: id,
         expectedRevision: row.revision,
       });
-      if (result.status !== "removed") return result;
+      if (!removedByCleanup) return receipt;
       await deps.prisma.capabilityInstall.updateMany({
-        where: { id, installedAt: null, status: "removed" },
+        where: { id, installedAt: null, status: "removed", revision: receipt.revision },
         data: { status: "failed", revision: { increment: 1 } },
       });
     } catch {

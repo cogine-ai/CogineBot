@@ -14,6 +14,7 @@ import {
   isPluginSecretReferenced,
   lockPluginInstall,
   readPluginCleanupRefs,
+  recordPluginUninstallAudit,
 } from "@rakazo/db";
 import { dismissMcpServerApprovals } from "./mcp-approval.js";
 import { pluginInstallReceipt, pluginReceiptChildren } from "./plugin-install-receipt.js";
@@ -199,10 +200,26 @@ async function detachConnections(tx: Tx, owner: Scope, serverIds: string[]) {
 
 export { isPluginSecretReferenced } from "@rakazo/db";
 
+async function settleUninstall(
+  tx: Tx,
+  row: { id: string; status: string },
+  status: "removed" | "cleanup_failed",
+) {
+  const updated = await tx.capabilityInstall.update({
+    where: { id: row.id },
+    data: { status, revision: { increment: 1 } },
+    include: includeChildren,
+  });
+  return {
+    receipt: pluginInstallReceipt(updated),
+    transition: row.status === status ? null : { row: updated, status },
+  };
+}
+
 /** Durable disable precedes fallible remote cleanup. Removed rows retain their nonce receipt. */
 export function createPluginUninstaller(deps: Deps) {
-  return {
-    async uninstall(actor: Actor, input: PluginUninstallInput) {
+  const service = {
+    async uninstall(actor: Actor, input: PluginUninstallInput, audit: boolean) {
       const phase = await deps.prisma.$transaction(async (tx) => {
         await lockPluginInstall(tx, input.installId);
         const row = await authorized(tx, actor, input.installId);
@@ -214,6 +231,7 @@ export function createPluginUninstaller(deps: Deps) {
             seqs: [] as Seq[],
             resumes: [] as string[],
             serverIds: [] as string[],
+            started: false,
           };
         if (row.revision !== input.expectedRevision)
           throw new ORPCError("CONFLICT", { message: "Plugin changed; reload its status." });
@@ -267,8 +285,17 @@ export function createPluginUninstaller(deps: Deps) {
           },
           include: includeChildren,
         });
-        return { row: updated, owner, serverIds, seqs, resumes: approval.resumes };
+        return {
+          row: updated,
+          owner,
+          serverIds,
+          seqs,
+          resumes: approval.resumes,
+          started: row.status !== "uninstalling",
+        };
       });
+      if (audit && phase.started)
+        await recordPluginUninstallAudit(deps.prisma, actor, phase.row, "uninstalling");
       deps.mcpOAuth?.discardPluginPending(phase.serverIds, phase.owner);
       for (const event of phase.seqs)
         await deps.events.notify(event.threadId, event.seq).catch(() => undefined);
@@ -276,7 +303,9 @@ export function createPluginUninstaller(deps: Deps) {
         await deps.jobs
           ?.enqueue({ name: "run.continue", payload: { runId } })
           .catch(() => undefined);
-      if (phase.row.status === "removed") return pluginInstallReceipt(phase.row);
+      if (phase.row.status === "removed")
+        return { receipt: pluginInstallReceipt(phase.row), transition: null };
+      let final: Awaited<ReturnType<typeof settleUninstall>>;
       try {
         // Each item is committed separately. An unknown acknowledgement is safe to retry:
         // SecretStore.delete treats already-absent resources as an idempotent success.
@@ -334,10 +363,11 @@ export function createPluginUninstaller(deps: Deps) {
           );
           if (!remaining) break;
         }
-        return await deps.prisma.$transaction(async (tx) => {
+        final = await deps.prisma.$transaction(async (tx) => {
           await lockPluginInstall(tx, input.installId);
           const row = await authorized(tx, actor, input.installId);
-          if (row.status === "removed") return pluginInstallReceipt(row);
+          if (row.status === "removed")
+            return { receipt: pluginInstallReceipt(row), transition: null };
           if (readPluginCleanupRefs(row.cleanupRefs).length)
             throw new Error("Cleanup is incomplete");
           const ids = row.mcpServers.map((server) => server.id);
@@ -347,28 +377,34 @@ export function createPluginUninstaller(deps: Deps) {
           if (foreign) throw new Error("A linked account is outside this installation");
           await tx.connection.deleteMany({ where: { ...phase.owner, mcpServerId: { in: ids } } });
           await tx.mcpServer.deleteMany({ where: { ...phase.owner, installId: row.id } });
-          return pluginInstallReceipt(
-            await tx.capabilityInstall.update({
-              where: { id: row.id },
-              data: { status: "removed", revision: { increment: 1 } },
-              include: includeChildren,
-            }),
-          );
+          return settleUninstall(tx, row, "removed");
         });
       } catch {
-        return deps.prisma.$transaction(async (tx) => {
+        final = await deps.prisma.$transaction(async (tx) => {
           await lockPluginInstall(tx, input.installId);
           const row = await authorized(tx, actor, input.installId);
-          if (row.status === "removed") return pluginInstallReceipt(row);
-          return pluginInstallReceipt(
-            await tx.capabilityInstall.update({
-              where: { id: row.id },
-              data: { status: "cleanup_failed", revision: { increment: 1 } },
-              include: includeChildren,
-            }),
-          );
+          if (row.status === "removed")
+            return { receipt: pluginInstallReceipt(row), transition: null };
+          return settleUninstall(tx, row, "cleanup_failed");
         });
       }
+      if (audit && final.transition)
+        await recordPluginUninstallAudit(
+          deps.prisma,
+          actor,
+          final.transition.row,
+          final.transition.status,
+        );
+      return final;
+    },
+  };
+  return {
+    async uninstall(actor: Actor, input: PluginUninstallInput) {
+      return (await service.uninstall(actor, input, true)).receipt;
+    },
+    async cleanupFailedInstall(actor: Actor, input: PluginUninstallInput) {
+      const { receipt, transition } = await service.uninstall(actor, input, false);
+      return { receipt, removedByCleanup: transition?.status === "removed" };
     },
   };
 }

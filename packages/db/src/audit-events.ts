@@ -133,6 +133,34 @@ export function recordAutoReviewPreferenceAudit(
   ]);
 }
 
+const pluginUninstallEvents = {
+  uninstalling: { action: "plugin.uninstall.started", outcome: "pending" },
+  cleanup_failed: { action: "plugin.uninstall.cleanup_failed", outcome: "error" },
+  removed: { action: "plugin.uninstall.removed", outcome: "success" },
+} as const;
+
+export function recordPluginUninstallAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  transition: { id: string; revision: number; updatedAt: Date },
+  status: keyof typeof pluginUninstallEvents,
+): Promise<void> {
+  const { action, outcome } = pluginUninstallEvents[status];
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      id: `plugin.uninstall:${transition.id}:${transition.revision}`,
+      createdAt: transition.updatedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action,
+      targetType: "plugin_install",
+      targetId: transition.id,
+      outcome,
+      metadata: { revision: transition.revision },
+    },
+  ]);
+}
+
 type CredentialAuditTarget =
   | "bot_secret"
   | "webhook"

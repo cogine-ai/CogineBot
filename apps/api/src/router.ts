@@ -1412,7 +1412,7 @@ export function createRouter(deps: RouterDeps) {
   const pluginUninstaller = createPluginUninstaller({ ...deps, mcpOAuth });
   const pluginInstalls = createPluginInstallsService({
     ...deps,
-    uninstall: pluginUninstaller.uninstall,
+    cleanupFailedInstall: pluginUninstaller.cleanupFailedInstall,
     assertEndpoint: (endpoint, actor) => assertMcpRemoteEndpoint(endpoint, actor, deps),
   });
   const pluginMarketplace = createPluginMarketplace(deps.pluginRead);
