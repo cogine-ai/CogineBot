@@ -82,6 +82,8 @@ function fixture({ stdio = false, stdioEnabled = true } = {}) {
       update: vi.fn(async ({ data }: { data: { cleanupRefs: [] } }) => Object.assign(parent, data)),
     },
     mcpOAuthSession: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+    space: { findUniqueOrThrow: vi.fn(async () => ({ organizationId: "fixture-org" })) },
+    auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
     secret: {
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) => rows.get(where.id) ?? null),
       create: vi.fn(async ({ data }: { data: { id: string; ciphertext: string } }) => {
@@ -647,6 +649,7 @@ describe("MCP remote endpoint updates", () => {
     expect(f.server.secretId).toBe("old");
     expect(f.secrets.put).not.toHaveBeenCalled();
     expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it("keeps named blank headers and replaces the supplied header set for the same target", async () => {
@@ -663,6 +666,7 @@ describe("MCP remote endpoint updates", () => {
       ...f.material,
       headers: { authorization: "old", "X-New": "new" },
     });
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it.each(["/mcp/", "/other", "/mcp?mode=new"])(
@@ -683,6 +687,24 @@ describe("MCP remote endpoint updates", () => {
       expect(f.prisma.mcpOAuthSession.deleteMany).toHaveBeenCalledWith({
         where: { serverId: f.server.id, userId: actor.userId, spaceId: actor.spaceId },
       });
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [
+          {
+            id: expect.any(String),
+            createdAt: f.server.updatedAt,
+            organizationId: "fixture-org",
+            spaceId: actor.spaceId,
+            actorId: actor.userId,
+            actorType: "user",
+            action: "credential.changed",
+            targetType: "mcp_server",
+            targetId: f.server.id,
+            outcome: "success",
+            metadata: {},
+          },
+        ],
+      });
     },
   );
 
@@ -701,6 +723,10 @@ describe("MCP remote endpoint updates", () => {
       });
       expect(f.server.secretId).toBeNull();
       expect(f.secrets.put).not.toHaveBeenCalled();
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledWith({
+        skipDuplicates: true,
+        data: [expect.objectContaining({ action: "credential.deleted" })],
+      });
     },
   );
 
@@ -719,6 +745,7 @@ describe("MCP remote endpoint updates", () => {
       expect(f.server).toMatchObject({ endpoint: config.endpoint, secretId: "old", revision: 1 });
       expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
       expect(f.secrets.put).not.toHaveBeenCalled();
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
     },
   );
 
@@ -749,7 +776,31 @@ describe("MCP remote endpoint updates", () => {
     ).rejects.toThrow();
     expect(f.server).toMatchObject({ endpoint: config.endpoint, secretId: "old", revision: 1 });
     expect(f.prisma.mcpOAuthSession.deleteMany).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "fixture-new-credential"])(
+    "audits a credential-free server move only when new material is attached (%s)",
+    async (secret) => {
+      const f = fixture();
+      f.server.secretId = null;
+      f.rows.clear();
+      const input = {
+        id: f.server.id,
+        config: { ...config, endpoint: "https://tools.example.test/next", secret },
+      };
+      await f.client.mcp.servers.update(input);
+      await f.client.mcp.servers.update(input);
+      if (!secret) {
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        return;
+      }
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [expect.objectContaining({ action: "credential.created" })],
+      });
+    },
+  );
 });
 
 describe("revision-bound MCP connection patches", () => {
