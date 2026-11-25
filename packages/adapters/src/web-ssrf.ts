@@ -262,10 +262,13 @@ async function followRedirects(
   }
 
   if (!response.ok) {
-    if (!state.signal.aborted && response.status >= 400 && response.status < 600) {
-      state.onHttpErrorStatus?.(response.status);
+    try {
+      if (!state.signal.aborted && response.status >= 400 && response.status < 600) {
+        state.onHttpErrorStatus?.(response.status);
+      }
+    } finally {
+      await cancelResponseBody(response, state.signal);
     }
-    await cancelResponseBody(response, state.signal);
     throw new Error(`Request failed: HTTP ${response.status}`);
   }
 
