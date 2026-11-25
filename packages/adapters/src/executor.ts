@@ -221,6 +221,7 @@ import {
   recheckDelegatedApprovalDispatchInTransaction,
   recordAutomaticApprovalAudit,
   recordConnectionActivationAudit,
+  recordShellCommandCompletionAudit,
   recordUsage,
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
@@ -9037,7 +9038,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
               exitCode: null,
               output: "",
             });
-            let terminalExitCode: number | undefined;
+            const commandId = randomUUID();
+            const startedAt = Date.now();
+            let verifiedExit: { code: number; happenedAt: Date } | undefined;
+            let backgroundExit = false;
+            const auditExit = () => {
+              if (!verifiedExit || !Number.isInteger(verifiedExit.code)) return;
+              return recordShellCommandCompletionAudit(deps.prisma, run, {
+                executionId: commandId,
+                happenedAt: verifiedExit.happenedAt,
+                durationMs: Math.max(0, verifiedExit.happenedAt.getTime() - startedAt),
+                outcome: verifiedExit.code === 0 ? "success" : "error",
+              });
+            };
             try {
               let latestOutput = "";
               let lastPublishedAt = 0;
@@ -9084,7 +9097,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       // (providerRef via toComputerRef). Scope launches to this run for cancel teardown.
                       storedComputer.id,
                       runId,
-                      randomUUID(),
+                      commandId,
                       command,
                     ],
                     cwd,
@@ -9100,7 +9113,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 {
                   secrets: runSecrets,
                   onVerifiedExit: (code) => {
-                    terminalExitCode = code;
+                    verifiedExit = { code, happenedAt: new Date() };
                   },
                   onOutput: (snapshot) => {
                     const output = commandOutput(snapshot, true);
@@ -9109,7 +9122,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               );
               if (observed.completion) {
+                // The command may finish after its originating Run stops waiting for it.
+                backgroundExit = true;
+                void observed.completion.then(auditExit, auditExit);
                 const completion = observed.completion.then(async (final) => {
+                  const terminalExitCode = verifiedExit?.code;
                   if (terminalExitCode !== undefined)
                     toolOutcomes.set(executionId, terminalExitCode === 0 ? "succeeded" : "failed");
                   clearPublishTimer();
@@ -9139,6 +9156,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     void completion
                       .catch(() => undefined)
                       .then(async () => {
+                        const terminalExitCode = verifiedExit?.code;
                         if (terminalExitCode === undefined) return;
                         const updated = await deps.prisma.externalEffect.updateMany({
                           where: {
@@ -9171,12 +9189,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 exitCode: redacted.code,
                 output: commandOutput(redacted, false).slice(-COMPUTER_COMMAND_OUTPUT_MAX_CHARS),
               });
+              const terminalExitCode = verifiedExit?.code;
               if (terminalExitCode === undefined) return finish(redacted);
               const returned = await finish(redacted, terminalExitCode === 0 ? "result" : "error");
               if (terminalExitCode === 0 && returned === redacted)
                 observedShellResults.add(redacted);
               return returned;
             } catch (error) {
+              const terminalExitCode = verifiedExit?.code;
               const message = redactSecrets(
                 error instanceof Error ? error.message : "command failed",
                 runSecrets,
@@ -9196,6 +9216,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 await persistEffectResult({ error: message }, "error").catch(() => undefined);
               }
               throw error;
+            } finally {
+              if (!backgroundExit) await auditExit();
             }
           }
           if (name === "open_path") {
