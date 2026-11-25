@@ -1029,6 +1029,32 @@ describe("delegated shell approval receipts", () => {
     await f.executor.continueRun(f.runRecord.id, "worker-1");
     expect(run).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledTimes(2);
+    const verifiedExecutionId = execute.mock.calls[0]![1].argv.at(-2);
+    expect(verifiedExecutionId).not.toBe(execute.mock.calls[1]![1].argv.at(-2));
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+      skipDuplicates: true,
+      data: [
+        {
+          id: `tool.completed:${verifiedExecutionId}`,
+          createdAt: expect.any(Date),
+          actorType: "bot",
+          actorId: f.runRecord.botId,
+          organizationId: "org-1",
+          spaceId: f.runRecord.spaceId,
+          action: "tool.completed",
+          targetType: "tool_execution",
+          targetId: verifiedExecutionId,
+          runId: f.runRecord.id,
+          threadId: f.runRecord.threadId,
+          outcome: "success",
+          metadata: {
+            name: "shell",
+            executionId: verifiedExecutionId,
+            durationMs: expect.any(Number),
+          },
+        },
+      ],
+    });
     expect(
       f.append.mock.calls
         .filter(([event]) => event.type === "agent.tool.completed")
@@ -1037,6 +1063,68 @@ describe("delegated shell approval receipts", () => {
       expect.objectContaining({ executionId: "repeated-id", outcome: "unknown" }),
       expect.objectContaining({ executionId: "repeated-id", outcome: "succeeded" }),
     ]);
+  });
+
+  it("keeps the verified command result when organization audit storage is unavailable", async () => {
+    const execute = vi.fn<SandboxProvider["execute"]>(async function* () {
+      yield { type: "stdout", data: "fixture" };
+      yield { type: "exit", code: 0, terminalStateVerified: true };
+    });
+    const f = shellFixture(execute, { reportToolCompletion: true });
+    f.prisma.auditEvent.createMany.mockRejectedValueOnce(new Error("Synthetic audit outage"));
+    f.setCalls([{ args: { command: "printf fixture" }, executionId: "shell-storage-outage" }]);
+    await f.run();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
+    expect(f.results.at(-1)).toMatchObject({ code: 0, stdout: "fixture" });
+    expect(f.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "agent.tool.completed",
+        payload: expect.objectContaining({
+          executionId: "shell-storage-outage",
+          outcome: "succeeded",
+        }),
+      }),
+    );
+  });
+
+  it("audits a verified rejection after the shell has returned a running snapshot", async () => {
+    let releaseExit!: () => void;
+    const allowExit = new Promise<void>((resolve) => {
+      releaseExit = resolve;
+    });
+    const execute = vi.fn<SandboxProvider["execute"]>(async function* () {
+      yield { type: "stdout", data: "fixture" };
+      await allowExit;
+      throw new SandboxCommandExitError(2, new Error("Fixture command failed"));
+    });
+    const f = shellFixture(execute, { reportToolCompletion: true });
+    f.setCalls([{ args: { command: "printf fixture" }, executionId: "delayed-exit" }]);
+    vi.useFakeTimers();
+    try {
+      const execution = f.run();
+      await vi.advanceTimersByTimeAsync(1_001);
+      await execution;
+      expect(f.results.at(-1)).toMatchObject({ code: null, running: true });
+      expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+      releaseExit();
+      await vi.waitFor(() =>
+        expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              action: "tool.completed",
+              runId: f.runRecord.id,
+              outcome: "error",
+            }),
+          ],
+        }),
+      );
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      releaseExit();
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -1101,6 +1189,20 @@ describe("delegated shell approval receipts", () => {
         if (running) await vi.advanceTimersByTimeAsync(1_001);
         await execution;
         expect(execute).toHaveBeenCalledOnce();
+        const writes = f.prisma.auditEvent.createMany;
+        const executionId = execute.mock.calls[0]![1].argv.at(-2);
+        const verified = code !== undefined && !unverified;
+        const expectShellAudit = () =>
+          expect(writes).toHaveBeenCalledExactlyOnceWith({
+            skipDuplicates: true,
+            data: [
+              expect.objectContaining({
+                id: `tool.completed:${executionId}`,
+                action: "tool.completed",
+                outcome: code === 0 ? "success" : "error",
+              }),
+            ],
+          });
         const modelResult = reportedError
           ? { error: "command exited" }
           : { code: running ? null : (code ?? 0), stdout: "fixture", stderr: "" };
@@ -1118,6 +1220,7 @@ describe("delegated shell approval receipts", () => {
           );
         }
         if (running) {
+          expect(writes).not.toHaveBeenCalled();
           expect(effect).toMatchObject({
             status: "completed",
             result: { ...modelResult, running: true },
@@ -1153,10 +1256,14 @@ describe("delegated shell approval receipts", () => {
         } else {
           expect(f.notifyDelegatedApprovalParent).not.toHaveBeenCalled();
         }
+        if (verified) await vi.waitFor(expectShellAudit);
+        else expect(writes).not.toHaveBeenCalled();
         f.setCalls([{ args, executionId: "replay" }]);
         await f.run();
         expect(f.results.at(-1)).toMatchObject(modelResult);
         expect(execute).toHaveBeenCalledOnce();
+        if (verified) expectShellAudit();
+        else expect(writes).not.toHaveBeenCalled();
         if (running || code === 0) {
           expect(f.append).toHaveBeenCalledWith(
             expect.objectContaining({

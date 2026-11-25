@@ -467,6 +467,37 @@ export function recordCloudAgentApprovalAudit(
   });
 }
 
+export function recordShellCommandCompletionAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  run: { id: string; spaceId: string; threadId: string; botId: string },
+  completion: {
+    executionId: string;
+    happenedAt: Date;
+    durationMs: number;
+    outcome: "success" | "error";
+  },
+): Promise<void> {
+  return appendAuditEvents(prisma, run.spaceId, [
+    {
+      id: `tool.completed:${completion.executionId}`,
+      createdAt: completion.happenedAt,
+      actorType: "bot",
+      actorId: run.botId,
+      action: "tool.completed",
+      targetType: "tool_execution",
+      targetId: completion.executionId,
+      runId: run.id,
+      threadId: run.threadId,
+      outcome: completion.outcome,
+      metadata: {
+        name: "shell",
+        executionId: completion.executionId,
+        durationMs: completion.durationMs,
+      },
+    },
+  ]);
+}
+
 export function auditEventRetentionDays(value: string | undefined): number {
   const days = Number(value);
   return Number.isSafeInteger(days) && days >= 1 && days <= 3650 ? days : 365;
