@@ -101,6 +101,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
   let retryMemorySaveFor: string | undefined;
   let rejectMcpApprovalFor: string | undefined;
   let rejectMcpToolPolicyFor: string | undefined;
+  let rejectMcpCredentialRemovalFor: string | undefined;
   let botReads = 0;
 
   beforeAll(async () => {
@@ -155,6 +156,14 @@ describePostgres("trusted request contexts on a restricted single-connection poo
             if (rejectMcpToolPolicyFor && args.where?.id === rejectMcpToolPolicyFor)
               throw new Error("Synthetic MCP tool policy rollback");
             return updated;
+          },
+        },
+        secret: {
+          async deleteMany({ args, query }) {
+            const deleted = await query(args);
+            if (rejectMcpCredentialRemovalFor && args.where?.id === rejectMcpCredentialRemovalFor)
+              throw new Error("Synthetic MCP credential removal rollback");
+            return deleted;
           },
         },
         spaceMemoryConfig: {
@@ -779,6 +788,87 @@ describePostgres("trusted request contexts on a restricted single-connection poo
         allowedTools: ["read"],
       });
     }
+  });
+
+  it("audits local credential deletion only after the MCP server removal commits", async () => {
+    const { actor, cookie } = await account("Mcp-removal-audit");
+    const { spaceId, userId } = actor;
+    const stored = await store.put(JSON.stringify({ secret: "fixture-mcp-secret" }), {
+      spaceId,
+      userId,
+      operationId: "mcp-removal-fixture",
+      traceId: "mcp-removal-fixture",
+      signal: new AbortController().signal,
+    });
+    const secret = await owner.prisma.secret.create({
+      data: { id: stored.id, spaceId, userId, kind: "mcp", ciphertext: stored.ciphertext },
+    });
+    const createServer = (slug: string, secretId?: string) =>
+      owner.prisma.mcpServer.create({
+        data: {
+          spaceId,
+          userId,
+          slug,
+          name: "MCP removal fixture",
+          transport: "streamable_http",
+          endpoint: "https://mcp.example.test/tools",
+          secretId,
+        },
+      });
+    const server = await createServer("fixture-with-credential", secret.id);
+    const credentialFree = await createServer("fixture-without-credential");
+    const audit = () =>
+      owner.prisma.auditEvent.findMany({
+        where: { targetId: { in: [server.id, credentialFree.id] } },
+        select: {
+          action: true,
+          actorType: true,
+          actorId: true,
+          spaceId: true,
+          organizationId: true,
+          targetType: true,
+          targetId: true,
+          outcome: true,
+          metadata: true,
+        },
+      });
+    const input = { id: server.id };
+    expect((await raw(second.cookie, "mcp/servers/remove", input, spaceId)).status).toBe(403);
+    rejectMcpCredentialRemovalFor = secret.id;
+    try {
+      expect((await raw(cookie, "mcp/servers/remove", input)).status).toBe(500);
+    } finally {
+      rejectMcpCredentialRemovalFor = undefined;
+    }
+    expect(await owner.prisma.mcpServer.findUnique({ where: input })).toEqual(server);
+    expect(await owner.prisma.secret.findUnique({ where: { id: secret.id } })).toEqual(secret);
+    expect(await audit()).toEqual([]);
+
+    await expect(rpc(cookie, "mcp/servers/remove", input)).resolves.toEqual({ ok: true });
+    expect(await owner.prisma.mcpServer.findUnique({ where: input })).toBeNull();
+    expect(await owner.prisma.secret.findUnique({ where: { id: secret.id } })).toBeNull();
+    expect((await raw(cookie, "mcp/servers/remove", input)).ok).toBe(false);
+    await rpc(cookie, "mcp/servers/remove", { id: credentialFree.id });
+    expect(
+      await owner.prisma.mcpServer.findUnique({ where: { id: credentialFree.id } }),
+    ).toBeNull();
+
+    const { organizationId } = await owner.prisma.space.findUniqueOrThrow({
+      where: { id: spaceId },
+    });
+    expect(await audit()).toEqual([
+      {
+        action: "credential.deleted",
+        actorType: "user",
+        actorId: userId,
+        spaceId,
+        organizationId,
+        targetType: "mcp_server",
+        targetId: server.id,
+        outcome: "success",
+        metadata: {},
+      },
+    ]);
   });
 
   it("audits only committed changes to the shared MCP tool policy", async () => {

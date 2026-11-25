@@ -6769,9 +6769,9 @@ export function createRouter(deps: RouterDeps) {
           }
           // Assignments cascade; the encrypted credential must go with the server.
           // Cards are closed first, including ones that were never assigned.
-          const seqs = await deps.prisma.$transaction(async (tx) => {
+          const { seqs, deletedCredential } = await deps.prisma.$transaction(async (tx) => {
             await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
-            const painted = await dismissMcpServerApprovals(
+            const seqs = await dismissMcpServerApprovals(
               onboardingDeps,
               context.actor,
               input.id,
@@ -6781,13 +6781,19 @@ export function createRouter(deps: RouterDeps) {
               where,
               select: { secretId: true },
             });
-            if (secretId) {
-              await tx.secret.deleteMany({
-                where: { id: secretId, spaceId, userId },
-              });
-            }
-            return painted;
+            const deleted = secretId
+              ? await tx.secret.deleteMany({ where: { id: secretId, spaceId, userId } })
+              : null;
+            return { seqs, deletedCredential: deleted?.count === 1 };
           });
+          if (deletedCredential)
+            await recordCredentialAudit(
+              deps.prisma,
+              context.actor,
+              { type: "mcp_server", ids: [input.id] },
+              "credential.deleted",
+              new Date(),
+            );
           for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
           return { ok: true as const };
         }),
