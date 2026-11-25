@@ -9417,7 +9417,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const trustedSites = await trust.loadTrustedSites();
             let blockedRequest = false;
             let reviewAdmission: Date | undefined;
-            let responseStatus: number | undefined;
+            let observedResponse:
+              | { status: number; happenedAt: Date; durationMs: number }
+              | undefined;
             const resolveFetchRules = (site: string | undefined, rules: ActionApprovalRule[]) => {
               const resolved = resolveActionApprovalDetail({
                 toolName: name,
@@ -9466,28 +9468,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   reviewAdmission ??= appliedReviewAdmission();
                 },
                 onResponseStatus: (status) => {
-                  responseStatus = status;
+                  if (!context.signal.aborted) {
+                    observedResponse = {
+                      status,
+                      happenedAt: new Date(),
+                      durationMs: Math.round(performance.now() - startedAt),
+                    };
+                  }
                 },
               },
             );
             if (blockedRequest) return finishPolicyBlock();
-            const confirmed =
-              !context.signal.aborted && "url" in result && isConfirmedHttpResponse(responseStatus);
-            const happenedAt = new Date();
-            const durationMs = Math.round(performance.now() - startedAt);
+            const status = observedResponse?.status;
+            const succeeded =
+              !context.signal.aborted && "url" in result && isConfirmedHttpResponse(status);
+            const failed =
+              "error" in result && status !== undefined && status >= 400 && status < 600;
+            const outcome = succeeded ? "success" : failed ? "error" : undefined;
             const completed = await finish(
               result,
               undefined,
-              confirmed ? reviewAdmission : undefined,
+              succeeded ? reviewAdmission : undefined,
             );
-            // A lost effect receipt returns a different result. A later Stop does not undo it.
-            if (confirmed && completed === result) {
+            // An HTTP error observed before Stop survives body cleanup. A lost effect receipt returns a different result.
+            if (observedResponse && outcome && completed === result) {
               await recordToolCompletionAudit(deps.prisma, run, {
                 name: "web_fetch",
                 executionId: applied?.effect.id ?? randomUUID(),
-                happenedAt,
-                durationMs,
-                outcome: "success",
+                happenedAt: observedResponse.happenedAt,
+                durationMs: observedResponse.durationMs,
+                outcome,
               });
             }
             return completed;

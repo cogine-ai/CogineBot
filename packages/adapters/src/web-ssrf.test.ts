@@ -335,6 +335,25 @@ describe("web SSRF policy", () => {
     ).rejects.toThrow(/too large/i);
   });
 
+  it("discards the error body when an HTTP status observer throws", async () => {
+    const cancel = vi.fn();
+    const failure = new Error("Status observer failed");
+    const onHttpErrorStatus = vi.fn(() => {
+      throw failure;
+    });
+    const body = new ReadableStream({ cancel });
+
+    await expect(
+      fetchSafeWebText("https://example.test/report", {
+        fetch: async () => new Response(body, { status: 503 }),
+        resolveHostname: publicResolver,
+        onHttpErrorStatus,
+      }),
+    ).rejects.toBe(failure);
+    expect(onHttpErrorStatus).toHaveBeenCalledExactlyOnceWith(503);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("aborts while streaming once maxBytes is exceeded", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

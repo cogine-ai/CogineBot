@@ -1144,7 +1144,7 @@ export interface WebFetchRequest {
   assertRedirectAllowed?: (url: string) => void | Promise<void>;
   /** Recheck caller authority after resolving a hop, before making its HTTP request. */
   beforeRequest?: (url: string) => void | Promise<void>;
-  /** Report the final HTTP status as transport evidence, outside the tool result. */
+  /** Report the final HTTP status outside the tool result, including observed 4xx/5xx errors. */
   onResponseStatus?: (status: number) => void;
 }
 
