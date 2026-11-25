@@ -6693,11 +6693,36 @@ export function createRouter(deps: RouterDeps) {
                               { serverId: updated.id, status: "pending" },
                               tx,
                             );
-                    return { server: updated, seqs };
+                    const movedCredential =
+                      remoteEndpointMoved &&
+                      current.endpoint !== null &&
+                      updated.endpoint !== null &&
+                      current.secretId !== updated.secretId &&
+                      (secret || updated.secretId)
+                        ? {
+                            hadCredential: Boolean(secret),
+                            hasCredential: updated.secretId !== null,
+                          }
+                        : null;
+                    return { server: updated, seqs, movedCredential };
                   });
                 },
               );
               if (row) {
+                if (row.movedCredential) {
+                  const { hadCredential, hasCredential } = row.movedCredential;
+                  await recordCredentialAudit(
+                    deps.prisma,
+                    context.actor,
+                    { type: "mcp_server", ids: [row.server.id] },
+                    hasCredential
+                      ? hadCredential
+                        ? "credential.changed"
+                        : "credential.created"
+                      : "credential.deleted",
+                    row.server.updatedAt,
+                  );
+                }
                 for (const event of row.seqs) await deps.events.notify(event.threadId, event.seq);
                 if (clearFailure)
                   throw new ORPCError("SERVICE_UNAVAILABLE", {
