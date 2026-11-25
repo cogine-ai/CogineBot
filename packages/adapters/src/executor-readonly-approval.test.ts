@@ -588,6 +588,7 @@ function fixture({
     }
     yield { type: "done" as const, text: "Done" };
   });
+  const notify = vi.fn<ThreadEvents["notify"]>(async () => undefined);
   const executor = createRunExecutor({
     prisma,
     runtime: runtimeProvider ?? {
@@ -662,7 +663,7 @@ function fixture({
       append,
       notifyDelegatedApprovalParent,
       claimSteering: vi.fn(async () => steering),
-      notify: vi.fn(async () => undefined),
+      notify,
       pauseRunForInput,
       pauseRunForTakeover,
       finalizeRun,
@@ -685,6 +686,7 @@ function fixture({
     runRecord: run,
     finalizeRun,
     append,
+    notify,
     notifyDelegatedApprovalParent,
     runtimeRun,
     effects,
@@ -2040,12 +2042,13 @@ describe("Run progress delivery", () => {
   );
 
   it.each([
-    { assign: true, succeeds: true },
-    { assign: false, succeeds: true },
-    { assign: true, succeeds: false },
+    { assign: true, succeeds: true, credential: true },
+    { assign: false, succeeds: true, credential: true },
+    { assign: true, succeeds: false, credential: true },
+    { assign: true, succeeds: true, credential: false },
   ])(
-    "exempts a preamble only alongside a committed connection card ($assign/$succeeds)",
-    async ({ assign, succeeds }) => {
+    "exempts a preamble with a committed card and audits a committed credential ($assign/$succeeds/$credential)",
+    async ({ assign, succeeds, credential }) => {
       const published = publication();
       const persisted = vi.spyOn(RunMessagesModule, "persistMessageInTransaction");
       const narration = "Please approve the connection to continue.";
@@ -2061,9 +2064,15 @@ describe("Run progress delivery", () => {
         };
       });
       try {
+        const put = vi.fn(async () => ({
+          id: "fixture-material",
+          ciphertext: "fixture-encrypted",
+          ref: "fixture-encrypted",
+        }));
         const f = fixture({
           builtin: true,
           startedAt: new Date(),
+          secretStore: { load: async () => "", put },
           secretHttp: {
             fetch: vi.fn(),
             resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
@@ -2076,14 +2085,16 @@ describe("Run progress delivery", () => {
               clientVersion: "test",
             });
           }
-          return { id: "server-1", name: "Example tools", revision: 1 };
+          return { id: "server-1", name: "Example tools", revision: 1, createdAt: new Date(1) };
         });
+        Object.assign(f.prisma.secret, { create: vi.fn() });
         Object.assign(f.prisma, { mcpServer: { create } });
         const args = {
           name: "Example tools",
           transport: "streamable_http",
           endpoint: "https://mcp.example.test/mcp",
           assign_to_self: assign,
+          ...(credential ? { headers: { "X-Fixture": "fixture-mcp-material" } } : {}),
         };
         f.runtimeRun.mockImplementation(async function* (request) {
           yield { type: "text", text: narration };
@@ -2092,9 +2103,51 @@ describe("Run progress delivery", () => {
           yield { type: "text", text: "Next step." };
           yield { type: "done", text: "Next step." };
         });
-        await f.run();
+        if (assign && succeeds && credential) {
+          let releaseAudit!: () => void;
+          const appendAudit = new Promise<{ count: number }>((resolve) => {
+            releaseAudit = () => resolve({ count: 1 });
+          });
+          f.prisma.auditEvent.createMany.mockReturnValueOnce(appendAudit);
+          const execution = f.run();
+          try {
+            await vi.waitFor(() =>
+              expect(f.notify).toHaveBeenCalledWith(f.runRecord.threadId, 2, undefined),
+            );
+          } finally {
+            releaseAudit();
+            await execution;
+          }
+        } else {
+          await f.run();
+        }
         expect(create).toHaveBeenCalledOnce();
+        expect(put).toHaveBeenCalledTimes(credential ? 1 : 0);
         expect(published).not.toHaveBeenCalled();
+        if (succeeds && credential) {
+          expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+            skipDuplicates: true,
+            data: [
+              {
+                id: expect.any(String),
+                createdAt: new Date(1),
+                organizationId: "org-1",
+                spaceId: f.runRecord.spaceId,
+                actorType: "bot",
+                actorId: f.runRecord.botId,
+                action: "credential.created",
+                targetType: "mcp_server",
+                targetId: "server-1",
+                runId: f.runRecord.id,
+                threadId: f.runRecord.threadId,
+                outcome: "success",
+                metadata: {},
+              },
+            ],
+          });
+        } else {
+          expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        }
         if (assign && succeeds) {
           expect(calls).toMatchObject([
             [{ kind: "text", text: narration }],

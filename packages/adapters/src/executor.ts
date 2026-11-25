@@ -185,7 +185,7 @@ import {
   stableJsonValue,
   toolEffectIdempotencyKey,
 } from "@rakazo/core/node/approval-effect-key";
-import type { McpServer, PrismaClient, ThreadEvents } from "@rakazo/db";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   appendEventInTransaction,
   authorizeCollaborationRunStart,
@@ -221,6 +221,7 @@ import {
   recheckDelegatedApprovalDispatchInTransaction,
   recordAutomaticApprovalAudit,
   recordConnectionActivationAudit,
+  recordCredentialAudit,
   recordToolCompletionAudit,
   recordUsage,
   reparkRunQuotaWaitForComputer,
@@ -9948,12 +9949,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
               });
             }
             const oauthLikely = needsOAuthProbe(parsed);
-            let serverRow: McpServer;
-            let approvalEventSeq: number | undefined;
-            let approvalFirstResponseRunId: string | undefined;
+            let serverId: string;
+            let credentialAudit: Promise<void> | undefined;
             try {
-              const create = () =>
-                deps.prisma.$transaction(async (tx) => {
+              const create = async () => {
+                const created = await deps.prisma.$transaction(async (tx) => {
                   if (storedCredential) {
                     await tx.secret.create({
                       data: {
@@ -10033,6 +10033,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       preamble?.firstResponseRunId ?? committed.firstResponseRunId,
                   };
                 });
+                if (storedCredential) {
+                  credentialAudit = recordCredentialAudit(
+                    deps.prisma,
+                    { spaceId: run.spaceId, botId: run.botId, runId, threadId: run.threadId },
+                    { type: "mcp_server", ids: [created.server.id] },
+                    "credential.created",
+                    created.server.createdAt,
+                  );
+                }
+                return created;
+              };
               const created = narration
                 ? await serializeProgress(async () => {
                     const result = await create();
@@ -10045,9 +10056,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     return result;
                   })
                 : await create();
-              serverRow = created.server;
-              approvalEventSeq = created.eventSeq;
-              approvalFirstResponseRunId = created.firstResponseRunId;
+              serverId = created.server.id;
+              if (created.eventSeq !== undefined) {
+                await deps.events
+                  .notify(run.threadId, created.eventSeq, created.firstResponseRunId)
+                  .catch((error) => {
+                    getLogger().error("MCP approval realtime notification", error);
+                  });
+              }
             } catch (error) {
               if (isUniqueViolation(error)) {
                 return finish({
@@ -10055,17 +10071,12 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 });
               }
               throw error;
-            }
-            if (approvalEventSeq !== undefined) {
-              await deps.events
-                .notify(run.threadId, approvalEventSeq, approvalFirstResponseRunId)
-                .catch((error) => {
-                  getLogger().error("MCP approval realtime notification", error);
-                });
+            } finally {
+              await credentialAudit;
             }
             return finish({
               ok: true,
-              server_id: serverRow.id,
+              server_id: serverId,
               assigned_to_self: false,
               shared_tools_enabled: false,
               next_step: parsed.assignToSelf

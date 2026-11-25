@@ -14,6 +14,7 @@ type ApprovalRuleChange = {
 const approvalRuleAuditMetadata = ActionApprovalRuleSchema.pick({ effect: true, matchKind: true });
 
 type AuditUser = { userId: string; spaceId: string };
+type AuditBotRun = { botId: string; spaceId: string; runId: string; threadId: string };
 type AuditRow = Omit<Prisma.AuditEventCreateManyInput, "organizationId" | "spaceId">;
 
 function approvalRuleAuditRow(
@@ -172,7 +173,7 @@ type CredentialAuditTarget =
 type CredentialAuditAction = "credential.created" | "credential.changed" | "credential.deleted";
 
 function credentialAuditRow(
-  actor: AuditUser,
+  actor: AuditUser | AuditBotRun,
   targetType: CredentialAuditTarget,
   targetId: string,
   action: CredentialAuditAction,
@@ -185,8 +186,9 @@ function credentialAuditRow(
         ? `${action}:${targetType}:${targetId}`
         : randomUUID(),
     createdAt: happenedAt,
-    actorType: "user",
-    actorId: actor.userId,
+    ...("runId" in actor
+      ? { actorType: "bot", actorId: actor.botId, runId: actor.runId, threadId: actor.threadId }
+      : { actorType: "user", actorId: actor.userId }),
     action,
     targetType,
     targetId,
@@ -197,7 +199,7 @@ function credentialAuditRow(
 
 export function recordCredentialAudit(
   prisma: Pick<PrismaClient, "$transaction">,
-  actor: AuditUser,
+  actor: AuditUser | AuditBotRun,
   target: { type: CredentialAuditTarget; ids: readonly string[] },
   action: CredentialAuditAction,
   happenedAt: Date,

@@ -199,6 +199,116 @@ describe.skipIf(!enabled)("API direct run composition (PostgreSQL)", () => {
     await migrateJobQueue(process.env.DATABASE_URL!);
   });
 
+  it("audits Bot MCP credentials only when registration commits", async () => {
+    const database = createDb(process.env.DATABASE_URL!);
+    const runtime = new ScriptedAgentRuntime();
+    const originalRun = runtime.run.bind(runtime);
+    let targetRunId: string | undefined;
+    let rejected = false;
+    const controlled = database.prisma.$extends({
+      query: {
+        mcpServer: {
+          async create({ args, query }) {
+            const row = await query(args);
+            if (row.slug === "fixture-rollback-tools") {
+              rejected = true;
+              throw new Error("Synthetic MCP registration rollback");
+            }
+            return row;
+          },
+        },
+      },
+    });
+    const credential = {
+      name: "Fixture audited tools",
+      transport: "streamable_http",
+      endpoint: "https://203.0.113.10/mcp",
+      headers: { "X-Fixture": "fixture-mcp-audit-key" },
+      assign_to_self: true,
+    };
+    const runSpy = vi.spyOn(runtime, "run").mockImplementation(async function* (request, context) {
+      if (request.runId === targetRunId) {
+        request.script = [
+          {
+            toolCalls: [
+              { name: "add_mcp_server", args: credential },
+              { name: "add_mcp_server", args: credential },
+              {
+                name: "add_mcp_server",
+                args: {
+                  name: "Fixture configuration only",
+                  transport: credential.transport,
+                  endpoint: credential.endpoint,
+                  assign_to_self: false,
+                },
+              },
+              {
+                name: "add_mcp_server",
+                args: { ...credential, name: "Fixture rollback tools" },
+              },
+            ],
+          },
+          { assistant: "Registration attempts completed.", complete: true },
+        ];
+      }
+      yield* originalRun(request, context);
+    });
+    let f: Awaited<ReturnType<typeof openApp>> | undefined;
+    try {
+      f = await openApp(runtime, {
+        wakeupDriver: "memory",
+        prisma: controlled as unknown as PrismaClient,
+      });
+      const seeded = await seed(f.handles, "Bot MCP credential audit");
+      targetRunId = seeded.run.id;
+      const { prisma } = f.handles;
+      await f.handles.executor.continueRun(targetRunId, "fixture-mcp-registration");
+      expect(rejected).toBe(true);
+
+      const scope = { userId: seeded.userId, spaceId: seeded.spaceId };
+      const servers = await prisma.mcpServer.findMany({
+        where: scope,
+        orderBy: { slug: "asc" },
+        include: { secret: true },
+      });
+      expect(servers).toMatchObject([
+        { slug: "fixture-audited-tools", secret: { ...scope, kind: "mcp" } },
+        { slug: "fixture-configuration-only", secret: null },
+      ]);
+      const [registered] = servers;
+      expect(await prisma.secret.count({ where: { ...scope, kind: "mcp" } })).toBe(1);
+      expect(registered!.secret!.ciphertext).not.toContain(credential.headers["X-Fixture"]);
+      const { organizationId } = await prisma.space.findUniqueOrThrow({
+        where: { id: seeded.spaceId },
+      });
+      expect(
+        await prisma.auditEvent.findMany({
+          where: { spaceId: seeded.spaceId, targetType: "mcp_server" },
+        }),
+      ).toMatchObject([
+        {
+          createdAt: registered!.createdAt,
+          organizationId,
+          spaceId: seeded.spaceId,
+          actorType: "bot",
+          actorId: seeded.botId,
+          action: "credential.created",
+          targetType: "mcp_server",
+          targetId: registered!.id,
+          runId: seeded.run.id,
+          threadId: seeded.threadId,
+          outcome: "success",
+          metadata: {},
+        },
+      ]);
+    } finally {
+      runSpy.mockRestore();
+      await f?.close();
+      await database.prisma.$disconnect();
+      await database.pool.end();
+    }
+  });
+
   it("starts new work behind a protected wait before the old executor finally returns", async () => {
     const realtime = new InMemoryRealtimeFanout();
     const runtime = new ScriptedAgentRuntime();
