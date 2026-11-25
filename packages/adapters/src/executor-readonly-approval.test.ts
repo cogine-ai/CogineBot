@@ -6251,17 +6251,141 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.results.at(-1)).toMatchObject({ truncated: true });
     expect(f.results.at(-1)).not.toHaveProperty("status");
-    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+    const executionId = f.effects[0]!.id;
+    expect(f.prisma.auditEvent.createMany).toHaveBeenCalledTimes(2);
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(1, {
       skipDuplicates: true,
       data: [
         expect.objectContaining({
-          id: `approval.auto_reviewed:${f.effects[0]?.id}`,
+          id: `approval.auto_reviewed:${executionId}`,
           outcome: "success",
           metadata: { decision: "pass" },
         }),
       ],
     });
+    expect(f.prisma.auditEvent.createMany).toHaveBeenNthCalledWith(2, {
+      skipDuplicates: true,
+      data: [
+        expect.objectContaining({
+          id: `tool.completed:${executionId}`,
+          action: "tool.completed",
+          outcome: "success",
+          metadata: { name: "web_fetch", executionId, durationMs: expect.any(Number) },
+        }),
+      ],
+    });
   });
+
+  it.each([false, true])(
+    "audits direct fetches without changing their result (audit fails=%s)",
+    async (auditFails) => {
+      const url = "https://docs.example.org/report?item=synthetic-query";
+      const body = "Synthetic page content";
+      const fetch = vi.fn(
+        async () => new Response(body, { headers: { "content-type": "text/plain" } }),
+      );
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        rules: [{ effect: "always_allow", matchKind: "site", matchValue: "example.org" }],
+        webProvider: new KeylessHttpWebProvider({
+          resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+          fetch,
+        }),
+      });
+      if (auditFails)
+        f.prisma.auditEvent.createMany.mockRejectedValueOnce(new Error("Audit unavailable"));
+      f.setCalls([{ args: { url }, executionId: "model-supplied-id" }]);
+
+      await f.run();
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(f.effects).toEqual([]);
+      expect(f.results).toEqual([expect.objectContaining({ url, text: body })]);
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledOnce();
+      const uuid = /[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/;
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [
+          {
+            id: expect.stringMatching(new RegExp(`^tool\\.completed:${uuid.source}$`)),
+            createdAt: expect.any(Date),
+            organizationId: expect.any(String),
+            spaceId: f.runRecord.spaceId,
+            actorType: "bot",
+            actorId: f.runRecord.botId,
+            action: "tool.completed",
+            targetType: "tool_execution",
+            targetId: expect.stringMatching(uuid),
+            runId: f.runRecord.id,
+            threadId: f.runRecord.threadId,
+            outcome: "success",
+            metadata: {
+              name: "web_fetch",
+              executionId: expect.stringMatching(uuid),
+              durationMs: expect.any(Number),
+            },
+          },
+        ],
+      });
+    },
+  );
+
+  it.each(["approved", "completed"])(
+    "audits a resumed fetch only when dispatched (%s)",
+    async (status) => {
+      const url = "https://docs.example.org/report";
+      const cached = { url, title: "Report", text: "Previously fetched content", truncated: false };
+      const fetch = vi.fn(
+        async () => new Response("New content", { headers: { "content-type": "text/plain" } }),
+      );
+      const f = fixture({
+        name: "web_fetch",
+        builtin: true,
+        attemptCount: 2,
+        rules: [{ effect: "require_approval", matchKind: "site", matchValue: "example.org" }],
+        webProvider: new KeylessHttpWebProvider({
+          resolveHostname: async () => [{ address: "203.0.113.10", family: 4 }],
+          fetch,
+        }),
+      });
+      f.effects.push({
+        id: "recorded-fetch",
+        runId: f.runRecord.id,
+        spaceId: f.runRecord.spaceId,
+        kind: "web_fetch",
+        status,
+        idempotencyKey: approvalEffectKey(f.runRecord.id, "web_fetch", { url }),
+        request: { url },
+        ...(status === "completed" ? { result: cached } : {}),
+      });
+      f.setCalls([{ args: { url }, executionId: "replayed-fetch" }]);
+      await f.run();
+      if (status === "completed") {
+        expect(f.results).toEqual([cached]);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
+        return;
+      }
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(f.results).toEqual([expect.objectContaining({ url, text: "New content" })]);
+      expect(f.effects[0]!.status).toBe("completed");
+      expect(f.prisma.auditEvent.createMany).toHaveBeenCalledExactlyOnceWith({
+        skipDuplicates: true,
+        data: [
+          expect.objectContaining({
+            id: "tool.completed:recorded-fetch",
+            outcome: "success",
+            metadata: {
+              name: "web_fetch",
+              executionId: "recorded-fetch",
+              durationMs: expect.any(Number),
+            },
+          }),
+        ],
+      });
+    },
+  );
 
   it.each([
     { scenario: "late deny", status: 200 },
@@ -6344,6 +6468,7 @@ describe("connector read-only metadata and approval enforcement", () => {
     expect(f.effects).toHaveLength(1);
     expect(f.effects[0]!.status).toBe("completed");
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.prisma.auditEvent.createMany).not.toHaveBeenCalled();
   });
 
   it.each([
