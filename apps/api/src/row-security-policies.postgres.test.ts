@@ -16,7 +16,7 @@ import {
   listTicketComments,
   provisionRuntimeRole,
   pruneAuditEvents,
-  recordShellCommandCompletionAudit,
+  recordToolCompletionAudit,
   redeemMessagingLinkCode,
   renameSpaceForMember,
   runAsSystem,
@@ -123,48 +123,52 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
   }
 
-  it("stores one scoped shell completion per verified execution", async () => {
-    const run = await owner.prisma.run.findUniqueOrThrow({ where: { id: id("run-a") } });
-    const happenedAt = new Date("2026-01-01T00:00:00Z");
-    const verified = {
-      executionId: id("shell-a"),
-      happenedAt,
-      durationMs: 42,
-      outcome: "success",
-    } as const;
-    const failed = { ...verified, executionId: id("shell-b"), outcome: "error" } as const;
-    const where = { runId: run.id, action: "tool.completed" };
-    try {
-      await inA(async () => {
-        await recordShellCommandCompletionAudit(runtime!.prisma, run, verified);
-        await recordShellCommandCompletionAudit(runtime!.prisma, run, failed);
-        await recordShellCommandCompletionAudit(runtime!.prisma, run, verified);
-      });
-      const events = await owner.prisma.auditEvent.findMany({
-        where,
-        orderBy: { targetId: "asc" },
-      });
-      expect(events).toEqual(
-        [verified, failed].map(({ executionId, durationMs, outcome }) => ({
-          id: `tool.completed:${executionId}`,
-          createdAt: happenedAt,
-          organizationId: orgA,
-          spaceId: spaceA,
-          actorType: "bot",
-          actorId: run.botId,
-          action: "tool.completed",
-          targetType: "tool_execution",
-          targetId: executionId,
-          outcome,
-          runId: run.id,
-          threadId: run.threadId,
-          metadata: { name: "shell", executionId, durationMs },
-        })),
-      );
-    } finally {
-      await owner.prisma.auditEvent.deleteMany({ where });
-    }
-  });
+  it.each(["shell", "web_fetch"] as const)(
+    "stores one scoped %s completion per execution",
+    async (name) => {
+      const run = await owner.prisma.run.findUniqueOrThrow({ where: { id: id("run-a") } });
+      const happenedAt = new Date("2026-01-01T00:00:00Z");
+      const verified = {
+        name,
+        executionId: id(`${name}-a`),
+        happenedAt,
+        durationMs: 42,
+        outcome: "success",
+      } as const;
+      const failed = { ...verified, executionId: id(`${name}-b`), outcome: "error" } as const;
+      const where = { runId: run.id, action: "tool.completed" };
+      try {
+        await inA(async () => {
+          await recordToolCompletionAudit(runtime!.prisma, run, verified);
+          await recordToolCompletionAudit(runtime!.prisma, run, failed);
+          await recordToolCompletionAudit(runtime!.prisma, run, verified);
+        });
+        const events = await owner.prisma.auditEvent.findMany({
+          where,
+          orderBy: { targetId: "asc" },
+        });
+        expect(events).toEqual(
+          [verified, failed].map(({ executionId, durationMs, outcome }) => ({
+            id: `tool.completed:${executionId}`,
+            createdAt: happenedAt,
+            organizationId: orgA,
+            spaceId: spaceA,
+            actorType: "bot",
+            actorId: run.botId,
+            action: "tool.completed",
+            targetType: "tool_execution",
+            targetId: executionId,
+            outcome,
+            runId: run.id,
+            threadId: run.threadId,
+            metadata: { name, executionId, durationMs },
+          })),
+        );
+      } finally {
+        await owner.prisma.auditEvent.deleteMany({ where });
+      }
+    },
+  );
 
   it("keeps bot credential mutations scoped and preserves a write when audit insertion fails", async () => {
     const botId = id("bot-a");

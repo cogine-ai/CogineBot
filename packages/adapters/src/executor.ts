@@ -221,7 +221,7 @@ import {
   recheckDelegatedApprovalDispatchInTransaction,
   recordAutomaticApprovalAudit,
   recordConnectionActivationAudit,
-  recordShellCommandCompletionAudit,
+  recordToolCompletionAudit,
   recordUsage,
   reparkRunQuotaWaitForComputer,
   reserveRunSelfRecovery,
@@ -9044,7 +9044,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             let backgroundExit = false;
             const auditExit = () => {
               if (!verifiedExit || !Number.isInteger(verifiedExit.code)) return;
-              return recordShellCommandCompletionAudit(deps.prisma, run, {
+              return recordToolCompletionAudit(deps.prisma, run, {
+                name: "shell",
                 executionId: commandId,
                 happenedAt: verifiedExit.happenedAt,
                 durationMs: Math.max(0, verifiedExit.happenedAt.getTime() - startedAt),
@@ -9431,6 +9432,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
               return resolved;
             };
+            const startedAt = performance.now();
             const result = await webFetchFromTool(
               web,
               context,
@@ -9468,10 +9470,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 },
               },
             );
-            const confirmed = "url" in result && isConfirmedHttpResponse(responseStatus);
-            return blockedRequest
-              ? finishPolicyBlock()
-              : finish(result, undefined, confirmed ? reviewAdmission : undefined);
+            if (blockedRequest) return finishPolicyBlock();
+            const confirmed =
+              !context.signal.aborted && "url" in result && isConfirmedHttpResponse(responseStatus);
+            const happenedAt = new Date();
+            const durationMs = Math.round(performance.now() - startedAt);
+            const completed = await finish(
+              result,
+              undefined,
+              confirmed ? reviewAdmission : undefined,
+            );
+            // A lost effect receipt returns a different result. A later Stop does not undo it.
+            if (confirmed && completed === result) {
+              await recordToolCompletionAudit(deps.prisma, run, {
+                name: "web_fetch",
+                executionId: applied?.effect.id ?? randomUUID(),
+                happenedAt,
+                durationMs,
+                outcome: "success",
+              });
+            }
+            return completed;
           }
           if (PAGE_BROWSER_TOOL_NAMES.has(name)) {
             if (heldForTakeover) {

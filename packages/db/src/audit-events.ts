@@ -467,10 +467,11 @@ export function recordCloudAgentApprovalAudit(
   });
 }
 
-export function recordShellCommandCompletionAudit(
+export function recordToolCompletionAudit(
   prisma: Pick<PrismaClient, "$transaction">,
   run: { id: string; spaceId: string; threadId: string; botId: string },
   completion: {
+    name: "shell" | "web_fetch";
     executionId: string;
     happenedAt: Date;
     durationMs: number;
@@ -490,7 +491,7 @@ export function recordShellCommandCompletionAudit(
       threadId: run.threadId,
       outcome: completion.outcome,
       metadata: {
-        name: "shell",
+        name: completion.name,
         executionId: completion.executionId,
         durationMs: completion.durationMs,
       },
