@@ -337,6 +337,27 @@ export function recordMcpApprovalAudit(
   ]);
 }
 
+export function recordMcpToolPolicyAudit(
+  prisma: Pick<PrismaClient, "$transaction">,
+  actor: AuditUser,
+  policy: { serverId: string; allowAllTools: boolean; allowlistCount: number | null },
+  happenedAt: Date,
+): Promise<void> {
+  return appendAuditEvents(prisma, actor.spaceId, [
+    {
+      id: randomUUID(),
+      createdAt: happenedAt,
+      actorType: "user",
+      actorId: actor.userId,
+      action: "approval.policy.changed",
+      targetType: "mcp_server",
+      targetId: policy.serverId,
+      outcome: "success",
+      metadata: { allowAllTools: policy.allowAllTools, allowlistCount: policy.allowlistCount },
+    },
+  ]);
+}
+
 type AutomaticApproval = {
   runId: string;
   threadId: string;

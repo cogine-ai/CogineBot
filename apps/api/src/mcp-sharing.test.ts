@@ -9,6 +9,7 @@ vi.mock("@rakazo/db", async (original) => ({
   ...(await original<typeof db>()),
   appendEventInTransaction: vi.fn(async () => ({ seq: 1 })),
   recordMcpApprovalAudit: vi.fn(async () => undefined),
+  recordMcpToolPolicyAudit: vi.fn(async () => undefined),
 }));
 
 const actor: Actor = {

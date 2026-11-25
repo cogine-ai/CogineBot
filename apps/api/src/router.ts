@@ -315,6 +315,7 @@ import {
   recordConnectionActivationAudit,
   recordConnectionRevocationAudit,
   recordCredentialAudit,
+  recordMcpToolPolicyAudit,
   recordSpaceModelChoice,
   recordSpaceThinkingEdit,
   recordSpaceVoiceChoice,
@@ -758,9 +759,7 @@ function mcpServerDto(
     enabled: row.enabled,
     verbatimResults: row.verbatimResults ?? false,
     allowAllTools: row.allowAllTools,
-    allowedTools: Array.isArray(row.allowedTools)
-      ? row.allowedTools.filter((item): item is string => typeof item === "string")
-      : [],
+    allowedTools: mcpToolNames(row.allowedTools),
     revision: row.revision,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -837,6 +836,12 @@ function hasMcpTools(row: { allowAllTools: boolean; allowedTools: unknown }): bo
   );
 }
 
+function mcpToolNames(allowedTools: unknown): string[] {
+  return Array.isArray(allowedTools)
+    ? allowedTools.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 function sharedMcpAssignmentDto(
   row: {
     id: string;
@@ -864,9 +869,7 @@ function mcpAssignmentDto(row: {
     botId: row.botId,
     serverId: row.serverId,
     allowAllTools: row.allowAllTools,
-    allowedTools: Array.isArray(row.allowedTools)
-      ? row.allowedTools.filter((item): item is string => typeof item === "string")
-      : [],
+    allowedTools: mcpToolNames(row.allowedTools),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -6156,7 +6159,7 @@ export function createRouter(deps: RouterDeps) {
           );
         }),
         setTools: authed.mcp.servers.setTools.handler(async ({ context, input }) => {
-          const { row, seqs } = await withTransactionRetry(() =>
+          const { row, seqs, policyChange } = await withTransactionRetry(() =>
             deps.prisma.$transaction(
               async (tx) => {
                 const existing = await tx.mcpServer.findFirst({
@@ -6204,11 +6207,33 @@ export function createRouter(deps: RouterDeps) {
                         { serverId: row.id, status: "pending" },
                         tx,
                       );
-                return { row, seqs };
+                const before = new Set(mcpToolNames(existing.allowedTools));
+                const after = new Set(mcpToolNames(row.allowedTools));
+                const policyChanged =
+                  existing.allowAllTools !== row.allowAllTools ||
+                  (!row.allowAllTools &&
+                    (before.size !== after.size || [...before].some((name) => !after.has(name))));
+                return {
+                  row,
+                  seqs,
+                  policyChange: policyChanged
+                    ? {
+                        allowAllTools: row.allowAllTools,
+                        allowlistCount: row.allowAllTools ? null : after.size,
+                      }
+                    : null,
+                };
               },
               { isolationLevel: "Serializable" },
             ),
           );
+          if (policyChange)
+            await recordMcpToolPolicyAudit(
+              deps.prisma,
+              context.actor,
+              { serverId: row.id, ...policyChange },
+              row.updatedAt,
+            );
           for (const event of seqs) await deps.events.notify(event.threadId, event.seq);
           return mcpServerDto(row, await mcpOAuth.statusFor(row, context.actor));
         }),
