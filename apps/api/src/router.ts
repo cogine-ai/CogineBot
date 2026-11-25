@@ -1182,20 +1182,24 @@ async function resolveSpaceBoard(
   return found;
 }
 
+interface RouterRequestContext {
+  actor: Actor | null;
+  /** The signed-in session, so a push token ends with the session that registered it. */
+  sessionId?: string;
+  /** A verified session without a Space still needs membership recovery, not sign-out. */
+  sessionAuthenticated?: boolean;
+  /** Server-authenticated user, independent of the currently selected Space. */
+  sessionUserId?: string;
+  supportsWebsiteLoginCard?: boolean;
+  signal?: AbortSignal;
+  /** Server-owned transport evidence for a successfully committed synchronous action. */
+  auditRequestIp?: () => Promise<string | undefined>;
+  /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
+  stillAuthorized?: () => Promise<boolean>;
+}
+
 export function createRouter(deps: RouterDeps) {
-  const os = implement(appContract).$context<{
-    actor: Actor | null;
-    /** The signed-in session, so a push token ends with the session that registered it. */
-    sessionId?: string;
-    /** A verified session without a Space still needs membership recovery, not sign-out. */
-    sessionAuthenticated?: boolean;
-    /** Server-authenticated user, independent of the currently selected Space. */
-    sessionUserId?: string;
-    supportsWebsiteLoginCard?: boolean;
-    signal?: AbortSignal;
-    /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
-    stillAuthorized?: () => Promise<boolean>;
-  }>();
+  const os = implement(appContract).$context<RouterRequestContext>();
   const repos = createRepos(deps.prisma);
   async function listOwnedBotCredentials(actor: Actor, botId: string) {
     const bot = await repos.getBot(actor, botId);
@@ -8755,11 +8759,14 @@ export function createRouter(deps: RouterDeps) {
           return { row: existing, created: false };
         });
         if (created)
-          await recordApprovalRuleAudit(deps.prisma, actor, row.id, row.createdAt, {
-            action: "approval.rule.created",
-            effect: input.effect,
-            matchKind: input.matchKind,
-          });
+          await recordApprovalRuleAudit(
+            deps.prisma,
+            actor,
+            row.id,
+            row.createdAt,
+            { action: "approval.rule.created", effect: input.effect, matchKind: input.matchKind },
+            await context.auditRequestIp?.(),
+          );
         return {
           id: row.id,
           effect: row.effect as ActionApprovalRule["effect"],
@@ -8784,11 +8791,18 @@ export function createRouter(deps: RouterDeps) {
           return row && { ...row, happenedAt: new Date() };
         });
         if (removed)
-          await recordApprovalRuleAudit(deps.prisma, actor, input.id, removed.happenedAt, {
-            action: "approval.rule.deleted",
-            effect: removed.effect,
-            matchKind: removed.matchKind,
-          });
+          await recordApprovalRuleAudit(
+            deps.prisma,
+            actor,
+            input.id,
+            removed.happenedAt,
+            {
+              action: "approval.rule.deleted",
+              effect: removed.effect,
+              matchKind: removed.matchKind,
+            },
+            await context.auditRequestIp?.(),
+          );
         return { ok: true as const };
       }),
     },
@@ -8816,7 +8830,14 @@ export function createRouter(deps: RouterDeps) {
           });
           return changed;
         });
-        if (saved) await recordAutoReviewPreferenceAudit(deps.prisma, actor, saved, new Date());
+        if (saved)
+          await recordAutoReviewPreferenceAudit(
+            deps.prisma,
+            actor,
+            saved,
+            new Date(),
+            await context.auditRequestIp?.(),
+          );
         return loadAutoReviewSettings(deps, actor);
       }),
     },

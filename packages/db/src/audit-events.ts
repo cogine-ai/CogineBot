@@ -107,9 +107,13 @@ export function recordApprovalRuleAudit(
   ruleId: string,
   happenedAt: Date,
   change: ApprovalRuleChange,
+  requestIp?: string,
 ): Promise<void> {
   return appendAuditEvents(prisma, actor.spaceId, [
-    approvalRuleAuditRow(actor.userId, ruleId, happenedAt, change),
+    {
+      ...approvalRuleAuditRow(actor.userId, ruleId, happenedAt, change),
+      ...(requestIp ? { requestIp } : {}),
+    },
   ]);
 }
 
@@ -118,6 +122,7 @@ export function recordAutoReviewPreferenceAudit(
   actor: AuditUser,
   preference: { id: string; enabled: boolean },
   happenedAt: Date,
+  requestIp?: string,
 ): Promise<void> {
   return appendAuditEvents(prisma, actor.spaceId, [
     {
@@ -125,6 +130,7 @@ export function recordAutoReviewPreferenceAudit(
       createdAt: happenedAt,
       actorType: "user",
       actorId: actor.userId,
+      ...(requestIp ? { requestIp } : {}),
       action: "approval.policy.changed",
       targetType: "auto_review_preference",
       targetId: preference.id,

@@ -123,6 +123,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createBillingService } from "./billing.js";
 import { mountBillingRoutes } from "./billing-webhook.js";
+import { createAuditRequestIpReader } from "./client-ip.js";
 import { createDeploymentTransferService } from "./deployment-transfer.js";
 import { mountDeploymentTransferHttp } from "./deployment-transfer-http.js";
 import { mountDiagramScript } from "./diagram-script.js";
@@ -910,6 +911,7 @@ async function buildApp(
       return { actor, sessionId: session.session.id, sessionUserId: session.user.id };
     });
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
+  const bindAuditRequestIp = createAuditRequestIpReader(env.trustedProxies);
   app.use("/rpc/*", async (c, next) => {
     const session = await requestSession(c.req.raw);
     const actor = session?.actor ?? null;
@@ -923,6 +925,7 @@ async function buildApp(
         sessionId: session?.sessionId,
         sessionAuthenticated: Boolean(session),
         sessionUserId: session?.sessionUserId,
+        auditRequestIp: actor ? bindAuditRequestIp(c) : undefined,
         supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
         signal: c.req.raw.signal,
         // Same user in the same space, so leaving the space also ends a stream.

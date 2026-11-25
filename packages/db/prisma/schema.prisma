@@ -335,6 +335,7 @@ model AuditEvent {
   actorType      String
   actorId        String
   actorLabel     String?  @db.VarChar(200)
+  requestIp      String?  @db.VarChar(45)
   action         String
   targetType     String
   targetId       String
