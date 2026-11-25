@@ -78,7 +78,7 @@ describe("shared Page rate limits", () => {
 });
 
 describe("audit request address", () => {
-  const request = (trustedProxies: string[]) => {
+  const request = (trustedProxies: string[], forwarded?: string) => {
     const app = new Hono();
     const bindIp = createAuditRequestIpReader(trustedProxies);
     const socket = { remoteAddress: "198.51.100.22" };
@@ -90,7 +90,7 @@ describe("audit request address", () => {
     });
     return app.request(
       "/",
-      { headers: { "x-forwarded-for": "203.0.113.19" } },
+      { headers: forwarded ? { "x-forwarded-for": forwarded } : {} },
       { incoming: { socket } },
     );
   };
@@ -106,11 +106,29 @@ describe("audit request address", () => {
     await expect(response.json()).resolves.toEqual({ ip: "198.51.100.22" });
   });
 
+  it.each([undefined, "invalid", "198.51.100.22"])(
+    "cannot attribute a client behind a trusted socket with forwarding %s",
+    async (forwarded) => {
+      const response = await request(["198.51.100.22"], forwarded);
+      await expect(response.json()).resolves.toEqual({ ip: null });
+    },
+  );
+
+  it("omits the address when the trusted hostname cannot be established", async () => {
+    const lookup = vi.mocked(dns.lookup).mockRejectedValueOnce(new Error("Synthetic DNS failure"));
+    try {
+      const response = await request(["proxy.example.test"], "203.0.113.19");
+      await expect(response.json()).resolves.toEqual({ ip: null });
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it("does not wait for a stalled named-proxy lookup", async () => {
     vi.useFakeTimers();
     const lookup = vi.mocked(dns.lookup).mockImplementationOnce(() => new Promise(() => {}));
     try {
-      const response = request(["proxy.example.test"]);
+      const response = request(["proxy.example.test"], "203.0.113.19");
       await vi.advanceTimersByTimeAsync(250);
       expect(lookup).toHaveBeenCalledWith("proxy.example.test", { all: true });
       await expect((await response).json()).resolves.toEqual({ ip: null });

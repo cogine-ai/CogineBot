@@ -55,13 +55,16 @@ export function createClientIpResolver(
   }
 
   let known = new Set<string>();
+  let unresolvedHosts = false;
   let refreshedAt = Number.NEGATIVE_INFINITY;
   let refreshing: Promise<void> | undefined;
   async function refreshHosts() {
     if (!names.length || now() - refreshedAt < hostTtlMs) return;
     refreshing ??= Promise.all(names.map((name) => resolve(name).catch(() => [])))
       .then((addresses) => {
-        known = new Set(addresses.flat().flatMap((value) => parseIp(value) ?? []));
+        const resolved = addresses.map((values) => values.flatMap((value) => parseIp(value) ?? []));
+        known = new Set(resolved.flat());
+        unresolvedHosts = resolved.some((values) => values.length === 0);
         refreshedAt = now();
       })
       .finally(() => {
@@ -72,18 +75,28 @@ export function createClientIpResolver(
   const trusted = (ip: string) =>
     ranges.check(ip, isIP(ip) === 6 ? "ipv6" : "ipv4") || known.has(ip);
 
-  return async ({ peer, forwarded }: { peer?: string; forwarded?: string }) => {
+  return async ({
+    peer,
+    forwarded,
+    requireClientIp = false,
+  }: {
+    peer?: string;
+    forwarded?: string;
+    requireClientIp?: boolean;
+  }) => {
     const ip = peer ? parseIp(peer) : undefined;
-    if (!ip || !forwarded) return ip;
+    if (!ip || (!forwarded && !requireClientIp)) return ip;
     await refreshHosts();
+    if (requireClientIp && unresolvedHosts) return undefined;
     if (!trusted(ip)) return ip;
+    if (!forwarded) return undefined;
     const hops = forwarded.split(",").map(parseIp);
     for (let index = hops.length - 1; index >= 0; index--) {
       const hop = hops[index];
-      if (!hop) return ip;
+      if (!hop) return requireClientIp ? undefined : ip;
       if (!trusted(hop)) return hop;
     }
-    return hops[0] ?? ip;
+    return requireClientIp ? undefined : (hops[0] ?? ip);
   };
 }
 
@@ -92,12 +105,12 @@ export type ClientIpResolver = ReturnType<typeof createClientIpResolver>;
 /** A source address is optional for audit, even when a configured proxy uses DNS. */
 export async function resolveClientIpForAudit(
   resolve: ClientIpResolver,
-  source: Parameters<ClientIpResolver>[0],
+  source: { peer?: string; forwarded?: string },
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      resolve(source),
+      resolve({ ...source, requireClientIp: true }),
       new Promise<undefined>((done) => {
         timer = setTimeout(() => done(undefined), 250);
         timer.unref();

@@ -6,15 +6,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createClientIpResolver } from "@rakazo/core/node/trusted-proxy";
 import { createServer, preview } from "vite";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createRpcProxy } from "./rpc-proxy.js";
 
 const origin = (server: Pick<Server, "address">) =>
   `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
 it.each([
-  { mode: "direct", trusted: [], expected: "127.0.0.1" },
-  { mode: "trusted outer proxy", trusted: ["127.0.0.1"], expected: "203.0.113.23" },
+  { mode: "direct", trusted: [], chain: "192.0.2.21, 203.0.113.23", expected: "127.0.0.1" },
+  {
+    mode: "trusted outer proxy",
+    trusted: ["127.0.0.1"],
+    chain: "192.0.2.21, 203.0.113.23",
+    expected: "203.0.113.23",
+  },
+  { mode: "trusted proxy without a client", trusted: ["127.0.0.1"] },
 ])("rebuilds the upstream RPC forwarding header in dev and preview for $mode", async (test) => {
   const root = await mkdtemp(path.join(tmpdir(), "rpc-forwarding-"));
   const upstream = createHttpServer((request, response) => {
@@ -29,9 +35,8 @@ it.each([
     await mkdir(path.join(root, "dist"));
     await writeFile(path.join(root, "dist", "index.html"), "<title>Synthetic application</title>");
     await new Promise<void>((done) => upstream.listen(0, "127.0.0.1", done));
-    const proxy = {
-      "/rpc": createRpcProxy(origin(upstream), createClientIpResolver(test.trusted)),
-    };
+    const resolve = vi.fn(createClientIpResolver(test.trusted));
+    const proxy = { "/rpc": createRpcProxy(origin(upstream), resolve) };
     const config = {
       configFile: false as const,
       root,
@@ -45,11 +50,20 @@ it.each([
     for (const server of [dev.httpServer!, built.httpServer]) {
       const response = await fetch(`${origin(server)}/rpc/approvalRules/set`, {
         method: "POST",
-        headers: { "x-forwarded-for": "192.0.2.21, 203.0.113.23" },
+        headers: test.chain ? { "x-forwarded-for": test.chain } : {},
         body: "{}",
       });
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ ip: test.expected, method: "POST" });
+      const lookups = resolve.mock.calls.length;
+      const stopped = await fetch(`${origin(server)}/rpc/threads/stop`, {
+        method: "POST",
+        headers: { "x-forwarded-for": "192.0.2.21" },
+        body: "{}",
+      });
+      expect(stopped.status).toBe(200);
+      await expect(stopped.json()).resolves.toEqual({ method: "POST" });
+      expect(resolve).toHaveBeenCalledTimes(lookups);
     }
   } finally {
     await dev?.close();

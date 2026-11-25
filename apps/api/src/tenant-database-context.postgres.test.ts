@@ -851,6 +851,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     await request("autoReview/set", { enabled: true }, "203.0.113.24", "192.0.2.21");
     await request("autoReview/set", { enabled: true }, "203.0.113.22");
     await request("autoReview/set", { enabled: false }, "198.51.100.5", "198.51.100.30");
+    await request("autoReview/set", { enabled: true }, "198.51.100.5");
     const rows = await owner.prisma.auditEvent.findMany({
       where: { spaceId, actorId: userId },
       select: { action: true, targetId: true, requestIp: true, metadata: true },
@@ -858,7 +859,7 @@ describePostgres("trusted request contexts on a restricted single-connection poo
     const preference = await owner.prisma.actionAutoReviewPreference.findUniqueOrThrow({
       where: { spaceId_userId: { spaceId, userId } },
     });
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     expect(rows).toEqual(
       expect.arrayContaining([
         {
@@ -884,6 +885,12 @@ describePostgres("trusted request contexts on a restricted single-connection poo
           targetId: preference.id,
           requestIp: "198.51.100.30",
           metadata: { enabled: false },
+        },
+        {
+          action: "approval.policy.changed",
+          targetId: preference.id,
+          requestIp: null,
+          metadata: { enabled: true },
         },
       ]),
     );
