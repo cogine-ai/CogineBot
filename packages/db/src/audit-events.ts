@@ -169,7 +169,8 @@ type CredentialAuditTarget =
   | "voice_credential"
   | "memory_credential"
   | "mcp_oauth"
-  | "mcp_server";
+  | "mcp_server"
+  | "capability_install";
 type CredentialAuditAction = "credential.created" | "credential.changed" | "credential.deleted";
 
 function credentialAuditRow(
