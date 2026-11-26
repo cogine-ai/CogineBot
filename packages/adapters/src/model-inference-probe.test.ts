@@ -12,6 +12,7 @@ const openRouterInput = {
   modelId: openRouterModel.id,
   apiKey: "fixture-gateway-key",
 };
+const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
 
 function chatChunk(choices: unknown[], extra: Record<string, unknown> = {}) {
   return `data: ${JSON.stringify({ id: "gen-fixture", object: "chat.completion.chunk", choices, ...extra })}\n\n`;
@@ -63,42 +64,101 @@ describe("model inference check", () => {
     expect(JSON.parse(String(init?.body)).max_output_tokens).toBeLessThanOrEqual(1024);
   });
 
-  it("waits for a model chunk on OpenRouter and aborts a single bounded tool request", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            const frames = [
-              ": OPENROUTER PROCESSING\n\n",
-              chatChunk([]),
-              chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]),
-            ];
-            for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
-            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
-              once: true,
-            });
-          },
-        }),
-        { headers: { "content-type": "text/event-stream" } },
-      );
-    });
-    expect(await probeModelInference(openRouterInput, { fetch })).toBe("accepted");
+  it.each([
+    [openRouterInput, "https://openrouter.ai/api/v1/chat/completions"],
+    [groqInput, "https://api.groq.com/openai/v1/chat/completions"],
+  ] as const)(
+    "waits for a model chunk on $0.provider and aborts a single bounded tool request",
+    async (input, endpoint) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              const frames = [
+                ": processing\n\n",
+                chatChunk([]),
+                chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]),
+              ];
+              for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+              init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
+                once: true,
+              });
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      });
+      expect(await probeModelInference(input, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = fetch.mock.calls[0]!;
+      const request = new Request(url, init);
+      expect(request.url).toBe(endpoint);
+      expect(request.headers.get("authorization")).toBe(`Bearer ${input.apiKey}`);
+      expect(request.redirect).toBe("error");
+      expect(init?.signal?.aborted).toBe(true);
+      const payload = await request.json();
+      expect(payload).toMatchObject({
+        model: input.modelId,
+        stream: true,
+        tools: [expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) })],
+      });
+      const limit = payload.max_completion_tokens ?? payload.max_tokens;
+      expect(limit).toBeGreaterThan(0);
+      expect(limit).toBeLessThanOrEqual(1024);
+    },
+  );
+
+  it.each([
+    [401, "auth"],
+    [498, "rate"],
+  ] as const)("classifies Groq HTTP %i as %s without a retry", async (status, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { message: "Request failed" } }, { status }),
+    );
+    expect(await probeModelInference(groqInput, { fetch })).toBe(outcome);
     expect(fetch).toHaveBeenCalledOnce();
-    const [url, init] = fetch.mock.calls[0]!;
-    const request = new Request(url, init);
-    expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
-    expect(request.headers.get("authorization")).toBe(`Bearer ${openRouterInput.apiKey}`);
-    expect(request.redirect).toBe("error");
-    expect(init?.signal?.aborted).toBe(true);
-    const payload = await request.json();
-    expect(payload).toMatchObject({
-      model: openRouterInput.modelId,
-      stream: true,
-      tools: [expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) })],
-    });
-    const limit = payload.max_completion_tokens ?? payload.max_tokens;
-    expect(limit).toBeGreaterThan(0);
-    expect(limit).toBeLessThanOrEqual(1024);
+  });
+
+  it.each([
+    [400, "blocked_api_access", "spending"],
+    [400, "model_decommissioned", "model"],
+    [403, "model_terms_required", "model"],
+    [403, "model_permission_blocked_org", "model"],
+    [403, "model_permission_blocked_project", "model"],
+    [429, "model_decommissioned", "rate"],
+    [503, "blocked_api_access", "unavailable"],
+  ] as const)(
+    "classifies Groq HTTP %i %s as %s from its structured code",
+    async (status, code, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error: { code, message: "Request failed" } }, { status }),
+      );
+      expect(await probeModelInference(groqInput, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [400, "Unsupported model fixture-model", "model"],
+    [400, "Unsupported model parameter", "unavailable"],
+    [503, "Unsupported model fixture-model", "unavailable"],
+  ] as const)("classifies Groq HTTP %i %s as %s", async (status, message, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { code: String(status), message } }, { status }),
+    );
+    expect(await probeModelInference(groqInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Groq status from a stream error before the first model response", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(chatChunk([], { error: { code: 404, message: "Request failed" } }), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(groqInput, { fetch })).toBe("model");
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -338,6 +398,17 @@ describe("model inference check", () => {
 
   it("does not contact another provider or guess a dynamic model", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
+    const safeguard = "openai/gpt-oss-safeguard-20b";
+    expect(
+      listPiCatalog().find((entry) => entry.provider === "groq" && entry.id === safeguard)
+        ?.inferenceProbe,
+    ).toBeUndefined();
+    expect(await probeModelInference({ ...groqInput, modelId: safeguard }, { fetch })).toBe(
+      "unavailable",
+    );
+    expect(
+      await probeModelInference({ ...groqInput, modelId: "fixture/unknown-model" }, { fetch }),
+    ).toBe("unavailable");
     expect(await probeModelInference({ ...input, provider: "openrouter" }, { fetch })).toBe(
       "unavailable",
     );

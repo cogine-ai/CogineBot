@@ -2550,6 +2550,7 @@ it.each([
   { provider: "openai", providerName: "OpenAI", inferenceStatus: "rate", dynamic: false },
   { provider: "openai", providerName: "OpenAI", inferenceStatus: "accepted", dynamic: true },
   { provider: "openrouter", providerName: "OpenRouter", inferenceStatus: "rate", dynamic: false },
+  { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {
