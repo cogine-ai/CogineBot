@@ -1391,6 +1391,8 @@ export const ModelConnectInputSchema = z
     credentialId: Id.optional(),
     expectedRevision: z.number().int().positive().optional(),
     apiKey: z.string().optional(),
+    /** The connection form disclosed that testing the replacement key can incur usage. */
+    verifyInference: z.literal(true).optional(),
     apiProtocol: ModelApiProtocolSchema.optional(),
     headers: ModelHeadersSchema.optional(),
     accountId: z.string().optional(),
@@ -1557,6 +1559,15 @@ export const ModelInferenceProbeStatusSchema = z.enum([
   "unavailable",
 ]);
 export type ModelInferenceProbeStatus = z.infer<typeof ModelInferenceProbeStatusSchema>;
+
+export const ModelConnectInferenceRejectionSchema = z.object({
+  inferenceStatus: ModelInferenceProbeStatusSchema.extract(["auth", "model", "credit", "spending"]),
+});
+export const ModelConnectResultSchema = ModelCredentialSchema.extend({
+  /** A result for this connection attempt, not a property of the stored credential. */
+  inferenceStatus: ModelInferenceProbeStatusSchema.optional(),
+});
+export type ModelConnectResult = z.infer<typeof ModelConnectResultSchema>;
 
 export const ModelCatalogEntrySchema = z.object({
   provider: z.string(),

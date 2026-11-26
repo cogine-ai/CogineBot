@@ -14,6 +14,7 @@ import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   DISCOVERED_MODEL_LIMITS,
   ModelApiProtocolSchema,
+  ModelConnectInferenceRejectionSchema,
   ModelHeaderRowsSchema,
   modelHeadersInput,
   modelOutputLeavesInputRoom,
@@ -78,6 +79,19 @@ export function modelInferenceProbeMessage(
   return translate(MODEL_INFERENCE_PROBE_MESSAGES[status], {
     provider: translate("Your model provider"),
   });
+}
+
+export function modelConnectChecksInference(
+  entry: Pick<ModelCatalogEntry, "inferenceProbe"> | undefined,
+  draftKey: string,
+): boolean {
+  return entry?.inferenceProbe === true && draftKey.trim().length >= 8;
+}
+
+export function modelConnectInferenceRejection(error: unknown) {
+  if (!error || typeof error !== "object" || !("data" in error)) return undefined;
+  const rejection = ModelConnectInferenceRejectionSchema.safeParse(error.data);
+  return rejection.success ? rejection.data.inferenceStatus : undefined;
 }
 
 /** Only rank discovery choices. Current selections and saved model order use the base catalog. */
@@ -329,7 +343,10 @@ export type ModelConnectRequest =
  */
 export function modelConnectRequest(input: {
   form: ConnectionFormDraft;
-  selected: Pick<ModelCatalogEntry, "provider" | "providerName" | "id" | "thinkingLevels">;
+  selected: Pick<
+    ModelCatalogEntry,
+    "provider" | "providerName" | "id" | "thinkingLevels" | "inferenceProbe"
+  >;
   credential?: Pick<
     ModelCredential,
     "provider" | "modelId" | "thinkingLevel" | "modelSettings" | "reasoning"
@@ -452,6 +469,7 @@ export function modelConnectRequest(input: {
     input: {
       provider: mutationProvider,
       ...(newKey ? { apiKey: newKey } : {}),
+      ...(modelConnectChecksInference(selected, newKey) ? { verifyInference: true } : {}),
       ...(selected.provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID
         ? { accountId: form.accountId.trim(), gatewayId: form.gatewayId.trim() }
         : {}),

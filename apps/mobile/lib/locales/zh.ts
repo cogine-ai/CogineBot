@@ -982,6 +982,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Found {count} model.": "找到 {count} 个模型。",
   "Check models": "检查模型目录",
   "Test model": "测试模型",
+  "Connecting sends one test request that may incur usage charges.":
+    "连接时会发送一次测试请求，可能产生用量费用。",
   "The model accepted the test request.": "模型已接收测试请求。",
   "This key cannot use the selected model.": "此密钥无法使用所选模型。",
   "Could not verify this model.": "无法验证此模型。",

@@ -40,6 +40,8 @@ import {
   initialModelProbeState,
   matchesSearchQuery,
   modelCatalogProbeInput,
+  modelConnectChecksInference,
+  modelConnectInferenceRejection,
   modelConnectRequest,
   modelThinkingLevels,
   prioritizeProviderListedModels,
@@ -169,6 +171,7 @@ export function ModelSettingsOverlay({
   const [codeCopied, copyOAuthCode] = useCopyText();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | "disconnect" | null>(null);
+  const connectionSaving = useRef(false);
   const pendingOwnerRef = useRef(0);
   function beginPending(next: "connect" | "default" | "disconnect") {
     const owner = ++pendingOwnerRef.current;
@@ -995,7 +998,7 @@ export function ModelSettingsOverlay({
     const revision = selectionRevisionRef.current;
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
-    if (!selected) return;
+    if (!selected || busy || preflightTesting || connectionSaving.current) return;
     const request = modelConnectRequest({
       form: {
         apiKey,
@@ -1040,6 +1043,7 @@ export function ModelSettingsOverlay({
     const { savingLimitOnly } = request;
     setError(null);
     setNotice(null);
+    connectionSaving.current = true;
     const pendingOwner = beginPending("connect");
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
@@ -1059,6 +1063,10 @@ export function ModelSettingsOverlay({
       const effective = await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       detailScrollRef.current?.scrollTo({ top: 0 });
+      if (savedConnection.inferenceStatus && savedConnection.inferenceStatus !== "accepted") {
+        setNotice(`${t`Saved.`} ${modelInferenceTestMessage(savedConnection.inferenceStatus)}`);
+        return;
+      }
       setNotice(
         isOpenAiCompatible ||
           savingLimitOnly ||
@@ -1070,9 +1078,16 @@ export function ModelSettingsOverlay({
           : t`Connected and using ${selected.label}.`,
       );
     } catch (err) {
-      if (operationCurrent(revision, scope, spaceGeneration))
-        setError(errorText(err, t`Could not connect this provider`));
+      if (operationCurrent(revision, scope, spaceGeneration)) {
+        const rejected = modelConnectInferenceRejection(err);
+        setError(
+          rejected
+            ? modelInferenceTestMessage(rejected)
+            : errorText(err, t`Could not connect this provider`),
+        );
+      }
     } finally {
+      connectionSaving.current = false;
       finishPending(pendingOwner);
     }
   }
@@ -1612,13 +1627,21 @@ export function ModelSettingsOverlay({
               ) : null}
             </>
           ) : null}
+          {modelConnectChecksInference(selected, apiKey) ? (
+            <p className="mt-3 text-sm text-muted-foreground">
+              <Trans>Connecting sends one test request that may incur usage charges.</Trans>
+            </p>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
             className="mt-3 rounded-full"
             size="sm"
             disabled={
-              busy || !cloudflareRoutingReady || (!builtinLimitSave && apiKey.trim().length < 8)
+              busy ||
+              preflightTesting ||
+              !cloudflareRoutingReady ||
+              (!builtinLimitSave && apiKey.trim().length < 8)
             }
             onClick={() => void connectKey()}
           >

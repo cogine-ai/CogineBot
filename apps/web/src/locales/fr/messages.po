@@ -7601,3 +7601,6 @@ msgstr "Messages effacés. Le nettoyage de la mémoire externe n’a pas pu êtr
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "Le nettoyage de la mémoire externe n’a pas pu être confirmé."
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "La connexion envoie une requête de test qui peut entraîner des frais d’utilisation."

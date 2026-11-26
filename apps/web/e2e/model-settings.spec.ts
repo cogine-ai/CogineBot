@@ -1730,6 +1730,110 @@ for (const notListed of [true, false]) {
   });
 }
 
+test("checks the replacement key while connecting a model", async ({ page }, testInfo) => {
+  await signup(
+    page,
+    `connect-model-check-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  await completeOnboarding(page);
+  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+  const model = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
+  const saved = await rpc<ModelCredential>(page, "models/connect", {
+    provider: model.provider,
+    apiKey: "fixture-existing-key",
+    modelId: model.id,
+  });
+  await page.route("**/rpc/models/list", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+    await route.fulfill({
+      response,
+      json: {
+        json: json.map((entry) =>
+          entry.id === model.id && entry.provider === model.provider
+            ? { ...entry, inferenceProbe: true }
+            : entry,
+        ),
+      },
+    });
+  });
+  const attempts: unknown[] = [];
+  let refuse = true;
+  await page.route("**/rpc/models/connect", async (route) => {
+    attempts.push(route.request().postDataJSON().json);
+    if (refuse) {
+      await route.fulfill({
+        status: 400,
+        json: {
+          json: {
+            defined: true,
+            code: "BAD_REQUEST",
+            status: 400,
+            message: "The test rejected this key.",
+            data: { inferenceStatus: "auth" },
+          },
+        },
+      });
+      return;
+    }
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const { json } = await response.json();
+    await route.fulfill({ response, json: { json: { ...json, inferenceStatus: "timeout" } } });
+  });
+
+  const settings = await openUserSettings(page, "models");
+  await settings.getByPlaceholder("Search providers").fill("openai");
+  await settings
+    .getByRole("button")
+    .filter({ has: page.getByText("OpenAI", { exact: true }) })
+    .click();
+  const cost = settings.getByText(
+    "Connecting sends one test request that may incur usage charges.",
+  );
+  await expect(cost).toHaveCount(0);
+  const key = settings.getByLabel("Replace API key", { exact: true });
+  await key.fill("fixture-connect-replacement-key");
+  const replace = settings.getByRole("button", { name: "Replace API key", exact: true });
+  await expect(cost).toBeInViewport({ ratio: 1 });
+  await captureScreenshot(page, testInfo, "a1-connection-test-usage");
+  await replace.click();
+  await expect(
+    settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
+  ).toBeVisible();
+  await expect(key).toHaveValue("fixture-connect-replacement-key");
+  expect(attempts).toEqual([
+    expect.objectContaining({
+      provider: model.provider,
+      modelId: model.id,
+      apiKey: "fixture-connect-replacement-key",
+      credentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+      verifyInference: true,
+    }),
+  ]);
+  const afterRejection = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  expect(afterRejection.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
+    saved.connectionRevision,
+  );
+
+  refuse = false;
+  await replace.click();
+  await expect(
+    settings.getByRole("status").filter({ hasText: "Saved. Your model provider took too long" }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(key).toHaveValue("");
+  await expect(cost).toHaveCount(0);
+  expect(attempts).toHaveLength(2);
+  const afterTimeout = await rpc<ModelCredential[]>(page, "models/credentials", {});
+  expect(afterTimeout.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
+    saved.connectionRevision! + 1,
+  );
+  await captureScreenshot(page, testInfo, "a1-connection-test-saved-timeout");
+});
+
 test("tests model access with the selected saved or draft API key", async ({ page }, testInfo) => {
   await signup(page, `model-access-${Date.now()}@example.test`, "password12", "Model fixture");
   await completeOnboarding(page);

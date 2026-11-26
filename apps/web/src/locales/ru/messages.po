@@ -7657,3 +7657,6 @@ msgstr "Сообщения удалены. Не удалось подтверд�
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "Не удалось подтвердить очистку внешней памяти."
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "При подключении отправляется один тестовый запрос, который может тарифицироваться."
