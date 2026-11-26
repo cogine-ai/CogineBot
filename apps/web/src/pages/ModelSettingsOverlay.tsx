@@ -564,6 +564,7 @@ export function ModelSettingsOverlay({
       ? (credential?.thinkingLevel ?? null)
       : null;
   const thinkingDirty = !isOpenAiCompatible && (thinkingLevel ?? null) !== selectedStoredLevel;
+  const settingsModelId = isOpenAiCompatible ? modelId.trim() : (selected?.id ?? "");
   const settingsSelectionRevision = selectionRevisionRef.current;
   const busy = pending !== null || oauthPending;
   const effectiveBaseUrl = baseUrl.trim();
@@ -2086,14 +2087,14 @@ export function ModelSettingsOverlay({
                 </div>
               ) : null}
               {credential &&
-              modelId.trim() &&
+              settingsModelId &&
               (!isOpenAiCompatible ||
-                credential.enabledModelIds?.includes(modelId.trim()) ||
-                credential.modelId === modelId.trim()) ? (
+                credential.enabledModelIds?.includes(settingsModelId) ||
+                credential.modelId === settingsModelId) ? (
                 <ModelSettingsPanel
-                  key={`${credential.id}:${modelId.trim()}`}
+                  key={`${credential.id}:${settingsModelId}`}
                   credential={credential}
-                  modelId={modelId.trim()}
+                  modelId={settingsModelId}
                   entry={selected}
                   spaceId={me?.spaceId}
                   onSaved={async () => {

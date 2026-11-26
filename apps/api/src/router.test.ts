@@ -5825,6 +5825,7 @@ describe("saved model catalog checks", () => {
       ...bundled,
       "gpt-fixture-new-model",
       "gpt-fixture-embedding",
+      "gpt-live-1",
       "fixture-unregistered-chat",
       `gpt-${storedKey}`,
     ]);
@@ -5840,6 +5841,7 @@ describe("saved model catalog checks", () => {
     ]);
     expect(JSON.stringify(result)).not.toContain("fixture-unregistered-chat");
     expect(JSON.stringify(result)).not.toContain("gpt-fixture-embedding");
+    expect(JSON.stringify(result)).not.toContain("gpt-live-1");
     expect(JSON.stringify(result)).not.toContain(storedKey);
     expect(await credentials({ ...actor, spaceId: "space-two" })).toEqual(result);
     expect(await credentials({ ...actor, userId: "other-user" })).toEqual([]);

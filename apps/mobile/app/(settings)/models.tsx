@@ -1899,17 +1899,18 @@ function ModelsForm({
     setThinkingLevel(value);
   }
 
+  const settingsModelId = isOpenAiCompatible ? modelId.trim() : (selected?.id ?? "");
   const settingsSelectionRevision = selectionRevisionRef.current;
   const modelSettingsPanel =
     credential &&
-    modelId.trim() &&
+    settingsModelId &&
     (!isOpenAiCompatible ||
-      credential.enabledModelIds?.includes(modelId.trim()) ||
-      credential.modelId === modelId.trim()) ? (
+      credential.enabledModelIds?.includes(settingsModelId) ||
+      credential.modelId === settingsModelId) ? (
       <ModelSettingsPanel
-        key={`${credential.id}:${modelId.trim()}`}
+        key={`${credential.id}:${settingsModelId}`}
         credential={credential}
-        modelId={modelId.trim()}
+        modelId={settingsModelId}
         entry={selected}
         saveSettings={async (values) => {
           const requestContext = await captureApiRequestContext();
@@ -1917,7 +1918,7 @@ function ModelsForm({
             throw new Error(t("Model connection changed. Reload and try again."));
           await rpc(
             "models/saveModelSettings",
-            { credentialId: credential.id, modelId: modelId.trim(), settings: values },
+            { credentialId: credential.id, modelId: settingsModelId, settings: values },
             { requestContext },
           );
         }}
@@ -1927,7 +1928,7 @@ function ModelsForm({
           if (!current()) throw new Error(t("Could not load model settings"));
           const applied = await load({
             provider,
-            modelId,
+            modelId: settingsModelId,
             connectionId: credential.id,
             keepForm: true,
           });

@@ -7914,6 +7914,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                       gatewayId: judgeKey.gatewayId,
                       baseUrl: judgeKey.baseUrl,
                       apiProtocol: judgeKey.apiProtocol,
+                      providerCatalogModel: judgeKey.providerCatalogModel,
                       headers: judgeKey.headers,
                       cacheCapabilities: judgeKey.cacheCapabilities,
                       contextWindow: judgeKey.contextWindow,

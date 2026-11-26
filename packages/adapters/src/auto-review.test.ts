@@ -392,13 +392,13 @@ describe("LLM Auto Review argument budget", () => {
 });
 
 describe("runAutoReviewJudge instructions", () => {
-  it("anchors the present moment in the judge system instructions", async () => {
+  it("anchors the present moment and forwards the confirmed model to the judge runtime", async () => {
     vi.resetModules();
     const { runAutoReviewJudge } = await import("./auto-review.js");
-    let captured: { instructions?: string } | undefined;
+    let captured: { instructions?: string; model: { providerCatalogModel?: boolean } } | undefined;
     const runtime = {
       describe: () => ({ capabilities: { scripted: false } }),
-      run: (request: { instructions?: string }) => {
+      run: (request: NonNullable<typeof captured>) => {
         captured = request;
         return (async function* () {
           yield {
@@ -411,7 +411,8 @@ describe("runAutoReviewJudge instructions", () => {
     };
     await runAutoReviewJudge({
       runtime: runtime as never,
-      checker: { provider: "openrouter", model: "x" },
+      checker: { provider: "openai", model: "gpt-fixture-discovered" },
+      providerCatalogModel: true,
       prompt: "test",
       runId: "run",
       spaceId: "ws",
@@ -421,6 +422,11 @@ describe("runAutoReviewJudge instructions", () => {
     });
     expect(captured?.instructions).toContain("Current date and time");
     expect(captured?.instructions).toContain("fast safety checker");
+    expect(captured?.model).toMatchObject({
+      provider: "openai",
+      id: "gpt-fixture-discovered",
+      providerCatalogModel: true,
+    });
   });
 });
 

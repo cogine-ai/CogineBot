@@ -1546,6 +1546,22 @@ test("prioritizes automatically listed models for a saved connection", async ({
   await picker.click();
   await listbox.getByRole("option", { name: discovered, exact: true }).click();
   await expect(picker).toHaveText(discovered);
+  const replacementKey = settings.getByLabel("Replace API key", { exact: true });
+  await replacementKey.fill("fixture-replacement");
+  await expect(picker).toHaveText(current!.label);
+  const panel = settings.getByTestId("model-settings-panel");
+  await panel.locator("summary").click();
+  await panel.getByLabel("Maximum output tokens", { exact: true }).fill("512");
+  const advancedWrite = page.waitForRequest("**/rpc/models/saveModelSettings");
+  await panel.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await advancedWrite).postDataJSON().json).toMatchObject({
+    credentialId: saved.id,
+    modelId: current!.id,
+    settings: { maxTokens: 512 },
+  });
+  await expect(panel.getByRole("status")).toHaveText("Saved.");
+  await replacementKey.clear();
+  await expect(picker).toHaveText(discovered);
   await expect(settings.getByRole("button", { name: "Save limits", exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "a1-discovered-api-key-model");
   let choice: unknown;

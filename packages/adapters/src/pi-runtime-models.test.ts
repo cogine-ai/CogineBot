@@ -156,6 +156,7 @@ describe("request model catalogs", () => {
     for (const unsafe of [
       { provider: "openai-compatible" },
       { id: "gpt-fixture-embedding" },
+      { id: "gpt-live-1" },
       { apiKey: undefined },
     ]) {
       expect(

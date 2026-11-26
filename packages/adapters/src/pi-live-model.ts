@@ -21,7 +21,12 @@ export function providerCatalogModel(
   id: string,
   models: Models = catalogModels,
 ): Model<"openai-responses"> | undefined {
-  if (provider !== "openai" || !/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) || !isChatModelId(id))
+  if (
+    provider !== "openai" ||
+    !/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) ||
+    /^gpt-live(?:-|$)/i.test(id) ||
+    !isChatModelId(id)
+  )
     return undefined;
   const siblings = models.getProvider(provider)?.getModels();
   if (
