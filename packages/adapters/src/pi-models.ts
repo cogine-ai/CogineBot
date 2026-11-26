@@ -32,6 +32,7 @@ export type PiCatalogEntry = {
   placeholder?: boolean;
   /** Provider models share one pinned HTTPS models-list base URL. */
   catalogProbe?: boolean;
+  savedCatalogProbe?: true;
 };
 
 const catalogProbeBaseUrls = new Map<string, string>();
@@ -154,7 +155,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         provider.id === CHATGPT_PLAN_PROVIDER_ID
           ? { placeholder: true }
           : {}),
-        ...(probeBaseUrl ? { catalogProbe: true } : {}),
+        ...(probeBaseUrl ? { catalogProbe: true, savedCatalogProbe: true } : {}),
       });
     }
   }
@@ -176,7 +177,9 @@ function buildPiCatalog(): PiCatalogEntry[] {
       subscription: false,
       reasoning: true,
       thinkingLevels: ["off", "minimal", "low", "medium", "high"],
-      ...(catalogProbeBaseUrls.has("openrouter") ? { catalogProbe: true } : {}),
+      ...(catalogProbeBaseUrls.has("openrouter")
+        ? { catalogProbe: true, savedCatalogProbe: true }
+        : {}),
     });
   }
 

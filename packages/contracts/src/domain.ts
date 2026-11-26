@@ -1512,6 +1512,19 @@ export const SpaceMemoryConfigSchema = z.object({
 });
 export type SpaceMemoryConfig = z.infer<typeof SpaceMemoryConfigSchema>;
 
+const modelCatalogProbeProvider = z.string().trim().min(1);
+export const ModelCatalogProbeInputSchema = z.union([
+  z.object({ provider: modelCatalogProbeProvider, apiKey: z.string().trim().min(8) }).strict(),
+  z
+    .object({
+      provider: modelCatalogProbeProvider,
+      credentialId: Id,
+      expectedRevision: z.number().int().positive(),
+    })
+    .strict(),
+]);
+export type ModelCatalogProbeInput = z.infer<typeof ModelCatalogProbeInputSchema>;
+
 export const ModelCatalogEntrySchema = z.object({
   provider: z.string(),
   providerName: z.string().optional(),
@@ -1534,6 +1547,8 @@ export const ModelCatalogEntrySchema = z.object({
   placeholder: z.boolean().optional(),
   /** Models share one pinned HTTPS models-list URL that can be probed. */
   catalogProbe: z.boolean().optional(),
+  /** The server accepts a saved connection revision in the catalog check. */
+  savedCatalogProbe: z.literal(true).optional(),
 });
 export type ModelCatalogEntry = z.infer<typeof ModelCatalogEntrySchema>;
 

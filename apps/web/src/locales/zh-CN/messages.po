@@ -1182,6 +1182,10 @@ msgstr "聊天应用、群组频道和 Agent 连接。"
 msgid "Chat Settings"
 msgstr "聊天设置"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "检查模型目录"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

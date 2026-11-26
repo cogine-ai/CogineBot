@@ -39,6 +39,7 @@ import {
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
+  modelCatalogProbeInput,
   modelConnectRequest,
   modelThinkingLevels,
   savedCompatibleModelIds,
@@ -195,6 +196,9 @@ export function ModelSettingsOverlay({
   const [preflightSuccess, setPreflightSuccess] = useState<string | null>(null);
   const [preflightFailure, setPreflightFailure] = useState<ModelPreflightFailure | null>(null);
   const preflightRevisionRef = useRef(0);
+  const checkedConnectionRef = useRef<{ credentialId: string; expectedRevision: number } | null>(
+    null,
+  );
   const detailScrollRef = useRef<HTMLDivElement>(null);
   const refreshRevisionRef = useRef(0);
   const selectionRevisionRef = useRef(0);
@@ -288,6 +292,16 @@ export function ModelSettingsOverlay({
     if (boundSpaceId && nextMe.spaceId !== boundSpaceId) return;
     setMe(nextMe);
     if (keepConnectionState) return nextMe;
+    const checked = checkedConnectionRef.current;
+    if (
+      checked &&
+      !nextCredentials.some(
+        ({ id, connectionRevision }) =>
+          id === checked.credentialId && connectionRevision === checked.expectedRevision,
+      )
+    ) {
+      invalidatePreflight();
+    }
     setDefaultsRevision((revision) => revision + 1);
     const nextProvider =
       provider &&
@@ -465,6 +479,7 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true
     : reasoning;
@@ -559,6 +574,7 @@ export function ModelSettingsOverlay({
     apiKey.trim().length === 0;
 
   function invalidatePreflight() {
+    checkedConnectionRef.current = null;
     preflightRevisionRef.current += 1;
     setPreflightTesting(false);
     setPreflightTarget(null);
@@ -758,7 +774,8 @@ export function ModelSettingsOverlay({
   }
 
   async function testApiKeyConnection() {
-    if (!selected?.catalogProbe) return;
+    if (!selected || !catalogRequest) return;
+    checkedConnectionRef.current = "credentialId" in catalogRequest ? catalogRequest : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
     setPreflightTarget("api-key");
@@ -770,9 +787,9 @@ export function ModelSettingsOverlay({
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
-      apiKey,
       modelId: selected.id,
       catalogProbe: true,
+      catalogRequest,
       probeCatalog: rpc.models.probeCatalog,
     });
     if (
@@ -1478,12 +1495,16 @@ export function ModelSettingsOverlay({
                 variant="outline"
                 size="sm"
                 className="mt-3 rounded-full"
-                disabled={busy || preflightTesting || apiKey.trim().length < 8}
+                disabled={busy || preflightTesting || !catalogRequest}
                 onClick={() => void testApiKeyConnection()}
               >
-                {modelPreflightTestingLabel(
-                  preflightTesting && preflightTarget === "api-key",
-                  "api-key",
+                {catalogRequest && "credentialId" in catalogRequest && !preflightTesting ? (
+                  <Trans>Check models</Trans>
+                ) : (
+                  modelPreflightTestingLabel(
+                    preflightTesting && preflightTarget === "api-key",
+                    "api-key",
+                  )
                 )}
               </Button>
               {preflightTarget === "api-key" ? (

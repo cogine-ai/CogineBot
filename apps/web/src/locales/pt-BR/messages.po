@@ -1182,6 +1182,10 @@ msgstr ""
 msgid "Chat Settings"
 msgstr "Configurações do chat"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "Verificar modelos"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

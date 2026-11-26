@@ -2349,3 +2349,109 @@ it("keeps the native committed revision when a settings readback supersedes the 
     state.rpc.mock.calls.filter(([name]) => name === "models/connect").at(-1)?.[1],
   ).toMatchObject({ expectedRevision: 8 });
 });
+
+it("checks a saved API key without exposing it to the editor", async () => {
+  const saved = {
+    id: "owned-key",
+    provider: "openai",
+    label: "OpenAI",
+    hasKey: true,
+    isDefault: true,
+    authKind: "api_key",
+    modelId: "fixture-chat",
+    connectionRevision: 7,
+  };
+  let readback: Promise<(typeof saved)[]> | undefined;
+  let probe: Promise<{ models: string[] }> | undefined;
+  const normal = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "me")
+      return {
+        userId: "user-1",
+        spaceId: "space-1",
+        defaultProvider: saved.provider,
+        defaultModel: saved.modelId,
+      };
+    if (procedure === "models/list")
+      return [
+        {
+          provider: saved.provider,
+          providerName: "OpenAI",
+          id: saved.modelId,
+          label: "Example Chat",
+          auth: "api-key",
+          billing: "API",
+          catalogProbe: true,
+          savedCatalogProbe: true,
+        },
+      ];
+    if (procedure === "models/credentials") return readback ?? [saved];
+    if (procedure === "models/probeCatalog") return probe ?? { models: [saved.modelId] };
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]');
+  expect(key?.value).toBe("");
+  const check = button("Check models");
+  expect(check.disabled).toBe(false);
+  await act(async () => check.click());
+  expect(
+    state.rpc.mock.calls.find(([procedure]) => procedure === "models/probeCatalog")?.[1],
+  ).toEqual({
+    provider: "openai",
+    credentialId: saved.id,
+    expectedRevision: 7,
+  });
+  expect(container.textContent).toContain("Model listed by the provider.");
+  expect(key?.value).toBe("");
+
+  saved.connectionRevision++;
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  expect(container.textContent).not.toContain("Model listed by the provider.");
+  await act(async () => button("Check models").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog").at(-1)?.[1],
+  ).toMatchObject({ expectedRevision: 8 });
+
+  const nextConnection = deferred<(typeof saved)[]>();
+  const lateResult = deferred<{ models: string[] }>();
+  readback = nextConnection.promise;
+  probe = lateResult.promise;
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  await act(async () => button("Check models").click());
+  const checks = state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog");
+  expect(checks).toHaveLength(3);
+  expect(checks.at(-1)?.[1]).toMatchObject({ expectedRevision: 8 });
+  await act(async () => nextConnection.resolve([{ ...saved, connectionRevision: 9 }]));
+  await act(async () => lateResult.reject(new Error("Old connection changed")));
+  expect(container.textContent).not.toContain("Old connection changed");
+  expect(container.textContent).not.toContain("Model listed by the provider.");
+
+  const obsoleteReadback = deferred<(typeof saved)[]>();
+  readback = obsoleteReadback.promise;
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  readback = Promise.resolve([{ ...saved, connectionRevision: 9 }]);
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  const currentProbe = deferred<{ models: string[] }>();
+  probe = currentProbe.promise;
+  await act(async () => button("Check models").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog").at(-1)?.[1],
+  ).toMatchObject({ expectedRevision: 9 });
+  await act(async () => obsoleteReadback.reject(new Error("Superseded refresh failed")));
+  await act(async () => currentProbe.resolve({ models: [saved.modelId] }));
+  expect(container.textContent).not.toContain("Superseded refresh failed");
+  expect(container.textContent).toContain("Model listed by the provider.");
+});

@@ -14,10 +14,15 @@ function fixture(
     spaceId: "owner-default",
     member: { user: { email: "owner@example.test" } },
   }));
-  const handle = vi.fn(async () => ({
-    matched: true,
-    response: new Response('{"json":{"ok":true}}'),
-  }));
+  const handle = vi.fn(
+    async (
+      _request: Request,
+      _options: { context: { stillAuthorized: () => Promise<boolean> } },
+    ) => ({
+      matched: true,
+      response: new Response('{"json":{"ok":true}}'),
+    }),
+  );
   const app = new Hono();
   mountLocalSettings(app, {
     token: configuredToken,
@@ -69,6 +74,7 @@ describe("local settings authority", () => {
     const f = fixture();
     for (const procedure of [
       "models/connect",
+      "models/probeCatalog",
       "models/setDefault",
       "models/backups",
       "models/setBackups",
@@ -99,5 +105,20 @@ describe("local settings authority", () => {
     const f = fixture(token, null);
     expect((await f.request("models/list")).status).toBe(409);
     expect(f.handle).not.toHaveBeenCalled();
+  });
+
+  it("rechecks the original owner before completing an authorized settings request", async () => {
+    const f = fixture();
+    expect((await f.request("models/probeCatalog")).status).toBe(200);
+    const check = f.handle.mock.lastCall![1].context.stillAuthorized;
+    await expect(check()).resolves.toBe(true);
+    f.findUnique.mockResolvedValueOnce({ ownerUserId: "new-owner" });
+    f.findUnique.mockResolvedValueOnce({ ownerUserId: "new-owner" });
+    f.findFirst.mockResolvedValueOnce({
+      userId: "new-owner",
+      spaceId: "new-owner-default",
+      member: { user: { email: "new-owner@example.test" } },
+    });
+    await expect(check()).resolves.toBe(false);
   });
 });

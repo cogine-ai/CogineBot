@@ -44,6 +44,8 @@ import {
   filterModelCatalog,
   initialModelProbeState,
   matchesSearchQuery,
+  modelCatalogProbeInput,
+  modelCatalogProbeOutcome,
   modelConnectRequest,
   modelThinkingLevels,
   savedCompatibleModelIds,
@@ -237,10 +239,12 @@ function ModelsForm({
   const [oauth, setOauth] = useState<ModelOAuthBegin | null>(null);
   const [pasteCode, setPasteCode] = useState("");
   const [loading, setLoading] = useState(true);
-  const [pending, setPending] = useState<"connect" | "default" | "disconnect" | null>(null);
+  const [pending, setPending] = useState<"connect" | "default" | "disconnect" | "test" | null>(
+    null,
+  );
   const busyRef = useRef(false);
   const pendingOwnerRef = useRef(0);
-  function beginPending(next: "connect" | "default" | "disconnect") {
+  function beginPending(next: "connect" | "default" | "disconnect" | "test") {
     const owner = ++pendingOwnerRef.current;
     setPending(next);
     return owner;
@@ -280,6 +284,15 @@ function ModelsForm({
   const meRef = useRef<MobileMe | null>(null);
   meRef.current = me;
   const [feedbackAnchor, setFeedbackAnchor] = useState<FeedbackAnchor>("connection");
+  const [catalogFeedback, setCatalogFeedback] = useState<{
+    error: boolean;
+    message: string;
+  } | null>(null);
+  const catalogCheckGenerationRef = useRef(0);
+  const invalidateCatalogCheck = useCallback(() => {
+    catalogCheckGenerationRef.current += 1;
+    setCatalogFeedback(null);
+  }, []);
   const oauthAbortRef = useRef<AbortController | null>(null);
   const oauthLoginIdRef = useRef<string | null>(null);
   const oauthCodeSubmittingRef = useRef(false);
@@ -293,15 +306,16 @@ function ModelsForm({
     const nextError = next.error ?? null;
     setFeedbackAnchor(anchor);
     setError(nextError);
+    invalidateCatalogCheck();
     const message = nextError ?? next.notice ?? null;
     // VoiceOver keeps focus on the tapped button, so speak the result from here.
-    // Success is spoken only: the selection already shows the active model.
     if (message) AccessibilityInfo.announceForAccessibility(message);
   }
 
   function clearFeedback() {
     setFeedbackAnchor("connection");
     setError(null);
+    invalidateCatalogCheck();
   }
 
   function acceptSavedBackupConnection(
@@ -347,99 +361,109 @@ function ModelsForm({
     if (loginId) void settings.cancelOAuth(loginId).catch(() => undefined);
   }, [settings.cancelOAuth]);
 
-  const load = useCallback(async (preferred: ModelLoadOptions = {}) => {
-    setError(null);
-    const generation = ++modelRequestGenerationRef.current;
-    const selectionRevision = selectionRevisionRef.current;
-    const spaceGeneration = currentSpaceSelectionGeneration();
-    const requestContext = await captureApiRequestContext();
-    const [nextMe, nextCatalog, nextCredentials, nextReferences] = await Promise.all([
-      rpc<MobileMe>("me", {}, { requestContext }),
-      rpc<MobileModel[]>("models/list", {}, { requestContext }),
-      rpc<MobileModelCredential[]>("models/credentials", {}, { requestContext }),
-      rpc<{ references: ModelCredentialReference[] }>("models/references", {}, { requestContext }),
-    ]);
-    if (
-      generation !== modelRequestGenerationRef.current ||
-      spaceGeneration !== currentSpaceSelectionGeneration() ||
-      requestContext.apiBase !== currentApiBase() ||
-      requestContext.sessionGeneration !== currentSessionGeneration()
-    )
-      return;
-    meRef.current = nextMe;
-    setMe(nextMe);
-    if (preferred.keepConnectionState) return nextMe;
-    setDefaultsRevision((revision) => revision + 1);
-    setReferences(nextReferences.references);
-    backupOptionsSnapshotRef.current = new Map(
-      connectedBackupOptions(nextCatalog, nextCredentials).map((option) => [
-        backupChoiceKey(option),
-        option,
-      ]),
-    );
-    setCatalog(nextCatalog);
-    setCredentials(nextCredentials);
-    if (selectionRevision !== selectionRevisionRef.current) return nextMe;
-    if (preferred.keepForm) {
-      const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
-      setConnectionRevision(current?.connectionRevision);
-      setSavedBaseUrl(current?.baseUrl);
-      if (current) acceptSavedBackupConnection(current, nextCatalog);
-      return nextMe;
-    }
-    const nextProvider =
-      (preferred.provider &&
-      nextCatalog.some(
-        (entry) =>
-          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(preferred.provider ?? ""),
+  const load = useCallback(
+    async (preferred: ModelLoadOptions = {}) => {
+      setError(null);
+      const generation = ++modelRequestGenerationRef.current;
+      if (!preferred.keepConnectionState) invalidateCatalogCheck();
+      const selectionRevision = selectionRevisionRef.current;
+      const spaceGeneration = currentSpaceSelectionGeneration();
+      const requestContext = await captureApiRequestContext();
+      const [nextMe, nextCatalog, nextCredentials, nextReferences] = await Promise.all([
+        rpc<MobileMe>("me", {}, { requestContext }),
+        rpc<MobileModel[]>("models/list", {}, { requestContext }),
+        rpc<MobileModelCredential[]>("models/credentials", {}, { requestContext }),
+        rpc<{ references: ModelCredentialReference[] }>(
+          "models/references",
+          {},
+          { requestContext },
+        ),
+      ]);
+      if (
+        generation !== modelRequestGenerationRef.current ||
+        spaceGeneration !== currentSpaceSelectionGeneration() ||
+        requestContext.apiBase !== currentApiBase() ||
+        requestContext.sessionGeneration !== currentSessionGeneration()
       )
-        ? preferred.provider
-        : nextMe.defaultProvider) ??
-      nextCatalog[0]?.provider ??
-      "";
-    const nextCredential =
-      nextCredentials.find(
-        (entry) =>
-          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
-          entry.id === preferred.connectionId,
-      ) ??
-      nextCredentials.find(
-        (entry) =>
-          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
-          entry.isDefault,
-      ) ??
-      nextCredentials.find(
-        (entry) =>
-          canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+        return;
+      meRef.current = nextMe;
+      setMe(nextMe);
+      if (preferred.keepConnectionState) return nextMe;
+      invalidateCatalogCheck();
+      setDefaultsRevision((revision) => revision + 1);
+      setReferences(nextReferences.references);
+      backupOptionsSnapshotRef.current = new Map(
+        connectedBackupOptions(nextCatalog, nextCredentials).map((option) => [
+          backupChoiceKey(option),
+          option,
+        ]),
       );
-    const nextModel = connectionFormModelId({
-      catalog: nextCatalog,
-      provider: nextProvider,
-      credential: nextCredential,
-      defaults: nextMe,
-      current: preferred.modelId,
-    });
-    resetOpenAiCompatibleProbe();
-    setProvider(nextProvider);
-    setConnectionId(nextCredential?.id ?? null);
-    setConnectionRevision(nextCredential?.connectionRevision);
-    setSavedBaseUrl(nextCredential?.baseUrl);
-    setModelSearch((current) =>
-      current.provider === nextProvider ? current : { provider: nextProvider, query: "" },
-    );
-    setModelId(nextModel);
-    applyConnectionFields(
-      connectionFormFields({
+      setCatalog(nextCatalog);
+      setCredentials(nextCredentials);
+      if (selectionRevision !== selectionRevisionRef.current) return nextMe;
+      if (preferred.keepForm) {
+        const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
+        setConnectionRevision(current?.connectionRevision);
+        setSavedBaseUrl(current?.baseUrl);
+        if (current) acceptSavedBackupConnection(current, nextCatalog);
+        return nextMe;
+      }
+      const nextProvider =
+        (preferred.provider &&
+        nextCatalog.some(
+          (entry) =>
+            canonicalPiProviderId(entry.provider) ===
+            canonicalPiProviderId(preferred.provider ?? ""),
+        )
+          ? preferred.provider
+          : nextMe.defaultProvider) ??
+        nextCatalog[0]?.provider ??
+        "";
+      const nextCredential =
+        nextCredentials.find(
+          (entry) =>
+            canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+            entry.id === preferred.connectionId,
+        ) ??
+        nextCredentials.find(
+          (entry) =>
+            canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? "") &&
+            entry.isDefault,
+        ) ??
+        nextCredentials.find(
+          (entry) =>
+            canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
+        );
+      const nextModel = connectionFormModelId({
         catalog: nextCatalog,
         provider: nextProvider,
-        modelId: nextModel,
         credential: nextCredential,
-      }),
-    );
-    setHeaderRows(null);
-    setShowHeaders(false);
-    return nextMe;
-  }, []);
+        defaults: nextMe,
+        current: preferred.modelId,
+      });
+      resetOpenAiCompatibleProbe();
+      setProvider(nextProvider);
+      setConnectionId(nextCredential?.id ?? null);
+      setConnectionRevision(nextCredential?.connectionRevision);
+      setSavedBaseUrl(nextCredential?.baseUrl);
+      setModelSearch((current) =>
+        current.provider === nextProvider ? current : { provider: nextProvider, query: "" },
+      );
+      setModelId(nextModel);
+      applyConnectionFields(
+        connectionFormFields({
+          catalog: nextCatalog,
+          provider: nextProvider,
+          modelId: nextModel,
+          credential: nextCredential,
+        }),
+      );
+      setHeaderRows(null);
+      setShowHeaders(false);
+      return nextMe;
+    },
+    [invalidateCatalogCheck],
+  );
 
   const loadBackupModels = useCallback(
     async (expectedMe: MobileMe) => {
@@ -516,14 +540,20 @@ function ModelsForm({
 
   useFocusEffect(
     useCallback(() => {
-      void load()
-        .then((nextMe) => (nextMe ? loadBackupModels(nextMe) : undefined))
-        .catch((err: unknown) =>
+      const refresh = load();
+      const generation = modelRequestGenerationRef.current;
+      const isCurrent = () => generation === modelRequestGenerationRef.current;
+      void refresh
+        .then((nextMe) => (nextMe && isCurrent() ? loadBackupModels(nextMe) : undefined))
+        .catch((err: unknown) => {
+          if (!isCurrent()) return;
           publishFeedback("connection", {
             error: errorText(err, t("Could not load model settings")),
-          }),
-        )
-        .finally(() => setLoading(false));
+          });
+        })
+        .finally(() => {
+          if (isCurrent()) setLoading(false);
+        });
       return () => {
         modelRequestGenerationRef.current += 1;
         selectionRevisionRef.current += 1;
@@ -639,6 +669,7 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
+  const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true
     : reasoning;
@@ -788,6 +819,7 @@ function ModelsForm({
     selectionRevisionRef.current += 1;
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
+    invalidateCatalogCheck();
   }
 
   function chooseProvider(nextProvider: string, nextConnectionId?: string | null) {
@@ -904,6 +936,48 @@ function ModelsForm({
         });
       },
     });
+  }
+
+  async function testCatalogConnection() {
+    if (!catalogRequest || !selected || busyRef.current) return;
+    clearFeedback();
+    const revision = selectionRevisionRef.current;
+    const catalogGeneration = catalogCheckGenerationRef.current;
+    const scope = me;
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const sessionGeneration = currentSessionGeneration();
+    const isCurrent = (context?: ApiRequestContext) =>
+      catalogGeneration === catalogCheckGenerationRef.current &&
+      operationCurrent(revision, scope, spaceGeneration, sessionGeneration, context);
+    function report(message: string, error = false) {
+      setCatalogFeedback({ message, error });
+      AccessibilityInfo.announceForAccessibility(message);
+    }
+    const pendingOwner = beginPending("test");
+    busyRef.current = true;
+    try {
+      const context = await captureApiRequestContext();
+      if (!isCurrent(context)) return;
+      const { models } = await rpc<{ models: string[] }>("models/probeCatalog", catalogRequest, {
+        requestContext: context,
+        skipSpaceAuthRecovery: true,
+      });
+      if (!isCurrent(context)) return;
+      const outcome = modelCatalogProbeOutcome(selected.id, models);
+      report(
+        outcome === "empty"
+          ? t("No models listed.")
+          : outcome === "listed"
+            ? t("Model listed by the provider.")
+            : t("This model is missing from the connection's model list."),
+        outcome === "missing",
+      );
+    } catch (error) {
+      if (!isCurrent()) return;
+      report(errorText(error, t("Could not list models.")), true);
+    } finally {
+      finishPending(pendingOwner);
+    }
   }
 
   function operationCurrent(
@@ -1989,6 +2063,22 @@ function ModelsForm({
                   value={apiKey}
                 />
               </>
+            ) : null}
+
+            {acceptsKey && selected.catalogProbe ? (
+              <NativeActionButton
+                disabled={busy || !catalogRequest}
+                label={pending === "test" ? t("Testing…") : t("Check models")}
+                onPress={() => void testCatalogConnection()}
+                prominence="secondary"
+                style={{ marginTop: 12 }}
+              />
+            ) : null}
+
+            {catalogFeedback ? (
+              <Text style={catalogFeedback.error ? styles.error : styles.secondary}>
+                {catalogFeedback.message}
+              </Text>
             ) : null}
 
             <NativeActionButton

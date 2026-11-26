@@ -1182,6 +1182,10 @@ msgstr "Applications de discussion, canaux de groupe et connexions d'agent."
 msgid "Chat Settings"
 msgstr "Paramètres de discussion"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "Vérifier les modèles"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

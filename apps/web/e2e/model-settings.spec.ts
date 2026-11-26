@@ -1446,3 +1446,48 @@ for (const width of [1280, 390]) {
     ).toHaveValue("low");
   });
 }
+
+test("checks a saved provider key without asking the user to re-enter it", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `catalog-key-${Date.now()}@example.test`, "password12", "Connection fixture");
+  await completeOnboarding(page);
+  const catalog = await rpc<Array<{ provider: string; id: string; catalogProbe?: boolean }>>(
+    page,
+    "models/list",
+    {},
+  );
+  const model = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe);
+  expect(model).toBeDefined();
+  const saved = await rpc<ModelCredential>(page, "models/connect", {
+    provider: "openai",
+    apiKey: "fixture-saved-provider-key",
+    modelId: model!.id,
+  });
+  const requests: unknown[] = [];
+  await page.route("**/rpc/models/probeCatalog", async (route) => {
+    requests.push(route.request().postDataJSON().json);
+    await route.fulfill({ json: { json: { models: [model!.id] } } });
+  });
+
+  const settings = await openUserSettings(page, "models");
+  await settings.getByPlaceholder("Search providers").fill("openai");
+  await settings
+    .getByRole("button")
+    .filter({ has: page.getByText("OpenAI", { exact: true }) })
+    .click();
+  const input = settings.getByLabel("Replace API key", { exact: true });
+  const check = settings.getByRole("button", { name: "Check models", exact: true });
+  await expect(input).toHaveValue("");
+  await expect(check).toBeEnabled();
+  await input.fill("short");
+  await expect(settings.getByRole("button", { name: "Test API key", exact: true })).toBeDisabled();
+  await input.clear();
+  await check.click();
+  await expect(settings.getByText("Chat was not tested.", { exact: false })).toBeVisible();
+  expect(requests).toEqual([
+    { provider: "openai", credentialId: saved.id, expectedRevision: saved.connectionRevision },
+  ]);
+  await expect(input).toHaveValue("");
+  await captureScreenshot(page, testInfo, "a1-saved-api-key-catalog-check");
+});

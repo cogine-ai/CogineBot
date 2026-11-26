@@ -5701,3 +5701,168 @@ describe("Routine list Native query batching", () => {
     expect(routines.every((routine) => routine.nativeTriggers?.length === 0)).toBe(true);
   });
 });
+
+describe("saved model catalog checks", () => {
+  const actor = {
+    spaceId: "space-one",
+    userId: "user-one",
+    email: "user@example.test",
+    isDeploymentOwner: false,
+  } satisfies Actor;
+  const savedInput = { provider: "openai", credentialId: "stored-model", expectedRevision: 7 };
+  const storedKey = "fixture-credential-value";
+
+  function fixture() {
+    const state = {
+      revision: 7,
+      ciphertext: "fixture-sealed-key",
+      allowed: true,
+      secretId: "fixture-secret",
+      plaintext: storedKey,
+    };
+    const probe = vi.fn().mockResolvedValue(["example-chat"]);
+    const findCredential = vi.fn(async ({ where }) =>
+      where.id === savedInput.credentialId &&
+      where.userId === actor.userId &&
+      where.provider === "openai" &&
+      (where.connectionRevision === undefined || where.connectionRevision === state.revision) &&
+      (where.secretId === undefined || where.secretId === state.secretId)
+        ? { id: where.id, secretId: state.secretId, connectionRevision: state.revision }
+        : null,
+    );
+    const findSecret = vi.fn(async ({ where }) =>
+      where.id === state.secretId &&
+      where.userId === actor.userId &&
+      where.spaceId === null &&
+      (where.ciphertext === undefined || where.ciphertext === state.ciphertext)
+        ? { id: where.id, ciphertext: state.ciphertext }
+        : null,
+    );
+    const load = vi.fn(async () => state.plaintext);
+    const handler = new RPCHandler(
+      createRouter({
+        prisma: {
+          userModelCredential: { findFirst: findCredential },
+          secret: { findFirst: findSecret },
+        },
+        secrets: { load },
+        catalogProbe: probe,
+        env: { defaultProvider: "fake", defaultModel: "fixture", sandboxProvider: "fake" },
+      } as unknown as RouterDeps),
+    );
+    async function call(input: unknown, currentActor = actor, signal?: AbortSignal) {
+      const { response } = await handler.handle(
+        new Request("http://127.0.0.1/rpc/models/probeCatalog", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ json: input }),
+        }),
+        {
+          prefix: "/rpc",
+          context: { actor: currentActor, signal, stillAuthorized: async () => state.allowed },
+        },
+      );
+      if (!response) throw new Error("Expected a catalog response");
+      return { status: response.status, body: await response.json() };
+    }
+
+    return { state, call, findSecret, load, probe };
+  }
+
+  it("tests only the owned stored key, and discards a key reflected as a model ID", async () => {
+    const { call, load, probe } = fixture();
+    probe.mockResolvedValue(["example-chat", `echo-${storedKey}`]);
+    await expect(call(savedInput)).resolves.toEqual({
+      status: 200,
+      body: { json: { models: ["example-chat"] } },
+    });
+    expect(load).toHaveBeenCalledExactlyOnceWith("fixture-sealed-key", "fixture-secret");
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { provider: "openai", apiKey: storedKey },
+      undefined,
+      undefined,
+    );
+  });
+
+  it("keeps an unsaved key separate and rejects ambiguous or cross-owner inputs", async () => {
+    const { call, load, probe } = fixture();
+    expect((await call({ ...savedInput, apiKey: "fixture-draft-key" })).status).toBe(400);
+    expect((await call({ ...savedInput, expectedRevision: 6 })).status).toBe(409);
+    expect((await call({ ...savedInput, provider: "openrouter" })).status).toBe(404);
+    expect((await call(savedInput, { ...actor, userId: "other-user" })).status).toBe(404);
+    expect(load).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    expect((await call({ provider: "openai", apiKey: "fixture-draft-key" })).status).toBe(200);
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { provider: "openai", apiKey: "fixture-draft-key" },
+      undefined,
+      undefined,
+    );
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each(["revision", "ciphertext", "authorization"] as const)(
+    "rejects results when %s changes during the provider fetch",
+    async (change) => {
+      const { call, state, probe } = fixture();
+      probe.mockImplementationOnce(async () => {
+        if (change === "revision") state.revision++;
+        else if (change === "ciphertext") state.ciphertext = "rotated-secret";
+        else state.allowed = false;
+        return ["late-model"];
+      });
+      const result = await call(savedInput);
+      expect(result.status).toBe(change === "authorization" ? 403 : 409);
+      expect(JSON.stringify(result.body)).not.toContain("late-model");
+    },
+  );
+
+  it("rejects unreadable auth or a key rotated during loading before sending the probe", async () => {
+    const { call, state, load, probe } = fixture();
+    load.mockImplementationOnce(async () => {
+      state.ciphertext = "another-sealed-key";
+      return storedKey;
+    });
+    expect((await call(savedInput)).status).toBe(409);
+    state.plaintext = JSON.stringify({
+      type: "oauth",
+      access: "fixture-bearer",
+      refresh: "fixture-refresh",
+      expires: 600,
+    });
+    expect((await call(savedInput)).status).toBe(400);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("returns a connection conflict if an obsolete probe fails after rotation", async () => {
+    const { call, state, probe } = fixture();
+    probe.mockImplementationOnce(async () => {
+      state.revision++;
+      throw new Error("401: expired old key");
+    });
+    const result = await call(savedInput);
+    expect(result.status).toBe(409);
+    expect(JSON.stringify(result.body)).not.toContain("expired old key");
+  });
+
+  it("recognizes a new revision if replacement removes the old secret before loading it", async () => {
+    const { call, state, findSecret, load, probe } = fixture();
+    findSecret.mockImplementationOnce(async () => {
+      state.revision++;
+      state.secretId = "replacement-secret";
+      return null;
+    });
+    expect((await call(savedInput)).status).toBe(409);
+    expect(load).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved key out of failure details", async () => {
+    const { call, probe } = fixture();
+    probe.mockRejectedValueOnce(new Error(`401: provider echoed ${storedKey}`));
+    const result = await call(savedInput);
+    expect(result.status).toBe(400);
+    expect(JSON.stringify(result.body)).toContain("401");
+    expect(JSON.stringify(result.body)).not.toContain(storedKey);
+  });
+});

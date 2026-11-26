@@ -1,5 +1,6 @@
 import { plural, t } from "@lingui/core/macro";
-import type { ModelCredential } from "@rakazo/contracts";
+import type { ModelCatalogProbeInput, ModelCredential } from "@rakazo/contracts";
+import { modelCatalogProbeOutcome } from "@rakazo/core";
 
 type ModelPreflightOutcome =
   | "timeout"
@@ -119,7 +120,7 @@ export function unavailableSelectedModel(
   options?: { manualEntry?: boolean },
 ): ModelPreflightFailure | null {
   const trimmed = modelId?.trim() ?? "";
-  if (!trimmed || discoveredModels.length === 0 || discoveredModels.includes(trimmed)) return null;
+  if (modelCatalogProbeOutcome(trimmed, discoveredModels) !== "missing") return null;
   return classifyModelConnectionFailure(new Error("model not listed"), {
     modelId: trimmed,
     discoveredModels,
@@ -195,7 +196,8 @@ type ModelConnectionPreflightInput = {
   credentialUnreadable?: boolean;
   /** Catalog entry says this provider has a pinned models-list URL. */
   catalogProbe?: boolean;
-  probeCatalog?: (input: { provider: string; apiKey: string }) => Promise<{ models: string[] }>;
+  catalogRequest?: ModelCatalogProbeInput;
+  probeCatalog?: (input: ModelCatalogProbeInput) => Promise<{ models: string[] }>;
 };
 
 export async function runModelConnectionPreflight(
@@ -240,7 +242,7 @@ export async function runModelConnectionPreflight(
   const trimmedKey = input.apiKey?.trim() ?? "";
   const trimmedModel = input.modelId?.trim() ?? "";
 
-  if (trimmedKey.length < 8) {
+  if (!input.catalogRequest && trimmedKey.length < 8) {
     return {
       ok: false,
       failure: {
@@ -261,10 +263,9 @@ export async function runModelConnectionPreflight(
     };
   }
   try {
-    const { models } = await input.probeCatalog({
-      provider: input.provider,
-      apiKey: trimmedKey,
-    });
+    const { models } = await input.probeCatalog(
+      input.catalogRequest ?? { provider: input.provider, apiKey: trimmedKey },
+    );
     const unavailable = unavailableSelectedModel(trimmedModel, models, { manualEntry: false });
     if (unavailable) return { ok: false, failure: unavailable };
     return { ok: true, discoveredModels: models };

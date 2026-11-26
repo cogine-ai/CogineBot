@@ -26,6 +26,7 @@ const models = vi.hoisted(() => ({
   disconnect: vi.fn(),
   setDefault: vi.fn(),
   saveModelSettings: vi.fn(),
+  probeCatalog: vi.fn(),
   probeOpenAiCompatible: vi.fn(),
   beginOAuth: vi.fn(),
   chatgptProfiles: vi.fn(),
@@ -250,6 +251,7 @@ beforeEach(() => {
   vi.mocked(rpc.me).mockResolvedValue(account("deepseek", "deepseek-chat"));
   models.defaults.mockReset();
   models.references.mockResolvedValue({ references: [] });
+  models.probeCatalog.mockReset().mockResolvedValue({ models: [] });
   models.probeOpenAiCompatible.mockReset().mockResolvedValue({ models: [] });
   models.setDefault.mockReset().mockResolvedValue(undefined);
   models.saveModelSettings.mockReset().mockResolvedValue({ ok: true });
@@ -1498,6 +1500,75 @@ it("reopens and saves a legacy Azure row through its catalog alias without rebin
     await view.unmount();
   }
 });
+
+it.each(["before readback", "during readback"] as const)(
+  "drops an old catalog reply requested %s",
+  async (timing) => {
+    const saved: ModelCredential = {
+      id: "saved-key",
+      provider: "deepseek",
+      label: "DeepSeek key",
+      hasKey: true,
+      isDefault: true,
+      authKind: "api_key",
+      modelId: "deepseek-chat",
+      connectionRevision: 7,
+      modelSettings: { "deepseek-chat": { maxTokens: 512 } },
+    };
+    const pending = deferred<{ models: string[] }>();
+    models.list.mockResolvedValue([
+      { ...deepseekEntry, catalogProbe: true, savedCatalogProbe: true },
+    ]);
+    models.credentials.mockResolvedValue([saved]);
+    models.probeCatalog.mockReturnValueOnce(pending.promise);
+    const view = await renderSettings();
+    const readback = deferred<ModelCredential[]>();
+    models.credentials.mockReturnValueOnce(readback.promise);
+    const reselectProvider = async () => {
+      const provider = buttons(view.container, "DeepSeek").find((button) =>
+        button.hasAttribute("aria-current"),
+      );
+      expect(provider).toBeDefined();
+      await act(async () => provider!.click());
+    };
+    try {
+      if (timing === "before readback")
+        await act(async () => buttons(view.container, "Check models")[0]?.click());
+      const panel = view.container.querySelector<HTMLElement>(
+        '[data-testid="model-settings-panel"]',
+      )!;
+      await act(async () => panel.querySelector("summary")?.click());
+      await act(async () => buttons(panel, "Reset to defaults")[0]?.click());
+      expect(models.saveModelSettings).toHaveBeenCalledTimes(1);
+      expect(models.credentials).toHaveBeenCalledTimes(2);
+      if (timing === "during readback") {
+        await reselectProvider();
+        await act(async () => buttons(view.container, "Check models")[0]?.click());
+      }
+      expect(models.probeCatalog).toHaveBeenCalledWith({
+        provider: "deepseek",
+        credentialId: "saved-key",
+        expectedRevision: 7,
+      });
+      await act(async () =>
+        readback.resolve([{ ...saved, connectionRevision: 8, modelSettings: {} }]),
+      );
+      if (timing === "before readback") expect(panel.textContent).toContain("Saved.");
+      await act(async () => pending.resolve({ models: [] }));
+      expect(view.container.textContent).not.toContain("No models listed.");
+      if (timing === "during readback") await reselectProvider();
+      await act(async () => buttons(view.container, "Check models")[0]?.click());
+      expect(models.probeCatalog).toHaveBeenLastCalledWith({
+        provider: "deepseek",
+        credentialId: "saved-key",
+        expectedRevision: 8,
+      });
+      expect(view.container.textContent).toContain("No models listed.");
+    } finally {
+      await view.unmount();
+    }
+  },
+);
 
 it.each(["save", "reset"] as const)(
   "keeps the non-default compatible model selected after settings %s",
