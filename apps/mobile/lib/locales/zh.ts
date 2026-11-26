@@ -984,6 +984,12 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Testing…": "测试中…",
   "No models listed.": "提供商未列出模型。",
   "Model listed by the provider.": "提供商已列出此模型。",
+  "Confirm this model for the current API key, or choose another.":
+    "请为当前 API 密钥确认此模型，或选择其他模型。",
+  "Confirmation is unavailable for this connection. Choose another model.":
+    "此连接无法确认模型。请选择其他模型。",
+  "This model is missing from the provider’s list. You can choose another model.":
+    "提供商的模型目录未列出此模型。你可以选择其他模型。",
   "This model is missing from the connection's model list.": "此连接的模型目录中没有当前模型。",
   "Could not list models.": "无法列出模型。",
   "Found {count} models.": "找到 {count} 个模型。",
@@ -1456,6 +1462,7 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Reset to defaults": "恢复默认",
   "Could not save model settings": "无法保存模型设置",
   "Maximum output tokens must be below the context limit.": "最大输出 token 数必须小于上下文上限。",
+  "Model connection changed. Check models again.": "模型连接已更改，请重新检查模型。",
   "Model connection changed. Reload and try again.": "模型连接已更改，请重新加载后重试。",
   "First run": "首次执行",
   "Set first run": "设置首次执行",

@@ -123,6 +123,11 @@ type ModelLoadOptions = {
   keepConnectionState?: boolean;
 };
 
+type ModelLoadResult = {
+  me: MobileMe;
+  connectionRevision?: number;
+};
+
 type FeedbackAnchor = "probe" | "model" | "connection";
 
 export default function Models() {
@@ -366,7 +371,7 @@ function ModelsForm({
   }, [settings.cancelOAuth]);
 
   const load = useCallback(
-    async (preferred: ModelLoadOptions = {}) => {
+    async (preferred: ModelLoadOptions = {}): Promise<ModelLoadResult | undefined> => {
       setError(null);
       const generation = ++modelRequestGenerationRef.current;
       if (!preferred.keepConnectionState && !preferred.keepCatalogCheck) invalidateCatalogCheck();
@@ -396,7 +401,7 @@ function ModelsForm({
         return;
       meRef.current = nextMe;
       setMe(nextMe);
-      if (preferred.keepConnectionState) return nextMe;
+      if (preferred.keepConnectionState) return { me: nextMe };
       if (!preferred.keepCatalogCheck) invalidateCatalogCheck();
       setDefaultsRevision((revision) => revision + 1);
       setReferences(nextReferences.references);
@@ -408,13 +413,13 @@ function ModelsForm({
       );
       setCatalog(nextCatalog);
       setCredentials(nextCredentials);
-      if (selectionRevision !== selectionRevisionRef.current) return nextMe;
+      if (selectionRevision !== selectionRevisionRef.current) return { me: nextMe };
       if (preferred.keepForm) {
         const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
         setConnectionRevision(current?.connectionRevision);
         setSavedBaseUrl(current?.baseUrl);
         if (current) acceptSavedBackupConnection(current, nextCatalog);
-        return nextMe;
+        return { me: nextMe, connectionRevision: current?.connectionRevision };
       }
       const nextProvider =
         (preferred.provider &&
@@ -469,7 +474,7 @@ function ModelsForm({
       );
       setHeaderRows(null);
       setShowHeaders(false);
-      return nextMe;
+      return { me: nextMe };
     },
     [invalidateCatalogCheck],
   );
@@ -553,7 +558,7 @@ function ModelsForm({
       const generation = modelRequestGenerationRef.current;
       const isCurrent = () => generation === modelRequestGenerationRef.current;
       void refresh
-        .then((nextMe) => (nextMe && isCurrent() ? loadBackupModels(nextMe) : undefined))
+        .then((loaded) => (loaded && isCurrent() ? loadBackupModels(loaded.me) : undefined))
         .catch((err: unknown) => {
           if (!isCurrent()) return;
           publishFeedback("connection", {
@@ -1003,12 +1008,21 @@ function ModelsForm({
       );
       if (!isCurrent(context)) return;
       if (catalogUpdated && "credentialId" in catalogRequest) {
-        await load({
+        const applied = await load({
           connectionId: catalogRequest.credentialId,
           keepForm: true,
           keepCatalogCheck: true,
         }).catch(() => undefined);
         if (!isCurrent(context)) return;
+        if (applied?.connectionRevision !== catalogRequest.expectedRevision) {
+          report(
+            applied
+              ? t("Model connection changed. Check models again.")
+              : t("Could not load model settings"),
+            true,
+          );
+          return;
+        }
       }
       const outcome = modelCatalogProbeOutcome(selected.id, models);
       report(
@@ -1235,7 +1249,7 @@ function ModelsForm({
       acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
-      const effective = await load({ provider, modelId, connectionId: savedConnection.id });
+      const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
       publishFeedback("connection", {
@@ -1280,7 +1294,7 @@ function ModelsForm({
     oauthLoginIdRef.current = null;
     setOauth(null);
     acceptSavedBackupConnection(savedConnection, catalog);
-    const effective = await load({ provider, modelId, connectionId: savedConnection.id });
+    const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
     if (!isCurrent()) return;
     publishFeedback("connection", {
       notice:
