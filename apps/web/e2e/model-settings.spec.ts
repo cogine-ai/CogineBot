@@ -1855,6 +1855,75 @@ test("checks the replacement key while connecting a model", async ({ page }, tes
   await captureScreenshot(page, testInfo, "a1-connection-test-saved-timeout");
 });
 
+test("onboarding reports a timed out model check after saving", async ({ page }, testInfo) => {
+  let connects = 0;
+  let releaseCheck!: () => void;
+  const pendingCheck = new Promise<void>((resolve) => {
+    releaseCheck = resolve;
+  });
+  await page.route("**/rpc/me", async (route) => {
+    const response = await route.fetch();
+    const { json } = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        json: connects === 0 ? { ...json, needsModel: true, defaultProvider: "openai" } : json,
+      },
+    });
+  });
+  await page.route("**/rpc/models/list", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+    await route.fulfill({
+      response,
+      json: {
+        json: json.map((entry) =>
+          entry.provider === "openai" && entry.catalogProbe
+            ? { ...entry, inferenceProbe: true, thinkingLevels: ["off", "low", "medium"] }
+            : entry,
+        ),
+      },
+    });
+  });
+  await page.route("**/rpc/models/connect", async (route) => {
+    connects += 1;
+    expect(route.request().postDataJSON().json).toMatchObject({
+      provider: "openai",
+      apiKey: "fixture-onboarding-model-key",
+      verifyInference: true,
+    });
+    await pendingCheck;
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const { json } = await response.json();
+    await route.fulfill({ response, json: { json: { ...json, inferenceStatus: "timeout" } } });
+  });
+
+  await signup(
+    page,
+    `onboard-model-check-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  await expect(page.getByRole("heading", { name: "Connect a model" })).toBeVisible();
+  await page.getByLabel("API key", { exact: true }).fill("fixture-onboarding-model-key");
+  await expect(
+    page.getByText("Connecting sends one test request that may incur usage charges."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Thinking", exact: true })).toBeDisabled();
+  releaseCheck();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Saved. The model test timed out." }),
+  ).toBeVisible();
+  await expect(page.getByLabel("API key", { exact: true })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "a1-onboarding-model-check-saved-timeout");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await completeOnboarding(page);
+  expect(connects).toBe(1);
+});
+
 test("tests model access with the selected saved or draft API key", async ({ page }, testInfo) => {
   await signup(page, `model-access-${Date.now()}@example.test`, "password12", "Model fixture");
   await completeOnboarding(page);
