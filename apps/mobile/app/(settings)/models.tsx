@@ -540,14 +540,20 @@ function ModelsForm({
 
   useFocusEffect(
     useCallback(() => {
-      void load()
-        .then((nextMe) => (nextMe ? loadBackupModels(nextMe) : undefined))
-        .catch((err: unknown) =>
+      const refresh = load();
+      const generation = modelRequestGenerationRef.current;
+      const isCurrent = () => generation === modelRequestGenerationRef.current;
+      void refresh
+        .then((nextMe) => (nextMe && isCurrent() ? loadBackupModels(nextMe) : undefined))
+        .catch((err: unknown) => {
+          if (!isCurrent()) return;
           publishFeedback("connection", {
             error: errorText(err, t("Could not load model settings")),
-          }),
-        )
-        .finally(() => setLoading(false));
+          });
+        })
+        .finally(() => {
+          if (isCurrent()) setLoading(false);
+        });
       return () => {
         modelRequestGenerationRef.current += 1;
         selectionRevisionRef.current += 1;

@@ -2432,4 +2432,26 @@ it("checks a saved API key without exposing it to the editor", async () => {
   await act(async () => lateResult.reject(new Error("Old connection changed")));
   expect(container.textContent).not.toContain("Old connection changed");
   expect(container.textContent).not.toContain("Model listed by the provider.");
+
+  const obsoleteReadback = deferred<(typeof saved)[]>();
+  readback = obsoleteReadback.promise;
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  readback = Promise.resolve([{ ...saved, connectionRevision: 9 }]);
+  await act(async () => {
+    state.blur?.();
+    state.blur = state.focus?.();
+  });
+  const currentProbe = deferred<{ models: string[] }>();
+  probe = currentProbe.promise;
+  await act(async () => button("Check models").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog").at(-1)?.[1],
+  ).toMatchObject({ expectedRevision: 9 });
+  await act(async () => obsoleteReadback.reject(new Error("Superseded refresh failed")));
+  await act(async () => currentProbe.resolve({ models: [saved.modelId] }));
+  expect(container.textContent).not.toContain("Superseded refresh failed");
+  expect(container.textContent).toContain("Model listed by the provider.");
 });
