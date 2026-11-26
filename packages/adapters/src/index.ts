@@ -149,6 +149,7 @@ export { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 export * from "./pi-models.js";
 export * from "./pi-oauth.js";
 export * from "./pi-openai-compatible-provider.js";
+export { ApiKeyModelCatalog } from "./pi-provider-catalog.js";
 export * from "./pi-runtime.js";
 export * from "./pi-session.js";
 export * from "./pipedream-connector.js";

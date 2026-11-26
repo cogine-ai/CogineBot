@@ -2360,6 +2360,7 @@ it("checks a saved API key without exposing it to the editor", async () => {
     authKind: "api_key",
     modelId: "fixture-chat",
     connectionRevision: 7,
+    providerListedModelIds: ["fixture-listed-chat"],
   };
   let readback: Promise<(typeof saved)[]> | undefined;
   let probe: Promise<{ models: string[] }> | undefined;
@@ -2384,12 +2385,32 @@ it("checks a saved API key without exposing it to the editor", async () => {
           catalogProbe: true,
           savedCatalogProbe: true,
         },
+        {
+          provider: saved.provider,
+          providerName: "OpenAI",
+          id: "fixture-listed-chat",
+          label: "Listed Chat",
+          auth: "api-key",
+          billing: "API",
+          catalogProbe: true,
+          savedCatalogProbe: true,
+        },
       ];
-    if (procedure === "models/credentials") return readback ?? [saved];
+    if (procedure === "models/credentials") {
+      const credentials = await (readback ?? [saved]);
+      if ((input as { includeProviderCatalog?: boolean }).includeProviderCatalog)
+        return credentials;
+      return credentials.map(({ providerListedModelIds: _listed, ...rest }) => rest);
+    }
     if (procedure === "models/probeCatalog") return probe ?? { models: [saved.modelId] };
     return normal(procedure, input);
   });
   await act(async () => root.render(<Models />));
+  expect(
+    button("Listed Chat").compareDocumentPosition(button("Example Chat")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(button("Example Chat").getAttribute("aria-pressed")).toBe("true");
   const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]');
   expect(key?.value).toBe("");
   const check = button("Check models");

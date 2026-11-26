@@ -1541,6 +1541,13 @@ The optional marketing site in `apps/www` can be hosted separately.
 
 The iOS and Android app can also point at a self-hosted origin at runtime. On the sign-in screen, tap **Use a custom server** and enter the same HTTPS origin as `WEB_ORIGIN` (for example `https://app.example.com`). Store builds still default to `EXPO_PUBLIC_API_URL`; the in-app setting is an override for people running their own API. Changing the server signs the device out of any previous session.
 
+## Model catalogs
+
+Model settings use saved API keys to list models at supported providers' fixed HTTPS endpoints.
+When the response agrees with enough of the bundled catalog, listed choices appear first in the
+saved connection's picker. Set `MODEL_LIVE_CATALOG_ENABLED=false` and start the API with the
+updated environment to use the bundled order. The explicit connection check remains available.
+
 ## Shared model funding
 
 `PLATFORM_MODEL_ALLOWLIST` controls access to deployment-funded models, including host

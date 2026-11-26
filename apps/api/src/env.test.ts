@@ -7,6 +7,21 @@ const base = {
 };
 
 describe("loadEnv", () => {
+  it("enables automatic key catalogs for the product and supports a deployment opt-out", () => {
+    const development = { ...base, NODE_ENV: "development" };
+    expect(loadEnv(development).modelLiveCatalogEnabled).toBe(true);
+    expect(
+      loadEnv({ ...development, MODEL_LIVE_CATALOG_ENABLED: " OFF " }).modelLiveCatalogEnabled,
+    ).toBe(false);
+    expect(loadEnv({ ...development, AGENT_RUNTIME: "scripted" }).modelLiveCatalogEnabled).toBe(
+      false,
+    );
+    expect(loadEnv(base).modelLiveCatalogEnabled).toBe(false);
+    expect(() => loadEnv({ ...development, MODEL_LIVE_CATALOG_ENABLED: "flase" })).toThrow(
+      "MODEL_LIVE_CATALOG_ENABLED must be on or off",
+    );
+  });
+
   it("keeps the ticket board off unless explicitly enabled", () => {
     expect(loadEnv(base).ticketBoardEnabled).toBe(false);
     for (const value of ["false", "1", ""])

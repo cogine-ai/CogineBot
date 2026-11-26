@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
-import type { Me, ModelCredential, ThreadSnapshot } from "@rakazo/contracts";
+import type { Me, ModelCatalogEntry, ModelCredential, ThreadSnapshot } from "@rakazo/contracts";
 import {
   activeBotId,
   captureScreenshot,
@@ -1490,4 +1490,53 @@ test("checks a saved provider key without asking the user to re-enter it", async
   ]);
   await expect(input).toHaveValue("");
   await captureScreenshot(page, testInfo, "a1-saved-api-key-catalog-check");
+});
+
+test("prioritizes automatically listed models for a saved connection", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `listed-model-${Date.now()}@example.test`, "password12", "Connection fixture");
+  await completeOnboarding(page);
+  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+  const openai = catalog.filter((entry) => entry.provider === "openai" && entry.catalogProbe);
+  expect(openai.length).toBeGreaterThan(2);
+  const [current, listed] = openai;
+  const saved = await rpc<ModelCredential>(page, "models/connect", {
+    provider: "openai",
+    apiKey: "fixture-provider-key-for-order",
+    modelId: current!.id,
+  });
+  await page.route("**/rpc/models/credentials", async (route) => {
+    if (route.request().postDataJSON()?.json?.includeProviderCatalog !== true) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const payload = (await response.json()) as { json: ModelCredential[] };
+    const json = payload.json.map((credential) =>
+      credential.id === saved.id
+        ? { ...credential, providerListedModelIds: [listed!.id] }
+        : credential,
+    );
+    await route.fulfill({ response, json: { json } });
+  });
+
+  const settings = await openUserSettings(page, "models");
+  await settings.getByPlaceholder("Search providers").fill("openai");
+  await settings
+    .getByRole("button")
+    .filter({ has: page.getByText("OpenAI", { exact: true }) })
+    .click();
+  const picker = settings.getByRole("combobox", { name: "Model", exact: true });
+  await expect(picker).toHaveText(current!.label);
+  await picker.click();
+  const listbox = settings.getByRole("listbox", { name: "Model options" });
+  const options = listbox.getByRole("option");
+  await expect(options.first()).toContainText(listed!.label);
+  await expect(listbox.getByRole("option", { selected: true })).toContainText(current!.label);
+  await captureScreenshot(page, testInfo, "a1-provider-listed-model-order");
+  await picker.click();
+  await settings.getByLabel("Replace API key", { exact: true }).fill("fixture-replacement");
+  await picker.click();
+  await expect(options.first()).toContainText(current!.label);
 });

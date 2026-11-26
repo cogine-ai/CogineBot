@@ -47,6 +47,7 @@ export interface AppEnv {
   cloudAgentSpaceId: string | undefined;
   cursorApiKey: string | undefined;
   agentRuntime: string;
+  modelLiveCatalogEnabled: boolean;
   platformModelAllowlist: PlatformModelAllowlist;
   deploymentModelKey: string | undefined;
   /** The deployment default model can run; see resolveDeploymentModel. */
@@ -119,6 +120,10 @@ export interface AppEnv {
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   secretStoreOptionsFromEnv(source);
+  const liveCatalog = source.MODEL_LIVE_CATALOG_ENABLED?.trim().toLowerCase();
+  if (liveCatalog && !["true", "false", "on", "off", "1", "0", "yes", "no"].includes(liveCatalog)) {
+    throw new Error("MODEL_LIVE_CATALOG_ENABLED must be on or off");
+  }
   const issuer = optional(source.OIDC_ISSUER);
   const clientId = optional(source.OIDC_CLIENT_ID);
   const clientSecret = optional(source.OIDC_CLIENT_SECRET);
@@ -196,6 +201,10 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     cloudAgentSpaceId: optional(source.CLOUD_AGENT_SPACE_ID),
     cursorApiKey: optional(source.CURSOR_API_KEY),
     agentRuntime: source.AGENT_RUNTIME ?? "pi",
+    modelLiveCatalogEnabled:
+      source.NODE_ENV !== "test" &&
+      source.AGENT_RUNTIME !== "scripted" &&
+      !["false", "off", "0", "no"].includes(liveCatalog ?? ""),
     platformModelAllowlist: parsePlatformModelAllowlist(source.PLATFORM_MODEL_ALLOWLIST),
     // Provider, model and key resolve together: see resolveDeploymentModel.
     deploymentModelKey: deploymentModel.key,

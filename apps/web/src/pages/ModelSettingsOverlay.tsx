@@ -42,6 +42,7 @@ import {
   modelCatalogProbeInput,
   modelConnectRequest,
   modelThinkingLevels,
+  prioritizeProviderListedModels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -272,7 +273,7 @@ export function ModelSettingsOverlay({
     const spaceGeneration = currentSpaceSelectionGeneration();
     const [nextCatalog, nextCredentials, nextMe] = await Promise.all([
       rpc.models.list(),
-      rpc.models.credentials(),
+      rpc.models.credentials(keepConnectionState ? undefined : { includeProviderCatalog: true }),
       rpc.me(),
     ]);
     const profilesResult = nextCatalog.some((entry) => entry.provider === "chatgpt-plan")
@@ -1144,7 +1145,12 @@ export function ModelSettingsOverlay({
             <Trans>Model</Trans>
           </span>
           <ModelPicker
-            options={modelsForProvider}
+            options={prioritizeProviderListedModels(
+              modelsForProvider,
+              credential,
+              connectionRevision,
+              apiKey,
+            )}
             value={selected.id}
             onChange={(nextModelId) => {
               cancelOAuthAttempt();

@@ -724,6 +724,7 @@ async function buildApp(
     env: {
       ticketBoardEnabled,
       agentRuntime: env.agentRuntime,
+      modelLiveCatalogEnabled: env.modelLiveCatalogEnabled,
       platformModelAllowlist: env.platformModelAllowlist,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,

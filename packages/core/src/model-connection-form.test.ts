@@ -7,6 +7,7 @@ import {
   connectionFormModelId,
   modelCatalogProbeInput,
   modelConnectRequest,
+  prioritizeProviderListedModels,
 } from "./model-connection-form.js";
 
 const catalog = [
@@ -31,6 +32,30 @@ function credential(overrides: Partial<ModelCredential> = {}): ModelCredential {
     ...overrides,
   };
 }
+
+it("ranks listed choices for the displayed revision while leaving the base order and draft key alone", () => {
+  const models = [1, 2, 3, 4].map((number) => ({
+    id: `fixture-${number}`,
+    provider: "anthropic",
+    label: `Fixture ${number}`,
+    billing: "API",
+  }));
+  const saved = credential({ providerListedModelIds: [models[3]!.id, models[1]!.id] });
+  expect(prioritizeProviderListedModels(models, saved, 7, "")).toEqual([
+    models[1],
+    models[3],
+    models[0],
+    models[2],
+  ]);
+  expect(prioritizeProviderListedModels(models, saved, 6, "")).toBe(models);
+  expect(prioritizeProviderListedModels(models, saved, 7, "new-key-draft")).toBe(models);
+  expect(models.map(({ label }) => label)).toEqual([
+    "Fixture 1",
+    "Fixture 2",
+    "Fixture 3",
+    "Fixture 4",
+  ]);
+});
 
 function draft(overrides: Partial<ConnectionFormDraft> = {}): ConnectionFormDraft {
   return {
