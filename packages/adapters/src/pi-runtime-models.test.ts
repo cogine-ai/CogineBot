@@ -128,6 +128,42 @@ describe("request model catalogs", () => {
     }
   });
 
+  it("resolves an approved model on the same API-key Responses route with conservative limits", () => {
+    const id = "gpt-fixture-model";
+    const choice = { provider: "openai", id, apiKey: "fixture-connection-key" };
+    expect(resolveRuntimeModel(choice).model).toBeUndefined();
+    expect(
+      resolveRuntimeModel({
+        ...choice,
+        providerCatalogModel: true,
+        acceptsImages: true,
+        reasoning: true,
+      }).model,
+    ).toMatchObject({
+      id,
+      provider: "openai",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 32_768,
+      maxTokens: 16_384,
+    });
+    const codex = { ...choice, provider: "openai-codex" };
+    expect(resolveRuntimeModel({ ...codex, providerCatalogModel: true }).model).toEqual(
+      resolveRuntimeModel(codex).model,
+    );
+    for (const unsafe of [
+      { provider: "openai-compatible" },
+      { id: "gpt-fixture-embedding" },
+      { apiKey: undefined },
+    ]) {
+      expect(
+        resolveRuntimeModel({ ...choice, ...unsafe, providerCatalogModel: true }).model,
+      ).toBeUndefined();
+    }
+  });
+
   it("isolates concurrent OpenAI-compatible endpoint registrations", () => {
     const first = modelsForRequest(
       requestModel("first-model", "http://127.0.0.1:8001/v1"),

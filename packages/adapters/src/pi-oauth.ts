@@ -594,7 +594,8 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
     secret.gatewayId === undefined &&
     secret.contextWindow === undefined &&
     secret.cacheCapabilities === undefined &&
-    !models.models
+    !models.models &&
+    !secret.key.trimStart().startsWith("{")
   ) {
     return secret.key;
   }

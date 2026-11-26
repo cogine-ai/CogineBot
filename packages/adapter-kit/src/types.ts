@@ -555,6 +555,8 @@ export interface AgentRunModel {
   apiProtocol?: ModelApiProtocol;
   /** Validated custom headers for this model connection. */
   headers?: Record<string, string>;
+  /** The worker confirmed this model was saved from this stored API key’s directory. */
+  providerCatalogModel?: boolean;
   /** Whether this custom connection accepts standard reasoning_effort. */
   reasoning?: boolean;
   /** Whether this custom connection accepts image input. */

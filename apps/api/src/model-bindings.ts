@@ -7,6 +7,7 @@ import {
   isCatalogModelChoice,
   loadStoredModelSecret,
   parseModelSecret,
+  providerCatalogModel,
   readChatGPTPlanCredential,
   readChatGPTPlanModels,
   SUBSCRIPTION_SIGN_IN_PROVIDERS,
@@ -94,6 +95,7 @@ export type PreparedModelBindingSecret = {
   secretId: string;
   ciphertext: string;
   plaintext: string;
+  catalogModelId?: string;
 };
 
 /** Call inside the transaction which writes a pin or preference. */
@@ -170,7 +172,9 @@ export async function validateModelBinding(
     }
   } else if (
     !isCatalogModelChoice(binding.modelProvider, binding.modelId) &&
-    credential.defaultModel !== binding.modelId
+    prepared?.catalogModelId !== binding.modelId &&
+    (credential.defaultModel !== binding.modelId ||
+      providerCatalogModel(binding.modelProvider, binding.modelId) !== undefined)
   ) {
     throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
   }

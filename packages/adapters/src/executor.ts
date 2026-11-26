@@ -469,6 +469,7 @@ import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
   helperModelChoicesDescription,
+  isCatalogModelChoice,
   listHelperModelConnections,
   pinnedModelCredentialError,
   routineRunModelPin,
@@ -519,6 +520,7 @@ import {
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveModel, liveThinkingLevels } from "./pi-codex-catalog.js";
 import { toOAuthCredential } from "./pi-credentials.js";
+import { providerCatalogModel } from "./pi-live-model.js";
 import { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import {
@@ -535,6 +537,7 @@ import {
   serializeModelSecret,
   withModelCredentialLock,
 } from "./pi-oauth.js";
+import type { ProviderCatalogSelections } from "./pi-provider-catalog.js";
 import { canUsePlatformModel, platformModelAuthorization } from "./platform-model-access.js";
 import type { PlotSpec } from "./plot-tool.js";
 import {
@@ -3029,6 +3032,7 @@ export interface ExecutorDeps {
   };
   secrets: string[];
   secretStore: SecretStore;
+  providerCatalogSelections?: ProviderCatalogSelections;
   platformModelAllowlist?: PlatformModelAllowlist;
   deploymentModelKey?: string;
   /** The deployment default model can run; see resolveDeploymentModel. */
@@ -3626,6 +3630,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       provider,
       modelId,
       modelCredentialId,
+      deps.providerCatalogSelections,
     );
     if (validationError) throw new Error(validationError);
     const credential = await findConnectedModelCredential(
@@ -3658,6 +3663,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       apiProtocol: resolved.apiProtocol,
       headers: resolved.headers,
       cacheCapabilities: resolved.cacheCapabilities,
+      providerCatalogModel: resolved.providerCatalogModel,
       contextWindow: resolved.contextWindow,
 
       reasoning: resolved.reasoning,
@@ -3780,6 +3786,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         apiProtocol: resolved.apiProtocol,
         headers: resolved.headers,
         cacheCapabilities: resolved.cacheCapabilities,
+        providerCatalogModel: resolved.providerCatalogModel,
         contextWindow: resolved.contextWindow,
 
         reasoning: resolved.reasoning,
@@ -11810,6 +11817,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 apiProtocol: resolved.apiProtocol,
                 headers: resolved.headers,
                 cacheCapabilities: resolved.cacheCapabilities,
+                providerCatalogModel: resolved.providerCatalogModel,
                 contextWindow: resolved.contextWindow,
 
                 reasoning: resolved.reasoning,
@@ -14103,6 +14111,7 @@ async function resolveModelKey(
     id: string;
     secretId: string;
     provider: string;
+    providerCatalogSelection?: unknown;
     defaultModel?: string | null;
     supportsImages?: boolean;
   } | null,
@@ -14123,6 +14132,7 @@ async function resolveModelKey(
   cacheCapabilities?: AgentRunRequest["model"]["cacheCapabilities"];
   contextWindow?: number;
   reasoning?: boolean;
+  providerCatalogModel?: boolean;
   maxTokens?: number;
   thinkingLevel?: AgentRunRequest["model"]["thinkingLevel"];
   thinkingLevels?: NonNullable<AgentRunRequest["model"]["thinkingLevel"]>[];
@@ -14220,6 +14230,17 @@ async function resolveModelKey(
           if (!liveListed) throw new UnavailableModelForAuthError(authError);
         }
         resolved ??= await resolveAuth();
+        // User-selected models can outlive the Space default, but must still
+        // match the saved proof for the credential that will make this request.
+        const confirmedCatalogChoice = deps.providerCatalogSelections
+          ?.read({ ...credential, userId }, resolved.secret)
+          .includes(modelId);
+        if (
+          !confirmedCatalogChoice &&
+          providerCatalogModel(provider, modelId) &&
+          !isCatalogModelChoice(provider, modelId)
+        )
+          throw new UnavailableModelForAuthError("Unknown model for that provider");
         if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
           liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
             waitMs: waitForThinkingCapabilities ? CODEX_LIVE_RUN_WAIT_MS : 0,
@@ -14252,6 +14273,7 @@ async function resolveModelKey(
             resolved.secret.kind !== "oauth" ? resolved.secret.cacheCapabilities : undefined,
           contextWindow: settings.contextWindow,
           reasoning: settings.reasoning,
+          providerCatalogModel: confirmedCatalogChoice,
           thinkingLevels: liveCodex && liveThinkingLevels(liveCodex),
           maxTokens: settings.maxTokens,
           thinkingLevel:

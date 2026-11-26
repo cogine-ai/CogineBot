@@ -35,6 +35,7 @@ import type {
   MessagingInstallations,
   NativeConnectorProvider,
   PluginRead,
+  ProviderCatalogSelections,
   RemoteConnectorDependencies,
   TicketChangeNotifier,
 } from "@rakazo/adapters";
@@ -85,6 +86,7 @@ import {
   hasActiveComputerControl,
   hostCredentialSource,
   isAutoReviewCheckerConfigured,
+  isCatalogModelChoice,
   isComputerScreenUnavailable,
   isNamedBotLogin,
   isSandboxGoneError,
@@ -128,6 +130,7 @@ import {
   prepareStoredModelAuth,
   probeCatalogProviderModels,
   probeOpenAiCompatibleModels,
+  providerCatalogModel,
   provisionComputer,
   publishComputerPowerStatus,
   queueComputerUpdate,
@@ -209,6 +212,7 @@ import {
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
   loginSecretFields,
+  MAX_ENABLED_MODEL_IDS,
   MAX_MODEL_SETTINGS_PER_CONNECTION,
   MCP_OAUTH_CLIENT_REQUIRED,
   modelOutputLeavesInputRoom,
@@ -893,6 +897,7 @@ export interface RouterDeps {
   codexCatalog?: CodexLiveCatalog;
   /** The pinned models-list transport can be replaced in offline tests. */
   catalogProbe?: typeof probeCatalogProviderModels;
+  providerCatalogSelections?: ProviderCatalogSelections;
   /** Capability of the composed runtime, including an explicit override. */
   scriptedRuntime?: boolean;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
@@ -2077,6 +2082,8 @@ export function createRouter(deps: RouterDeps) {
             try {
               plaintext = await deps.secrets.load(ciphertext, row.secretId);
               credential = modelCredentialDto(selected, plaintext);
+              const saved = deps.providerCatalogSelections?.read(row, parseModelSecret(plaintext));
+              if (saved?.length) credential.savedProviderCatalogModelIds = saved;
             } catch (error) {
               if (error instanceof SecretStoreUnavailableError)
                 throw new ORPCError("SERVICE_UNAVAILABLE", {
@@ -2097,11 +2104,7 @@ export function createRouter(deps: RouterDeps) {
               connectionRevision: row.connectionRevision,
               ciphertext,
             };
-            const current = async () => {
-              if (!(await modelCatalogConnectionCurrent(deps.prisma, snapshot))) return false;
-              const latest = parseModelSecret(await deps.secrets.load(ciphertext, row.secretId));
-              return latest.kind === "api_key" && latest.key.trim() === apiKey;
-            };
+            const current = () => modelCatalogKeyCurrent(deps, snapshot, apiKey);
             const listed = await catalogCache.read(snapshot, apiKey, async () => {
               probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
               return (
@@ -2219,7 +2222,11 @@ export function createRouter(deps: RouterDeps) {
                     (model) => model.id === input.modelId,
                   )
                 : catalogEntryFor(listPiCatalog(), credential.provider, input.modelId);
-            const defaults = modelSettingsDefaults(credential.provider, entry);
+            const discovered =
+              !entry && dynamicProviderCatalogModel(credential.provider, input.modelId)
+                ? providerCatalogModel(credential.provider, input.modelId)
+                : undefined;
+            const defaults = modelSettingsDefaults(credential.provider, entry ?? discovered);
             if (
               (input.settings.maxTokens !== undefined ||
                 input.settings.contextWindow !== undefined) &&
@@ -2304,6 +2311,29 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         try {
+          const requested = usableModelId(input.modelId);
+          if (
+            requested &&
+            dynamicProviderCatalogModel(input.provider, requested) &&
+            !input.apiKey?.trim()
+          )
+            throw new ORPCError("BAD_REQUEST", {
+              message: "Enter a replacement key to update this connection.",
+            });
+          const confirmNewModel =
+            requested && dynamicProviderCatalogModel(input.provider, requested)
+              ? await confirmProviderCatalogChoice(
+                  deps,
+                  apiKeyCatalog,
+                  input.credentialId && existing && expectedCiphertext
+                    ? { ...existing, ciphertext: expectedCiphertext }
+                    : undefined,
+                  context,
+                  requested,
+                  plaintext,
+                  previousPlaintext,
+                )
+              : false;
           return await persistModelCredential(
             deps,
             context.actor,
@@ -2317,6 +2347,10 @@ export function createRouter(deps: RouterDeps) {
               ...(existing ? { expectedCiphertext } : {}),
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
+              catalogModelId: confirmNewModel ? (requested ?? undefined) : undefined,
+              clearCatalogSelection:
+                input.apiKey !== undefined &&
+                plaintextApiKey(previousPlaintext) !== plaintextApiKey(plaintext),
               signal: context.signal,
             },
             codexCatalog,
@@ -2566,7 +2600,7 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       setDefault: authed.models.setDefault.handler(async ({ context, input }) => {
-        const prepared = await prepareBoundModelAuth(
+        const auth = await prepareBoundModelAuth(
           deps,
           context.actor,
           {
@@ -2579,6 +2613,29 @@ export function createRouter(deps: RouterDeps) {
           (secretId, provider) => refreshExpiredCredential(context.actor, secretId, provider),
         );
         try {
+          const confirmNewModel =
+            auth &&
+            !input.updateThinkingLevelOnly &&
+            dynamicProviderCatalogModel(input.provider, input.modelId) &&
+            auth.catalogModelId !== input.modelId &&
+            (await confirmProviderCatalogChoice(
+              deps,
+              apiKeyCatalog,
+              {
+                id: auth.modelCredentialId,
+                userId: context.actor.userId,
+                provider: input.provider,
+                secretId: auth.secretId,
+                connectionRevision: auth.connectionRevision,
+                ciphertext: auth.ciphertext,
+              },
+              context,
+              input.modelId,
+              auth.plaintext,
+              auth.plaintext,
+            ));
+          const prepared =
+            confirmNewModel && auth ? { ...auth, catalogModelId: input.modelId } : auth;
           await withSerializableRetry(() =>
             deps.prisma.$transaction(
               async (tx) => {
@@ -2655,6 +2712,22 @@ export function createRouter(deps: RouterDeps) {
                     ThinkingLevelSchema.nullable().parse(thinkingLevel),
                   );
                   return;
+                }
+                if (confirmNewModel) {
+                  // Choosing a model must never rewrite key material. In-place
+                  // rotation leaves the proof unusable with a different key.
+                  await tx.userModelCredential.update({
+                    where: { id: checked.credential.id },
+                    data: {
+                      providerCatalogSelection: signProviderCatalogChoice(
+                        deps,
+                        checked.credential,
+                        checked.secret,
+                        input.modelId,
+                      ),
+                      updatedAt: checked.credential.updatedAt,
+                    },
+                  });
                 }
                 await selectSpaceModelPreference(
                   tx,
@@ -10195,6 +10268,11 @@ async function prepareBoundModelAuth(
       secretId: credential.secretId,
       ciphertext: prepared.ref,
       plaintext,
+      catalogModelId: deps.providerCatalogSelections
+        ?.read(credential, parseModelSecret(plaintext))
+        .includes(binding.modelId)
+        ? binding.modelId
+        : undefined,
     };
   } catch (error) {
     if (error instanceof SecretStoreUnavailableError)
@@ -10216,6 +10294,85 @@ function assertPreparedModelAuth(
     throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
 }
 
+function dynamicProviderCatalogModel(provider: string, modelId: string) {
+  return (
+    Boolean(providerCatalogModel(provider, modelId)) && !isCatalogModelChoice(provider, modelId)
+  );
+}
+
+type CatalogSelectionOwner = Parameters<ProviderCatalogSelections["read"]>[0];
+
+async function confirmProviderCatalogChoice(
+  deps: RouterDeps,
+  catalog: ApiKeyModelCatalog | undefined,
+  snapshot: (Parameters<ApiKeyModelCatalog["read"]>[0] & CatalogSelectionOwner) | undefined,
+  context: { signal?: AbortSignal; stillAuthorized?: () => Promise<boolean> },
+  modelId: string,
+  plaintext: string,
+  previousPlaintext?: string,
+): Promise<boolean> {
+  const secret = parseModelSecret(plaintext);
+  const selections = deps.providerCatalogSelections;
+  if (snapshot && selections?.read(snapshot, secret).includes(modelId)) return false;
+  const previousKey = plaintextApiKey(previousPlaintext);
+  if (!catalog || !selections || !snapshot || secret.kind !== "api_key" || !previousKey)
+    throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
+  const connection = {
+    id: snapshot.id,
+    userId: snapshot.userId,
+    provider: snapshot.provider,
+    secretId: snapshot.secretId,
+    connectionRevision: snapshot.connectionRevision,
+    ciphertext: snapshot.ciphertext,
+  };
+  const checkCurrent = async () => {
+    if (context.signal?.aborted || (context.stillAuthorized && !(await context.stillAuthorized())))
+      return false;
+    return modelCatalogKeyCurrent(deps, connection, previousKey);
+  };
+  const listed = await catalog.read(connection, secret.key.trim(), checkCurrent);
+  if (!(await checkCurrent()))
+    throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
+  if (!listed?.includes(modelId))
+    throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
+  return true;
+}
+
+function plaintextApiKey(plaintext?: string) {
+  if (plaintext === undefined) return undefined;
+  try {
+    const secret = parseModelSecret(plaintext);
+    return secret.kind === "api_key" ? secret.key.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function signProviderCatalogChoice(
+  deps: RouterDeps,
+  owner: CatalogSelectionOwner,
+  secret: ReturnType<typeof parseModelSecret>,
+  modelId: string,
+) {
+  const selections = deps.providerCatalogSelections;
+  if (!selections || secret.kind !== "api_key")
+    throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
+  const modelIds = [...new Set([...selections.read(owner, secret), modelId])];
+  if (modelIds.length > MAX_ENABLED_MODEL_IDS)
+    throw new ORPCError("BAD_REQUEST", { message: "Too many models for this connection." });
+  return selections.sign(owner, secret, modelIds);
+}
+
+async function modelCatalogKeyCurrent(
+  deps: Pick<RouterDeps, "prisma" | "secrets">,
+  snapshot: Parameters<ApiKeyModelCatalog["read"]>[0],
+  apiKey: string,
+) {
+  if (!(await modelCatalogConnectionCurrent(deps.prisma, snapshot))) return false;
+  const latest = parseModelSecret(await deps.secrets.load(snapshot.ciphertext, snapshot.secretId));
+  return latest.kind === "api_key" && latest.key.trim() === apiKey;
+}
+
 async function persistModelCredential(
   deps: RouterDeps,
   actor: Actor,
@@ -10231,6 +10388,8 @@ async function persistModelCredential(
     supportsImages?: boolean;
     signal?: AbortSignal;
     oauthSession?: Parameters<SaveSubscription>[1];
+    catalogModelId?: string;
+    clearCatalogSelection?: boolean;
   },
   codexCatalog: CodexLiveCatalog,
 ) {
@@ -10388,6 +10547,18 @@ async function persistModelCredential(
                     label: input.label ?? input.provider,
                     secretId: secret.id,
                     connectionRevision: { increment: 1 },
+                    ...(input.catalogModelId
+                      ? {
+                          providerCatalogSelection: signProviderCatalogChoice(
+                            deps,
+                            existing,
+                            parseModelSecret(input.plaintext),
+                            input.catalogModelId,
+                          ),
+                        }
+                      : input.clearCatalogSelection
+                        ? { providerCatalogSelection: Prisma.DbNull }
+                        : {}),
                     ...(input.supportsImages !== undefined
                       ? { supportsImages: input.supportsImages }
                       : {}),

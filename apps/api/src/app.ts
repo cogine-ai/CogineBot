@@ -71,6 +71,7 @@ import {
   PiAgentRuntime,
   PipedreamConnector,
   PostgresRealtimeFanout,
+  ProviderCatalogSelections,
   pipedreamConfigFromEnv,
   piSessionsRoot,
   RunJobPublisher,
@@ -144,6 +145,7 @@ import { registerNativeEnterpriseWebhooks } from "./native-enterprise-webhooks.j
 import { registerNativeEventWebhooks } from "./native-event-webhooks.js";
 import { mountPageRuntime } from "./page-runtime.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
+import type { RouterDeps } from "./router.js";
 import { createRouter } from "./router.js";
 import { mountScreenTarget } from "./screen-proxy.js";
 import { mountSharedPages, sharedPageLogRoute } from "./shared-pages.js";
@@ -215,6 +217,7 @@ async function buildApp(
     readinessCheck?: () => Promise<unknown>;
     secretStore?: SecretStore;
     codexCatalog?: CodexLiveCatalog;
+    catalogProbe?: RouterDeps["catalogProbe"];
     openApiNow?: () => number;
     pluginRead?: PluginRead;
     deploymentTransferPeer?: DeploymentTransferPeer;
@@ -236,6 +239,7 @@ async function buildApp(
     readinessCheck: readinessCheckOverride,
     secretStore: secretStoreOverride,
     codexCatalog: codexCatalogOverride,
+    catalogProbe,
     openApiNow,
     pluginRead,
     deploymentTransferPeer,
@@ -581,6 +585,7 @@ async function buildApp(
   // One cache serves models.list, selection validation, and run-time model
   // resolution alike, so a list call warms the run path in this process.
   const codexCatalog = codexCatalogOverride ?? new CodexCatalogCache();
+  const providerCatalogSelections = new ProviderCatalogSelections(env.encryptionKey);
   const executor = createRunExecutor({
     contextStrategy,
     prisma,
@@ -611,6 +616,7 @@ async function buildApp(
       process.env.TYPESAFE_API_KEY ?? "",
     ].filter(Boolean),
     secretStore: secrets,
+    providerCatalogSelections,
     secretHttp: remoteConnectors,
     mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
     platformModelAllowlist: env.platformModelAllowlist,
@@ -693,6 +699,8 @@ async function buildApp(
     cloudAgent,
     codexCatalog,
     scriptedRuntime: runtime.describe().capabilities.scripted,
+    catalogProbe,
+    providerCatalogSelections,
     prisma,
     events,
     ticketChanges,

@@ -425,6 +425,7 @@ model UserModelCredential {
   secretId    String
   supportsImages Boolean              @default(false)
   connectionRevision Int              @default(1)
+  providerCatalogSelection Json?
   createdAt   DateTime               @default(now())
   updatedAt   DateTime               @updatedAt
   preferences SpaceModelPreference[]

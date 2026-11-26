@@ -1501,6 +1501,7 @@ test("prioritizes automatically listed models for a saved connection", async ({
   const openai = catalog.filter((entry) => entry.provider === "openai" && entry.catalogProbe);
   expect(openai.length).toBeGreaterThan(2);
   const [current, listed] = openai;
+  const discovered = "gpt-fixture-directory-model";
   const saved = await rpc<ModelCredential>(page, "models/connect", {
     provider: "openai",
     apiKey: "fixture-provider-key-for-order",
@@ -1515,7 +1516,7 @@ test("prioritizes automatically listed models for a saved connection", async ({
     const payload = (await response.json()) as { json: ModelCredential[] };
     const json = payload.json.map((credential) =>
       credential.id === saved.id
-        ? { ...credential, providerListedModelIds: [listed!.id] }
+        ? { ...credential, providerListedModelIds: [listed!.id, discovered] }
         : credential,
     );
     await route.fulfill({ response, json: { json } });
@@ -1539,4 +1540,27 @@ test("prioritizes automatically listed models for a saved connection", async ({
   await settings.getByLabel("Replace API key", { exact: true }).fill("fixture-replacement");
   await picker.click();
   await expect(options.first()).toContainText(current!.label);
+  await expect(options.getByText(discovered, { exact: true })).toHaveCount(0);
+  await picker.click();
+  await settings.getByLabel("Replace API key", { exact: true }).clear();
+  await picker.click();
+  await listbox.getByRole("option", { name: discovered, exact: true }).click();
+  await expect(picker).toHaveText(discovered);
+  await expect(settings.getByRole("button", { name: "Save limits", exact: true })).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "a1-discovered-api-key-model");
+  let choice: unknown;
+  await page.route("**/rpc/models/setDefault", async (route) => {
+    choice = route.request().postDataJSON().json;
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+  await settings.getByRole("button", { name: "Use this model", exact: true }).click();
+  await expect
+    .poll(() => choice)
+    .toMatchObject({
+      provider: "openai",
+      modelId: discovered,
+      modelCredentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+    });
+  await expect(settings.getByText(`Now using ${discovered}.`, { exact: true })).toBeVisible();
 });

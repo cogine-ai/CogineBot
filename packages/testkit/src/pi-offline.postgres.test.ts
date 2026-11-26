@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ComposioEmulator, ExpoPushProvider } from "@rakazo/adapters";
+import {
+  ComposioEmulator,
+  ExpoPushProvider,
+  listPiCatalog,
+  PiAgentRuntime,
+} from "@rakazo/adapters";
 import type { ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -15,6 +20,268 @@ const databaseAvailable = process.env.VERIFY_DATABASE === "1" && Boolean(process
 const fixtureOrigin = "http://127.0.0.1:5173";
 
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
+  it("runs a newly discovered model with the key and model ID saved from the same connection", async () => {
+    const provider = "openai";
+    const apiKey = "fixture-discovered-model-key";
+    const differentKey = "fixture-replacement-model-key";
+    const modelId = "gpt-fixture-discovered-model";
+    const rejectedId = "gpt-fixture-not-in-directory";
+    const otherModelIds = ["gpt-fixture-discovered-second", "gpt-fixture-discovered-third"];
+    const bundled = listPiCatalog().filter((entry) => entry.provider === provider);
+    const originalModel = bundled[0]!.id;
+    const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => [
+      ...bundled.map(({ id }) => id),
+      ...(key === apiKey ? [modelId, ...otherModelIds] : []),
+      "gpt-fixture-realtime",
+    ]);
+    const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://api.openai.com/v1/responses");
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${apiKey}`);
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: modelId, stream: true });
+      const message = {
+        id: "msg_directory_fixture",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "Used the selected model.", annotations: [] }],
+      };
+      const frames = [
+        { type: "response.output_item.added", output_index: 0, item: message },
+        { type: "response.output_item.done", output_index: 0, item: message },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_directory_fixture",
+            status: "completed",
+            output: [message],
+            usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+          },
+        },
+      ];
+      return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const dataDir = await mkdtemp(path.join(tmpdir(), "offline-model-directory-"));
+    let stop: (() => Promise<void>) | undefined;
+    try {
+      const { createApp } = await import("../../../apps/api/src/app.ts");
+      const handles = await createApp({
+        databaseUrl: process.env.DATABASE_URL!,
+        realtimeDatabaseUrl: process.env.DATABASE_URL!,
+        authUrl: fixtureOrigin,
+        webOrigin: fixtureOrigin,
+        dataDir,
+        sandboxProvider: "fake",
+        agentRuntime: "pi",
+        runtime: new PiAgentRuntime({ modelFetch }),
+        wakeupDriver: "memory",
+        signupsEnabled: "true",
+        composio: new ComposioEmulator(),
+        encryptionKey: "offline-directory-fixture-encryption-key",
+        modelLiveCatalogEnabled: true,
+        catalogProbe: probe,
+      });
+      stop = handles.stop;
+      const { app } = handles;
+      const signup = await app.request("/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: fixtureOrigin },
+        body: JSON.stringify({
+          email: `directory-${randomUUID()}@example.test`,
+          password: "password12",
+          name: "Directory fixture",
+        }),
+      });
+      expect(signup.status).toBeLessThan(400);
+      const cookie = sessionCookieHeader(signup);
+      const saved = await rpc<ModelCredential>(app, cookie, "models/connect", {
+        provider,
+        apiKey,
+        modelId: originalModel,
+        label: "Named connection",
+      });
+      const read = async (includeProviderCatalog: boolean) =>
+        (
+          await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+            includeProviderCatalog,
+          })
+        ).find((item) => item.id === saved.id);
+      const select = (id: string, expectedRevision = saved.connectionRevision) =>
+        rpc(app, cookie, "models/setDefault", {
+          provider,
+          modelId: id,
+          modelCredentialId: saved.id,
+          expectedRevision,
+        });
+      const listed = await read(true);
+      expect(listed?.providerListedModelIds).toContain(modelId);
+      expect(listed?.providerListedModelIds).not.toContain("gpt-fixture-realtime");
+      await expect(select(rejectedId)).rejects.toThrow(/models\/setDefault: 400/);
+      expect((await read(false))?.modelId).toBe(originalModel);
+      await expect(
+        rpc(app, cookie, "models/connect", {
+          provider,
+          credentialId: saved.id,
+          expectedRevision: saved.connectionRevision,
+          modelId,
+          maxTokens: 1024,
+        }),
+      ).rejects.toThrow(/models\/connect: 400/);
+      const credentialBeforeSelection = await handles.prisma.userModelCredential.findUniqueOrThrow({
+        where: { id: saved.id },
+        select: { secretId: true, updatedAt: true },
+      });
+      const secretBeforeSelection = await handles.prisma.secret.findUniqueOrThrow({
+        where: { id: credentialBeforeSelection.secretId },
+        select: { ciphertext: true },
+      });
+      await select(modelId);
+      const confirmed = await read(false);
+      expect(confirmed).toMatchObject({
+        id: saved.id,
+        label: "Named connection",
+        modelId,
+        isDefault: true,
+        savedProviderCatalogModelIds: [modelId],
+      });
+      expect(confirmed?.connectionRevision).toBe(saved.connectionRevision);
+      expect(
+        await handles.prisma.userModelCredential.findUniqueOrThrow({
+          where: { id: saved.id },
+          select: { secretId: true, updatedAt: true },
+        }),
+      ).toEqual(credentialBeforeSelection);
+      expect(
+        await handles.prisma.secret.findUniqueOrThrow({
+          where: { id: credentialBeforeSelection.secretId },
+          select: { ciphertext: true },
+        }),
+      ).toEqual(secretBeforeSelection);
+      await expect(select(modelId, saved.connectionRevision! + 1)).rejects.toThrow(
+        /models\/setDefault: 409/,
+      );
+      await expect(
+        rpc(app, cookie, "models/saveModelSettings", {
+          credentialId: saved.id,
+          modelId,
+          settings: { maxTokens: 40_000 },
+        }),
+      ).rejects.toThrow(/models\/saveModelSettings: 400/);
+      // A rejected replacement must not clear the working choice or its key.
+      await expect(
+        rpc(app, cookie, "models/connect", {
+          provider,
+          credentialId: saved.id,
+          expectedRevision: confirmed?.connectionRevision,
+          apiKey: differentKey,
+          modelId,
+        }),
+      ).rejects.toThrow(/models\/connect: 400/);
+      expect(await read(false)).toEqual(confirmed);
+      // Concurrent confirmations on the same connection must preserve both IDs.
+      await Promise.all(otherModelIds.map((id) => select(id, confirmed?.connectionRevision)));
+      expect((await read(false))?.savedProviderCatalogModelIds?.sort()).toEqual(
+        [modelId, ...otherModelIds].sort(),
+      );
+      const catalogCalls = probe.mock.calls.length;
+      // Explicitly saved choices on the same key can be reused without a catalog
+      // request, including after the default was changed to a bundled model.
+      await select(originalModel, confirmed?.connectionRevision);
+      await select(modelId, confirmed?.connectionRevision);
+      expect(probe).toHaveBeenCalledTimes(catalogCalls);
+      const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+        name: "Directory fixture",
+        title: "",
+        description: "",
+        instructions: "Answer briefly.",
+        notifyOnFinish: false,
+      });
+      await discardBotIntroRun(handles, cookie, bot.id);
+      const sent = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+        botId: bot.id,
+        text: "Use the saved model.",
+      });
+      await expect
+        .poll(
+          () =>
+            handles.prisma.run.findUnique({
+              where: { id: sent.runId },
+              select: { status: true, modelProvider: true, modelId: true, modelCredentialId: true },
+            }),
+          { timeout: 15_000, interval: 100 },
+        )
+        .toEqual({
+          status: "completed",
+          modelProvider: provider,
+          modelId,
+          modelCredentialId: saved.id,
+        });
+      expect(modelFetch).toHaveBeenCalledOnce();
+      await rpc(app, cookie, "bots/update", {
+        botId: bot.id,
+        modelProvider: provider,
+        modelId,
+        modelCredentialId: saved.id,
+        expectedRevision: confirmed?.connectionRevision,
+      });
+      await select(originalModel, confirmed?.connectionRevision);
+      expect((await read(false))?.modelId).toBe(originalModel);
+      const pinned = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+        botId: bot.id,
+        text: "Use the pinned model.",
+      });
+      await expect
+        .poll(
+          () =>
+            handles.prisma.run.findUnique({
+              where: { id: pinned.runId },
+              select: { status: true, modelProvider: true, modelId: true, modelCredentialId: true },
+            }),
+          { timeout: 15_000, interval: 100 },
+        )
+        .toEqual({
+          status: "completed",
+          modelProvider: provider,
+          modelId,
+          modelCredentialId: saved.id,
+        });
+      expect(modelFetch).toHaveBeenCalledTimes(2);
+      expect(probe).toHaveBeenCalledTimes(catalogCalls);
+      const thread = await rpc(app, cookie, "threads/get", { botId: bot.id });
+      expect(JSON.stringify(thread)).toContain("Used the selected model.");
+      expect(JSON.stringify(thread)).not.toContain(apiKey);
+      // Header-safe JSON may be the actual key text. It cannot introduce any
+      // caller-supplied proof fields, even on an ordinary bundled-model save.
+      const forgedKey = JSON.stringify({
+        kind: "api_key",
+        key: apiKey,
+        providerCatalogModels: [rejectedId],
+        providerCatalogSignature: "0".repeat(64),
+      });
+      const replaced = await rpc<ModelCredential>(app, cookie, "models/connect", {
+        provider,
+        credentialId: saved.id,
+        expectedRevision: confirmed?.connectionRevision,
+        apiKey: forgedKey,
+        modelId: originalModel,
+      });
+      expect(await read(false)).not.toHaveProperty("savedProviderCatalogModelIds");
+      await expect(select(rejectedId, replaced.connectionRevision)).rejects.toThrow(
+        /models\/setDefault: 400/,
+      );
+      expect(probe).toHaveBeenLastCalledWith(
+        { provider, apiKey: forgedKey },
+        undefined,
+        expect.any(AbortSignal),
+      );
+      expect((await read(false))?.modelId).toBe(originalModel);
+    } finally {
+      await stop?.();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses a saved model connection and the real executor to persist a file and completed run", async () => {
     const fixtureKey = "offline-product-fixture-key";
     let helperCredentialId = "";

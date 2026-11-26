@@ -45,6 +45,7 @@ import {
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
+  withConnectionCatalogModels,
 } from "@rakazo/core";
 import {
   AlertDialog,
@@ -326,8 +327,9 @@ export function ModelSettingsOverlay({
         (entry) =>
           canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
       );
+    const nextConnectionCatalog = withConnectionCatalogModels(nextCatalog, nextCredential);
     const nextModel = connectionFormModelId({
-      catalog: nextCatalog,
+      catalog: nextConnectionCatalog,
       provider: nextProvider,
       credential: nextCredential,
       defaults: nextMe,
@@ -358,7 +360,7 @@ export function ModelSettingsOverlay({
       setSavedBaseUrl(nextCredential?.baseUrl);
       setModelId(nextModel);
       const fields = connectionFormFields({
-        catalog: nextCatalog,
+        catalog: nextConnectionCatalog,
         provider: nextProvider,
         modelId: nextModel,
         credential: nextCredential,
@@ -456,10 +458,24 @@ export function ModelSettingsOverlay({
           ),
     [searching, filteredGroups, connectedProviderIds],
   );
-  const modelsForProvider = catalog.filter(
+  const credential = credentials.find(
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
+      entry.id === connectionId,
+  );
+  const connectionCatalog = withConnectionCatalogModels(
+    catalog,
+    credential,
+    connectionRevision,
+    apiKey,
+  );
+  const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
-  const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
+  const selected =
+    modelsForProvider.find((entry) => entry.id === modelId) ??
+    modelsForProvider.find((entry) => entry.id === credential?.modelId) ??
+    modelsForProvider[0];
   selectedLabelRef.current = selected?.label;
   const selectedProviderName = selected?.providerName ?? selected?.provider ?? "";
   const disconnectName = selectedProviderName;
@@ -475,11 +491,6 @@ export function ModelSettingsOverlay({
   const isCloudflareGateway = provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID;
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
-  const credential = credentials.find(
-    (entry) =>
-      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
-      entry.id === connectionId,
-  );
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true
@@ -572,6 +583,8 @@ export function ModelSettingsOverlay({
     !isOpenAiCompatible &&
     provider !== "chatgpt-plan" &&
     Boolean(credential) &&
+    selected !== undefined &&
+    catalog.includes(selected) &&
     apiKey.trim().length === 0;
 
   function invalidatePreflight() {
@@ -680,8 +693,9 @@ export function ModelSettingsOverlay({
     setConnectionId(nextCredential?.id ?? null);
     setConnectionRevision(nextCredential?.connectionRevision);
     setSavedBaseUrl(nextCredential?.baseUrl);
+    const nextConnectionCatalog = withConnectionCatalogModels(catalog, nextCredential);
     const nextModelId = connectionFormModelId({
-      catalog,
+      catalog: nextConnectionCatalog,
       provider: nextProvider,
       credential: nextCredential,
       defaults: me,
@@ -690,7 +704,7 @@ export function ModelSettingsOverlay({
     setModelId(nextModelId);
     applyConnectionFields(
       connectionFormFields({
-        catalog,
+        catalog: nextConnectionCatalog,
         provider: nextProvider,
         modelId: nextModelId,
         credential: nextCredential,

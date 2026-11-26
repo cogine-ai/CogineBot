@@ -27,10 +27,12 @@ import {
   codexLiveListsModel,
   readCodexLiveModels,
 } from "./pi-codex-catalog.js";
+import { providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
+import type { ProviderCatalogSelections } from "./pi-provider-catalog.js";
 
 type ModelCredential = Awaited<ReturnType<typeof findDefaultModelCredential>>;
 
@@ -566,6 +568,7 @@ export async function validateConnectedModelChoice(
   provider: string,
   modelId: string,
   modelCredentialId?: string | null,
+  providerCatalogSelections?: ProviderCatalogSelections,
 ) {
   const credential = await findConnectedModelCredential(
     prisma,
@@ -591,9 +594,10 @@ export async function validateConnectedModelChoice(
         ? auth.message
         : "Connect that model provider first";
   }
-  if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID) {
-    return isCatalogModelChoice(provider, modelId) ? undefined : "Unknown model for that provider";
-  }
+  if (isCatalogModelChoice(provider, modelId) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID)
+    return undefined;
+  if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID && !providerCatalogModel(provider, modelId))
+    return "Unknown model for that provider";
   const secret = await loadStoredModelSecret(
     prisma,
     secretStore,
@@ -607,7 +611,9 @@ export async function validateConnectedModelChoice(
   } catch {
     return "Model connection is unavailable";
   }
-  return parsed.kind === "openai_compatible" &&
+  if (providerCatalogSelections?.read(credential, parsed).includes(modelId)) return undefined;
+  return provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
+    parsed.kind === "openai_compatible" &&
     enabledOpenAiCompatibleModelIds(parsed, credential.defaultModel).includes(modelId.trim())
     ? undefined
     : "Unknown model for that provider";
@@ -704,7 +710,8 @@ export function pinnedModelCredentialError(
   if (
     modelId &&
     !isCatalogModelChoice(choice.modelProvider, modelId) &&
-    credential.defaultModel !== modelId
+    credential.defaultModel !== modelId &&
+    !providerCatalogModel(choice.modelProvider, modelId)
   ) {
     return "Unknown model for that provider";
   }

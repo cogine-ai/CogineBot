@@ -1,5 +1,6 @@
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
-import { DEFAULT_MODEL_CONTEXT_WINDOW } from "@rakazo/contracts";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { DEFAULT_MODEL_CONTEXT_WINDOW, DISCOVERED_MODEL_LIMITS } from "@rakazo/contracts";
 
 /** Models endpoints often mix chat models with tools and media endpoints. */
 export function isChatModelId(id: string): boolean {
@@ -9,6 +10,40 @@ export function isChatModelId(id: string): boolean {
       id,
     )
   );
+}
+
+const providerCatalogBaseUrl = "https://api.openai.com/v1";
+const catalogModels = builtinModels();
+
+/** The supported catalog and runtime must share the official Responses route. */
+export function providerCatalogModel(
+  provider: string,
+  id: string,
+  models: Models = catalogModels,
+): Model<"openai-responses"> | undefined {
+  if (provider !== "openai" || !/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) || !isChatModelId(id))
+    return undefined;
+  const siblings = models.getProvider(provider)?.getModels();
+  if (
+    !siblings?.length ||
+    siblings.some(
+      (model) => model.api !== "openai-responses" || model.baseUrl !== providerCatalogBaseUrl,
+    )
+  )
+    return undefined;
+  // The list endpoint only establishes availability for this key. It provides
+  // no evidence about context, modalities, reasoning, or pricing.
+  return {
+    id,
+    name: id,
+    provider,
+    api: "openai-responses",
+    baseUrl: providerCatalogBaseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...DISCOVERED_MODEL_LIMITS,
+  };
 }
 
 /**

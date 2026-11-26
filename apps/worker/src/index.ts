@@ -7,6 +7,7 @@ import {
   IntegrationProviderSettings,
   NativeConnectorProvider,
   NativeRoutineEventService,
+  ProviderCatalogSelections,
 } from "@rakazo/adapters";
 import { parsePlatformModelAllowlist } from "@rakazo/core";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
@@ -270,6 +271,7 @@ async function main() {
       process.env.TYPESAFE_API_KEY ?? "",
     ].filter(Boolean),
     secretStore: secrets,
+    providerCatalogSelections: new ProviderCatalogSelections(resolveEncryptionKey(process.env)),
     mcpAllowPrivateEndpoint: process.env.MCP_ALLOW_PRIVATE_ENDPOINT === "true",
     platformModelAllowlist,
     deploymentModelKey,
