@@ -5,6 +5,7 @@ import type {
   ModelConnectInput,
   ModelCredential,
   ModelHeaderRow,
+  ModelInferenceProbeStatus,
   ThinkingLevel,
 } from "@rakazo/contracts";
 import {
@@ -29,6 +30,8 @@ import {
   pickCatalogModelId,
 } from "./model-providers.js";
 import { credentialModelSettings } from "./model-settings-form.js";
+import type { RunErrorTranslator } from "./run-error.js";
+import { RUN_ERROR_LIMIT_MESSAGES } from "./run-error.js";
 
 /** A replacement draft always takes precedence over the saved connection. */
 export function modelCatalogProbeInput(
@@ -55,6 +58,26 @@ export function modelCatalogProbeOutcome(modelId: string | undefined, models: re
   if (models.length === 0) return "empty";
   const selected = modelId?.trim();
   return selected && !models.includes(selected) ? "missing" : "listed";
+}
+
+export const MODEL_INFERENCE_PROBE_MESSAGES = {
+  accepted: "The model accepted the test request.",
+  auth: "{provider} rejected the API key. Check your connection settings.",
+  model: "This key cannot use the selected model.",
+  credit: RUN_ERROR_LIMIT_MESSAGES.credit.none,
+  spending: RUN_ERROR_LIMIT_MESSAGES.spending.none,
+  rate: "{provider} is rate limiting requests. Try again shortly.",
+  timeout: "{provider} took too long to respond. Try again.",
+  unavailable: "Could not verify this model.",
+} satisfies Record<ModelInferenceProbeStatus, string>;
+
+export function modelInferenceProbeMessage(
+  status: ModelInferenceProbeStatus,
+  translate: RunErrorTranslator,
+): string {
+  return translate(MODEL_INFERENCE_PROBE_MESSAGES[status], {
+    provider: translate("Your model provider"),
+  });
 }
 
 /** Only rank discovery choices. Current selections and saved model order use the base catalog. */

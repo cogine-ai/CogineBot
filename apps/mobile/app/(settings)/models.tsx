@@ -3,6 +3,7 @@ import type {
   ModelBackupChoice,
   ModelCredentialReference,
   ModelHeaderRow,
+  ModelInferenceProbeStatus,
   ModelOAuthBegin,
   ThinkingDefaults,
   ThinkingLevel,
@@ -18,6 +19,7 @@ import {
   MAX_MODEL_BACKUPS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  MODEL_INFERENCE_PROBE_TIMEOUT_MS,
   ModelApiProtocolSchema,
   ModelHeaderRowsSchema,
   modelConnectionLabel,
@@ -47,6 +49,7 @@ import {
   modelCatalogProbeInput,
   modelCatalogProbeOutcome,
   modelConnectRequest,
+  modelInferenceProbeMessage,
   modelThinkingLevels,
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
@@ -248,12 +251,12 @@ function ModelsForm({
   const [oauth, setOauth] = useState<ModelOAuthBegin | null>(null);
   const [pasteCode, setPasteCode] = useState("");
   const [loading, setLoading] = useState(true);
-  const [pending, setPending] = useState<"connect" | "default" | "disconnect" | "test" | null>(
-    null,
-  );
+  const [pending, setPending] = useState<
+    "connect" | "default" | "disconnect" | "test" | "inference" | null
+  >(null);
   const busyRef = useRef(false);
   const pendingOwnerRef = useRef(0);
-  function beginPending(next: "connect" | "default" | "disconnect" | "test") {
+  function beginPending(next: NonNullable<typeof pending>) {
     const owner = ++pendingOwnerRef.current;
     setPending(next);
     return owner;
@@ -981,8 +984,14 @@ function ModelsForm({
     });
   }
 
-  async function testCatalogConnection() {
-    if (!catalogRequest || !selected || busyRef.current) return;
+  async function testCatalogConnection(testInference = false) {
+    if (
+      !catalogRequest ||
+      !selected ||
+      busyRef.current ||
+      (testInference && !selected.inferenceProbe)
+    )
+      return;
     clearFeedback();
     const revision = selectionRevisionRef.current;
     const catalogGeneration = catalogCheckGenerationRef.current;
@@ -996,11 +1005,25 @@ function ModelsForm({
       setCatalogFeedback({ message, error });
       AccessibilityInfo.announceForAccessibility(message);
     }
-    const pendingOwner = beginPending("test");
+    const pendingOwner = beginPending(testInference ? "inference" : "test");
     busyRef.current = true;
     try {
       const context = await captureApiRequestContext();
       if (!isCurrent(context)) return;
+      if (testInference) {
+        const { status } = await rpc<{ status: ModelInferenceProbeStatus }>(
+          "models/probeInference",
+          { ...catalogRequest, modelId: selected.id },
+          {
+            requestContext: context,
+            skipSpaceAuthRecovery: true,
+            timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
+          },
+        );
+        if (isCurrent(context))
+          report(modelInferenceProbeMessage(status, t), status !== "accepted");
+        return;
+      }
       const { models, catalogUpdated } = await rpc<{ models: string[]; catalogUpdated?: true }>(
         "models/probeCatalog",
         catalogRequest,
@@ -1035,7 +1058,11 @@ function ModelsForm({
       );
     } catch (error) {
       if (!isCurrent()) return;
-      report(errorText(error, t("Could not list models.")), true);
+      const fallback = testInference
+        ? modelInferenceProbeMessage("unavailable", t)
+        : t("Could not list models.");
+      const message = errorText(error, fallback);
+      report(testInference ? t(message) : message, true);
     } finally {
       finishPending(pendingOwner);
     }
@@ -2141,6 +2168,16 @@ function ModelsForm({
                 onPress={() => void testCatalogConnection()}
                 prominence="secondary"
                 style={{ marginTop: 12 }}
+              />
+            ) : null}
+
+            {acceptsKey && selected.inferenceProbe ? (
+              <NativeActionButton
+                disabled={busy || !catalogRequest}
+                label={pending === "inference" ? t("Testing…") : t("Test model")}
+                onPress={() => void testCatalogConnection(true)}
+                prominence="secondary"
+                style={{ marginTop: 8 }}
               />
             ) : null}
 

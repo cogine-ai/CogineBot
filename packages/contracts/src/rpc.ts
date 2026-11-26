@@ -123,6 +123,8 @@ import {
   ModelConnectInputSchema,
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
+  ModelInferenceProbeInputSchema,
+  ModelInferenceProbeStatusSchema,
   ModelOAuthBeginSchema,
   ModelSettingsSaveSchema,
   REPLY_QUOTE_MAX_LENGTH,
@@ -463,6 +465,9 @@ export const appContract = {
       .output(
         z.object({ models: z.array(z.string()), catalogUpdated: z.literal(true).optional() }),
       ),
+    probeInference: oc
+      .input(ModelInferenceProbeInputSchema)
+      .output(z.object({ status: ModelInferenceProbeStatusSchema })),
     beginOAuth: oc
       .input(
         z.object({

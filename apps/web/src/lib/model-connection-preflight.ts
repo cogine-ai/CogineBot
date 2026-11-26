@@ -1,5 +1,9 @@
 import { plural, t } from "@lingui/core/macro";
-import type { ModelCatalogProbeInput, ModelCredential } from "@rakazo/contracts";
+import type {
+  ModelCatalogProbeInput,
+  ModelCredential,
+  ModelInferenceProbeStatus,
+} from "@rakazo/contracts";
 import { modelCatalogProbeOutcome } from "@rakazo/core";
 
 type ModelPreflightOutcome =
@@ -286,4 +290,27 @@ export function modelPreflightSuccessMessage(modelCount: number): string {
     one: "# model",
     other: "# models",
   })} available. Chat was not tested.`;
+}
+
+/** Static messages keep the inference feedback in the compiled locale catalogs. */
+export function modelInferenceTestMessage(status: ModelInferenceProbeStatus): string {
+  const provider = t`Your model provider`;
+  switch (status) {
+    case "accepted":
+      return t`The model accepted the test request.`;
+    case "auth":
+      return t`${provider} rejected the API key. Check your connection settings.`;
+    case "model":
+      return t`This key cannot use the selected model.`;
+    case "credit":
+      return t`${provider} reached its credit limit.`;
+    case "spending":
+      return t`${provider} reached its spending limit.`;
+    case "rate":
+      return t`${provider} is rate limiting requests. Try again shortly.`;
+    case "timeout":
+      return t`${provider} took too long to respond. Try again.`;
+    case "unavailable":
+      return t`Could not verify this model.`;
+  }
 }

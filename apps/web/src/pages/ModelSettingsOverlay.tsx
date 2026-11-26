@@ -87,6 +87,7 @@ import type { ModelPreflightFailure } from "../lib/model-connection-preflight";
 import {
   classifyModelConnectionFailure,
   loadStoredModelAuth,
+  modelInferenceTestMessage,
   modelPreflightSuccessMessage,
   runModelConnectionPreflight,
   unavailableSelectedModel,
@@ -94,7 +95,7 @@ import {
 import { currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
 import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
-import { errorText } from "../lib/user-error";
+import { errorCode, errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
 import { ModelDefaultSettings } from "./ModelDefaultSettings";
@@ -194,7 +195,7 @@ export function ModelSettingsOverlay({
   const [notice, setNotice] = useState<string | null>(null);
   const [preflightTesting, setPreflightTesting] = useState(false);
   const [preflightTarget, setPreflightTarget] = useState<
-    "api-key" | "sign-in" | "compatible" | null
+    "api-key" | "inference" | "sign-in" | "compatible" | null
   >(null);
   const [preflightSuccess, setPreflightSuccess] = useState<string | null>(null);
   const [preflightFailure, setPreflightFailure] = useState<ModelPreflightFailure | null>(null);
@@ -801,17 +802,41 @@ export function ModelSettingsOverlay({
     });
   }
 
-  async function testApiKeyConnection() {
-    if (!selected || !catalogRequest) return;
+  async function testApiKeyConnection(testInference = false) {
+    if (!selected || !catalogRequest || (testInference && !selected.inferenceProbe)) return;
     checkedConnectionRef.current = "credentialId" in catalogRequest ? catalogRequest : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
-    setPreflightTarget("api-key");
+    const isCurrent = () =>
+      preflightStillCurrent(revision) && spaceGeneration === currentSpaceSelectionGeneration();
+    setPreflightTarget(testInference ? "inference" : "api-key");
     setPreflightTesting(true);
     setPreflightSuccess(null);
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
+    if (testInference) {
+      const feedback = await rpc.models
+        .probeInference({ ...catalogRequest, modelId: selected.id })
+        .then(
+          ({ status }) => ({
+            accepted: status === "accepted",
+            message: modelInferenceTestMessage(status),
+          }),
+          (error: unknown) => ({
+            accepted: false,
+            message:
+              errorCode(error) === "CONFLICT"
+                ? t`Model connection changed. Reload and try again.`
+                : errorText(error, modelInferenceTestMessage("unavailable")),
+          }),
+        );
+      if (!isCurrent()) return;
+      setPreflightTesting(false);
+      if (feedback.accepted) setPreflightSuccess(feedback.message);
+      else setPreflightFailure({ outcome: "unknown", message: feedback.message });
+      return;
+    }
     let catalogUpdated = false;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
@@ -825,22 +850,12 @@ export function ModelSettingsOverlay({
         return response;
       },
     });
-    if (
-      !contextCurrent() ||
-      !preflightStillCurrent(revision) ||
-      spaceGeneration !== currentSpaceSelectionGeneration()
-    )
-      return;
+    if (!isCurrent()) return;
     if (catalogUpdated && "credentialId" in catalogRequest) {
       const applied = await refresh(catalogRequest.credentialId, { keepForm: true }).catch(
         () => undefined,
       );
-      if (
-        !contextCurrent() ||
-        !preflightStillCurrent(revision) ||
-        spaceGeneration !== currentSpaceSelectionGeneration()
-      )
-        return;
+      if (!isCurrent()) return;
       if (!applied) {
         setPreflightTesting(false);
         setPreflightFailure({ outcome: "unknown", message: t`Could not load model settings` });
@@ -1565,7 +1580,9 @@ export function ModelSettingsOverlay({
                 disabled={busy || preflightTesting || !catalogRequest}
                 onClick={() => void testApiKeyConnection()}
               >
-                {catalogRequest && "credentialId" in catalogRequest && !preflightTesting ? (
+                {catalogRequest &&
+                "credentialId" in catalogRequest &&
+                !(preflightTesting && preflightTarget === "api-key") ? (
                   <Trans>Check models</Trans>
                 ) : (
                   modelPreflightTestingLabel(
@@ -1574,7 +1591,23 @@ export function ModelSettingsOverlay({
                   )
                 )}
               </Button>
-              {preflightTarget === "api-key" ? (
+              {selected.inferenceProbe ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="ml-2 mt-3 rounded-full"
+                  disabled={busy || preflightTesting || !catalogRequest}
+                  onClick={() => void testApiKeyConnection(true)}
+                >
+                  {preflightTesting && preflightTarget === "inference" ? (
+                    <Trans>Testing…</Trans>
+                  ) : (
+                    <Trans>Test model</Trans>
+                  )}
+                </Button>
+              ) : null}
+              {preflightTarget === "api-key" || preflightTarget === "inference" ? (
                 <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
               ) : null}
             </>

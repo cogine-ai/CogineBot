@@ -1025,6 +1025,11 @@ export const RU_MESSAGES: Record<string, string> = {
   "exact-model-id": "exact-model-id",
   "Found {count} model.": "Найдена {count} модель.",
   "Check models": "Проверить список моделей",
+  "Test model": "Тестировать модель",
+  "The model accepted the test request.": "Модель приняла тестовый запрос.",
+  "This key cannot use the selected model.":
+    "Этот ключ не позволяет использовать выбранную модель.",
+  "Could not verify this model.": "Не удалось проверить эту модель.",
   "Testing…": "Проверка…",
   "No models listed.": "Модели не перечислены.",
   "Model listed by the provider.": "Поставщик указал эту модель в списке.",

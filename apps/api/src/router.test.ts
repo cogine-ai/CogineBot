@@ -5736,6 +5736,7 @@ describe("saved model catalog checks", () => {
       plaintext: storedKey,
     };
     const probe = vi.fn().mockResolvedValue(["example-chat"]);
+    const inference = vi.fn().mockResolvedValue("accepted");
     const findCredential = vi.fn(async ({ where }) =>
       where.id === savedInput.credentialId &&
       where.userId === actor.userId &&
@@ -5785,6 +5786,7 @@ describe("saved model catalog checks", () => {
         },
         secrets: { load },
         catalogProbe: probe,
+        modelInferenceProbe: inference,
         providerCatalogSelections: selections,
         env: {
           defaultProvider: "fake",
@@ -5825,6 +5827,8 @@ describe("saved model catalog checks", () => {
     }
     const call = (input: unknown, currentActor = actor, signal?: AbortSignal) =>
       request("probeCatalog", input, currentActor, signal);
+    const infer = (input: unknown, currentActor = actor, signal?: AbortSignal) =>
+      request("probeInference", input, currentActor, signal);
     const credentials = async (currentActor = actor, includeProviderCatalog = true) =>
       (await request("credentials", { includeProviderCatalog }, currentActor)).body.json;
 
@@ -5832,8 +5836,58 @@ describe("saved model catalog checks", () => {
       state.modelId = modelId;
       state.proof = selections.sign(owner, { kind: "api_key", key: storedKey }, [modelId]);
     };
-    return { state, call, credentials, findSecret, load, probe, confirm };
+    return { state, call, infer, inference, credentials, findSecret, load, probe, confirm };
   }
+
+  it("runs inference only on explicit draft and owned saved-key requests", async () => {
+    const { call, infer, inference, probe } = fixture();
+    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    const draft = { provider: "openai", modelId, apiKey: "fixture-draft-key" };
+    await call(savedInput);
+    expect(inference).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledOnce();
+    expect(await infer(draft)).toEqual({ status: 200, body: { json: { status: "accepted" } } });
+    expect(await infer({ ...savedInput, modelId })).toEqual({
+      status: 200,
+      body: { json: { status: "accepted" } },
+    });
+    expect(inference.mock.calls.map(([input]) => input)).toEqual([
+      draft,
+      { provider: savedInput.provider, modelId, apiKey: storedKey },
+    ]);
+    expect(probe).toHaveBeenCalledOnce();
+  });
+
+  it("fences ownership, credential revision, and unsupported targets before inference", async () => {
+    const { infer, inference } = fixture();
+    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    const input = { ...savedInput, modelId };
+    expect((await infer(input, { ...actor, userId: "another-fixture-owner" })).status).toBe(404);
+    expect((await infer({ ...input, expectedRevision: 6 })).status).toBe(409);
+    expect((await infer({ ...input, modelId: "gpt-unconfirmed-fixture" })).body.json).toEqual({
+      status: "unavailable",
+    });
+    expect(inference).not.toHaveBeenCalled();
+  });
+
+  it("discards inference outcomes after a key rotation or revoked membership", async () => {
+    const { infer, inference, state } = fixture();
+    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    inference.mockImplementationOnce(async () => {
+      state.plaintext = "fixture-key-replaced-in-place";
+      return "accepted";
+    });
+    const rotated = await infer({ ...savedInput, modelId });
+    expect(rotated.status).toBe(409);
+    expect(JSON.stringify(rotated)).not.toContain(state.plaintext);
+    inference.mockImplementationOnce(async () => {
+      state.allowed = false;
+      return "accepted";
+    });
+    const revoked = await infer({ ...savedInput, modelId });
+    expect(revoked.status).toBe(403);
+    expect(inference).toHaveBeenCalledTimes(2);
+  });
 
   it("lists supported trusted IDs on an owned credential and shares a warm result", async () => {
     const { credentials, probe } = fixture(true);

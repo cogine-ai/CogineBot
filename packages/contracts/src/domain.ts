@@ -1528,17 +1528,35 @@ export const SpaceMemoryConfigSchema = z.object({
 export type SpaceMemoryConfig = z.infer<typeof SpaceMemoryConfigSchema>;
 
 const modelCatalogProbeProvider = z.string().trim().min(1);
-export const ModelCatalogProbeInputSchema = z.union([
-  z.object({ provider: modelCatalogProbeProvider, apiKey: z.string().trim().min(8) }).strict(),
-  z
-    .object({
-      provider: modelCatalogProbeProvider,
-      credentialId: Id,
-      expectedRevision: z.number().int().positive(),
-    })
-    .strict(),
-]);
+const draftModelProbe = z.strictObject({
+  provider: modelCatalogProbeProvider,
+  apiKey: z.string().trim().min(8),
+});
+const savedModelProbe = z.strictObject({
+  provider: modelCatalogProbeProvider,
+  credentialId: Id,
+  expectedRevision: z.number().int().positive(),
+});
+export const ModelCatalogProbeInputSchema = z.union([draftModelProbe, savedModelProbe]);
 export type ModelCatalogProbeInput = z.infer<typeof ModelCatalogProbeInputSchema>;
+
+const inferenceModelId = z.string().trim().min(1).max(512);
+export const MODEL_INFERENCE_PROBE_TIMEOUT_MS = 15_000;
+export const ModelInferenceProbeInputSchema = z.union([
+  draftModelProbe.extend({ modelId: inferenceModelId }),
+  savedModelProbe.extend({ modelId: inferenceModelId }),
+]);
+export const ModelInferenceProbeStatusSchema = z.enum([
+  "accepted",
+  "auth",
+  "model",
+  "credit",
+  "spending",
+  "rate",
+  "timeout",
+  "unavailable",
+]);
+export type ModelInferenceProbeStatus = z.infer<typeof ModelInferenceProbeStatusSchema>;
 
 export const ModelCatalogEntrySchema = z.object({
   provider: z.string(),
@@ -1564,6 +1582,7 @@ export const ModelCatalogEntrySchema = z.object({
   catalogProbe: z.boolean().optional(),
   /** The server accepts a saved connection revision in the catalog check. */
   savedCatalogProbe: z.literal(true).optional(),
+  inferenceProbe: z.literal(true).optional(),
 });
 export type ModelCatalogEntry = z.infer<typeof ModelCatalogEntrySchema>;
 

@@ -129,6 +129,7 @@ import {
   prepareManagedConnectorForTransaction,
   prepareStoredModelAuth,
   probeCatalogProviderModels,
+  probeModelInference,
   probeOpenAiCompatibleModels,
   providerCatalogModel,
   provisionComputer,
@@ -193,6 +194,7 @@ import type {
   McpServerUpdateConfigInput,
   McpStdioOAuthClient,
   Me,
+  ModelCatalogProbeInput,
   NativeRoutineTrigger,
   ProductEvent,
   Routine,
@@ -897,6 +899,7 @@ export interface RouterDeps {
   codexCatalog?: CodexLiveCatalog;
   /** The pinned models-list transport can be replaced in offline tests. */
   catalogProbe?: typeof probeCatalogProviderModels;
+  modelInferenceProbe?: typeof probeModelInference;
   providerCatalogSelections?: ProviderCatalogSelections;
   /** Capability of the composed runtime, including an explicit override. */
   scriptedRuntime?: boolean;
@@ -1309,6 +1312,7 @@ export function createRouter(deps: RouterDeps) {
       },
     );
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
+  const inferenceProbesEnabled = deps.env.agentRuntime === "pi" && !deps.scriptedRuntime;
   const apiKeyCatalog =
     deps.env.modelLiveCatalogEnabled &&
     deps.env.agentRuntime !== "scripted" &&
@@ -2039,7 +2043,13 @@ export function createRouter(deps: RouterDeps) {
             : codexAvailable;
         // The scripted fixture only exists to drive the scripted runtime; a real
         // runtime cannot execute it, so it stays out of the user-facing catalog.
-        return deps.env.agentRuntime === "scripted" ? [...catalog, scriptedCatalogEntry] : catalog;
+        if (inferenceProbesEnabled) return catalog;
+        const catalogWithoutInference = catalog.map(
+          ({ inferenceProbe: _inference, ...entry }) => entry,
+        );
+        return deps.env.agentRuntime === "scripted"
+          ? [...catalogWithoutInference, scriptedCatalogEntry]
+          : catalogWithoutInference;
       }),
       credentials: authed.models.credentials.handler(async ({ context, input }) => {
         const { actor, signal, stillAuthorized } = context;
@@ -2494,7 +2504,7 @@ export function createRouter(deps: RouterDeps) {
         },
       ),
       probeCatalog: authed.models.probeCatalog.handler(async ({ context, input }) => {
-        const { actor, signal, stillAuthorized } = context;
+        const { signal } = context;
         const probe = deps.catalogProbe ?? probeCatalogProviderModels;
 
         async function listModels(apiKey: string) {
@@ -2514,54 +2524,12 @@ export function createRouter(deps: RouterDeps) {
 
         if ("apiKey" in input) return { models: await listModels(input.apiKey) };
 
-        const owner = { id: input.credentialId, userId: actor.userId, provider: input.provider };
-        const credential = await deps.prisma.userModelCredential.findFirst({
-          where: owner,
-          select: { secretId: true, connectionRevision: true },
-        });
-        if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
-        assertConnectionRevision(credential, input.expectedRevision);
-        const secretId = credential.secretId;
-        const connectionRevision = input.expectedRevision;
-        const readCurrentCredential = () =>
-          deps.prisma.userModelCredential.findFirst({
-            where: { ...owner, connectionRevision, secretId },
-            select: { id: true },
-          });
-        const connectionChanged = () =>
-          new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
-        const { plaintext, ciphertext } = await loadConnectionSecret(
-          deps.prisma,
-          deps.secrets,
-          actor.userId,
-          secretId,
-        ).catch(async (error: unknown) => {
-          if (!(await readCurrentCredential())) throw connectionChanged();
-          throw error;
-        });
-        let saved: ReturnType<typeof parseModelSecret>;
-        try {
-          saved = parseModelSecret(plaintext);
-        } catch {
-          throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
-        }
-        if (saved.kind !== "api_key" || !saved.key.trim())
-          throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
-
-        const key = saved.key.trim();
-        const snapshot = { ...owner, connectionRevision, secretId, ciphertext };
-        async function ensureCurrent() {
-          signal?.throwIfAborted();
-          if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
-          if (!(await modelCatalogKeyCurrent(deps, snapshot, key))) throw connectionChanged();
-          signal?.throwIfAborted();
-        }
-
+        const { key, snapshot, ensureCurrent } = await loadSavedModelProbeKey(deps, context, input);
         await ensureCurrent();
         let models: string[];
         let observationOrder: number | undefined;
         try {
-          models = await listModels(saved.key);
+          models = await listModels(key);
           observationOrder = apiKeyCatalog?.nextManualObservationOrder();
         } finally {
           await ensureCurrent();
@@ -2570,6 +2538,35 @@ export function createRouter(deps: RouterDeps) {
           observationOrder !== undefined &&
           apiKeyCatalog?.record(snapshot, key, models, observationOrder);
         return updated ? { models, catalogUpdated: true as const } : { models };
+      }),
+      probeInference: authed.models.probeInference.handler(async ({ context, input }) => {
+        if (
+          !inferenceProbesEnabled ||
+          !listPiCatalog().some(
+            (model) =>
+              model.inferenceProbe &&
+              model.provider === input.provider &&
+              model.id === input.modelId,
+          )
+        )
+          return { status: "unavailable" as const };
+
+        const target =
+          "apiKey" in input
+            ? { key: input.apiKey, ensureCurrent: () => ensureModelProbeAuthorized(context) }
+            : await loadSavedModelProbeKey(deps, context, input);
+        const probeInference = deps.modelInferenceProbe ?? probeModelInference;
+        await target.ensureCurrent();
+        try {
+          return {
+            status: await probeInference(
+              { provider: input.provider, modelId: input.modelId, apiKey: target.key },
+              { signal: context.signal },
+            ),
+          };
+        } finally {
+          await target.ensureCurrent();
+        }
       }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {
         const isChatGPTPlan = input.provider === CHATGPT_PLAN_PROVIDER_ID;
@@ -10412,6 +10409,60 @@ async function modelCatalogKeyCurrent(
   if (!(await modelCatalogConnectionCurrent(deps.prisma, snapshot))) return false;
   const latest = parseModelSecret(await deps.secrets.load(snapshot.ciphertext, snapshot.secretId));
   return latest.kind === "api_key" && latest.key.trim() === apiKey;
+}
+
+type ModelProbeContext = {
+  actor: Actor;
+  signal?: AbortSignal;
+  stillAuthorized?: () => Promise<boolean>;
+};
+
+async function ensureModelProbeAuthorized({ signal, stillAuthorized }: ModelProbeContext) {
+  signal?.throwIfAborted();
+  if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
+  signal?.throwIfAborted();
+}
+
+async function loadSavedModelProbeKey(
+  deps: Pick<RouterDeps, "prisma" | "secrets">,
+  context: ModelProbeContext,
+  input: Extract<ModelCatalogProbeInput, { credentialId: string }>,
+) {
+  const owner = { id: input.credentialId, userId: context.actor.userId, provider: input.provider };
+  const credential = await deps.prisma.userModelCredential.findFirst({
+    where: owner,
+    select: { secretId: true, connectionRevision: true },
+  });
+  if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
+  assertConnectionRevision(credential, input.expectedRevision);
+  const { secretId, connectionRevision } = credential;
+  const connectionChanged = () =>
+    new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
+  const { plaintext, ciphertext } = await loadConnectionSecret(
+    deps.prisma,
+    deps.secrets,
+    owner.userId,
+    secretId,
+  ).catch(async (error: unknown) => {
+    const current = await deps.prisma.userModelCredential.findFirst({
+      where: { ...owner, connectionRevision, secretId },
+      select: { id: true },
+    });
+    if (!current) throw connectionChanged();
+    throw error;
+  });
+  const key = plaintextApiKey(plaintext);
+  if (!key) throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+  const snapshot = { ...owner, connectionRevision, secretId, ciphertext };
+  return {
+    key,
+    snapshot,
+    async ensureCurrent() {
+      await ensureModelProbeAuthorized(context);
+      if (!(await modelCatalogKeyCurrent(deps, snapshot, key))) throw connectionChanged();
+      context.signal?.throwIfAborted();
+    },
+  };
 }
 
 async function persistModelCredential(
