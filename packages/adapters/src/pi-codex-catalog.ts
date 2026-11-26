@@ -4,6 +4,7 @@ import type { ThinkingLevel } from "@rakazo/contracts";
 import { ThinkingLevelSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
+import { LiveCatalogCache } from "./pi-live-cache.js";
 import type { PiCatalogEntry } from "./pi-models.js";
 import { listPiCatalog } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -90,8 +91,10 @@ export async function fetchCodexCatalog(
   accessToken: string,
   accountId: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<CodexCatalogResult> {
   const url = `${CODEX_MODELS_ENDPOINT}?client_version=${CODEX_CLIENT_VERSION}`;
+  const timeout = AbortSignal.timeout(CODEX_CATALOG_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetchImpl(url, {
@@ -102,7 +105,7 @@ export async function fetchCodexCatalog(
         accept: "application/json",
       },
       redirect: "error",
-      signal: AbortSignal.timeout(CODEX_CATALOG_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
@@ -232,44 +235,10 @@ function stringListContains(value: unknown, expected: string): boolean | typeof 
   return found;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-type CodexCatalogCacheEntry =
-  | { ok: true; models: CodexCatalogModel[]; expiresAt: number; fetchedAt: number }
-  | { ok: false; expiresAt: number };
-
-/**
- * A refresh that never reached the network — no usable bearer, expired token —
- * is not a fetch failure: it must not negative-cache, or a credential that gets
- * refreshed a moment later would stay hidden behind the failure TTL.
- */
-type CodexCatalogFetch =
-  | { attempted: true; models: CodexCatalogModel[] | undefined }
-  | { attempted: false };
-
-/**
- * In-memory per (userId, accountId) catalog with a single in-flight refresh per key.
- * Reads never block past `waitMs`: a fresh hit returns immediately, a stale hit serves
- * the last good list while a background refresh runs, and a cold miss waits a short
- * bounded time before giving up. A failed refresh keeps the last good catalog — the
- * stale entry stays servable and only re-arms a retry after the failure TTL, so a
- * transient outage cannot hide live-listed models — but only within
- * `staleMaxAgeMs` of the last successful fetch, so an account that lost access
- * eventually falls back to the static catalog instead of pinning removed models
- * forever. Process-lifetime only — restart loses the catalog until the next fetch.
- */
+/** Process-local refresh policy for the subscription account's model catalog. */
 export class CodexCatalogCache implements CodexLiveCatalog {
-  private readonly entries = new Map<string, CodexCatalogCacheEntry>();
-  private readonly inflight = new Map<string, Promise<CodexCatalogModel[] | undefined>>();
+  private readonly cache: LiveCatalogCache<CodexCatalogModel>;
   private readonly fetchImpl: typeof fetch;
-  private readonly now: () => number;
-  private readonly ttlMs: number;
-  private readonly failureTtlMs: number;
-  private readonly waitMs: number;
-  private readonly deadlineMs: number;
-  private readonly staleMaxAgeMs: number;
 
   constructor(
     opts: {
@@ -285,99 +254,43 @@ export class CodexCatalogCache implements CodexLiveCatalog {
     } = {},
   ) {
     this.fetchImpl = opts.fetch ?? fetch;
-    this.now = opts.now ?? Date.now;
-    this.ttlMs = opts.ttlMs ?? CATALOG_TTL_MS;
-    this.failureTtlMs = opts.failureTtlMs ?? CATALOG_FAILURE_TTL_MS;
-    this.waitMs = opts.waitMs ?? CATALOG_READ_WAIT_MS;
-    this.deadlineMs = opts.deadlineMs ?? CODEX_CATALOG_HARD_DEADLINE_MS;
-    this.staleMaxAgeMs = opts.staleMaxAgeMs ?? CATALOG_STALE_MAX_AGE_MS;
+    this.cache = new LiveCatalogCache({
+      now: opts.now ?? Date.now,
+      ttlMs: opts.ttlMs ?? CATALOG_TTL_MS,
+      failureTtlMs: opts.failureTtlMs ?? CATALOG_FAILURE_TTL_MS,
+      waitMs: opts.waitMs ?? CATALOG_READ_WAIT_MS,
+      deadlineMs: opts.deadlineMs ?? CODEX_CATALOG_HARD_DEADLINE_MS,
+      staleMaxAgeMs: opts.staleMaxAgeMs ?? CATALOG_STALE_MAX_AGE_MS,
+      maxEntries: MAX_CATALOG_CACHE_ENTRIES,
+    });
   }
 
-  async read(
+  read(
     userId: string,
     account: CodexCatalogAccount,
     opts?: { waitMs?: number; cacheOnly?: boolean },
   ): Promise<CodexCatalogModel[] | undefined> {
-    const key = `${userId}:${account.accountId}`;
-    const entry = this.entries.get(key);
-    if (opts?.cacheOnly) return entry?.ok ? this.trusted(entry) : undefined;
-    if (entry && entry.expiresAt > this.now()) {
-      return entry.ok ? this.trusted(entry) : undefined;
-    }
-    if (entry) {
-      if (!this.inflight.has(key)) void this.revalidate(key, account);
-      return entry.ok ? this.trusted(entry) : undefined;
-    }
-    const pending = this.inflight.get(key) ?? this.revalidate(key, account);
-    return Promise.race([pending, sleep(opts?.waitMs ?? this.waitMs).then(() => undefined)]);
-  }
-
-  /** A last-good catalog is servable only within the staleness bound. */
-  private trusted(entry: { models: CodexCatalogModel[]; fetchedAt: number }) {
-    return entry.fetchedAt + this.staleMaxAgeMs > this.now() ? entry.models : undefined;
-  }
-
-  private revalidate(
-    key: string,
-    account: CodexCatalogAccount,
-  ): Promise<CodexCatalogModel[] | undefined> {
-    // A fetch that ignores its abort signal must not pin the key in-flight
-    // forever, so the tracked promise has its own hard deadline.
-    const work = Promise.race([
-      this.fetchModels(account),
-      sleep(this.deadlineMs).then(
-        (): CodexCatalogFetch => ({ attempted: true, models: undefined }),
-      ),
-    ]);
-    const tracked = work.then((outcome) => {
-      if (this.inflight.get(key) === tracked) this.inflight.delete(key);
-      // Only an attempted fetch records a result. A missing or expired bearer
-      // stores nothing, so the next read retries the credential instead of
-      // serving a failure entry while a detached refresh is still landing.
-      if (outcome.attempted) this.store(key, this.nextEntry(key, outcome.models));
-      const models = outcome.attempted ? outcome.models : undefined;
-      return models && models.length > 0 ? models : undefined;
-    });
-    this.inflight.set(key, tracked);
-    return tracked;
-  }
-
-  private nextEntry(key: string, models: CodexCatalogModel[] | undefined): CodexCatalogCacheEntry {
-    if (models && models.length > 0) {
-      return { ok: true, models, expiresAt: this.now() + this.ttlMs, fetchedAt: this.now() };
-    }
-    const prior = this.entries.get(key);
-    // Keep serving the last good catalog only within the staleness bound — the
-    // failure TTL paces the retry, but a list too old to trust drops to the
-    // static catalog so removed models stop being selectable.
-    if (prior?.ok && prior.fetchedAt + this.staleMaxAgeMs > this.now()) {
-      return { ...prior, expiresAt: this.now() + this.failureTtlMs };
-    }
-    return { ok: false, expiresAt: this.now() + this.failureTtlMs };
-  }
-
-  private async fetchModels(account: CodexCatalogAccount): Promise<CodexCatalogFetch> {
-    let accessToken: string | null;
-    try {
-      accessToken = await account.accessToken();
-    } catch {
-      return { attempted: false };
-    }
-    if (!accessToken) return { attempted: false };
-    try {
-      const result = await fetchCodexCatalog(accessToken, account.accountId, this.fetchImpl);
-      return { attempted: true, models: result.status === "ok" ? result.models : undefined };
-    } catch {
-      return { attempted: true, models: undefined };
-    }
-  }
-
-  private store(key: string, entry: CodexCatalogCacheEntry): void {
-    if (!this.entries.has(key) && this.entries.size >= MAX_CATALOG_CACHE_ENTRIES) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest) this.entries.delete(oldest);
-    }
-    this.entries.set(key, entry);
+    return this.cache.read(
+      JSON.stringify([userId, account.accountId]),
+      async (signal) => {
+        let accessToken: string | null;
+        try {
+          accessToken = await account.accessToken();
+        } catch {
+          return { attempted: false };
+        }
+        // A missing or expired bearer leaves no negative cache entry.
+        if (!accessToken || signal.aborted) return { attempted: false };
+        const result = await fetchCodexCatalog(
+          accessToken,
+          account.accountId,
+          this.fetchImpl,
+          signal,
+        );
+        return { attempted: true, models: result.status === "ok" ? result.models : undefined };
+      },
+      opts,
+    );
   }
 }
 
