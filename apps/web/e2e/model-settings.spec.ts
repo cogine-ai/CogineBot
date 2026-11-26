@@ -1602,6 +1602,7 @@ for (const notListed of [true, false]) {
     });
     let choice: Record<string, unknown> | undefined;
     let listedAgain = !notListed;
+    let failSettingsReadback = false;
     await page.route("**/rpc/me", async (route) => {
       const response = await route.fetch();
       const payload = await response.json();
@@ -1618,6 +1619,13 @@ for (const notListed of [true, false]) {
       });
     });
     await page.route("**/rpc/models/credentials", async (route) => {
+      if (
+        failSettingsReadback &&
+        route.request().postDataJSON()?.json?.includeProviderCatalog === true
+      ) {
+        await route.abort("failed");
+        return;
+      }
       const response = await route.fetch();
       const payload = (await response.json()) as { json: ModelCredential[] };
       const json = payload.json.map((item) =>
@@ -1684,12 +1692,24 @@ for (const notListed of [true, false]) {
           json: { json: { models: [bundled.id, modelId], catalogUpdated: true } },
         });
       });
-      await settings.getByRole("button", { name: "Check models", exact: true }).click();
+      const checkModels = settings.getByRole("button", { name: "Check models", exact: true });
+      if (notListed) {
+        failSettingsReadback = true;
+        await checkModels.click();
+        await expect(settings.getByRole("alert")).toHaveText("Could not load model settings");
+        await expect(settings.getByText("Chat was not tested.", { exact: false })).toHaveCount(0);
+        await expect(picker).toHaveText(modelId);
+        await expect(useModel).toBeDisabled();
+        await captureScreenshot(page, testInfo, "a1-model-catalog-refresh-failure");
+        failSettingsReadback = false;
+      }
+      await checkModels.click();
       await expect(
         settings.getByText("Confirm this model for the current API key, or choose another.", {
           exact: true,
         }),
       ).toBeVisible();
+      await expect(settings.getByText("Could not load model settings")).toHaveCount(0);
     }
     await expect(useModel).toBeEnabled();
     await useModel.click();

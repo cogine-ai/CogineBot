@@ -832,13 +832,20 @@ export function ModelSettingsOverlay({
     )
       return;
     if (catalogUpdated && "credentialId" in catalogRequest) {
-      await refresh(catalogRequest.credentialId, { keepForm: true }).catch(() => undefined);
+      const applied = await refresh(catalogRequest.credentialId, { keepForm: true }).catch(
+        () => undefined,
+      );
       if (
         !contextCurrent() ||
         !preflightStillCurrent(revision) ||
         spaceGeneration !== currentSpaceSelectionGeneration()
       )
         return;
+      if (!applied) {
+        setPreflightTesting(false);
+        setError(t`Could not load model settings`);
+        return;
+      }
     }
     setPreflightTesting(false);
     if (result.ok) {
