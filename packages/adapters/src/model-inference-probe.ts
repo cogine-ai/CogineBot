@@ -16,7 +16,7 @@ const context: Context = {
 
 /** Test one agent request on the pinned Responses route and stop on acceptance. */
 export async function probeModelInference(
-  input: { provider: string; modelId: string; apiKey: string },
+  input: { provider: string; modelId: string; apiKey: string; providerCatalogModel?: true },
   options: { fetch?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<ModelInferenceProbeStatus> {
   options.signal?.throwIfAborted();
@@ -24,6 +24,7 @@ export async function probeModelInference(
     provider: input.provider,
     id: input.modelId,
     apiKey: input.apiKey,
+    providerCatalogModel: input.providerCatalogModel,
   });
   if (!model || !apiKey || !isOfficialResponsesModel(model)) return "unavailable";
 

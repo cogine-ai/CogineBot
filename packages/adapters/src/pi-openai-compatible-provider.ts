@@ -11,6 +11,7 @@ import type { ModelApiProtocol } from "@rakazo/contracts";
 import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   DEFAULT_MODEL_MAX_TOKENS,
+  MODEL_DIRECTORY_PROBE_TIMEOUT_MS,
   parseModelHeaders,
 } from "@rakazo/contracts";
 import { Agent } from "undici";
@@ -492,6 +493,17 @@ async function readBoundedJson(
   }
 }
 
+export type ModelDirectoryFailure = "auth" | "rate" | "timeout";
+
+export class ModelDirectoryError extends Error {
+  constructor(
+    message: string,
+    readonly failure: ModelDirectoryFailure,
+  ) {
+    super(message);
+  }
+}
+
 export async function probeOpenAiCompatibleModels(
   input: {
     baseUrl: string;
@@ -512,7 +524,7 @@ export async function probeOpenAiCompatibleModels(
     input.apiKey || (Object.keys(customHeaders ?? {}).length ? "present" : undefined),
   );
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
+  const timeout = setTimeout(() => controller.abort(), MODEL_DIRECTORY_PROBE_TIMEOUT_MS);
   const merged = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   try {
     const headers: Record<string, string> = { Accept: "application/json" };
@@ -537,9 +549,11 @@ export async function probeOpenAiCompatibleModels(
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new Error(
-        `Model server returned ${response.status}. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`,
-      );
+      const message = `Model server returned ${response.status}. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`;
+      if (response.status === 401 || response.status === 403)
+        throw new ModelDirectoryError(message, "auth");
+      if (response.status === 429) throw new ModelDirectoryError(message, "rate");
+      throw new Error(message);
     }
     const body = await readBoundedJson(response, opts);
     return probeModelIds(body, opts);
@@ -552,7 +566,10 @@ export async function probeOpenAiCompatibleModels(
     if (aborted) {
       // Caller-cancelled probes keep the original AbortError; the 5s probe budget gets a hint.
       if (signal?.aborted) throw error;
-      throw new Error(`Model server probe timed out. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
+      throw new ModelDirectoryError(
+        `Model server probe timed out. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`,
+        "timeout",
+      );
     }
     const message = modelConnectionErrorMessage(error, input);
     if (message !== (error instanceof Error ? error.message : String(error)))

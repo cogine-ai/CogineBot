@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { canonicalPiProviderId } from "@rakazo/contracts";
+import { canonicalPiProviderId, MODEL_DIRECTORY_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { LiveCatalogCache } from "./pi-live-cache.js";
 import { isChatModelId, providerCatalogModel } from "./pi-live-model.js";
 import {
@@ -7,8 +7,9 @@ import {
   listPiCatalog,
   probeCatalogProviderModels,
 } from "./pi-models.js";
-
 import type { StoredModelSecret } from "./pi-oauth.js";
+import type { ModelDirectoryFailure } from "./pi-openai-compatible-provider.js";
+import { ModelDirectoryError } from "./pi-openai-compatible-provider.js";
 
 type CatalogConnection = {
   id: string;
@@ -72,7 +73,7 @@ export class ProviderCatalogSelections {
 
 /** Cached catalog observations for exactly one revision of an owned API key. */
 export class ApiKeyModelCatalog {
-  private readonly cache: LiveCatalogCache<string>;
+  private readonly cache: LiveCatalogCache<string, ModelDirectoryFailure>;
   private readonly probe: typeof probeCatalogProviderModels;
   private readonly versionKey = randomBytes(32);
   private manualObservationOrder = 0;
@@ -87,7 +88,8 @@ export class ApiKeyModelCatalog {
       ttlMs: 6 * 60 * 60_000,
       failureTtlMs: 10 * 60_000,
       waitMs: 1_500,
-      deadlineMs: 5_000,
+      deadlineMs: MODEL_DIRECTORY_PROBE_TIMEOUT_MS,
+      deadlineFailure: "timeout",
       staleMaxAgeMs: 24 * 60 * 60_000,
       maxEntries: 256,
     });
@@ -105,15 +107,30 @@ export class ApiKeyModelCatalog {
     connection: CatalogConnection,
     apiKey: string,
     current: () => Promise<boolean>,
-  ): Promise<{ models: string[] | undefined; fresh: boolean }> {
+    { waitForRefresh = false } = {},
+  ): Promise<{ models: string[] | undefined; fresh: boolean; failure?: ModelDirectoryFailure }> {
     const scope = this.scope(connection, apiKey);
     if (!scope) return { models: undefined, fresh: false };
-    const models = await this.cache.read(scope.key, async (signal) => {
-      if (!(await current()) || signal.aborted) return { attempted: false };
-      const listed = await this.probe({ provider: scope.provider, apiKey }, undefined, signal);
-      return { attempted: true, models: trustedModels(scope, apiKey, listed) };
-    });
-    return { models, fresh: models !== undefined && this.cache.isFresh(scope.key, models) };
+    const { models, failure } = await this.cache.readObservation(
+      scope.key,
+      async (signal) => {
+        if (!(await current()) || signal.aborted) return { attempted: false };
+        try {
+          const listed = await this.probe({ provider: scope.provider, apiKey }, undefined, signal);
+          return { attempted: true, models: trustedModels(scope, apiKey, listed) };
+        } catch (error) {
+          if (error instanceof ModelDirectoryError)
+            return { attempted: true, failure: error.failure };
+          throw error;
+        }
+      },
+      { waitForRefresh },
+    );
+    return {
+      models,
+      fresh: models !== undefined && this.cache.isFresh(scope.key, models),
+      ...(failure && { failure }),
+    };
   }
 
   nextManualObservationOrder(): number {

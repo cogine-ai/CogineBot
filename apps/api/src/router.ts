@@ -33,6 +33,7 @@ import type {
   McpConnector,
   MemoryProviderResolver,
   MessagingInstallations,
+  ModelDirectoryFailure,
   NativeConnectorProvider,
   PluginRead,
   ProviderCatalogSelections,
@@ -195,6 +196,7 @@ import type {
   McpStdioOAuthClient,
   Me,
   ModelCatalogProbeInput,
+  ModelInferenceProbeStatus,
   NativeRoutineTrigger,
   ProductEvent,
   Routine,
@@ -217,7 +219,6 @@ import {
   MAX_ENABLED_MODEL_IDS,
   MAX_MODEL_SETTINGS_PER_CONNECTION,
   MCP_OAUTH_CLIENT_REQUIRED,
-  ModelConnectInferenceRejectionSchema,
   modelOutputLeavesInputRoom,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
@@ -2103,6 +2104,14 @@ export function createRouter(deps: RouterDeps) {
               const saved = deps.providerCatalogSelections?.read(row, parseModelSecret(plaintext));
               if (saved?.length) credential.savedProviderCatalogModelIds = saved;
               if (
+                inferenceProbesEnabled &&
+                deps.providerCatalogSelections &&
+                row.provider === "openai" &&
+                credential.authKind === "api_key" &&
+                (apiKeyCatalog || saved?.length)
+              )
+                credential.providerCatalogInferenceProbe = apiKeyCatalog ? "replacement" : "saved";
+              if (
                 credential.authKind === "api_key" &&
                 credential.modelId &&
                 dynamicProviderCatalogModel(row.provider, credential.modelId) &&
@@ -2360,51 +2369,74 @@ export function createRouter(deps: RouterDeps) {
         }
         try {
           const requested = usableModelId(input.modelId);
-          if (
-            requested &&
-            dynamicProviderCatalogModel(input.provider, requested) &&
-            !input.apiKey?.trim()
-          )
+          const discoveredModelId =
+            requested && dynamicProviderCatalogModel(input.provider, requested)
+              ? requested
+              : undefined;
+          if (discoveredModelId && !input.apiKey?.trim())
             throw new ORPCError("BAD_REQUEST", {
               message: "Enter a replacement key to update this connection.",
             });
-          const confirmNewModel =
-            requested && dynamicProviderCatalogModel(input.provider, requested)
-              ? await confirmProviderCatalogChoice(
-                  deps,
-                  apiKeyCatalog,
-                  input.credentialId && existing && expectedCiphertext
-                    ? { ...existing, ciphertext: expectedCiphertext }
-                    : undefined,
-                  context,
-                  requested,
-                  plaintext,
-                  previousPlaintext,
-                )
-              : false;
+          const catalogConnection =
+            discoveredModelId && input.credentialId && existing && expectedCiphertext
+              ? { ...existing, ciphertext: expectedCiphertext }
+              : undefined;
+          const confirmNewModel = discoveredModelId
+            ? await confirmProviderCatalogChoice(
+                deps,
+                apiKeyCatalog,
+                catalogConnection,
+                context,
+                discoveredModelId,
+                plaintext,
+                previousPlaintext,
+                inferenceProbesEnabled && input.verifyInference === true,
+              )
+            : false;
+          if (typeof confirmNewModel === "string") throw modelInferenceRejection(confirmNewModel);
           const probeModelId =
             input.verifyInference && input.apiKey?.trim()
               ? (requested ?? defaultCatalogModelId(input.provider, plaintext))
               : undefined;
           let inferenceStatus: Awaited<ReturnType<typeof probeModelInference>> | undefined;
-          if (probeModelId && canProbeInference(input.provider, probeModelId)) {
+          if (
+            probeModelId &&
+            (canProbeInference(input.provider, probeModelId) ||
+              (inferenceProbesEnabled && probeModelId === discoveredModelId))
+          ) {
             const saved = parseModelSecret(plaintext);
             if (saved.kind === "api_key") {
-              await ensureModelProbeAuthorized(context);
+              const previousKey = catalogConnection && plaintextApiKey(previousPlaintext);
+              const ensureCurrent = async () => {
+                await ensureModelProbeAuthorized(context);
+                if (
+                  catalogConnection &&
+                  previousKey &&
+                  !(await modelCatalogKeyCurrent(deps, catalogConnection, previousKey))
+                )
+                  throw new ORPCError("CONFLICT", {
+                    message: "Model connection changed. Reload and try again.",
+                  });
+                context.signal?.throwIfAborted();
+              };
+              await ensureCurrent();
               inferenceStatus = await probeInference(
-                { provider: input.provider, modelId: probeModelId, apiKey: saved.key },
+                {
+                  provider: input.provider,
+                  modelId: probeModelId,
+                  apiKey: saved.key,
+                  ...(discoveredModelId ? { providerCatalogModel: true } : {}),
+                },
                 { signal: context.signal },
               );
-              await ensureModelProbeAuthorized(context);
-              const rejection = ModelConnectInferenceRejectionSchema.safeParse({ inferenceStatus });
-              if (rejection.success)
-                throw new ORPCError("BAD_REQUEST", {
-                  data: rejection.data,
-                  message: MODEL_INFERENCE_PROBE_MESSAGES[rejection.data.inferenceStatus].replace(
-                    "{provider}",
-                    "Your model provider",
-                  ),
-                });
+              await ensureCurrent();
+              if (
+                inferenceStatus === "auth" ||
+                inferenceStatus === "model" ||
+                inferenceStatus === "credit" ||
+                inferenceStatus === "spending"
+              )
+                throw modelInferenceRejection(inferenceStatus);
             }
           }
           const saved = await persistModelCredential(
@@ -2421,7 +2453,7 @@ export function createRouter(deps: RouterDeps) {
               expectNewConnection: inferenceStatus !== undefined && !existing,
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
-              catalogModelId: confirmNewModel ? (requested ?? undefined) : undefined,
+              catalogModelId: confirmNewModel ? discoveredModelId : undefined,
               clearCatalogSelection:
                 input.apiKey !== undefined &&
                 plaintextApiKey(previousPlaintext) !== plaintextApiKey(plaintext),
@@ -2575,18 +2607,41 @@ export function createRouter(deps: RouterDeps) {
         return updated ? { models, catalogUpdated: true as const } : { models };
       }),
       probeInference: authed.models.probeInference.handler(async ({ context, input }) => {
-        if (!canProbeInference(input.provider, input.modelId))
+        const discovered =
+          inferenceProbesEnabled &&
+          "credentialId" in input &&
+          dynamicProviderCatalogModel(input.provider, input.modelId);
+        if (!discovered && !canProbeInference(input.provider, input.modelId))
           return { status: "unavailable" as const };
 
         const target =
-          "apiKey" in input
-            ? { key: input.apiKey, ensureCurrent: () => ensureModelProbeAuthorized(context) }
-            : await loadSavedModelProbeKey(deps, context, input);
+          "credentialId" in input
+            ? await loadSavedModelProbeKey(deps, context, input)
+            : { key: input.apiKey, ensureCurrent: () => ensureModelProbeAuthorized(context) };
+        const apiKey = "apiKey" in input ? input.apiKey : target.key;
         await target.ensureCurrent();
         try {
+          if (discovered && "snapshot" in target) {
+            const confirmation = await confirmProviderCatalogChoice(
+              deps,
+              apiKeyCatalog,
+              target.snapshot,
+              context,
+              input.modelId,
+              serializeModelSecret({ kind: "api_key", key: apiKey }),
+              target.plaintext,
+              true,
+            );
+            if (typeof confirmation === "string") return { status: confirmation };
+          }
           return {
             status: await probeInference(
-              { provider: input.provider, modelId: input.modelId, apiKey: target.key },
+              {
+                provider: input.provider,
+                modelId: input.modelId,
+                apiKey,
+                ...(discovered ? { providerCatalogModel: true } : {}),
+              },
               { signal: context.signal },
             ),
           };
@@ -2689,7 +2744,7 @@ export function createRouter(deps: RouterDeps) {
               input.modelId,
               auth.plaintext,
               auth.plaintext,
-            ));
+            )) === true;
           const prepared =
             confirmNewModel && auth ? { ...auth, catalogModelId: input.modelId } : auth;
           await withSerializableRetry(() =>
@@ -10358,6 +10413,16 @@ function dynamicProviderCatalogModel(provider: string, modelId: string) {
 
 type CatalogSelectionOwner = Parameters<ProviderCatalogSelections["read"]>[0];
 
+function modelInferenceRejection(inferenceStatus: Exclude<ModelInferenceProbeStatus, "accepted">) {
+  return new ORPCError("BAD_REQUEST", {
+    data: { inferenceStatus },
+    message: MODEL_INFERENCE_PROBE_MESSAGES[inferenceStatus].replace(
+      "{provider}",
+      "Your model provider",
+    ),
+  });
+}
+
 async function confirmProviderCatalogChoice(
   deps: RouterDeps,
   catalog: ApiKeyModelCatalog | undefined,
@@ -10366,13 +10431,16 @@ async function confirmProviderCatalogChoice(
   modelId: string,
   plaintext: string,
   previousPlaintext?: string,
-): Promise<boolean> {
+  checkingInference = false,
+): Promise<boolean | "model" | "unavailable" | ModelDirectoryFailure> {
   const secret = parseModelSecret(plaintext);
   const selections = deps.providerCatalogSelections;
   if (snapshot && selections?.read(snapshot, secret).includes(modelId)) return false;
   const previousKey = plaintextApiKey(previousPlaintext);
-  if (!catalog || !selections || !snapshot || secret.kind !== "api_key" || !previousKey)
+  if (!catalog || !selections || !snapshot || secret.kind !== "api_key" || !previousKey) {
+    if (checkingInference) return "unavailable";
     throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
+  }
   const connection = {
     id: snapshot.id,
     userId: snapshot.userId,
@@ -10386,19 +10454,24 @@ async function confirmProviderCatalogChoice(
       return false;
     return modelCatalogKeyCurrent(deps, connection, previousKey);
   };
-  const { models: listed, fresh } = await catalog.observe(
-    connection,
-    secret.key.trim(),
-    checkCurrent,
-  );
+  const {
+    models: listed,
+    fresh,
+    failure,
+  } = await catalog.observe(connection, secret.key.trim(), checkCurrent, {
+    waitForRefresh: checkingInference,
+  });
   if (!(await checkCurrent()))
     throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
-  if (!listed?.includes(modelId))
+  if (checkingInference && failure) return failure;
+  if (!listed?.includes(modelId)) {
+    if (checkingInference) return fresh ? "model" : "unavailable";
     throw new ORPCError("BAD_REQUEST", {
       message: fresh
         ? "This model is missing from the provider’s list. You can choose another model."
         : "Confirm this model for the current API key, or choose another.",
     });
+  }
   return true;
 }
 
@@ -10457,7 +10530,7 @@ async function loadSavedModelProbeKey(
   const owner = { id: input.credentialId, userId: context.actor.userId, provider: input.provider };
   const credential = await deps.prisma.userModelCredential.findFirst({
     where: owner,
-    select: { secretId: true, connectionRevision: true },
+    select: { secretId: true, connectionRevision: true, providerCatalogSelection: true },
   });
   if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
   assertConnectionRevision(credential, input.expectedRevision);
@@ -10479,9 +10552,16 @@ async function loadSavedModelProbeKey(
   });
   const key = plaintextApiKey(plaintext);
   if (!key) throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
-  const snapshot = { ...owner, connectionRevision, secretId, ciphertext };
+  const snapshot = {
+    ...owner,
+    connectionRevision,
+    secretId,
+    ciphertext,
+    providerCatalogSelection: credential.providerCatalogSelection,
+  };
   return {
     key,
+    plaintext,
     snapshot,
     async ensureCurrent() {
       await ensureModelProbeAuthorized(context);

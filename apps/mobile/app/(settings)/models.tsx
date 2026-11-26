@@ -20,6 +20,7 @@ import {
   MAX_MODEL_BACKUPS,
   MAX_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_MAX_TOKENS,
+  MODEL_DIRECTORY_PROBE_TIMEOUT_MS,
   MODEL_INFERENCE_PROBE_TIMEOUT_MS,
   ModelApiProtocolSchema,
   ModelHeaderRowsSchema,
@@ -52,6 +53,7 @@ import {
   modelConnectChecksInference,
   modelConnectInferenceRejection,
   modelConnectRequest,
+  modelInferenceProbeInput,
   modelInferenceProbeMessage,
   modelThinkingLevels,
   prioritizeProviderListedModels,
@@ -705,6 +707,16 @@ function ModelsForm({
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
+  const inferenceRequest = modelInferenceProbeInput(
+    selected,
+    catalogRequest,
+    credential,
+    connectionRevision,
+  );
+  const inferenceRequestTimeoutMs =
+    MODEL_INFERENCE_PROBE_TIMEOUT_MS +
+    (selected?.connectionCatalogModel ? MODEL_DIRECTORY_PROBE_TIMEOUT_MS : 0) +
+    5_000;
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true
     : reasoning;
@@ -988,12 +1000,7 @@ function ModelsForm({
   }
 
   async function testCatalogConnection(testInference = false) {
-    if (
-      !catalogRequest ||
-      !selected ||
-      busyRef.current ||
-      (testInference && !selected.inferenceProbe)
-    )
+    if (!catalogRequest || !selected || busyRef.current || (testInference && !inferenceRequest))
       return;
     clearFeedback();
     const revision = selectionRevisionRef.current;
@@ -1013,14 +1020,14 @@ function ModelsForm({
     try {
       const context = await captureApiRequestContext();
       if (!isCurrent(context)) return;
-      if (testInference) {
+      if (testInference && inferenceRequest) {
         const { status } = await rpc<{ status: ModelInferenceProbeStatus }>(
           "models/probeInference",
-          { ...catalogRequest, modelId: selected.id },
+          inferenceRequest,
           {
             requestContext: context,
             skipSpaceAuthRecovery: true,
-            timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
+            timeoutMs: inferenceRequestTimeoutMs,
           },
         );
         if (isCurrent(context))
@@ -1276,9 +1283,7 @@ function ModelsForm({
         return;
       const savedConnection = await rpc<ModelConnectResult>("models/connect", request.input, {
         requestContext,
-        ...(request.input.verifyInference
-          ? { timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000 }
-          : {}),
+        ...(request.input.verifyInference ? { timeoutMs: inferenceRequestTimeoutMs } : {}),
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
@@ -2206,7 +2211,7 @@ function ModelsForm({
 
             {acceptsKey && selected.inferenceProbe ? (
               <NativeActionButton
-                disabled={busy || !catalogRequest}
+                disabled={busy || !inferenceRequest}
                 label={pending === "inference" ? t("Testing…") : t("Test model")}
                 onPress={() => void testCatalogConnection(true)}
                 prominence="secondary"

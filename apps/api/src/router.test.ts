@@ -15,6 +15,7 @@ import {
   LocalAgentHomeStore,
   listPiCatalog,
   ProviderCatalogSelections,
+  probeCatalogProviderModels,
   screenLeaseIdForRun,
   serializeModelSecret,
 } from "@rakazo/adapters";
@@ -5855,7 +5856,12 @@ describe("saved model catalog checks", () => {
       where.provider === "openai" &&
       (where.connectionRevision === undefined || where.connectionRevision === state.revision) &&
       (where.secretId === undefined || where.secretId === state.secretId)
-        ? { id: where.id, secretId: state.secretId, connectionRevision: state.revision }
+        ? {
+            ...owner,
+            secretId: state.secretId,
+            connectionRevision: state.revision,
+            providerCatalogSelection: state.proof,
+          }
         : null,
     );
     const findSecret = vi.fn(async ({ where }) =>
@@ -5941,6 +5947,7 @@ describe("saved model catalog checks", () => {
       request("probeCatalog", input, currentActor, signal);
     const infer = (input: unknown, currentActor = actor, signal?: AbortSignal) =>
       request("probeInference", input, currentActor, signal);
+    const connect = (input: unknown) => request("connect", input, actor);
     const credentials = async (currentActor = actor, includeProviderCatalog = true) =>
       (await request("credentials", { includeProviderCatalog }, currentActor)).body.json;
 
@@ -5948,7 +5955,18 @@ describe("saved model catalog checks", () => {
       state.modelId = modelId;
       state.proof = selections.sign(owner, { kind: "api_key", key: storedKey }, [modelId]);
     };
-    return { state, call, infer, inference, credentials, findSecret, load, probe, confirm };
+    return {
+      state,
+      call,
+      infer,
+      connect,
+      inference,
+      credentials,
+      findSecret,
+      load,
+      probe,
+      confirm,
+    };
   }
 
   it("runs inference only on explicit draft and owned saved-key requests", async () => {
@@ -5976,11 +5994,125 @@ describe("saved model catalog checks", () => {
     const input = { ...savedInput, modelId };
     expect((await infer(input, { ...actor, userId: "another-fixture-owner" })).status).toBe(404);
     expect((await infer({ ...input, expectedRevision: 6 })).status).toBe(409);
-    expect((await infer({ ...input, modelId: "gpt-unconfirmed-fixture" })).body.json).toEqual({
+    expect((await infer({ ...input, modelId: "gpt-fixture-embedding" })).body.json).toEqual({
       status: "unavailable",
     });
     expect(inference).not.toHaveBeenCalled();
   });
+
+  it("tests a signed choice without refreshing the catalog or accepting an unbound dynamic ID", async () => {
+    const { confirm, credentials, infer, inference, probe } = fixture();
+    const modelId = "gpt-fixture-signed-choice";
+    const draft = { provider: "openai", modelId, apiKey: storedKey };
+    expect((await infer(draft)).body.json).toEqual({ status: "unavailable" });
+    expect(await infer({ ...savedInput, modelId })).toEqual({
+      status: 200,
+      body: { json: { status: "unavailable" } },
+    });
+    expect(inference).not.toHaveBeenCalled();
+    confirm(modelId);
+    expect((await credentials(actor, false))[0]).toMatchObject({
+      providerCatalogInferenceProbe: "saved",
+      savedProviderCatalogModelIds: [modelId],
+    });
+    expect((await infer({ ...savedInput, modelId })).body.json).toEqual({ status: "accepted" });
+    expect(inference).toHaveBeenCalledExactlyOnceWith(
+      { ...draft, providerCatalogModel: true },
+      expect.any(Object),
+    );
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("checks the replacement key's own catalog before sending inference", async () => {
+    const { confirm, infer, inference, probe } = fixture(true);
+    const modelId = "gpt-fixture-dynamic-choice";
+    const apiKey = "fixture-new-key";
+    const input = { ...savedInput, modelId, apiKey };
+    confirm(modelId);
+    probe.mockResolvedValueOnce(bundled);
+    expect(await infer(input)).toEqual({ status: 200, body: { json: { status: "model" } } });
+    expect(probe.mock.calls[0]?.[0]).toMatchObject({ apiKey });
+    expect(inference).not.toHaveBeenCalled();
+
+    const qualified = "fixture-qualified-key";
+    probe.mockResolvedValueOnce([...bundled, modelId]);
+    expect((await infer({ ...input, apiKey: qualified })).body.json).toEqual({
+      status: "accepted",
+    });
+    expect(inference).toHaveBeenCalledExactlyOnceWith(
+      { provider: input.provider, modelId, apiKey: qualified, providerCatalogModel: true },
+      expect.any(Object),
+    );
+  });
+
+  it("refuses the old target when a dynamic connection's key changes in place during a replacement test", async () => {
+    const { connect, inference, probe, state } = fixture(true);
+    const modelId = "gpt-fixture-dynamic-choice";
+    const newKey = "fixture-replacement-key";
+    probe.mockResolvedValueOnce([...bundled, modelId]);
+    inference.mockImplementationOnce(async () => {
+      state.plaintext = "fixture-concurrent-external-key";
+      return "accepted";
+    });
+    const result = await connect({ ...savedInput, modelId, apiKey: newKey, verifyInference: true });
+    expect(result.status).toBe(409);
+    expect(inference).toHaveBeenCalledExactlyOnceWith(
+      { provider: savedInput.provider, modelId, apiKey: newKey, providerCatalogModel: true },
+      expect.any(Object),
+    );
+  });
+
+  it("does not start inference if the saved key changes during directory confirmation", async () => {
+    const { confirm, infer, inference, probe, state } = fixture(true);
+    const modelId = "gpt-fixture-dynamic-choice";
+    confirm(modelId);
+    probe.mockImplementationOnce(async () => {
+      state.plaintext = "fixture-concurrently-rotated-model-key";
+      return [...bundled, modelId];
+    });
+    const result = await infer({ ...savedInput, modelId, apiKey: "fixture-candidate-key" });
+    expect(result.status).toBe(409);
+    expect(probe).toHaveBeenCalledOnce();
+    expect(inference).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [401, "auth"],
+    [429, "rate"],
+    [502, "unavailable"],
+  ] as const)(
+    "reports directory HTTP %i without probing or storing the replacement key",
+    async (http, status) => {
+      const { confirm, connect, credentials, infer, inference, probe } = fixture(true);
+      const modelId = "gpt-fixture-saved";
+      const input = { ...savedInput, modelId, apiKey: "fixture-candidate-key" };
+      confirm(modelId);
+      const directoryFetch = vi.fn<typeof fetch>(
+        async () =>
+          new Response(JSON.stringify({ error: { message: input.apiKey } }), { status: http }),
+      );
+      probe.mockImplementation((request, _fetch, signal) =>
+        probeCatalogProviderModels(request, directoryFetch, signal),
+      );
+      const before = await credentials(actor, false);
+      expect(await infer(input)).toEqual({ status: 200, body: { json: { status } } });
+      const save = await connect({ ...input, verifyInference: true });
+      expect(save).toMatchObject({
+        status: 400,
+        body: { json: { data: { inferenceStatus: status } } },
+      });
+      expect(JSON.stringify(save.body)).not.toContain(input.apiKey);
+      expect(directoryFetch).toHaveBeenCalledTimes(2);
+      expect(inference).not.toHaveBeenCalled();
+      expect(await credentials(actor, false)).toEqual(before);
+      directoryFetch.mockResolvedValueOnce(
+        Response.json({ data: [...bundled, modelId].map((id) => ({ id })) }),
+      );
+      expect(await infer(input)).toEqual({ status: 200, body: { json: { status: "accepted" } } });
+      expect(directoryFetch).toHaveBeenCalledTimes(3);
+      expect(inference).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("discards inference outcomes after a key rotation or revoked membership", async () => {
     const { infer, inference, state } = fixture();
@@ -6100,6 +6232,7 @@ describe("saved model catalog checks", () => {
       confirmationRequired: true,
       confirmationUnavailable: true,
     });
+    expect((await credentials())[0]).not.toHaveProperty("providerCatalogInferenceProbe");
     expect(probe).not.toHaveBeenCalled();
   });
 

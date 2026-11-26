@@ -8,7 +8,7 @@ import {
   listPiCatalog,
   PiAgentRuntime,
 } from "@rakazo/adapters";
-import type { ModelCredential } from "@rakazo/contracts";
+import type { ModelConnectResult, ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
@@ -25,6 +25,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
+    const nextKey = "fixture-next-qualified-key";
     const modelId = "gpt-fixture-discovered-model";
     const rejectedId = "gpt-fixture-not-in-directory";
     const otherModelIds = ["gpt-fixture-discovered-second", "gpt-fixture-discovered-third"];
@@ -32,7 +33,9 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const originalModel = bundled[0]!.id;
     const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => [
       ...bundled.map(({ id }) => id),
-      ...(key === apiKey || key === qualifiedKey ? [modelId, ...otherModelIds] : []),
+      ...(key === apiKey || key === qualifiedKey || key === nextKey
+        ? [modelId, ...otherModelIds]
+        : []),
       "gpt-fixture-realtime",
     ]);
     let expectedWireKey = apiKey;
@@ -64,7 +67,38 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         headers: { "content-type": "text/event-stream" },
       });
     });
+    let probeKey = apiKey;
+    let probeResponse = "accepted";
+    const inferenceFetch = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe("https://api.openai.com/v1/responses");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${probeKey}`);
+      expect(await request.json()).toMatchObject({
+        model: modelId,
+        max_output_tokens: 1024,
+        tools: [expect.objectContaining({ name: "noop" })],
+      });
+      if (probeResponse !== "accepted")
+        return Response.json(
+          { error: { code: probeResponse === "auth" ? "invalid_api_key" : "rate_limit_exceeded" } },
+          { status: probeResponse === "auth" ? 401 : 429 },
+        );
+      return new Response(
+        'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\n',
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
+    });
+    const fetch = globalThis.fetch;
     const dataDir = await mkdtemp(path.join(tmpdir(), "offline-model-directory-"));
+    const transport = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input, init) =>
+        String(input) === "https://api.openai.com/v1/responses"
+          ? inferenceFetch(input, init)
+          : fetch(input, init),
+      );
     let stop: (() => Promise<void>) | undefined;
     try {
       const { createApp } = await import("../../../apps/api/src/app.ts");
@@ -117,8 +151,23 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           expectedRevision,
         });
       const listed = await read(true);
+      expect(listed?.providerCatalogInferenceProbe).toBe("replacement");
       expect(listed?.providerListedModelIds).toContain(modelId);
       expect(listed?.providerListedModelIds).not.toContain("gpt-fixture-realtime");
+      const testModel = (expectedRevision: number | undefined, apiKey?: string) =>
+        rpc(app, cookie, "models/probeInference", {
+          provider,
+          modelId,
+          credentialId: saved.id,
+          expectedRevision,
+          apiKey,
+        });
+      await expect(testModel(saved.connectionRevision)).resolves.toEqual({ status: "accepted" });
+      await expect(testModel(saved.connectionRevision, differentKey)).resolves.toEqual({
+        status: "model",
+      });
+      expect(inferenceFetch).toHaveBeenCalledTimes(1);
+      expect((await read(false))?.savedProviderCatalogModelIds).toBeUndefined();
       await expect(select(rejectedId)).rejects.toThrow(/models\/setDefault: 400/);
       expect((await read(false))?.modelId).toBe(originalModel);
       await expect(
@@ -148,6 +197,18 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         savedProviderCatalogModelIds: [modelId],
       });
       expect(confirmed?.connectionRevision).toBe(saved.connectionRevision);
+      const callsBeforeSavedCheck = probe.mock.calls.length;
+      await expect(testModel(confirmed?.connectionRevision)).resolves.toEqual({
+        status: "accepted",
+      });
+      expect(probe).toHaveBeenCalledTimes(callsBeforeSavedCheck);
+      expect(inferenceFetch).toHaveBeenCalledTimes(2);
+      probeKey = qualifiedKey;
+      await expect(testModel(confirmed?.connectionRevision, qualifiedKey)).resolves.toEqual({
+        status: "accepted",
+      });
+      expect(inferenceFetch).toHaveBeenCalledTimes(3);
+      expect(await read(false)).toEqual(confirmed);
       expect(
         await handles.prisma.userModelCredential.findUniqueOrThrow({
           where: { id: saved.id },
@@ -249,6 +310,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           modelCredentialId: saved.id,
         });
       expect(modelFetch).toHaveBeenCalledTimes(2);
+      expect(inferenceFetch).toHaveBeenCalledTimes(3);
       expect(probe).toHaveBeenCalledTimes(catalogCalls);
       const thread = await rpc(app, cookie, "threads/get", { botId: bot.id });
       expect(JSON.stringify(thread)).toContain("Used the selected model.");
@@ -306,6 +368,20 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         modelSettings: { [modelId]: { contextWindow: 32_000, maxTokens: 1024 } },
       });
       expect(await readSaved()).not.toHaveProperty("savedModelDirectory");
+      const verifiedConnect = {
+        provider,
+        credentialId: saved.id,
+        expectedRevision: qualified.connectionRevision,
+        apiKey: nextKey,
+        modelId,
+        verifyInference: true,
+      };
+      probeKey = nextKey;
+      probeResponse = "auth";
+      await expect(rpc(app, cookie, "models/connect", verifiedConnect)).rejects.toThrow(
+        /models\/connect: 400/,
+      );
+      expect((await readSaved())?.connectionRevision).toBe(qualified.connectionRevision);
       expectedWireKey = qualifiedKey;
       const recovered = await rpc<{ runId: string }>(app, cookie, "threads/send", {
         botId: bot.id,
@@ -339,6 +415,22 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           modelCredentialId: saved.id,
         });
       expect(modelFetch).toHaveBeenCalledTimes(3);
+      expect(inferenceFetch).toHaveBeenCalledTimes(4);
+      probeResponse = "rate";
+      const verified = await rpc<ModelConnectResult>(
+        app,
+        cookie,
+        "models/connect",
+        verifiedConnect,
+      );
+      expect(verified).toMatchObject({
+        id: saved.id,
+        modelId,
+        inferenceStatus: "rate",
+        connectionRevision: qualified.connectionRevision! + 1,
+      });
+      expect((await readSaved())?.savedProviderCatalogModelIds).toEqual([modelId]);
+      expect(inferenceFetch).toHaveBeenCalledTimes(5);
 
       // Header-safe JSON may be the actual key text. It cannot introduce any
       // caller-supplied proof fields, even on an ordinary bundled-model save.
@@ -351,7 +443,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const replaced = await rpc<ModelCredential>(app, cookie, "models/connect", {
         provider,
         credentialId: saved.id,
-        expectedRevision: qualified.connectionRevision,
+        expectedRevision: verified.connectionRevision,
         apiKey: forgedKey,
         modelId: originalModel,
       });
@@ -366,6 +458,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       );
       expect((await read(false))?.modelId).toBe(originalModel);
     } finally {
+      transport.mockRestore();
       await stop?.();
       await rm(dataDir, { recursive: true, force: true });
     }

@@ -43,6 +43,7 @@ import {
   modelConnectChecksInference,
   modelConnectInferenceRejection,
   modelConnectRequest,
+  modelInferenceProbeInput,
   modelThinkingLevels,
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
@@ -202,6 +203,11 @@ export function ModelSettingsOverlay({
   >(null);
   const [preflightSuccess, setPreflightSuccess] = useState<string | null>(null);
   const [preflightFailure, setPreflightFailure] = useState<ModelPreflightFailure | null>(null);
+  const inferenceFeedbackRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (preflightTarget === "inference" && (preflightSuccess || preflightFailure))
+      inferenceFeedbackRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [preflightTarget, preflightSuccess, preflightFailure]);
   const preflightRevisionRef = useRef(0);
   const checkedConnectionRef = useRef<{ credentialId: string; expectedRevision: number } | null>(
     null,
@@ -497,6 +503,12 @@ export function ModelSettingsOverlay({
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
+  const inferenceRequest = modelInferenceProbeInput(
+    selected,
+    catalogRequest,
+    credential,
+    connectionRevision,
+  );
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true
     : reasoning;
@@ -806,8 +818,12 @@ export function ModelSettingsOverlay({
   }
 
   async function testApiKeyConnection(testInference = false) {
-    if (!selected || !catalogRequest || (testInference && !selected.inferenceProbe)) return;
-    checkedConnectionRef.current = "credentialId" in catalogRequest ? catalogRequest : null;
+    if (!selected || !catalogRequest || (testInference && !inferenceRequest)) return;
+    const request = testInference ? inferenceRequest : catalogRequest;
+    checkedConnectionRef.current =
+      request && "credentialId" in request
+        ? { credentialId: request.credentialId, expectedRevision: request.expectedRevision }
+        : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
     const isCurrent = () =>
@@ -818,22 +834,20 @@ export function ModelSettingsOverlay({
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
-    if (testInference) {
-      const feedback = await rpc.models
-        .probeInference({ ...catalogRequest, modelId: selected.id })
-        .then(
-          ({ status }) => ({
-            accepted: status === "accepted",
-            message: modelInferenceTestMessage(status),
-          }),
-          (error: unknown) => ({
-            accepted: false,
-            message:
-              errorCode(error) === "CONFLICT"
-                ? t`Model connection changed. Reload and try again.`
-                : errorText(error, modelInferenceTestMessage("unavailable")),
-          }),
-        );
+    if (testInference && inferenceRequest) {
+      const feedback = await rpc.models.probeInference(inferenceRequest).then(
+        ({ status }) => ({
+          accepted: status === "accepted",
+          message: modelInferenceTestMessage(status),
+        }),
+        (error: unknown) => ({
+          accepted: false,
+          message:
+            errorCode(error) === "CONFLICT"
+              ? t`Model connection changed. Reload and try again.`
+              : errorText(error, modelInferenceTestMessage("unavailable")),
+        }),
+      );
       if (!isCurrent()) return;
       setPreflightTesting(false);
       if (feedback.accepted) setPreflightSuccess(feedback.message);
@@ -1621,7 +1635,7 @@ export function ModelSettingsOverlay({
                   variant="outline"
                   size="sm"
                   className="ml-2 mt-3 rounded-full"
-                  disabled={busy || preflightTesting || !catalogRequest}
+                  disabled={busy || preflightTesting || !inferenceRequest}
                   onClick={() => void testApiKeyConnection(true)}
                 >
                   {preflightTesting && preflightTarget === "inference" ? (
@@ -1632,7 +1646,9 @@ export function ModelSettingsOverlay({
                 </Button>
               ) : null}
               {preflightTarget === "api-key" || preflightTarget === "inference" ? (
-                <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
+                <div ref={preflightTarget === "inference" ? inferenceFeedbackRef : undefined}>
+                  <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
+                </div>
               ) : null}
             </>
           ) : null}

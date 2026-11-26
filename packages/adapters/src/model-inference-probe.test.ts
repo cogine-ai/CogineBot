@@ -11,7 +11,10 @@ describe("model inference check", () => {
     vi.unstubAllEnvs();
   });
 
-  it("sends one bounded tool request and aborts it at the first acceptance", async () => {
+  it.each([
+    input,
+    { ...input, modelId: "gpt-fixture-discovered", providerCatalogModel: true as const },
+  ])("sends one bounded tool request for $modelId and aborts on acceptance", async (input) => {
     vi.stubEnv("OPENAI_ORG_ID", "org-fixture");
     vi.stubEnv("OPENAI_PROJECT_ID", "project-fixture");
     const fetch = vi.fn<typeof globalThis.fetch>(async (_request, init) => {

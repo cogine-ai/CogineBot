@@ -1507,16 +1507,26 @@ test("prioritizes automatically listed models for a saved connection", async ({
     apiKey: "fixture-provider-key-for-order",
     modelId: current!.id,
   });
+  let savedDiscovery = false;
+  const tested: unknown[] = [];
+  await page.route("**/rpc/models/probeInference", async (route) => {
+    tested.push(route.request().postDataJSON().json);
+    await route.fulfill({ json: { json: { status: "accepted" } } });
+  });
   await page.route("**/rpc/models/credentials", async (route) => {
-    if (route.request().postDataJSON()?.json?.includeProviderCatalog !== true) {
-      await route.continue();
-      return;
-    }
+    const includeCatalog = route.request().postDataJSON()?.json?.includeProviderCatalog === true;
     const response = await route.fetch();
     const payload = (await response.json()) as { json: ModelCredential[] };
     const json = payload.json.map((credential) =>
       credential.id === saved.id
-        ? { ...credential, providerListedModelIds: [listed!.id, discovered] }
+        ? {
+            ...credential,
+            providerCatalogInferenceProbe: "replacement" as const,
+            ...(includeCatalog ? { providerListedModelIds: [listed!.id, discovered] } : {}),
+            ...(savedDiscovery
+              ? { modelId: discovered, savedProviderCatalogModelIds: [discovered] }
+              : {}),
+          }
         : credential,
     );
     await route.fulfill({ response, json: { json } });
@@ -1564,9 +1574,24 @@ test("prioritizes automatically listed models for a saved connection", async ({
   await expect(picker).toHaveText(discovered);
   await expect(settings.getByRole("button", { name: "Save limits", exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "a1-discovered-api-key-model");
+  const testModel = settings.getByRole("button", { name: "Test model", exact: true });
+  await testModel.click();
+  const accepted = settings
+    .getByRole("status")
+    .filter({ hasText: "The model accepted the test request." });
+  await expect(accepted).toBeInViewport({ ratio: 0.98 });
+  const expectedTarget = {
+    provider: "openai",
+    modelId: discovered,
+    credentialId: saved.id,
+    expectedRevision: saved.connectionRevision,
+  };
+  expect(tested).toEqual([expectedTarget]);
+  await captureScreenshot(page, testInfo, "a1-discovered-model-accepted");
   let choice: unknown;
   await page.route("**/rpc/models/setDefault", async (route) => {
     choice = route.request().postDataJSON().json;
+    savedDiscovery = true;
     await route.fulfill({ json: { json: { ok: true } } });
   });
   await settings.getByRole("button", { name: "Use this model", exact: true }).click();
@@ -1579,6 +1604,17 @@ test("prioritizes automatically listed models for a saved connection", async ({
       expectedRevision: saved.connectionRevision,
     });
   await expect(settings.getByText(`Now using ${discovered}.`, { exact: true })).toBeVisible();
+  await replacementKey.fill("fixture-qualified-replacement");
+  await expect(picker).toHaveText(discovered);
+  await expect(
+    settings.getByText("Connecting sends one test request that may incur usage charges."),
+  ).toBeVisible();
+  await testModel.click();
+  await expect(accepted).toBeInViewport({ ratio: 0.98 });
+  expect(tested).toEqual([
+    expectedTarget,
+    { ...expectedTarget, apiKey: "fixture-qualified-replacement" },
+  ]);
 });
 
 for (const notListed of [true, false]) {

@@ -79,11 +79,14 @@ export async function modelCatalogConnectionCurrent(
     ciphertext: string;
   },
 ): Promise<boolean> {
-  const { ciphertext, ...connection } = snapshot;
+  const { id, userId, provider, secretId, connectionRevision, ciphertext } = snapshot;
   const [row, secret] = await Promise.all([
-    prisma.userModelCredential.findFirst({ where: connection, select: { id: true } }),
+    prisma.userModelCredential.findFirst({
+      where: { id, userId, provider, secretId, connectionRevision },
+      select: { id: true },
+    }),
     prisma.secret.findFirst({
-      where: { id: connection.secretId, userId: connection.userId, spaceId: null, ciphertext },
+      where: { id: secretId, userId, spaceId: null, ciphertext },
       select: { id: true },
     }),
   ]);

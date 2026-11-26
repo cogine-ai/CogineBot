@@ -1,56 +1,75 @@
-export type CatalogFetch<T> = { attempted: false } | { attempted: true; models: T[] | undefined };
+type CatalogObservation<T, Failure> = { models?: T[]; failure?: Failure };
+export type CatalogFetch<T, Failure = never> =
+  | { attempted: false }
+  | ({ attempted: true } & CatalogObservation<T, Failure>);
 
-type CatalogEntry<T> = {
-  models?: T[];
+type CatalogEntry<T, Failure> = CatalogObservation<T, Failure> & {
   fetchedAt: number;
   expiresAt: number;
   manualObservationOrder?: number;
 };
 
-type CatalogCacheOptions = {
+type CatalogCacheOptions<Failure> = {
   now: () => number;
   ttlMs: number;
   failureTtlMs: number;
   waitMs: number;
   deadlineMs: number;
+  deadlineFailure?: Failure;
   staleMaxAgeMs: number;
   maxEntries: number;
 };
 
 /** Bounded stale-while-revalidate lifecycle for account-scoped model catalogs. */
-export class LiveCatalogCache<T> {
-  private readonly entries = new Map<string, CatalogEntry<T>>();
+export class LiveCatalogCache<T, Failure = never> {
+  private readonly entries = new Map<string, CatalogEntry<T, Failure>>();
   private readonly pending = new Map<
     string,
-    { result: Promise<T[] | undefined>; superseded: { value: boolean } }
+    { result: Promise<CatalogObservation<T, Failure>>; superseded: { value: boolean } }
   >();
 
-  constructor(private readonly options: CatalogCacheOptions) {}
+  constructor(private readonly options: CatalogCacheOptions<Failure>) {}
 
   async read(
     key: string,
-    fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T>>,
-    { waitMs = this.options.waitMs, cacheOnly = false } = {},
+    fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T, Failure>>,
+    options?: { waitMs?: number; cacheOnly?: boolean },
   ): Promise<T[] | undefined> {
+    return (await this.readObservation(key, fetchModels, options)).models;
+  }
+
+  async readObservation(
+    key: string,
+    fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T, Failure>>,
+    { waitMs = this.options.waitMs, cacheOnly = false, waitForRefresh = false } = {},
+  ): Promise<CatalogObservation<T, Failure>> {
     const entry = this.entries.get(key);
     const now = this.options.now();
     const lastGood = this.trusted(entry, now);
-    if (cacheOnly || (entry && entry.expiresAt > now)) return lastGood;
+    if (
+      cacheOnly ||
+      (entry &&
+        entry.expiresAt > now &&
+        (!waitForRefresh || (lastGood && this.isFresh(key, lastGood))))
+    )
+      return { models: lastGood, failure: entry?.failure };
 
     let work = this.pending.get(key);
     if (!work) {
-      if (this.pending.size >= this.options.maxEntries) return lastGood;
+      if (this.pending.size >= this.options.maxEntries)
+        return waitForRefresh ? {} : { models: lastGood };
       const superseded = { value: false };
       work = { result: this.refresh(key, fetchModels, superseded), superseded };
       this.pending.set(key, work);
     }
-    if (entry || waitMs === 0) return lastGood;
+    if (waitForRefresh) return work.result;
+    if (entry || waitMs === 0) return { models: lastGood };
 
     return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(undefined), waitMs);
-      void work.result.then((models) => {
+      const timer = setTimeout(() => resolve({}), waitMs);
+      void work.result.then((observation) => {
         clearTimeout(timer);
-        resolve(models);
+        resolve(observation);
       });
     });
   }
@@ -74,21 +93,21 @@ export class LiveCatalogCache<T> {
     return entry?.models === models && this.options.now() < entry.fetchedAt + this.options.ttlMs;
   }
 
-  private trusted(entry: CatalogEntry<T> | undefined, now: number): T[] | undefined {
+  private trusted(entry: CatalogEntry<T, Failure> | undefined, now: number): T[] | undefined {
     return entry && now < entry.fetchedAt + this.options.staleMaxAgeMs ? entry.models : undefined;
   }
 
   private async refresh(
     key: string,
-    fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T>>,
+    fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T, Failure>>,
     superseded: { value: boolean },
-  ): Promise<T[] | undefined> {
+  ): Promise<CatalogObservation<T, Failure>> {
     const controller = new AbortController();
-    const failed = { attempted: true, models: undefined } as const;
+    const failed: CatalogFetch<T, Failure> = { attempted: true };
     let timer!: ReturnType<typeof setTimeout>;
-    const deadline = new Promise<CatalogFetch<T>>((resolve) => {
+    const deadline = new Promise<CatalogFetch<T, Failure>>((resolve) => {
       timer = setTimeout(() => {
-        resolve(failed);
+        resolve({ ...failed, failure: this.options.deadlineFailure });
         controller.abort(new DOMException("Catalog refresh timed out", "TimeoutError"));
       }, this.options.deadlineMs);
     });
@@ -99,21 +118,22 @@ export class LiveCatalogCache<T> {
     this.pending.delete(key);
     const prior = this.entries.get(key);
     const now = this.options.now();
-    if (superseded.value) return this.trusted(prior, now);
-    if (!result.attempted) return undefined;
+    if (superseded.value) return { models: this.trusted(prior, now) };
+    if (!result.attempted) return {};
     const models = result.models?.length ? result.models : undefined;
     const entry = models
       ? { models, fetchedAt: now, expiresAt: now + this.options.ttlMs }
       : {
           models: this.trusted(prior, now),
+          failure: result.failure,
           fetchedAt: prior?.fetchedAt ?? now,
           expiresAt: now + this.options.failureTtlMs,
         };
     this.store(key, { ...entry, manualObservationOrder: prior?.manualObservationOrder });
-    return models;
+    return { models, failure: result.failure };
   }
 
-  private store(key: string, entry: CatalogEntry<T>) {
+  private store(key: string, entry: CatalogEntry<T, Failure>) {
     if (!this.entries.has(key) && this.entries.size >= this.options.maxEntries) {
       this.entries.delete(this.entries.keys().next().value!);
     }

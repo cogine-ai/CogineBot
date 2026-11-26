@@ -1315,6 +1315,8 @@ export const ModelCredentialSchema = z.object({
   /** Chat model IDs observed in this revision's trusted provider catalog. */
   providerListedModelIds: z.array(z.string()).optional(),
   savedProviderCatalogModelIds: z.array(z.string()).optional(),
+  /** A signed saved key can be tested, and a live directory can also confirm a replacement. */
+  providerCatalogInferenceProbe: z.enum(["saved", "replacement"]).optional(),
   /** Directory status of the connection's saved model for the current Space. */
   savedModelDirectory: z
     .object({
@@ -1543,11 +1545,14 @@ export const ModelCatalogProbeInputSchema = z.union([draftModelProbe, savedModel
 export type ModelCatalogProbeInput = z.infer<typeof ModelCatalogProbeInputSchema>;
 
 const inferenceModelId = z.string().trim().min(1).max(512);
+export const MODEL_DIRECTORY_PROBE_TIMEOUT_MS = 5_000;
 export const MODEL_INFERENCE_PROBE_TIMEOUT_MS = 15_000;
 export const ModelInferenceProbeInputSchema = z.union([
   draftModelProbe.extend({ modelId: inferenceModelId }),
   savedModelProbe.extend({ modelId: inferenceModelId }),
+  savedModelProbe.extend({ modelId: inferenceModelId, apiKey: draftModelProbe.shape.apiKey }),
 ]);
+export type ModelInferenceProbeInput = z.infer<typeof ModelInferenceProbeInputSchema>;
 export const ModelInferenceProbeStatusSchema = z.enum([
   "accepted",
   "auth",
@@ -1561,7 +1566,7 @@ export const ModelInferenceProbeStatusSchema = z.enum([
 export type ModelInferenceProbeStatus = z.infer<typeof ModelInferenceProbeStatusSchema>;
 
 export const ModelConnectInferenceRejectionSchema = z.object({
-  inferenceStatus: ModelInferenceProbeStatusSchema.extract(["auth", "model", "credit", "spending"]),
+  inferenceStatus: ModelInferenceProbeStatusSchema.exclude(["accepted"]),
 });
 export const ModelConnectResultSchema = ModelCredentialSchema.extend({
   /** A result for this connection attempt, not a property of the stored credential. */
