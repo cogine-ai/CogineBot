@@ -2542,86 +2542,93 @@ it("checks a saved API key without exposing it to the editor", async () => {
   });
 });
 
-it("checks a replacement key during connect and keeps a draft after rejection", async () => {
-  const saved = {
-    id: "fixture-model-connection",
-    provider: "openai",
-    label: "OpenAI",
-    hasKey: true,
-    isDefault: true,
-    authKind: "api_key",
-    modelId: "fixture-chat",
-    connectionRevision: 7,
-  };
-  let refuse = true;
-  let failReadback = false;
-  const normal = state.rpc.getMockImplementation()!;
-  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
-    if (procedure === "me")
-      return {
-        userId: "user-1",
-        spaceId: "space-1",
-        defaultProvider: saved.provider,
-        defaultModel: saved.modelId,
-      };
-    if (procedure === "models/credentials") {
-      if (failReadback) throw new Error("Fixture credential read failed");
-      return [saved];
-    }
-    if (procedure === "models/list")
-      return [
-        {
-          provider: saved.provider,
-          providerName: "OpenAI",
-          id: saved.modelId,
-          label: "Example Chat",
-          auth: "api-key",
-          billing: "API",
-          catalogProbe: true,
-          inferenceProbe: true,
-        },
-      ];
-    if (procedure === "models/connect") {
-      if (refuse)
-        throw Object.assign(new Error("A fixture rejection."), {
-          data: { inferenceStatus: "auth" },
-        });
-      saved.connectionRevision += 1;
-      failReadback = true;
-      return { ...saved, inferenceStatus: "rate" };
-    }
-    return normal(procedure, input);
-  });
-  await act(async () => root.render(<Models />));
-  const disclosure = "Connecting sends one test request that may incur usage charges.";
-  expect(container.textContent).not.toContain(disclosure);
-  const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
-  await edit(key, "fixture-connect-replacement-key");
-  expect(container.textContent).toContain(disclosure);
-  await act(async () => {
-    const replace = button("Replace API key");
-    replace.click();
-    replace.click();
-  });
-  expect(container.textContent).toContain("rejected the API key");
-  expect(key.value).toBe("fixture-connect-replacement-key");
-  const calls = () => state.rpc.mock.calls.filter(([name]) => name === "models/connect");
-  expect(calls()).toHaveLength(1);
-  expect(calls()[0]?.[1]).toMatchObject({
-    credentialId: saved.id,
-    expectedRevision: 7,
-    apiKey: "fixture-connect-replacement-key",
-    modelId: saved.modelId,
-    verifyInference: true,
-  });
-  expect(calls()[0]?.[2]).toMatchObject({
-    timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
-  });
-  refuse = false;
-  await act(async () => button("Replace API key").click());
-  expect(container.textContent).toContain("Saved. Your model provider is rate limiting requests.");
-  expect(container.textContent).toContain("Could not load model settings");
-  expect(container.textContent).not.toContain(disclosure);
-  expect(key.value).toBe("");
-  expect(calls()).toHaveLength(2);
-});
+it.each(["rate", "accepted"] as const)(
+  "checks a replacement key and keeps the %s write receipt",
+  async (inferenceStatus) => {
+    const saved = {
+      id: "fixture-model-connection",
+      provider: "openai",
+      label: "OpenAI",
+      hasKey: true,
+      isDefault: true,
+      authKind: "api_key",
+      modelId: "fixture-chat",
+      connectionRevision: 7,
+    };
+    let refuse = true;
+    let failReadback = false;
+    const normal = state.rpc.getMockImplementation()!;
+    state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+      if (procedure === "me")
+        return {
+          userId: "user-1",
+          spaceId: "space-1",
+          defaultProvider: saved.provider,
+          defaultModel: saved.modelId,
+        };
+      if (procedure === "models/credentials") {
+        if (failReadback) throw new Error("Fixture credential read failed");
+        return [saved];
+      }
+      if (procedure === "models/list")
+        return [
+          {
+            provider: saved.provider,
+            providerName: "OpenAI",
+            id: saved.modelId,
+            label: "Example Chat",
+            auth: "api-key",
+            billing: "API",
+            catalogProbe: true,
+            inferenceProbe: true,
+          },
+        ];
+      if (procedure === "models/connect") {
+        if (refuse)
+          throw Object.assign(new Error("A fixture rejection."), {
+            data: { inferenceStatus: "auth" },
+          });
+        saved.connectionRevision += 1;
+        failReadback = true;
+        return { ...saved, inferenceStatus };
+      }
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    const disclosure = "Connecting sends one test request that may incur usage charges.";
+    expect(container.textContent).not.toContain(disclosure);
+    const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
+    await edit(key, "fixture-connect-replacement-key");
+    expect(container.textContent).toContain(disclosure);
+    await act(async () => {
+      const replace = button("Replace API key");
+      replace.click();
+      replace.click();
+    });
+    expect(container.textContent).toContain("rejected the API key");
+    expect(key.value).toBe("fixture-connect-replacement-key");
+    const calls = () => state.rpc.mock.calls.filter(([name]) => name === "models/connect");
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0]?.[1]).toMatchObject({
+      credentialId: saved.id,
+      expectedRevision: 7,
+      apiKey: "fixture-connect-replacement-key",
+      modelId: saved.modelId,
+      verifyInference: true,
+    });
+    expect(calls()[0]?.[2]).toMatchObject({
+      timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
+    });
+    refuse = false;
+    await act(async () => button("Replace API key").click());
+    expect(container.textContent).toContain(
+      inferenceStatus === "rate"
+        ? "Saved. Your model provider is rate limiting requests."
+        : "Saved. Could not load model settings",
+    );
+    expect(container.textContent).toContain("Could not load model settings");
+    expect(container.textContent).not.toContain(disclosure);
+    expect(key.value).toBe("");
+    expect(calls()).toHaveLength(2);
+  },
+);

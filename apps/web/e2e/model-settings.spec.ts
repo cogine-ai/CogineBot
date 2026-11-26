@@ -1730,130 +1730,139 @@ for (const notListed of [true, false]) {
   });
 }
 
-test("checks the replacement key while connecting a model", async ({ page }, testInfo) => {
-  await signup(
+for (const inferenceStatus of ["timeout", "accepted"] as const) {
+  test(`checks the replacement key while connecting a model after ${inferenceStatus}`, async ({
     page,
-    `connect-model-check-${Date.now()}@example.test`,
-    "password12",
-    "Model fixture",
-  );
-  await completeOnboarding(page);
-  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
-  const model = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
-  const saved = await rpc<ModelCredential>(page, "models/connect", {
-    provider: model.provider,
-    apiKey: "fixture-existing-key",
-    modelId: model.id,
-  });
-  await page.route("**/rpc/models/list", async (route) => {
-    const response = await route.fetch();
-    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
-    await route.fulfill({
-      response,
-      json: {
-        json: json.map((entry) =>
-          entry.id === model.id && entry.provider === model.provider
-            ? { ...entry, inferenceProbe: true }
-            : entry,
-        ),
-      },
+  }, testInfo) => {
+    await signup(
+      page,
+      `connect-model-check-${Date.now()}@example.test`,
+      "password12",
+      "Model fixture",
+    );
+    await completeOnboarding(page);
+    const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+    const model = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
+    const saved = await rpc<ModelCredential>(page, "models/connect", {
+      provider: model.provider,
+      apiKey: "fixture-existing-key",
+      modelId: model.id,
     });
-  });
-  const attempts: unknown[] = [];
-  let refuse = true;
-  let releaseRejection!: () => void;
-  const pendingRejection = new Promise<void>((resolve) => {
-    releaseRejection = resolve;
-  });
-  let savedReplacement = false;
-  await page.route("**/rpc/models/credentials", (route) =>
-    savedReplacement
-      ? route.fulfill({
-          status: 503,
-          json: { json: { code: "SERVICE_UNAVAILABLE", status: 503 } },
-        })
-      : route.continue(),
-  );
-  await page.route("**/rpc/models/connect", async (route) => {
-    attempts.push(route.request().postDataJSON().json);
-    if (refuse) {
-      await pendingRejection;
+    await page.route("**/rpc/models/list", async (route) => {
+      const response = await route.fetch();
+      const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
       await route.fulfill({
-        status: 400,
+        response,
         json: {
-          json: {
-            defined: true,
-            code: "BAD_REQUEST",
-            status: 400,
-            message: "The test rejected this key.",
-            data: { inferenceStatus: "auth" },
-          },
+          json: json.map((entry) =>
+            entry.id === model.id && entry.provider === model.provider
+              ? { ...entry, inferenceProbe: true }
+              : entry,
+          ),
         },
       });
-      return;
-    }
-    const response = await route.fetch();
-    expect(response.ok()).toBe(true);
-    const { json } = await response.json();
-    savedReplacement = true;
-    await route.fulfill({ response, json: { json: { ...json, inferenceStatus: "timeout" } } });
+    });
+    const attempts: unknown[] = [];
+    let refuse = true;
+    let releaseRejection!: () => void;
+    const pendingRejection = new Promise<void>((resolve) => {
+      releaseRejection = resolve;
+    });
+    let savedReplacement = false;
+    await page.route("**/rpc/models/credentials", (route) =>
+      savedReplacement
+        ? route.fulfill({
+            status: 503,
+            json: { json: { code: "SERVICE_UNAVAILABLE", status: 503 } },
+          })
+        : route.continue(),
+    );
+    await page.route("**/rpc/models/connect", async (route) => {
+      attempts.push(route.request().postDataJSON().json);
+      if (refuse) {
+        await pendingRejection;
+        await route.fulfill({
+          status: 400,
+          json: {
+            json: {
+              defined: true,
+              code: "BAD_REQUEST",
+              status: 400,
+              message: "The test rejected this key.",
+              data: { inferenceStatus: "auth" },
+            },
+          },
+        });
+        return;
+      }
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      const { json } = await response.json();
+      savedReplacement = true;
+      await route.fulfill({ response, json: { json: { ...json, inferenceStatus } } });
+    });
+
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill("openai");
+    await settings
+      .getByRole("button")
+      .filter({ has: page.getByText("OpenAI", { exact: true }) })
+      .click();
+    const cost = settings.getByText(
+      "Connecting sends one test request that may incur usage charges.",
+    );
+    await expect(cost).toHaveCount(0);
+    const key = settings.getByLabel("Replace API key", { exact: true });
+    await key.fill("fixture-connect-replacement-key");
+    const replace = settings.getByRole("button", { name: "Replace API key", exact: true });
+    await expect(cost).toBeInViewport({ ratio: 1 });
+    if (inferenceStatus === "timeout")
+      await captureScreenshot(page, testInfo, "a1-connection-test-usage");
+    await replace.click();
+    await expect(key).toBeDisabled();
+    await expect(settings.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
+    releaseRejection();
+    await expect(
+      settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
+    ).toBeVisible();
+    await expect(key).toHaveValue("fixture-connect-replacement-key");
+    expect(attempts).toEqual([
+      expect.objectContaining({
+        provider: model.provider,
+        modelId: model.id,
+        apiKey: "fixture-connect-replacement-key",
+        credentialId: saved.id,
+        expectedRevision: saved.connectionRevision,
+        verifyInference: true,
+      }),
+    ]);
+    const afterRejection = await rpc<ModelCredential[]>(page, "models/credentials", {});
+    expect(afterRejection.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
+      saved.connectionRevision,
+    );
+
+    refuse = false;
+    await replace.click();
+    await expect(
+      settings.getByRole("status").filter({
+        hasText:
+          inferenceStatus === "timeout" ? "Saved. Your model provider took too long" : /^Saved\.$/,
+      }),
+    ).toBeInViewport({ ratio: 1 });
+    await expect(
+      settings.getByRole("alert").filter({ hasText: "Could not load model settings" }),
+    ).toBeVisible();
+    await expect(key).toHaveValue("");
+    await expect(cost).toHaveCount(0);
+    expect(attempts).toHaveLength(2);
+    const afterTimeout = await rpc<ModelCredential[]>(page, "models/credentials", {});
+    expect(afterTimeout.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
+      saved.connectionRevision! + 1,
+    );
+    if (inferenceStatus === "timeout")
+      await captureScreenshot(page, testInfo, "a1-connection-test-saved-timeout");
   });
-
-  const settings = await openUserSettings(page, "models");
-  await settings.getByPlaceholder("Search providers").fill("openai");
-  await settings
-    .getByRole("button")
-    .filter({ has: page.getByText("OpenAI", { exact: true }) })
-    .click();
-  const cost = settings.getByText(
-    "Connecting sends one test request that may incur usage charges.",
-  );
-  await expect(cost).toHaveCount(0);
-  const key = settings.getByLabel("Replace API key", { exact: true });
-  await key.fill("fixture-connect-replacement-key");
-  const replace = settings.getByRole("button", { name: "Replace API key", exact: true });
-  await expect(cost).toBeInViewport({ ratio: 1 });
-  await captureScreenshot(page, testInfo, "a1-connection-test-usage");
-  await replace.click();
-  await expect(key).toBeDisabled();
-  await expect(settings.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
-  releaseRejection();
-  await expect(
-    settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
-  ).toBeVisible();
-  await expect(key).toHaveValue("fixture-connect-replacement-key");
-  expect(attempts).toEqual([
-    expect.objectContaining({
-      provider: model.provider,
-      modelId: model.id,
-      apiKey: "fixture-connect-replacement-key",
-      credentialId: saved.id,
-      expectedRevision: saved.connectionRevision,
-      verifyInference: true,
-    }),
-  ]);
-  const afterRejection = await rpc<ModelCredential[]>(page, "models/credentials", {});
-  expect(afterRejection.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
-    saved.connectionRevision,
-  );
-
-  refuse = false;
-  await replace.click();
-  await expect(
-    settings.getByRole("status").filter({ hasText: "Saved. Your model provider took too long" }),
-  ).toBeInViewport({ ratio: 1 });
-  await expect(
-    settings.getByRole("alert").filter({ hasText: "Could not load model settings" }),
-  ).toBeVisible();
-  await expect(key).toHaveValue("");
-  await expect(cost).toHaveCount(0);
-  expect(attempts).toHaveLength(2);
-  const afterTimeout = await rpc<ModelCredential[]>(page, "models/credentials", {});
-  expect(afterTimeout.find((entry) => entry.id === saved.id)?.connectionRevision).toBe(
-    saved.connectionRevision! + 1,
-  );
-  await captureScreenshot(page, testInfo, "a1-connection-test-saved-timeout");
-});
+}
 
 test("onboarding reports a timed out model check after saving", async ({ page }, testInfo) => {
   let connects = 0;
@@ -1920,6 +1929,74 @@ test("onboarding reports a timed out model check after saving", async ({ page },
   await expect(page.getByLabel("API key", { exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "a1-onboarding-model-check-saved-timeout");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await completeOnboarding(page);
+  expect(connects).toBe(1);
+});
+
+test("keeps the compatible model draft fixed while onboarding saves it", async ({ page }) => {
+  const baseUrl = "http://127.0.0.1:11434/v1";
+  let connects = 0;
+  let releaseSave!: () => void;
+  const pendingSave = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  await page.route("**/rpc/me", async (route) => {
+    const response = await route.fetch();
+    const { json } = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        json:
+          connects === 0
+            ? { ...json, needsModel: true, defaultProvider: "openai-compatible" }
+            : json,
+      },
+    });
+  });
+  await page.route("**/rpc/models/probeOpenAiCompatible", (route) =>
+    route.fulfill({ json: { json: { models: ["fixture-compatible-discovered"] } } }),
+  );
+  await page.route("**/rpc/models/connect", async (route) => {
+    connects += 1;
+    const { json } = route.request().postDataJSON();
+    expect(json).toMatchObject({
+      provider: "openai-compatible",
+      baseUrl,
+      modelId: "fixture-compatible-custom",
+      apiKey: "fixture-compatible-key",
+    });
+    expect(json).not.toHaveProperty("verifyInference");
+    await pendingSave;
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    await route.fulfill({ response });
+  });
+  await signup(
+    page,
+    `onboarding-compatible-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  await expect(page.getByRole("heading", { name: "Connect a model" })).toBeVisible();
+  const url = page.getByLabel("OpenAI-compatible server URL");
+  await url.fill(baseUrl);
+  await page
+    .locator("summary")
+    .filter({ hasText: /^API key$/ })
+    .click();
+  const key = page.getByLabel("API key", { exact: true });
+  await key.fill("fixture-compatible-key");
+  await page.getByRole("button", { name: "Find models" }).click();
+  await page.getByRole("combobox", { name: "Models from server" }).click();
+  await page.getByRole("option", { name: "Other model…" }).click();
+  const model = page.getByLabel("Model id", { exact: true });
+  await model.fill("fixture-compatible-custom");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(url).toBeDisabled();
+  await expect(model).toBeDisabled();
+  await expect(key).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Use a found model" })).toBeDisabled();
+  releaseSave();
   await completeOnboarding(page);
   expect(connects).toBe(1);
 });

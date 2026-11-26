@@ -463,7 +463,7 @@ export function OnboardingPage() {
   }
 
   async function saveModel() {
-    if (!canSaveModel || preflightTesting || connectAttempt.current) return;
+    if (!canSaveModel || probing || preflightTesting || connectAttempt.current) return;
     const controller = new AbortController();
     const spaceGeneration = currentSpaceSelectionGeneration();
     const current = () =>
@@ -674,6 +674,7 @@ export function OnboardingPage() {
                     <Input
                       id={`${fieldId}-base-url`}
                       value={baseUrl}
+                      disabled={connecting}
                       onChange={(e) => updateBaseUrl(e.target.value)}
                       aria-label={t`OpenAI-compatible server URL`}
                       placeholder="http://127.0.0.1:8000/v1"
@@ -684,7 +685,7 @@ export function OnboardingPage() {
                   <div className="mt-3">
                     <Button
                       variant="outline"
-                      disabled={probing || !baseUrl.trim()}
+                      disabled={connecting || probing || !baseUrl.trim()}
                       onClick={() => void probeServerModels()}
                     >
                       {probing ? <Trans>Finding…</Trans> : <Trans>Find models</Trans>}
@@ -732,6 +733,7 @@ export function OnboardingPage() {
                     ) : (
                       <Input
                         value={modelId}
+                        disabled={connecting}
                         onChange={(e) => {
                           setManualModelId(true);
                           setModelId(e.target.value);
@@ -746,6 +748,7 @@ export function OnboardingPage() {
                       <Button
                         variant="link"
                         size="xs"
+                        disabled={connecting}
                         className="mt-2 px-0 text-muted-foreground"
                         onClick={() => {
                           setManualModelId(false);
@@ -758,6 +761,7 @@ export function OnboardingPage() {
                     ) : null}
                   </div>
                   <ModelThinkingOptions
+                    disabled={connecting}
                     reasoning={reasoning}
                     onReasoningChange={(value) => {
                       setReasoning(value);
@@ -1015,6 +1019,7 @@ export function OnboardingPage() {
                   <Trans>Account ID</Trans>
                   <Input
                     id={`${fieldId}-account-id`}
+                    disabled={connecting}
                     value={accountId}
                     onChange={(event) => setAccountId(event.target.value)}
                     autoComplete="off"
@@ -1029,6 +1034,7 @@ export function OnboardingPage() {
                   <Trans>Gateway ID</Trans>
                   <Input
                     id={`${fieldId}-gateway-id`}
+                    disabled={connecting}
                     value={gatewayId}
                     onChange={(event) => setGatewayId(event.target.value)}
                     autoComplete="off"
@@ -1046,6 +1052,7 @@ export function OnboardingPage() {
                   </summary>
                   <Input
                     aria-label={t`API key`}
+                    disabled={connecting}
                     value={apiKey}
                     onChange={(e) => updateApiKey(e.target.value)}
                     placeholder={t`Optional`}
@@ -1105,7 +1112,7 @@ export function OnboardingPage() {
             ) : null}
             <div className="mt-6 flex gap-3">
               <Button
-                disabled={!canSaveModel || connecting || preflightTesting}
+                disabled={!canSaveModel || connecting || probing || preflightTesting}
                 onClick={() => void saveModel()}
               >
                 {connecting ? <Trans>Saving…</Trans> : <Trans>Continue</Trans>}

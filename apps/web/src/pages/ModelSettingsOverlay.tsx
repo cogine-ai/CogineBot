@@ -1064,7 +1064,9 @@ export function ModelSettingsOverlay({
       setHeaderRows(null);
       const { inferenceStatus } = savedConnection;
       const unconfirmed = inferenceStatus !== undefined && inferenceStatus !== "accepted";
-      if (unconfirmed) setNotice(`${t`Saved.`} ${modelInferenceTestMessage(inferenceStatus)}`);
+      setNotice(
+        unconfirmed ? `${t`Saved.`} ${modelInferenceTestMessage(inferenceStatus)}` : t`Saved.`,
+      );
       detailScrollRef.current?.scrollTo({ top: 0 });
       const effective = await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;

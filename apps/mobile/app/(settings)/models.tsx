@@ -1310,18 +1310,23 @@ function ModelsForm({
       });
     } catch (err) {
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
+      if (committed) {
+        const reloadError = t("Could not load model settings");
+        publishFeedback("connection", {
+          error: connectionNotice ? reloadError : `${t("Saved.")} ${reloadError}`,
+        });
+        if (connectionNotice) {
+          setCatalogFeedback({ error: false, message: connectionNotice });
+          AccessibilityInfo.announceForAccessibility(connectionNotice);
+        }
+        return;
+      }
       const rejected = modelConnectInferenceRejection(err);
       publishFeedback("connection", {
-        error: committed
-          ? t("Could not load model settings")
-          : rejected
-            ? modelInferenceProbeMessage(rejected, t)
-            : errorText(err, t("Could not connect this provider")),
+        error: rejected
+          ? modelInferenceProbeMessage(rejected, t)
+          : errorText(err, t("Could not connect this provider")),
       });
-      if (connectionNotice) {
-        setCatalogFeedback({ error: false, message: connectionNotice });
-        AccessibilityInfo.announceForAccessibility(connectionNotice);
-      }
     } finally {
       finishPending(pendingOwner);
     }
