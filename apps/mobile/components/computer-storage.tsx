@@ -1,4 +1,5 @@
-import { useComputerStorage } from "@rakazo/chat-ui/computer-storage";
+import { useComputerCleanup, useComputerStorage } from "@rakazo/chat-ui/computer-storage";
+import type { ComputerDiskUsageResult } from "@rakazo/contracts";
 import { formatFileSize } from "@rakazo/core";
 import { useIsFocused } from "expo-router";
 import { useState, useSyncExternalStore } from "react";
@@ -10,7 +11,7 @@ import { useI18n } from "../lib/i18n";
 import { mobileScopeKey, subscribeMobileScope } from "../lib/mobile-scope";
 import { useMobileTokens } from "../lib/native";
 import { NativeActionButton } from "./native-action-button";
-import { SettingsRow } from "./settings-group";
+import { SettingsGroup, SettingsRow, SettingsSwitch } from "./settings-group";
 
 export function ComputerStorageRow({ botId }: { botId: string }) {
   const focused = useIsFocused();
@@ -54,16 +55,7 @@ function StorageSheet({
   const current = () => scope === mobileScopeKey();
   const { result, pending, failed, diagnose } = useComputerStorage(
     { botId },
-    async (input, signal) => {
-      const requestContext = await captureApiRequestContext();
-      signal.throwIfAborted();
-      if (!current()) throw new Error("Storage scope changed");
-      return rpc("computer/diskUsage", input, {
-        signal,
-        requestContext,
-        skipSpaceAuthRecovery: true,
-      });
-    },
+    (input, signal) => storageRequest("diskUsage", input, signal, current),
     current,
   );
   const outcome = result?.outcome;
@@ -110,17 +102,12 @@ function StorageSheet({
             {outcome.data.partial ? (
               <Text style={{ color: tokens.mutedForeground }}>{t("Partial results")}</Text>
             ) : null}
-            {outcome.data.candidates.map(({ path, logicalBytes }) => (
-              <View key={path} style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                <Text style={{ flexGrow: 1, flexShrink: 1, color: tokens.foreground }}>{path}</Text>
-                <Text style={{ color: tokens.mutedForeground }}>
-                  {formatFileSize(logicalBytes)}
-                </Text>
-              </View>
-            ))}
           </>
         ) : null}
-        {outcome?.status !== "changed" ? (
+        {!pending && result && outcome?.status === "available" ? (
+          <StorageSelection diagnosis={result} isCurrent={current} diagnose={diagnose} />
+        ) : null}
+        {!pending && outcome?.status !== "available" && outcome?.status !== "changed" ? (
           <NativeActionButton
             label={result || failed ? t("Retry") : t("Diagnose storage")}
             prominence="secondary"
@@ -130,5 +117,113 @@ function StorageSheet({
         ) : null}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+async function storageRequest(
+  action: "diskUsage" | "planCleanup" | "confirmCleanup" | "cancelCleanup",
+  input: unknown,
+  signal: AbortSignal,
+  isCurrent: () => boolean,
+) {
+  const requestContext = await captureApiRequestContext();
+  signal.throwIfAborted();
+  if (!isCurrent()) throw new Error("Storage scope changed");
+  return rpc(`computer/${action}`, input, {
+    signal,
+    requestContext,
+    skipSpaceAuthRecovery: true,
+  });
+}
+
+function StorageSelection({
+  diagnosis,
+  isCurrent,
+  diagnose,
+}: {
+  diagnosis: ComputerDiskUsageResult;
+  isCurrent: () => boolean;
+  diagnose: () => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const tokens = useMobileTokens();
+  const { candidates, canSelect, selected, plan, busy, failed, choose, review, finish } =
+    useComputerCleanup(
+      diagnosis,
+      {
+        plan: (input, signal) => storageRequest("planCleanup", input, signal, isCurrent),
+        confirm: (input, signal) => storageRequest("confirmCleanup", input, signal, isCurrent),
+        cancel: (input, signal) => storageRequest("cancelCleanup", input, signal, isCurrent),
+      },
+      isCurrent,
+    );
+  const reviewing = plan?.status === "awaiting_confirmation";
+  return (
+    <>
+      <SettingsGroup>
+        {(plan?.selected ?? candidates).map((file) => {
+          const size = formatFileSize(file.logicalBytes);
+          return canSelect && "cleanup" in file && file.cleanup ? (
+            <SettingsSwitch
+              key={file.path}
+              label={file.path}
+              detail={size}
+              value={selected.has(file.path)}
+              disabled={busy}
+              onChange={(checked) => choose(file.path, checked)}
+            />
+          ) : (
+            <SettingsRow key={file.path} title={file.path} detail={size} />
+          );
+        })}
+      </SettingsGroup>
+      {reviewing || plan?.status === "reviewed" ? (
+        <Text style={{ color: tokens.mutedForeground }}>{t("Files stay in place.")}</Text>
+      ) : null}
+      {plan?.status === "reviewed" ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: tokens.foreground }}>
+          {t("Selection saved.")}
+        </Text>
+      ) : null}
+      {plan?.status === "expired" ? (
+        <Text accessibilityLiveRegion="polite" style={{ color: tokens.foreground }}>
+          {t("Selection expired. Diagnose storage again.")}
+        </Text>
+      ) : null}
+      {failed ? (
+        <Text accessibilityRole="alert" style={{ color: tokens.destructive }}>
+          {t("Could not update the selection.")}
+        </Text>
+      ) : null}
+      {reviewing ? (
+        <>
+          <NativeActionButton
+            label={t("Confirm selection")}
+            disabled={busy}
+            onPress={() => void finish("confirm")}
+          />
+          <NativeActionButton
+            label={t("Cancel")}
+            prominence="secondary"
+            disabled={busy}
+            onPress={() => void finish("cancel")}
+          />
+        </>
+      ) : !plan && canSelect ? (
+        <NativeActionButton
+          label={t("Review selection")}
+          disabled={busy || !selected.size}
+          onPress={() => void review()}
+        />
+      ) : null}
+      {!reviewing || failed ? (
+        <NativeActionButton
+          label={t("Retry")}
+          prominence="secondary"
+          disabled={busy}
+          onPress={() => void diagnose()}
+        />
+      ) : null}
+    </>
   );
 }

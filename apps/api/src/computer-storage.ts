@@ -17,7 +17,10 @@ import { computerScopeKey, IsolationError } from "@rakazo/db";
 type GetBot = ReturnType<typeof createRepos>["getBot"];
 type Bot = Awaited<ReturnType<GetBot>>;
 
-function ownedWorkspace(actor: Actor, bot: Bot): ManagedDiskProbe["workspace"] | undefined {
+export function ownedWorkspace(
+  actor: Actor,
+  bot: Pick<Bot, "id" | "computer">,
+): ManagedDiskProbe["workspace"] | undefined {
   const computer = bot.computer;
   if (!computer) return undefined;
   if (
@@ -32,7 +35,10 @@ function ownedWorkspace(actor: Actor, bot: Bot): ManagedDiskProbe["workspace"] |
   return { kind: "team", botId: bot.id };
 }
 
-function diagnosticTarget(actor: Actor, bot: Bot) {
+export function computerStorageTarget(
+  actor: Actor,
+  bot: Pick<Bot, "id" | "screenGeneration" | "computerSwitching" | "computer">,
+) {
   const computer = bot.computer;
   if (!computer) return null;
   return createHash("sha256")
@@ -63,7 +69,7 @@ function diagnosticTarget(actor: Actor, bot: Bot) {
 
 export function workspaceFullRecovery(actor: Actor, bot: Bot): ComputerStorageRecovery | undefined {
   if (!ownedWorkspace(actor, bot)) return undefined;
-  const expectedTarget = diagnosticTarget(actor, bot);
+  const expectedTarget = computerStorageTarget(actor, bot);
   return expectedTarget
     ? { kind: "computer_storage", code: "ENOSPC", botId: bot.id, expectedTarget }
     : undefined;
@@ -95,7 +101,7 @@ export async function readComputerDiskUsage(
     const bot = await withAbort(deps.getBot(context.actor, input.botId), signal);
     const workspace = ownedWorkspace(context.actor, bot);
     const computer = bot.computer;
-    target = diagnosticTarget(context.actor, bot);
+    target = computerStorageTarget(context.actor, bot);
     if (input.expectedTarget !== undefined && input.expectedTarget !== target)
       return finish({ status: "changed" });
     if (!computer || !workspace) return finish({ status: "not_running" });
@@ -142,7 +148,8 @@ export async function readComputerDiskUsage(
     ownedWorkspace(context.actor, current);
     signal.throwIfAborted();
     if (performance.now() >= deadline) return finish({ status: "timeout" });
-    if (diagnosticTarget(context.actor, current) !== target) return finish({ status: "changed" });
+    if (computerStorageTarget(context.actor, current) !== target)
+      return finish({ status: "changed" });
     return finish(outcome);
   } catch (error) {
     context.signal?.throwIfAborted();

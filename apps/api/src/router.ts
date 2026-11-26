@@ -347,6 +347,7 @@ import {
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { lockActiveMembership } from "./active-membership.js";
 import { deleteAgentSecret, listAgentSecrets, putAgentSecret } from "./agent-secrets.js";
 import { createAgentSkillsService } from "./agent-skills.js";
 import { aiConsentStatus, allowAiConsent } from "./ai-consent.js";
@@ -381,6 +382,11 @@ import {
   listChatGPTPlanProfiles,
   lockChatGPTPlanConnection,
 } from "./chatgpt-plan.js";
+import {
+  cancelComputerCleanup,
+  confirmComputerCleanup,
+  planComputerCleanup,
+} from "./computer-cleanup.js";
 import {
   executionBlocksUserTakeover,
   resolveBusyBotName,
@@ -622,27 +628,6 @@ async function lockProviderConnectionScope(
   // Avoid NUL separators in the lock key; text params may truncate at a zero byte and break begin.
   const scope = `space:${owner.spaceId}|user:${owner.userId}|connector:${connectorId}|provider:${provider.trim().toLowerCase()}`;
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('connection-provider'), hashtext(${scope}))`;
-}
-
-async function lockMcpConnectionScope(
-  tx: Prisma.TransactionClient,
-  actor: Actor,
-  sessionId?: string,
-): Promise<void> {
-  const users = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT id FROM "user" WHERE id=${actor.userId} FOR SHARE`;
-  const spaces = await tx.$queryRaw<Array<{ id: string; deletingAt: Date | null }>>`
-    SELECT id, "deletingAt" FROM spaces WHERE id=${actor.spaceId} FOR SHARE`;
-  const members = await tx.$queryRaw<Array<{ id: string }>>`
-    SELECT id FROM space_members WHERE "spaceId"=${actor.spaceId} AND "userId"=${actor.userId} FOR SHARE`;
-  if (!users.length || !spaces.length || spaces[0]!.deletingAt || !members.length)
-    throw new ORPCError("FORBIDDEN");
-  if (sessionId) {
-    const sessions = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM "session" WHERE id=${sessionId} AND "userId"=${actor.userId}
-        AND "expiresAt">(clock_timestamp() AT TIME ZONE 'UTC') FOR SHARE`;
-    if (!sessions.length) throw new ORPCError("UNAUTHORIZED");
-  }
 }
 
 function computerContext(actor: Actor, botId: string, operationId: string): AdapterContext {
@@ -1195,6 +1180,7 @@ interface RouterRequestContext {
   supportsWebsiteLoginCard?: boolean;
   signal?: AbortSignal;
   diskUsageDeadline?: number;
+  supportsStorageSelection?: boolean;
   /** Server-owned transport evidence for a successfully committed synchronous action. */
   auditRequestIp?: () => Promise<string | undefined>;
   /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
@@ -1204,6 +1190,7 @@ interface RouterRequestContext {
 export function createRouter(deps: RouterDeps) {
   const os = implement(appContract).$context<RouterRequestContext>();
   const repos = createRepos(deps.prisma);
+  const computerStorageDeps = { getBot: repos.getBot, sandbox: deps.sandbox, prisma: deps.prisma };
   async function listOwnedBotCredentials(actor: Actor, botId: string) {
     const bot = await repos.getBot(actor, botId);
     const rows = await listBotSecretMetadata(deps.prisma, botSecretScope(actor, bot.id));
@@ -4013,8 +4000,28 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     computer: {
-      diskUsage: authed.computer.diskUsage.handler(({ context, input }) =>
-        readComputerDiskUsage(input, context, { getBot: repos.getBot, sandbox: deps.sandbox }),
+      diskUsage: authed.computer.diskUsage.handler(async ({ context, input }) => {
+        const result = await readComputerDiskUsage(input, context, computerStorageDeps);
+        if (context.supportsStorageSelection || result.outcome.status !== "available")
+          return result;
+        const { data } = result.outcome;
+        const candidates = data.candidates.map(({ path, logicalBytes }) => ({
+          path,
+          logicalBytes,
+        }));
+        return {
+          ...result,
+          outcome: { status: "available" as const, data: { ...data, candidates } },
+        };
+      }),
+      planCleanup: authed.computer.planCleanup.handler(({ context, input }) =>
+        planComputerCleanup(input, context, computerStorageDeps),
+      ),
+      confirmCleanup: authed.computer.confirmCleanup.handler(({ context, input }) =>
+        confirmComputerCleanup(input, context, computerStorageDeps),
+      ),
+      cancelCleanup: authed.computer.cancelCleanup.handler(({ context, input }) =>
+        cancelComputerCleanup(input, context, computerStorageDeps),
       ),
       status: authed.computer.status.handler(async ({ context, input }) =>
         computerStatus(deps, context.actor, input.botId),
@@ -6331,7 +6338,7 @@ export function createRouter(deps: RouterDeps) {
               disableOnly,
               disableAndClear,
             } = await deps.prisma.$transaction(async (tx) => {
-              if (connection) await lockMcpConnectionScope(tx, context.actor, context.sessionId);
+              if (connection) await lockActiveMembership(tx, context.actor, context.sessionId);
               const existing = await tx.mcpServer.findFirst({
                 where: {
                   id: input.id,
@@ -6581,7 +6588,7 @@ export function createRouter(deps: RouterDeps) {
                   if (connection) await assertAuthorized();
                   return deps.prisma.$transaction(async (tx) => {
                     if (connection)
-                      await lockMcpConnectionScope(tx, context.actor, context.sessionId);
+                      await lockActiveMembership(tx, context.actor, context.sessionId);
                     const parent = await lockActivePluginChild(tx, existing, context.actor);
                     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('mcp-oauth-material'), hashtext(${input.id}))`;
                     const current = await tx.mcpServer.findFirst({

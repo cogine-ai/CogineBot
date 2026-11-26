@@ -26,6 +26,10 @@ msgstr "另有 {0} 条诊断未显示"
 msgid "Circular references are not supported."
 msgstr "不支持循环引用。"
 
+#: src/components/computer/ComputerStorage.tsx
+msgid "Confirm selection"
+msgstr "确认选择"
+
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not confirm installation."
 msgstr "无法确认是否已安装。"
@@ -37,6 +41,10 @@ msgstr "无法加载 OpenAPI 文档。"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not preview OpenAPI."
 msgstr "无法预览 OpenAPI。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not update the selection."
+msgstr "无法更新所选文件。"
 
 #: src/lib/openapi-diagnostic.ts
 msgid "External references are not supported."
@@ -74,6 +82,18 @@ msgstr "正在预览…"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Ready"
 msgstr "可导入"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Files stay in place."
+msgstr "文件会保留在原处。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection expired. Diagnose storage again."
+msgstr "选择已过期，请重新诊断存储。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection saved."
+msgstr "已保存选择。"
 
 #: src/lib/openapi-diagnostic.ts
 msgid "The API server is not supported."
@@ -1097,6 +1117,7 @@ msgstr "无法连接服务器。"
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Cancel"
 msgstr "取消"
 
@@ -6988,6 +7009,7 @@ msgid "Review credentials"
 msgstr "核对凭据"
 
 #: src/components/DeploymentTransfer.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Review selection"
 msgstr "核对选择"
 

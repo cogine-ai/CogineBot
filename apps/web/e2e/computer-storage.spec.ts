@@ -183,3 +183,97 @@ test("offers a target-bound recovery after a managed upload reports storage exha
     if (label === "collapse") await browser.click();
   }
 });
+
+test("submits only the selected file versions and retries the same manual confirmation", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `selection-${Date.now()}@example.test`,
+    "password12",
+    "Storage selection fixture",
+  );
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  const planId = "a2d0e6ee-c542-4ca0-92f4-1f7858e4cfe5";
+  const first = { path: "reports/selected.pdf", logicalBytes: 2 ** 20 };
+  const fingerprint = { version: "d".repeat(64), modifiedAtMs: 1780000000000 };
+  const plan = {
+    id: planId,
+    botId,
+    revision: 1,
+    status: "awaiting_confirmation",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    selected: [{ ...first, ...fingerprint }],
+  };
+  await page.route("**/rpc/computer/diskUsage", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          botId,
+          target,
+          outcome: {
+            status: "available",
+            data: {
+              volume: { totalBytes: 2 ** 33, availableBytes: 0, availableInodes: 0 },
+              partial: false,
+              candidates: [
+                {
+                  path: "reports/not-selected.pdf",
+                  logicalBytes: 2 ** 21,
+                  cleanup: { ...fingerprint, version: "e".repeat(64) },
+                },
+                { ...first, cleanup: fingerprint },
+                { path: "reports/ineligible[1].pdf", logicalBytes: 10 },
+              ],
+            },
+          },
+        },
+      },
+    }),
+  );
+  const creations: unknown[] = [];
+  await page.route("**/rpc/computer/planCleanup", (route) => {
+    creations.push(route.request().postDataJSON().json);
+    return route.fulfill({ json: { json: plan } });
+  });
+  const confirmations: unknown[] = [];
+  await page.route("**/rpc/computer/confirmCleanup", (route) => {
+    confirmations.push(route.request().postDataJSON().json);
+    if (confirmations.length === 1) return route.abort();
+    return route.fulfill({ json: { json: { ...plan, revision: 2, status: "reviewed" } } });
+  });
+
+  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: "Storage", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Storage" });
+  await dialog.getByRole("button", { name: "Diagnose storage" }).click();
+  const review = dialog.getByRole("button", { name: "Review selection" });
+  await expect(review).toBeDisabled();
+  await expect(dialog.getByRole("checkbox", { name: "reports/ineligible[1].pdf" })).toHaveCount(0);
+  await dialog.getByRole("checkbox", { name: first.path }).click();
+  await review.click();
+  const confirm = dialog.getByRole("button", { name: "Confirm selection" });
+  await expect(confirm).toBeVisible();
+  await expect(dialog.getByText(first.path)).toBeVisible();
+  await expect(dialog.getByText("reports/not-selected.pdf")).toHaveCount(0);
+  await expect(dialog.getByText("Files stay in place.")).toBeVisible();
+  expect(confirmations).toEqual([]);
+  expect(creations).toEqual([
+    {
+      botId,
+      expectedTarget: target,
+      requestNonce: expect.any(String),
+      selected: [{ path: first.path, version: fingerprint.version }],
+    },
+  ]);
+  await captureScreenshot(page, testInfo, "computer-storage-review");
+  await confirm.click();
+  await expect(dialog.getByRole("alert")).toHaveText("Could not update the selection.");
+  await confirm.click();
+  await expect(dialog.getByText("Selection saved.")).toBeVisible();
+  expect(confirmations).toEqual([
+    { botId, planId, expectedRevision: 1, confirmed: true, requestNonce: expect.any(String) },
+    confirmations[0],
+  ]);
+});

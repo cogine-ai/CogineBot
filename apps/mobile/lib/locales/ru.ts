@@ -1558,6 +1558,13 @@ export const RU_MESSAGES: Record<string, string> = {
   Reload: "Обновить",
   Storage: "Хранилище",
   "Diagnose storage": "Проверить хранилище",
+  "Confirm selection": "Подтвердить выбор",
+  "Could not update the selection.": "Не удалось обновить выбор.",
+  "Review selection": "Проверить выбор",
+  "Files stay in place.": "Файлы останутся на месте.",
+  "Selection expired. Diagnose storage again.":
+    "Срок действия выбора истёк. Проверьте хранилище снова.",
+  "Selection saved.": "Выбор сохранён.",
   "Diagnosing…": "Идёт проверка…",
   "Could not diagnose storage.": "Не удалось проверить хранилище.",
   "Storage diagnostics are unavailable for this computer.":

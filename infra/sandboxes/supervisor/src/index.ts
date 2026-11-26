@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import http from "node:http";
@@ -779,6 +779,12 @@ app.post("/computers/:id/disk-usage", bodyLimit({ maxSize: 1024 }), async (c) =>
     if (performance.now() >= deadline) return c.json({ status: "timeout" as const });
 
     const container = docker.getContainer(info.Id);
+    const epoch =
+      c.req.query("selection") === "1"
+        ? createHash("sha256")
+            .update(JSON.stringify([info.Id, info.State.StartedAt]))
+            .digest("hex")
+        : "";
     const result = await runContainerCommand(
       container,
       [
@@ -789,6 +795,7 @@ app.post("/computers/:id/disk-usage", bodyLimit({ maxSize: 1024 }), async (c) =>
         workspaceDiskProbe,
         workspaceTarget(""),
         input.data.workspace.kind === "team" ? input.data.workspace.botId : "",
+        epoch,
       ],
       {
         signal,

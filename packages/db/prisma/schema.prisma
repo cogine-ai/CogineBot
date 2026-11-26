@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  schemas = ["public", "cogine_pages", "cogine_model_auth", "cogine_audit"]
+  schemas = ["public", "cogine_pages", "cogine_model_auth", "cogine_audit", "cogine_storage"]
 }
 
 model AiDataConsent {
@@ -24,6 +24,7 @@ model AiDataConsent {
 }
 
 model User {
+  computerCleanupPlans ComputerCleanupPlan[]
   botPackagePreviews BotPackagePreview[]
   botPackageImports BotPackageImport[]
   openApiImportReceipts OpenApiImportReceipt[]
@@ -220,6 +221,7 @@ model Member {
 }
 
 model Space {
+  computerCleanupPlans ComputerCleanupPlan[]
   botPackagePreviews BotPackagePreview[]
   botPackageImports BotPackageImport[]
   openApiImportReceipts OpenApiImportReceipt[]
@@ -508,6 +510,7 @@ model SpaceVoicePreference {
 }
 
 model Bot {
+  computerCleanupPlans ComputerCleanupPlan[]
   packageImport BotPackageImport?
   packageComponents BotPackageComponent[]
   screenGeneration Int @default(0)
@@ -1341,6 +1344,7 @@ model ComputerUpdate {
 }
 
 model Computer {
+  cleanupPlans ComputerCleanupPlan[]
   screenGeneration Int @default(0)
   id                      String                   @id @default(cuid())
   spaceId                 String
@@ -1386,6 +1390,36 @@ model Computer {
   @@index([spaceId, scope])
   @@map("computers")
   @@schema("public")
+}
+
+model ComputerCleanupPlan {
+  id                String   @id
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  spaceId           String
+  space             Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  botId             String
+  bot               Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  computerId        String
+  computer          Computer @relation(fields: [computerId], references: [id], onDelete: Cascade)
+  homeKey           String
+  providerRef       String
+  target            String
+  requestNonce      String
+  confirmationNonce String?
+  selected          Json
+  status            String   @default("awaiting_confirmation")
+  revision          Int      @default(1)
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime
+  confirmedAt       DateTime?
+
+  @@unique([spaceId, userId, requestNonce])
+  @@index([computerId])
+  @@index([botId])
+  @@index([userId])
+  @@map("computer_cleanup_plans")
+  @@schema("cogine_storage")
 }
 
 model ComputerExecutionLease {

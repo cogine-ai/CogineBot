@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ComputerDiskProbeOutcomeSchema } from "@rakazo/contracts";
@@ -79,6 +79,41 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
           ],
         },
       });
+    }));
+
+  it("binds selectable files to their identity, workspace and container start", () =>
+    fixture(async (root) => {
+      const existing = path.join(root, "fixture.txt");
+      const replacement = path.join(root, "replacement.txt");
+      const glob = path.join(root, "report[1].txt");
+      const sameTime = new Date("2026-01-01T00:00:00Z");
+      await writeFile(existing, "old");
+      await utimes(existing, sameTime, sameTime);
+      await writeFile(glob, "literal filename");
+      async function probe(epoch = "fixture-start") {
+        const result = await python(workspaceDiskProbe, [root, "", epoch], { budget: 2000 });
+        const output = ComputerDiskProbeOutcomeSchema.parse(JSON.parse(result.stdout));
+        expect(output.status).toBe("available");
+        if (output.status !== "available") throw new Error("Expected a readable workspace");
+        expect(
+          output.data.candidates.find((file) => file.path === "report[1].txt")?.cleanup,
+        ).toBeUndefined();
+        return output.data.candidates.find((file) => file.path === "fixture.txt")?.cleanup;
+      }
+
+      const version = await probe();
+      expect(version).toEqual({
+        version: expect.stringMatching(/^[0-9a-f]{64}$/),
+        modifiedAtMs: sameTime.getTime(),
+      });
+      expect(await probe()).toEqual(version);
+      expect((await probe("fixture-restart"))?.version).not.toBe(version?.version);
+      await writeFile(replacement, "new");
+      await utimes(replacement, sameTime, sameTime);
+      await rename(replacement, existing);
+      const changed = await probe();
+      expect(changed?.version).not.toBe(version?.version);
+      expect(changed?.modifiedAtMs).toBe(sameTime.getTime());
     }));
 
   it("refuses a symlink in the workspace root or in the Team ancestry", () =>

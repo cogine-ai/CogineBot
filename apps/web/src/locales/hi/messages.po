@@ -26,6 +26,10 @@ msgstr "अतिरिक्त छोड़े गए निदान: {0}"
 msgid "Circular references are not supported."
 msgstr "चक्रीय संदर्भ समर्थित नहीं हैं।"
 
+#: src/components/computer/ComputerStorage.tsx
+msgid "Confirm selection"
+msgstr "चयन की पुष्टि करें"
+
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not confirm installation."
 msgstr "इंस्टॉलेशन की पुष्टि नहीं हो सकी।"
@@ -37,6 +41,10 @@ msgstr "OpenAPI दस्तावेज़ लोड नहीं हो सक
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not preview OpenAPI."
 msgstr "OpenAPI का पूर्वावलोकन नहीं हो सका।"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not update the selection."
+msgstr "चयन अपडेट नहीं हो सका।"
 
 #: src/lib/openapi-diagnostic.ts
 msgid "External references are not supported."
@@ -74,6 +82,18 @@ msgstr "पूर्वावलोकन हो रहा है…"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Ready"
 msgstr "तैयार"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Files stay in place."
+msgstr "फ़ाइलें अपनी जगह बनी रहेंगी।"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection expired. Diagnose storage again."
+msgstr "चयन की समय सीमा समाप्त हो गई है। स्टोरेज की दोबारा जाँच करें।"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection saved."
+msgstr "चयन सहेजा गया।"
 
 #: src/lib/openapi-diagnostic.ts
 msgid "The API server is not supported."
@@ -1097,6 +1117,7 @@ msgstr "सर्वर तक नहीं पहुंचा जा सका�
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Cancel"
 msgstr "रद्द करें"
 
@@ -6988,6 +7009,7 @@ msgid "Review credentials"
 msgstr "क्रेडेंशियल की समीक्षा करें"
 
 #: src/components/DeploymentTransfer.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Review selection"
 msgstr "चयन की समीक्षा करें"
 

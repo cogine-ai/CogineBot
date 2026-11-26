@@ -236,6 +236,7 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "BrowserProfile",
   "ComputerUpdate",
   "Computer",
+  "ComputerCleanupPlan",
   "ComputerExecutionLease",
   "Artifact",
   "UsageRecord",

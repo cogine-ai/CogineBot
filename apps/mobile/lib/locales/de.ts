@@ -1566,6 +1566,13 @@ export const DE_MESSAGES: Record<string, string> = {
   Reload: "Neu laden",
   Storage: "Speicher",
   "Diagnose storage": "Speicher prüfen",
+  "Confirm selection": "Auswahl bestätigen",
+  "Could not update the selection.": "Auswahl konnte nicht aktualisiert werden.",
+  "Review selection": "Auswahl prüfen",
+  "Files stay in place.": "Die Dateien bleiben an ihrem Platz.",
+  "Selection expired. Diagnose storage again.":
+    "Die Auswahl ist abgelaufen. Speicher erneut prüfen.",
+  "Selection saved.": "Auswahl gespeichert.",
   "Diagnosing…": "Wird geprüft…",
   "Could not diagnose storage.": "Der Speicher konnte nicht geprüft werden.",
   "Storage diagnostics are unavailable for this computer.":

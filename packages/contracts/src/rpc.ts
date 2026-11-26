@@ -49,7 +49,14 @@ import {
   UndoBotSettingsInput,
   UndoBotSettingsResult,
 } from "./bot-settings.js";
-import { ComputerDiskUsageInputSchema, ComputerDiskUsageResultSchema } from "./computer-storage.js";
+import {
+  ComputerCleanupPlanSchema,
+  ComputerDiskUsageInputSchema,
+  ComputerDiskUsageResultSchema,
+  ConfirmComputerCleanupInputSchema,
+  PlanComputerCleanupInputSchema,
+  UpdateComputerCleanupInputSchema,
+} from "./computer-storage.js";
 import {
   DeploymentTransferApproveInput,
   DeploymentTransferCancelInput,
@@ -727,6 +734,9 @@ export const appContract = {
   },
   computer: {
     diskUsage: oc.input(ComputerDiskUsageInputSchema).output(ComputerDiskUsageResultSchema),
+    planCleanup: oc.input(PlanComputerCleanupInputSchema).output(ComputerCleanupPlanSchema),
+    confirmCleanup: oc.input(ConfirmComputerCleanupInputSchema).output(ComputerCleanupPlanSchema),
+    cancelCleanup: oc.input(UpdateComputerCleanupInputSchema).output(ComputerCleanupPlanSchema),
     status: oc.input(botId).output(ComputerStatusSchema),
     boot: oc
       .input(botId.extend({ onlyIfRunning: z.boolean().optional() }))

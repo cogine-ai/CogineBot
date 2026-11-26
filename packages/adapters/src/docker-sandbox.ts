@@ -476,7 +476,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     context: AdapterContext,
   ): Promise<ComputerDiskProbeOutcome> {
     if (computer.kind !== "docker") return { status: "unsupported" };
-    const res = await fetch(this.url(`/computers/${computer.id}/disk-usage`), {
+    const res = await fetch(this.url(`/computers/${computer.id}/disk-usage?selection=1`), {
       method: "POST",
       headers: { ...this.headers(context, computer.botId), "content-type": "application/json" },
       body: JSON.stringify(request),

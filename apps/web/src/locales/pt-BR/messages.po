@@ -26,6 +26,10 @@ msgstr "Diagnósticos adicionais omitidos: {0}"
 msgid "Circular references are not supported."
 msgstr "Referências circulares não são compatíveis."
 
+#: src/components/computer/ComputerStorage.tsx
+msgid "Confirm selection"
+msgstr "Confirmar seleção"
+
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not confirm installation."
 msgstr "Não foi possível confirmar a instalação."
@@ -37,6 +41,10 @@ msgstr "Não foi possível carregar o documento OpenAPI."
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not preview OpenAPI."
 msgstr "Não foi possível visualizar o OpenAPI."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not update the selection."
+msgstr "Não foi possível atualizar a seleção."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "External references are not supported."
@@ -74,6 +82,18 @@ msgstr "Carregando prévia…"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Ready"
 msgstr "Prontas"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Files stay in place."
+msgstr "Os arquivos permanecem no lugar."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection expired. Diagnose storage again."
+msgstr "A seleção expirou. Faça outro diagnóstico do armazenamento."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection saved."
+msgstr "Seleção salva."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "The API server is not supported."
@@ -1097,6 +1117,7 @@ msgstr "Não é possível acessar o servidor."
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Cancel"
 msgstr "Cancelar"
 
@@ -6988,6 +7009,7 @@ msgid "Review credentials"
 msgstr "Revisar credenciais"
 
 #: src/components/DeploymentTransfer.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Review selection"
 msgstr "Revisar seleção"
 

@@ -32,7 +32,7 @@ export interface RowSecurityPolicyStatus {
 interface PolicyDefinition {
   readonly model: string;
   readonly table: string;
-  readonly schema?: "cogine_pages" | "cogine_model_auth" | "cogine_audit";
+  readonly schema?: "cogine_pages" | "cogine_model_auth" | "cogine_audit" | "cogine_storage";
   readonly scope: RowSecurityPolicyScope;
   readonly tenantPredicate?: string;
 }
@@ -44,6 +44,8 @@ export interface RowSecurityCatalogOptions {
   allowPreModelAuth?: boolean;
   /** An interrupted candidate migration may not have installed the audit schema. */
   allowPreAudit?: boolean;
+  /** An exact predecessor restore can predate cleanup review storage. */
+  allowPreComputerCleanup?: boolean;
 }
 
 const space = "NULLIF(current_setting('app.space_id'::text, true), ''::text)";
@@ -299,6 +301,13 @@ export const ROW_SECURITY_POLICIES: readonly PolicyDefinition[] = Object.freeze(
       },
       { model: "Computer", table: "computers", scope: "tenant", tenantPredicate: local() },
       {
+        model: "ComputerCleanupPlan",
+        schema: "cogine_storage",
+        table: "computer_cleanup_plans",
+        scope: "tenant",
+        tenantPredicate: all(local(), own()),
+      },
+      {
         model: "ComputerExecutionLease",
         table: "computer_execution_leases",
         scope: "tenant",
@@ -541,6 +550,7 @@ interface Catalog {
   pageSchemaPresent: boolean;
   modelAuthPresent: boolean;
   auditSchemaPresent: boolean;
+  storageSchemaPresent: boolean;
 }
 type Query = <T>(statement: Prisma.Sql) => Promise<T[]>;
 
@@ -557,13 +567,16 @@ const modelAuthDefinitions = ROW_SECURITY_POLICIES.filter(
   ({ schema }) => schema === "cogine_model_auth",
 );
 const auditDefinitions = ROW_SECURITY_POLICIES.filter(({ schema }) => schema === "cogine_audit");
+const storageDefinitions = ROW_SECURITY_POLICIES.filter(
+  ({ schema }) => schema === "cogine_storage",
+);
 const tableKey = ({ schema, table }: { schema?: string; table: string }) =>
   `${schema ?? "public"}.${table}`;
 const relationSql = Prisma.sql`SELECT n.nspname AS schema, c.relname AS "table", c.relkind::text AS kind,
   c.relrowsecurity AS enabled, pg_catalog.row_security_active(c.oid) AS active
   FROM pg_catalog.pg_class c
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth', 'cogine_audit')
+  WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth', 'cogine_audit', 'cogine_storage')
     AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   ORDER BY n.nspname, c.relname`;
 const policySql = Prisma.sql`SELECT n.nspname AS schema, c.relname AS "table", p.polname AS name,
@@ -574,7 +587,7 @@ const policySql = Prisma.sql`SELECT n.nspname AS schema, c.relname AS "table", p
   FROM pg_catalog.pg_policy p
   JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth', 'cogine_audit')
+  WHERE n.nspname IN ('public', 'cogine_pages', 'cogine_model_auth', 'cogine_audit', 'cogine_storage')
   ORDER BY n.nspname, c.relname, p.polname`;
 const guardSql = Prisma.sql`SELECT f.prosrc AS body,
   (f.prosecdef AND NOT f.proretset AND f.prokind = 'f' AND f.provolatile = 's'
@@ -605,12 +618,14 @@ async function readCatalog(query: Query): Promise<Catalog> {
     pageSchemaPresent: boolean;
     modelAuthPresent: boolean;
     auditSchemaPresent: boolean;
+    storageSchemaPresent: boolean;
   }>(
     Prisma.sql`SELECT
       pg_catalog.to_regprocedure('public.app_rls_version()') IS NOT NULL AS "versionFunction",
       pg_catalog.to_regnamespace('cogine_pages') IS NOT NULL AS "pageSchemaPresent",
       pg_catalog.to_regnamespace('cogine_model_auth') IS NOT NULL AS "modelAuthPresent",
-      pg_catalog.to_regnamespace('cogine_audit') IS NOT NULL AS "auditSchemaPresent"`,
+      pg_catalog.to_regnamespace('cogine_audit') IS NOT NULL AS "auditSchemaPresent",
+      pg_catalog.to_regnamespace('cogine_storage') IS NOT NULL AS "storageSchemaPresent"`,
   );
   return {
     relations,
@@ -620,6 +635,7 @@ async function readCatalog(query: Query): Promise<Catalog> {
     pageSchemaPresent: metadata?.pageSchemaPresent !== false,
     modelAuthPresent: metadata?.modelAuthPresent !== false,
     auditSchemaPresent: metadata?.auditSchemaPresent !== false,
+    storageSchemaPresent: metadata?.storageSchemaPresent !== false,
   };
 }
 
@@ -652,13 +668,19 @@ function isLegacy(policy: PolicyRow): boolean {
 function report(
   catalog: Catalog,
   prepared: boolean,
-  { allowPrePages, allowPreModelAuth, allowPreAudit }: RowSecurityCatalogOptions = {},
+  {
+    allowPrePages,
+    allowPreModelAuth,
+    allowPreAudit,
+    allowPreComputerCleanup,
+  }: RowSecurityCatalogOptions = {},
 ): RowSecurityPolicyStatus {
   const definitions = ROW_SECURITY_POLICIES.filter(
     ({ schema }) =>
       !(schema === "cogine_pages" && allowPrePages && !catalog.pageSchemaPresent) &&
       !(schema === "cogine_model_auth" && allowPreModelAuth && !catalog.modelAuthPresent) &&
-      !(schema === "cogine_audit" && allowPreAudit && !catalog.auditSchemaPresent),
+      !(schema === "cogine_audit" && allowPreAudit && !catalog.auditSchemaPresent) &&
+      !(schema === "cogine_storage" && allowPreComputerCleanup && !catalog.storageSchemaPresent),
   );
   const knownTables = new Set(definitions.map(tableKey));
   const relations = new Map(catalog.relations.map((relation) => [tableKey(relation), relation]));
@@ -830,7 +852,8 @@ export async function applyRowSecurityPolicies(
       WHERE (n.nspname = 'public' AND c.relname = ANY(${publicDefinitions.map((entry) => entry.table)}::text[]))
         OR (n.nspname = 'cogine_pages' AND c.relname = ANY(${pageDefinitions.map((entry) => entry.table)}::text[]))
         OR (n.nspname = 'cogine_model_auth' AND c.relname = ANY(${modelAuthDefinitions.map((entry) => entry.table)}::text[]))
-        OR (n.nspname = 'cogine_audit' AND c.relname = ANY(${auditDefinitions.map((entry) => entry.table)}::text[]))`);
+        OR (n.nspname = 'cogine_audit' AND c.relname = ANY(${auditDefinitions.map((entry) => entry.table)}::text[]))
+        OR (n.nspname = 'cogine_storage' AND c.relname = ANY(${storageDefinitions.map((entry) => entry.table)}::text[]))`);
     if (ownership.length !== ROW_SECURITY_POLICIES.length || ownership.some((row) => !row.owns))
       throw new Error("The administrator must own every registered application table");
     for (const policy of before.policies.filter(canRetire))

@@ -26,6 +26,10 @@ msgstr "Atlanan ek tanılamalar: {0}"
 msgid "Circular references are not supported."
 msgstr "Döngüsel başvurular desteklenmiyor."
 
+#: src/components/computer/ComputerStorage.tsx
+msgid "Confirm selection"
+msgstr "Seçimi onayla"
+
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not confirm installation."
 msgstr "Yükleme doğrulanamadı."
@@ -37,6 +41,10 @@ msgstr "OpenAPI belgesi yüklenemedi."
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not preview OpenAPI."
 msgstr "OpenAPI önizlenemedi."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not update the selection."
+msgstr "Seçim güncellenemedi."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "External references are not supported."
@@ -74,6 +82,18 @@ msgstr "Önizleniyor…"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Ready"
 msgstr "Hazır"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Files stay in place."
+msgstr "Dosyalar yerinde kalır."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection expired. Diagnose storage again."
+msgstr "Seçimin süresi doldu. Depolamayı yeniden tanılayın."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection saved."
+msgstr "Seçim kaydedildi."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "The API server is not supported."
@@ -1097,6 +1117,7 @@ msgstr "Sunucuya ulaşılamıyor."
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Cancel"
 msgstr "İptal"
 
@@ -6988,6 +7009,7 @@ msgid "Review credentials"
 msgstr "Kimlik bilgilerini incele"
 
 #: src/components/DeploymentTransfer.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Review selection"
 msgstr "Seçimi incele"
 
