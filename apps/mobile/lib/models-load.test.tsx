@@ -2546,14 +2546,17 @@ it("checks a saved API key without exposing it to the editor", async () => {
   });
 });
 
-it.each(["rate", "accepted"] as const)(
-  "checks a replacement key and keeps the %s write receipt",
-  async (inferenceStatus) => {
-    const dynamic = inferenceStatus === "accepted";
+it.each([
+  { provider: "openai", providerName: "OpenAI", inferenceStatus: "rate", dynamic: false },
+  { provider: "openai", providerName: "OpenAI", inferenceStatus: "accepted", dynamic: true },
+  { provider: "openrouter", providerName: "OpenRouter", inferenceStatus: "rate", dynamic: false },
+] as const)(
+  "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
+  async ({ provider, providerName, inferenceStatus, dynamic }) => {
     const saved = {
       id: "fixture-model-connection",
-      provider: "openai",
-      label: "OpenAI",
+      provider,
+      label: providerName,
       hasKey: true,
       isDefault: true,
       authKind: "api_key",
@@ -2585,7 +2588,7 @@ it.each(["rate", "accepted"] as const)(
         return [
           {
             provider: saved.provider,
-            providerName: "OpenAI",
+            providerName,
             id: "fixture-chat",
             label: "Example Chat",
             auth: "api-key",

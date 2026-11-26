@@ -16,6 +16,7 @@ import {
   listPiCatalog,
   ProviderCatalogSelections,
   probeCatalogProviderModels,
+  probeModelInference,
   screenLeaseIdForRun,
   serializeModelSecret,
 } from "@rakazo/adapters";
@@ -3174,7 +3175,8 @@ describe("model credential persistence", () => {
 
   const verifiedConnect = {
     provider: "openai",
-    modelId: listPiCatalog().find((entry) => entry.inferenceProbe)!.id,
+    modelId: listPiCatalog().find((entry) => entry.provider === "openai" && entry.inferenceProbe)!
+      .id,
     apiKey: "fixture-connect-key",
     verifyInference: true,
   };
@@ -3238,6 +3240,73 @@ describe("model credential persistence", () => {
       expect((await response.json()).json).not.toHaveProperty("inferenceStatus");
     }
     expect(inference).not.toHaveBeenCalled();
+  });
+
+  it("tests and connects an OpenRouter model using exactly the draft credential", async () => {
+    const { deps, tx } = persistDeps();
+    const model = listPiCatalog().find(
+      (entry) => entry.provider === "openrouter" && entry.id === "openai/gpt-oss-120b",
+    )!;
+    expect(model.inferenceProbe).toBe(true);
+    const input = { provider: model.provider, modelId: model.id, apiKey: "fixture-router-draft" };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"id":"gen-fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: [DONE]\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response('data: {"error":{"code":402,"message":"Payment Required"}}\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            error: {
+              code: 402,
+              message: "Payment Required",
+              metadata: { limit_source: "openrouter_in_flight_budget" },
+            },
+          },
+          { status: 402 },
+        ),
+      );
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const tested = await call(handler, "models/probeInference", input);
+    expect(tested.status).toBe(200);
+    expect((await tested.json()).json).toEqual({ status: "accepted" });
+    const rejected = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(rejected.status).toBe(400);
+    expect((await rejected.json()).json).toMatchObject({
+      code: "BAD_REQUEST",
+      data: { inferenceStatus: "credit" },
+    });
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    const saved = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      provider: input.provider,
+      modelId: input.modelId,
+      inferenceStatus: "rate",
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [url, init] of fetch.mock.calls) {
+      const request = new Request(url, init);
+      expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${input.apiKey}`);
+      expect(await request.json()).toMatchObject({ model: model.id });
+    }
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+    expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
   });
 
   it("checks authorization on both sides of the provider wait", async () => {
@@ -5830,6 +5899,9 @@ describe("saved model catalog checks", () => {
   const bundled = listPiCatalog()
     .filter((m) => m.provider === "openai")
     .map(({ id }) => id);
+  const inferenceModelId = listPiCatalog().find(
+    (entry) => entry.provider === "openai" && entry.inferenceProbe,
+  )!.id;
 
   function fixture(modelLiveCatalogEnabled = false) {
     const selections = new ProviderCatalogSelections("fixture-deployment-key");
@@ -5971,7 +6043,7 @@ describe("saved model catalog checks", () => {
 
   it("runs inference only on explicit draft and owned saved-key requests", async () => {
     const { call, infer, inference, probe } = fixture();
-    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    const modelId = inferenceModelId;
     const draft = { provider: "openai", modelId, apiKey: "fixture-draft-key" };
     await call(savedInput);
     expect(inference).not.toHaveBeenCalled();
@@ -5990,7 +6062,7 @@ describe("saved model catalog checks", () => {
 
   it("fences ownership, credential revision, and unsupported targets before inference", async () => {
     const { infer, inference } = fixture();
-    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    const modelId = inferenceModelId;
     const input = { ...savedInput, modelId };
     expect((await infer(input, { ...actor, userId: "another-fixture-owner" })).status).toBe(404);
     expect((await infer({ ...input, expectedRevision: 6 })).status).toBe(409);
@@ -6116,7 +6188,7 @@ describe("saved model catalog checks", () => {
 
   it("discards inference outcomes after a key rotation or revoked membership", async () => {
     const { infer, inference, state } = fixture();
-    const modelId = listPiCatalog().find((entry) => entry.inferenceProbe)!.id;
+    const modelId = inferenceModelId;
     inference.mockImplementationOnce(async () => {
       state.plaintext = "fixture-key-replaced-in-place";
       return "accepted";
