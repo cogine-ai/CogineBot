@@ -155,15 +155,14 @@ test("offers a target-bound recovery after a managed upload reports storage exha
       releaseFirst = resolve;
     });
     const before = uploads.length;
-    await files
-      .locator('input[type="file"]')
-      .setInputFiles(
-        [firstFile, second].map((name) => ({
-          name,
-          mimeType: "text/plain",
-          buffer: Buffer.from(name),
-        })),
-      );
+    await expect(files.getByRole("button", { name: "Upload", exact: true })).toBeEnabled();
+    await files.locator('input[type="file"]').setInputFiles(
+      [firstFile, second].map((name) => ({
+        name,
+        mimeType: "text/plain",
+        buffer: Buffer.from(name),
+      })),
+    );
     try {
       await expect.poll(() => uploads.slice(before)).toEqual([firstFile]);
       await dismiss.click();
