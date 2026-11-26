@@ -131,6 +131,7 @@ describe("row-security maintenance command", () => {
       allowPrePages: true,
       allowPreModelAuth: true,
       allowPreAudit: true,
+      allowPreComputerCleanup: true,
     });
   });
 
@@ -140,6 +141,7 @@ describe("row-security maintenance command", () => {
       allowPrePages: true,
       allowPreModelAuth: false,
       allowPreAudit: false,
+      allowPreComputerCleanup: false,
     });
   });
 

@@ -19,6 +19,7 @@ import type {
 import {
   accountSecuritySchema,
   authCapabilitiesSchema,
+  COMPUTER_STORAGE_SELECTION_HEADER,
   IsoDate,
   legacyAccountSecurity,
   legacyAuthCapabilitiesSchema,
@@ -1060,6 +1061,7 @@ export async function rpc<T>(
           origin: "coginebot://",
           ...requestHeaders,
           [WEBSITE_LOGIN_CARD_HEADER]: "1",
+          ...(proc === "computer/diskUsage" ? { [COMPUTER_STORAGE_SELECTION_HEADER]: "1" } : {}),
         },
         body: JSON.stringify({ json: body }),
         signal: controller.signal,

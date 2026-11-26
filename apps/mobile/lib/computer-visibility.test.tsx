@@ -105,6 +105,26 @@ vi.mock("../components/computer-maintenance-actions", () => ({
 }));
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
 vi.mock("../components/settings-group", () => ({
+  SettingsGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SettingsSwitch: ({
+    label,
+    value,
+    disabled,
+    onChange,
+  }: {
+    label: string;
+    value: boolean;
+    disabled?: boolean;
+    onChange: (checked: boolean) => void;
+  }) => (
+    <input
+      type="checkbox"
+      aria-label={label}
+      checked={value}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.checked)}
+    />
+  ),
   SettingsRow: ({ title, onPress }: { title: string; onPress: () => void }) => (
     <button type="button" onClick={onPress}>
       {title}
@@ -113,8 +133,16 @@ vi.mock("../components/settings-group", () => ({
 }));
 vi.mock("../components/glass-icon-button", () => ({ GlassIconButton: () => null }));
 vi.mock("../components/native-action-button", () => ({
-  NativeActionButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
-    <button type="button" onClick={onPress}>
+  NativeActionButton: ({
+    label,
+    onPress,
+    disabled,
+  }: {
+    label: string;
+    onPress: () => void;
+    disabled?: boolean;
+  }) => (
+    <button type="button" onClick={onPress} disabled={disabled}>
       {label}
     </button>
   ),
@@ -631,4 +659,73 @@ it("does not boot from a failed foreground status read", async () => {
   await render();
   expect(calls("computer/boot")).toHaveLength(0);
   expect(calls("computer/heartbeat")).toHaveLength(0);
+});
+
+it("requires an explicit selection and confirmation in Storage", async () => {
+  const target = "a".repeat(64);
+  const selected = {
+    path: "notes.txt",
+    logicalBytes: 40,
+    cleanup: { version: "b".repeat(64), modifiedAtMs: 1000 },
+  };
+  nextDiskUsage = Promise.resolve({
+    botId: "bot-a",
+    target,
+    outcome: {
+      status: "available",
+      data: {
+        volume: { totalBytes: 100, availableBytes: 0, availableInodes: null },
+        partial: false,
+        candidates: [selected, { path: "other.txt", logicalBytes: 10 }],
+      },
+    },
+  });
+  const plan = {
+    id: "cadfe403-695d-44ba-9f0b-a35e87cb2025",
+    botId: "bot-a",
+    revision: 1,
+    status: "awaiting_confirmation",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    selected: [{ path: selected.path, logicalBytes: selected.logicalBytes, ...selected.cleanup }],
+  };
+  const original = state.rpc.getMockImplementation()!;
+  state.rpc.mockImplementation(async (proc, ...args) => {
+    if (proc === "computer/planCleanup") return plan;
+    if (proc === "computer/confirmCleanup") return { ...plan, status: "reviewed", revision: 2 };
+    return original(proc, ...args);
+  });
+  await render();
+  const button = (label: string) => {
+    const result = [...host.querySelectorAll("button")].find(
+      (entry) => entry.textContent === label,
+    );
+    expect(result).toBeDefined();
+    return result!;
+  };
+  const click = (label: string) => act(async () => button(label).click());
+  await click("Storage");
+  await click("Diagnose storage");
+  expect(button("Review selection").disabled).toBe(true);
+  await act(async () =>
+    host.querySelector<HTMLInputElement>('input[aria-label="notes.txt"]')?.click(),
+  );
+  await click("Review selection");
+  expect(calls("computer/planCleanup")[0]?.[1]).toEqual({
+    botId: "bot-a",
+    expectedTarget: target,
+    selected: [{ path: "notes.txt", version: selected.cleanup.version }],
+    requestNonce: expect.any(String),
+  });
+  expect(calls("computer/confirmCleanup")).toHaveLength(0);
+  expect(host.textContent).toContain("Files stay in place.");
+  expect(host.textContent).not.toContain("other.txt");
+  await click("Confirm selection");
+  expect(calls("computer/confirmCleanup")[0]?.[1]).toEqual({
+    botId: "bot-a",
+    planId: plan.id,
+    expectedRevision: 1,
+    confirmed: true,
+    requestNonce: expect.any(String),
+  });
+  expect(host.textContent).toContain("Selection saved.");
 });

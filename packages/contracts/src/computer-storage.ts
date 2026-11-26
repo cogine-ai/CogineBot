@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+// Older clients validate the original candidate shape strictly.
+export const COMPUTER_STORAGE_SELECTION_HEADER = "x-rakazo-storage-selection";
 export const COMPUTER_DISK_USAGE_TIMEOUT_MS = 10_000;
 export const COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES = 64 * 1024;
 export const COMPUTER_DISK_USAGE_MAX_CANDIDATES = 100;
@@ -83,11 +85,20 @@ const relativePath = z
     );
   });
 
+const cleanupPath = relativePath.refine((value) => !/[?*[\]]/u.test(value));
+const fileRevision = z.string().regex(/^[0-9a-f]{64}$/);
+const cleanupFingerprint = z
+  .object({ version: fileRevision, modifiedAtMs: z.int().min(-8.64e15).max(8.64e15) })
+  .strict();
+const diskCandidate = z
+  .object({ path: relativePath, logicalBytes: count, cleanup: cleanupFingerprint.optional() })
+  .strict();
+
 const diskUsageData = z
   .object({
     volume,
     candidates: z
-      .array(z.object({ path: relativePath, logicalBytes: count }).strict())
+      .array(diskCandidate)
       .max(COMPUTER_DISK_USAGE_MAX_CANDIDATES)
       .refine((files) => new Set(files.map((file) => file.path)).size === files.length),
     partial: z.boolean(),
@@ -115,6 +126,63 @@ export const ComputerDiskUsageResultSchema = z
   })
   .strict();
 export type ComputerDiskUsageResult = z.infer<typeof ComputerDiskUsageResultSchema>;
+
+const requestNonce = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/);
+const uniquePaths = <T extends { path: string }>(files: T[]) =>
+  new Set(files.map(({ path }) => path)).size === files.length;
+const cleanupSelection = z
+  .array(z.object({ path: cleanupPath, version: fileRevision }).strict())
+  .min(1)
+  .max(COMPUTER_DISK_USAGE_MAX_CANDIDATES)
+  .refine(uniquePaths);
+const cleanupEntry = cleanupFingerprint.extend({ path: cleanupPath, logicalBytes: count });
+export const ComputerCleanupEntriesSchema = z
+  .array(cleanupEntry)
+  .min(1)
+  .max(COMPUTER_DISK_USAGE_MAX_CANDIDATES)
+  .refine(uniquePaths);
+export type ComputerCleanupEntries = z.infer<typeof ComputerCleanupEntriesSchema>;
+
+export const PlanComputerCleanupInputSchema = z
+  .object({
+    botId,
+    expectedTarget: target,
+    requestNonce,
+    selected: cleanupSelection,
+  })
+  .strict();
+export type PlanComputerCleanupInput = z.infer<typeof PlanComputerCleanupInputSchema>;
+
+export const UpdateComputerCleanupInputSchema = z
+  .object({
+    botId,
+    planId: z.uuid(),
+    expectedRevision: z.int().positive(),
+  })
+  .strict();
+export type UpdateComputerCleanupInput = z.infer<typeof UpdateComputerCleanupInputSchema>;
+
+export const ConfirmComputerCleanupInputSchema = UpdateComputerCleanupInputSchema.extend({
+  confirmed: z.literal(true),
+  requestNonce,
+});
+export type ConfirmComputerCleanupInput = z.infer<typeof ConfirmComputerCleanupInputSchema>;
+
+export const ComputerCleanupPlanSchema = z
+  .object({
+    id: z.uuid(),
+    botId,
+    revision: z.int().positive(),
+    expiresAt: z.iso.datetime(),
+    status: z.enum(["awaiting_confirmation", "reviewed", "cancelled", "expired"]),
+    selected: ComputerCleanupEntriesSchema,
+  })
+  .strict();
+export type ComputerCleanupPlan = z.infer<typeof ComputerCleanupPlanSchema>;
 
 export const ComputerStorageRecoverySchema = z
   .object({

@@ -3,6 +3,7 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { ContractRouterClient } from "@orpc/contract";
 import type { AppContract } from "@rakazo/contracts";
 import {
+  COMPUTER_STORAGE_SELECTION_HEADER,
   LOCAL_SETTINGS_PAGE,
   LOCAL_SETTINGS_RPC,
   WEBSITE_LOGIN_CARD_HEADER,
@@ -228,6 +229,8 @@ const link = new RPCLink<RpcClientContext>({
     };
     const headers = withSpaceHeaders(request.headers, spaceId);
     headers.set(WEBSITE_LOGIN_CARD_HEADER, "1");
+    if (path[0] === "computer" && path[1] === "diskUsage")
+      headers.set(COMPUTER_STORAGE_SELECTION_HEADER, "1");
     const response = await fetch(request, {
       headers,
       credentials: "include",

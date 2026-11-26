@@ -26,6 +26,10 @@ msgstr "생략된 추가 진단: {0}"
 msgid "Circular references are not supported."
 msgstr "순환 참조는 지원되지 않습니다."
 
+#: src/components/computer/ComputerStorage.tsx
+msgid "Confirm selection"
+msgstr "선택 확인"
+
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not confirm installation."
 msgstr "설치를 확인할 수 없습니다."
@@ -37,6 +41,10 @@ msgstr "OpenAPI 문서를 불러올 수 없습니다."
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Could not preview OpenAPI."
 msgstr "OpenAPI를 미리 볼 수 없습니다."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not update the selection."
+msgstr "선택을 업데이트하지 못했습니다."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "External references are not supported."
@@ -74,6 +82,18 @@ msgstr "미리 보는 중…"
 #: src/components/integrations/OpenApiImportReview.tsx
 msgid "Ready"
 msgstr "가져오기 가능"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Files stay in place."
+msgstr "파일은 그대로 유지됩니다."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection expired. Diagnose storage again."
+msgstr "선택이 만료되었습니다. 저장 공간을 다시 진단하세요."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Selection saved."
+msgstr "선택이 저장되었습니다."
 
 #: src/lib/openapi-diagnostic.ts
 msgid "The API server is not supported."
@@ -1097,6 +1117,7 @@ msgstr "서버에 연결할 수 없습니다."
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/shell/bot-credentials.tsx
 #: src/pages/shell/dialogs.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Cancel"
 msgstr "취소"
 
@@ -6988,6 +7009,7 @@ msgid "Review credentials"
 msgstr "인증 정보 검토"
 
 #: src/components/DeploymentTransfer.tsx
+#: src/components/computer/ComputerStorage.tsx
 msgid "Review selection"
 msgstr "선택 항목 검토"
 

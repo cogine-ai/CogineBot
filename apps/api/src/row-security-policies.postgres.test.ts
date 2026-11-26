@@ -1747,6 +1747,424 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     if (failures.length) throw new AggregateError(failures, "Policy fixture cleanup failed");
   });
 
+  it("binds cleanup plans and one-time confirmations to the selected actor, workspace and file versions", async () => {
+    const { createRouterClient } = await import("@orpc/server");
+    const { createRouter } = await import("./router.js");
+    const computerId = id("cleanup-computer");
+    const botId = id("cleanup-bot");
+    const sessionId = id("cleanup-session");
+    await owner.prisma.computer.create({
+      data: {
+        id: computerId,
+        spaceId: spaceA,
+        userId: userA,
+        scopeKey: `team:${spaceA}`,
+        homeKey: computerId,
+        kind: "docker",
+        providerRef: "fixture-sandbox",
+        state: "running",
+      },
+    });
+    await owner.prisma.bot.create({
+      data: {
+        id: botId,
+        spaceId: spaceA,
+        userId: userA,
+        name: "Storage",
+        color: "ink",
+        computerId,
+      },
+    });
+    await owner.prisma.session.create({
+      data: {
+        id: sessionId,
+        token: id("cleanup-fixture-token"),
+        userId: userA,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const selectedFile = {
+      path: "one.txt",
+      logicalBytes: 41,
+      cleanup: { version: "a".repeat(64), modifiedAtMs: 1000 },
+    };
+    const otherFile = {
+      path: "two.txt",
+      logicalBytes: 1024,
+      cleanup: { version: "b".repeat(64), modifiedAtMs: 1000 },
+    };
+    const available = {
+      status: "available",
+      data: {
+        volume: { totalBytes: 5000, availableBytes: 0, availableInodes: 15 },
+        partial: false,
+        candidates: [otherFile, selectedFile],
+      },
+    };
+    const getDiskUsage = vi.fn().mockResolvedValue(available);
+    const execute = vi.fn();
+    const provision = vi.fn();
+    const router = createRouter({
+      prisma: runtime!.prisma,
+      sandbox: { getDiskUsage, execute, provision },
+      env: { sandboxProvider: "fake" },
+      dataDir: "unused-storage-fixture",
+    } as unknown as Parameters<typeof createRouter>[0]);
+    const clientFor = (
+      userId: string,
+      spaceId: string,
+      session?: string,
+      supportsStorageSelection = true,
+    ) =>
+      createRouterClient(router, {
+        context: {
+          actor: { userId, spaceId, email: "fixture@example.test", isDeploymentOwner: false },
+          sessionId: session,
+          supportsStorageSelection,
+        },
+      }).computer;
+
+    try {
+      const computer = clientFor(userA, spaceA, sessionId);
+      const diagnostic = await computer.diskUsage({ botId });
+      expect(diagnostic.outcome).toEqual(available);
+      const legacy = await clientFor(userA, spaceA, sessionId, false).diskUsage({ botId });
+      expect(legacy.outcome).toEqual({
+        ...available,
+        data: {
+          ...available.data,
+          candidates: [
+            { path: "two.txt", logicalBytes: 1024 },
+            { path: "one.txt", logicalBytes: 41 },
+          ],
+        },
+      });
+      expect(getDiskUsage.mock.lastCall?.[1]).toMatchObject({ workspace: { kind: "team", botId } });
+      expect(diagnostic.target).toBeTruthy();
+      const selection = {
+        botId,
+        expectedTarget: diagnostic.target!,
+        requestNonce: id("create-plan"),
+        selected: [{ path: selectedFile.path, version: selectedFile.cleanup.version }],
+      };
+      await expect(clientFor(userA, spaceA).planCleanup(selection)).rejects.toMatchObject({
+        code: "UNAUTHORIZED",
+      });
+      const beforeInvalid = getDiskUsage.mock.calls.length;
+      for (const path of [
+        "../outside.txt",
+        ".env",
+        "secrets/token.txt",
+        "cache[1].txt",
+        "state.db",
+        "/",
+      ]) {
+        await expect(
+          computer.planCleanup({
+            ...selection,
+            selected: [{ path, version: selectedFile.cleanup.version }],
+          }),
+        ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      }
+      await expect(
+        computer.planCleanup({
+          ...selection,
+          selected: [...selection.selected, ...selection.selected],
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(getDiskUsage).toHaveBeenCalledTimes(beforeInvalid);
+      const [plan, repeat] = await Promise.all([
+        computer.planCleanup(selection),
+        computer.planCleanup(selection),
+      ]);
+      expect(plan).toEqual(repeat);
+      const createOverlap = { ...selection, requestNonce: id("create-overlap") };
+      const starting = Promise.withResolvers<void>();
+      const creationProbe = Promise.withResolvers<{ status: "unavailable" }>();
+      getDiskUsage.mockImplementationOnce(() => {
+        starting.resolve();
+        return creationProbe.promise;
+      });
+      const latePlan = computer.planCleanup(createOverlap);
+      await starting.promise;
+      try {
+        const winner = await computer.planCleanup(createOverlap);
+        creationProbe.resolve({ status: "unavailable" });
+        await expect(latePlan).resolves.toEqual(winner);
+      } finally {
+        creationProbe.resolve({ status: "unavailable" });
+      }
+      expect(plan).toMatchObject({
+        botId,
+        status: "awaiting_confirmation",
+        revision: 1,
+        selected: [{ path: "one.txt", logicalBytes: 41, ...selectedFile.cleanup }],
+      });
+      await expect(
+        computer.planCleanup({
+          ...selection,
+          selected: [{ path: "two.txt", version: otherFile.cleanup.version }],
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      const update = { botId, planId: plan.id, expectedRevision: 1 };
+      const confirm = { ...update, confirmed: true as const, requestNonce: id("confirm") };
+      await expect(
+        clientFor(userB, spaceA, id("other-session")).confirmCleanup(confirm),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        clientFor(userA, spaceC, sessionId).confirmCleanup(confirm),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        computer.confirmCleanup({ ...confirm, expectedRevision: 2 }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      getDiskUsage.mockResolvedValueOnce({
+        ...available,
+        data: {
+          ...available.data,
+          candidates: [
+            otherFile,
+            {
+              ...selectedFile,
+              cleanup: { ...selectedFile.cleanup, version: "c".repeat(64) },
+            },
+          ],
+        },
+      });
+      await expect(computer.confirmCleanup(confirm)).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(
+        inA(() =>
+          runtime!.prisma.computerCleanupPlan.findUniqueOrThrow({ where: { id: plan.id } }),
+        ),
+      ).resolves.toMatchObject({ revision: 1, confirmationNonce: null });
+
+      const [accepted, competing] = await Promise.allSettled([
+        computer.confirmCleanup(confirm),
+        computer.confirmCleanup({ ...confirm, requestNonce: id("other-confirm") }),
+      ]);
+      const firstWon = accepted.status === "fulfilled";
+      const winner = firstWon ? accepted : competing;
+      const loser = firstWon ? competing : accepted;
+      expect(winner).toMatchObject({
+        status: "fulfilled",
+        value: {
+          ...plan,
+          revision: 2,
+          status: "reviewed",
+        },
+      });
+      expect(loser).toMatchObject({ status: "rejected", reason: { code: "CONFLICT" } });
+      const retry = firstWon ? confirm : { ...confirm, requestNonce: id("other-confirm") };
+      const probeCount = getDiskUsage.mock.calls.length;
+      await expect(computer.confirmCleanup(retry)).resolves.toMatchObject({
+        ...plan,
+        revision: 2,
+        status: "reviewed",
+      });
+      expect(getDiskUsage).toHaveBeenCalledTimes(probeCount);
+      await expect(computer.cancelCleanup(update)).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(
+        runAsTenant({ spaceId: spaceA, userId: userB }, () =>
+          runtime!.prisma.computerCleanupPlan.findMany({ where: { id: plan.id } }),
+        ),
+      ).resolves.toEqual([]);
+
+      const pending = await computer.planCleanup({ ...selection, requestNonce: id("cancel-plan") });
+      const cancel = { ...update, planId: pending.id };
+      await expect(computer.cancelCleanup(cancel)).resolves.toMatchObject({ status: "cancelled" });
+      await expect(computer.cancelCleanup(cancel)).resolves.toMatchObject({ status: "cancelled" });
+      await expect(
+        computer.confirmCleanup({ ...confirm, planId: pending.id }),
+      ).resolves.toMatchObject({
+        status: "cancelled",
+      });
+
+      const expiring = await computer.planCleanup({
+        ...selection,
+        requestNonce: id("expire-plan"),
+      });
+      await owner.prisma.computerCleanupPlan.update({
+        where: { id: expiring.id },
+        data: { expiresAt: new Date(0) },
+      });
+      await expect(
+        computer.confirmCleanup({ ...confirm, planId: expiring.id }),
+      ).resolves.toMatchObject({
+        status: "expired",
+        revision: 1,
+      });
+
+      // Starting a different plan can't erase either an expired nonce or a settled receipt.
+      const replayable = await computer.planCleanup({
+        ...selection,
+        requestNonce: id("overlap-plan"),
+      });
+      await expect(
+        computer.planCleanup({ ...selection, requestNonce: id("expire-plan") }),
+      ).resolves.toMatchObject({ id: expiring.id, status: "expired" });
+      const overlap = { ...confirm, planId: replayable.id };
+      const probing = Promise.withResolvers<void>();
+      const response = Promise.withResolvers<typeof available | { status: "unavailable" }>();
+      getDiskUsage.mockImplementationOnce(() => {
+        probing.resolve();
+        return response.promise;
+      });
+      const late = computer.confirmCleanup(overlap);
+      await probing.promise;
+      try {
+        await expect(computer.confirmCleanup(overlap)).resolves.toMatchObject({
+          status: "reviewed",
+          revision: 2,
+        });
+      } finally {
+        response.resolve({ status: "unavailable" });
+      }
+      await expect(late).resolves.toMatchObject({ status: "reviewed", revision: 2 });
+      await owner.prisma.computerCleanupPlan.update({
+        where: { id: replayable.id },
+        data: { expiresAt: new Date(0) },
+      });
+
+      const withinProbe = await computer.planCleanup({
+        ...selection,
+        requestNonce: id("expires-during-probe"),
+      });
+      getDiskUsage.mockImplementationOnce(async () => {
+        // Move the database deadline while the workspace read is in progress.
+        await owner.prisma.$executeRaw`
+          UPDATE cogine_storage.computer_cleanup_plans
+          SET "expiresAt" = (clock_timestamp() AT TIME ZONE 'UTC') - interval '1 second'
+          WHERE id = ${withinProbe.id}`;
+        return available;
+      });
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 60_000);
+      try {
+        await expect(
+          computer.confirmCleanup({ ...confirm, planId: withinProbe.id }),
+        ).resolves.toMatchObject({ status: "expired", revision: 1 });
+        await expect(
+          computer.cancelCleanup({ ...update, planId: withinProbe.id }),
+        ).resolves.toMatchObject({ status: "expired", revision: 1 });
+      } finally {
+        now.mockRestore();
+      }
+
+      // Exercise the existing switch lock order while the cleanup request is waiting.
+      const switcher = await owner.pool.connect();
+      let blockedPlan: Promise<unknown> | undefined;
+      try {
+        await switcher.query("BEGIN");
+        await switcher.query("SET LOCAL lock_timeout = '1500ms'");
+        await switcher.query("SELECT id FROM public.computers WHERE id = $1 FOR UPDATE", [
+          computerId,
+        ]);
+        blockedPlan = computer
+          .planCleanup({ ...selection, requestNonce: id("switching-plan") })
+          .catch((error: unknown) => error);
+        await vi.waitFor(
+          async () => {
+            const { rows } = await owner.pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'
+                AND query LIKE '%FOR SHARE OF c%'
+            ) AS waiting`);
+            expect(rows).toEqual([{ waiting: true }]);
+          },
+          { timeout: 2_000 },
+        );
+        await switcher.query('UPDATE public.bots SET "computerSwitching" = true WHERE id = $1', [
+          botId,
+        ]);
+        await switcher.query("COMMIT");
+        await expect(blockedPlan).resolves.toMatchObject({ code: "CONFLICT" });
+      } finally {
+        await switcher.query("ROLLBACK");
+        switcher.release();
+        await blockedPlan;
+        await owner.prisma.bot.update({ where: { id: botId }, data: { computerSwitching: false } });
+      }
+
+      const moved = await computer.planCleanup({ ...selection, requestNonce: id("moved-plan") });
+      await expect(computer.confirmCleanup(overlap)).resolves.toMatchObject({
+        status: "reviewed",
+        revision: 2,
+      });
+      await owner.prisma.computer.update({
+        where: { id: computerId },
+        data: { providerRef: "new-target" },
+      });
+      const afterMoveCount = getDiskUsage.mock.calls.length;
+      await expect(computer.confirmCleanup({ ...confirm, planId: moved.id })).rejects.toMatchObject(
+        { code: "CONFLICT" },
+      );
+      expect(getDiskUsage).toHaveBeenCalledTimes(afterMoveCount);
+      await owner.prisma.computer.update({
+        where: { id: computerId },
+        data: { homeKey: id("replacement-home") },
+      });
+      await expect(computer.planCleanup(selection)).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(computer.confirmCleanup(overlap)).rejects.toMatchObject({ code: "CONFLICT" });
+      await owner.prisma.computer.update({
+        where: { id: computerId },
+        data: { homeKey: computerId },
+      });
+      await owner.prisma.bot.update({ where: { id: botId }, data: { archivedAt: new Date() } });
+      await expect(computer.planCleanup(selection)).rejects.toMatchObject({ code: "CONFLICT" });
+      await expect(computer.confirmCleanup(overlap)).rejects.toMatchObject({ code: "CONFLICT" });
+      await owner.prisma.session.delete({ where: { id: sessionId } });
+      await expect(computer.confirmCleanup(retry)).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+      expect(execute).not.toHaveBeenCalled();
+      expect(provision).not.toHaveBeenCalled();
+    } finally {
+      await owner.prisma.session.deleteMany({ where: { id: sessionId } });
+      await owner.prisma.bot.delete({ where: { id: botId } });
+      await owner.prisma.computer.delete({ where: { id: computerId } });
+    }
+  });
+
+  it("installs cleanup review policies over a protected predecessor and verifies rollback separately", async () => {
+    const migration = await readFile(
+      new URL(
+        "../../../packages/db/prisma/migrations/20261126095000_computer_cleanup_plans/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const prisma = runtime!.prisma;
+    await owner.pool.query("ALTER SCHEMA cogine_storage RENAME TO previous_cleanup_fixture");
+    try {
+      await expect(verifyRuntimeDatabase(prisma)).rejects.toThrow("policies");
+      await expect(
+        verifyRuntimeDatabase(prisma, { allowPreComputerCleanup: true }),
+      ).resolves.toMatchObject({
+        connectionEnforced: true,
+      });
+      await owner.pool.query("CREATE SCHEMA cogine_storage");
+      await expect(
+        verifyRuntimeDatabase(prisma, { allowPreComputerCleanup: true }),
+      ).rejects.toThrow("policies");
+      await owner.pool.query("DROP SCHEMA cogine_storage");
+      await owner.pool.query(migration);
+      await expect(verifyRuntimeDatabase(prisma)).resolves.toMatchObject({
+        connectionEnforced: true,
+      });
+      const grants = await prisma.$queryRaw<Array<{ canDelete: boolean }>>`
+        SELECT has_table_privilege(current_user, 'cogine_storage.computer_cleanup_plans', 'DELETE') AS "canDelete"`;
+      expect(grants).toEqual([{ canDelete: false }]);
+      await owner.pool.query(
+        "DROP POLICY computer_cleanup_plans_tenant ON cogine_storage.computer_cleanup_plans",
+      );
+      await expect(
+        verifyRuntimeDatabase(prisma, { allowPreComputerCleanup: true }),
+      ).rejects.toThrow("policies");
+    } finally {
+      await owner.pool.query("DROP TABLE IF EXISTS cogine_storage.computer_cleanup_plans");
+      await owner.pool.query("DROP SCHEMA IF EXISTS cogine_storage");
+      await owner.pool.query("ALTER SCHEMA previous_cleanup_fixture RENAME TO cogine_storage");
+    }
+  });
+
   it("reports orphaned transfer credentials from the maintenance CLI under RLS", async () => {
     const transferId = id("orphaned-transfer");
     const itemId = id("orphaned-item");
@@ -1844,7 +2262,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
     );
     expect(actualRole).toEqual([{ superuser: false, bypass: false, owns: false }]);
     const snapshot = await catalog();
-    expect(snapshot).toHaveLength(164);
+    expect(snapshot).toHaveLength(166);
     expect(
       snapshot.every(
         (policy) => policy.polpermissive && policy.polcmd === "*" && policy.polroles === "{0}",
@@ -2858,7 +3276,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       try {
         await owner.pool.query(change);
         const state = await describeRowSecurityPolicies(runtime!.prisma);
-        expect((await catalog()).length).toBe(164);
+        expect((await catalog()).length).toBe(166);
         expect(state.policyInstalled).toBe(false);
         expect(state.connectionEnforced).toBe(false);
         expect(state.tables.find((candidate) => candidate.table === table)?.policyMatch).toBe(
@@ -3151,7 +3569,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         else expect((failure as Error).cause).toBe(closeFailure);
         const committed = await catalog();
         expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-        expect(committed).toHaveLength(164);
+        expect(committed).toHaveLength(166);
       } finally {
         query.mockRestore();
         close.mockRestore();
@@ -3197,7 +3615,7 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
       );
       const committed = await catalog();
       expect(committed.every((table) => table.relrowsecurity)).toBe(true);
-      expect(committed).toHaveLength(164);
+      expect(committed).toHaveLength(166);
     } finally {
       await owner.pool.query(`DROP EVENT TRIGGER IF EXISTS ${escapeIdentifier(trigger)}`);
       await owner.pool.query(`DROP FUNCTION IF EXISTS public.${escapeIdentifier(fn)}()`);

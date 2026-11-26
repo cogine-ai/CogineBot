@@ -20,9 +20,10 @@ def mount(fd):
 // Linux descriptor-relative reads keep traversal on the managed workspace mount.
 // O_PATH opens metadata only, including for sockets, device files, and symlinks.
 export const workspaceDiskProbe = String.raw`
-import json, os, select, stat, sys, threading, time, unicodedata
+import hashlib, json, os, select, stat, sys, threading, time, unicodedata
 
-home, bot = sys.argv[1:]
+home, bot, *epochs = sys.argv[1:]
+epoch = epochs[0] if epochs else ""
 max_entries = 2000
 max_depth = ${COMPUTER_DISK_USAGE_MAX_DEPTH}
 max_candidates = ${COMPUTER_DISK_USAGE_MAX_CANDIDATES}
@@ -76,7 +77,7 @@ def main():
     seen = 0
     partial = False
 
-    def visit(fd, prefix, depth):
+    def visit(fd, prefix, depth, lineage):
         nonlocal seen, partial
         try:
             with os.scandir(fd) as listing:
@@ -104,11 +105,19 @@ def main():
                                     continue
                                 nested = os.open(".", directory, dir_fd=child)
                                 try:
-                                    visit(nested, name + "/", depth + 1)
+                                    visit(nested, name + "/", depth + 1, lineage + (info.st_ino,))
                                 finally:
                                     os.close(nested)
                             elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                                rows.append((info.st_size, name))
+                                candidate = {"path": name, "logicalBytes": info.st_size}
+                                if epoch and not any(mark in name for mark in "?*[]"):
+                                    version = (epoch, work_mount, root_info.st_dev, lineage, name,
+                                        identity(info), info.st_size, info.st_mtime_ns)
+                                    candidate["cleanup"] = {
+                                        "version": hashlib.sha256(repr(version).encode("utf-8")).hexdigest(),
+                                        "modifiedAtMs": info.st_mtime_ns // 1000000,
+                                    }
+                                rows.append(candidate)
                             if identity(os.stat(entry.name, dir_fd=fd, follow_symlinks=False)) != identity(info):
                                 del rows[first_row:]
                                 partial = True
@@ -122,16 +131,15 @@ def main():
                 raise
             partial = True
 
-    visit(root, "", 1)
+    visit(root, "", 1, (root_info.st_ino,))
     current = workspace()
     after = os.fstat(current)
     if identity(after) != identity(root_info) or mount(current) != work_mount:
         return {"status": "unavailable"}
-    rows.sort(key=lambda file: (-file[0], file[1]))
+    rows.sort(key=lambda file: (-file["logicalBytes"], file["path"]))
     candidates = []
     remaining = max_candidate_bytes
-    for size, name in rows[:max_candidates]:
-        candidate = {"path": name, "logicalBytes": size}
+    for candidate in rows[:max_candidates]:
         encoded_bytes = len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         remaining -= encoded_bytes + 1
         if remaining < 0:

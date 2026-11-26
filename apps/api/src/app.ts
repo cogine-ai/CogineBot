@@ -91,7 +91,11 @@ import {
 } from "@rakazo/adapters";
 import { createAuth, isBlockedAuthPath, loopbackTwinOrigins } from "@rakazo/auth";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
-import { COMPUTER_DISK_USAGE_TIMEOUT_MS, WEBSITE_LOGIN_CARD_HEADER } from "@rakazo/contracts";
+import {
+  COMPUTER_DISK_USAGE_TIMEOUT_MS,
+  COMPUTER_STORAGE_SELECTION_HEADER,
+  WEBSITE_LOGIN_CARD_HEADER,
+} from "@rakazo/contracts";
 import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
@@ -894,7 +898,12 @@ async function buildApp(
   const diskUsageDeadlines = new WeakMap<object, number>();
   app.use("/rpc/*", async (c, next) => {
     const path = new URL(c.req.raw.url).pathname.replace(/\/$/, "");
-    if (path !== "/rpc/computer/diskUsage") return next();
+    if (
+      path !== "/rpc/computer/diskUsage" &&
+      path !== "/rpc/computer/planCleanup" &&
+      path !== "/rpc/computer/confirmCleanup"
+    )
+      return next();
     const request = c.req.raw;
     const timeout = AbortSignal.timeout(COMPUTER_DISK_USAGE_TIMEOUT_MS);
     const signal = AbortSignal.any([request.signal, timeout]);
@@ -952,6 +961,7 @@ async function buildApp(
         supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
         signal: c.req.raw.signal,
         diskUsageDeadline,
+        supportsStorageSelection: c.req.header(COMPUTER_STORAGE_SELECTION_HEADER) === "1",
         // Same user in the same space, so leaving the space also ends a stream.
         // A database failure rejects this check; only a missing membership is unauthorized.
         stillAuthorized: async () => {
