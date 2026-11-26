@@ -843,7 +843,7 @@ export function ModelSettingsOverlay({
         return;
       if (!applied) {
         setPreflightTesting(false);
-        setError(t`Could not load model settings`);
+        setPreflightFailure({ outcome: "unknown", message: t`Could not load model settings` });
         return;
       }
     }

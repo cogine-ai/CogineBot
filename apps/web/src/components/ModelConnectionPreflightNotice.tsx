@@ -21,7 +21,7 @@ export function ModelPreflightFeedback({
   return (
     <div className="mt-2 space-y-1 text-[13px]" role="alert">
       <p className="text-destructive">{failure.message}</p>
-      <p className="text-muted-foreground">{failure.nextAction}</p>
+      {failure.nextAction ? <p className="text-muted-foreground">{failure.nextAction}</p> : null}
     </div>
   );
 }

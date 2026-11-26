@@ -15,7 +15,7 @@ type ModelPreflightOutcome =
 export type ModelPreflightFailure = {
   outcome: ModelPreflightOutcome;
   message: string;
-  nextAction: string;
+  nextAction?: string;
 };
 
 type StoredModelAuthKind = NonNullable<ModelCredential["authKind"]>;

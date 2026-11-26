@@ -1696,7 +1696,10 @@ for (const notListed of [true, false]) {
       if (notListed) {
         failSettingsReadback = true;
         await checkModels.click();
-        await expect(settings.getByRole("alert")).toHaveText("Could not load model settings");
+        const loadError = settings.getByRole("alert").filter({
+          hasText: "Could not load model settings",
+        });
+        await expect(loadError).toBeInViewport({ ratio: 1 });
         await expect(settings.getByText("Chat was not tested.", { exact: false })).toHaveCount(0);
         await expect(picker).toHaveText(modelId);
         await expect(useModel).toBeDisabled();
