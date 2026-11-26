@@ -1058,12 +1058,11 @@ function ModelsForm({
       );
     } catch (error) {
       if (!isCurrent()) return;
-      report(
-        testInference
-          ? modelInferenceProbeMessage("unavailable", t)
-          : errorText(error, t("Could not list models.")),
-        true,
-      );
+      const fallback = testInference
+        ? modelInferenceProbeMessage("unavailable", t)
+        : t("Could not list models.");
+      const message = errorText(error, fallback);
+      report(testInference ? t(message) : message, true);
     } finally {
       finishPending(pendingOwner);
     }

@@ -41,7 +41,6 @@ import {
   matchesSearchQuery,
   modelCatalogProbeInput,
   modelConnectRequest,
-  modelInferenceProbeMessage,
   modelThinkingLevels,
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
@@ -88,15 +87,15 @@ import type { ModelPreflightFailure } from "../lib/model-connection-preflight";
 import {
   classifyModelConnectionFailure,
   loadStoredModelAuth,
+  modelInferenceTestMessage,
   modelPreflightSuccessMessage,
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
 import { currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
-import { translateRunError } from "../lib/run-error";
 import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
-import { errorText } from "../lib/user-error";
+import { errorCode, errorText } from "../lib/user-error";
 import type { ModelConnectionSave } from "./ModelBackupsSettings";
 import { ModelBackupsSettings } from "./ModelBackupsSettings";
 import { ModelDefaultSettings } from "./ModelDefaultSettings";
@@ -817,14 +816,25 @@ export function ModelSettingsOverlay({
     setError(null);
     setNotice(null);
     if (testInference) {
-      const result = await rpc.models
+      const feedback = await rpc.models
         .probeInference({ ...catalogRequest, modelId: selected.id })
-        .catch(() => ({ status: "unavailable" as const }));
+        .then(
+          ({ status }) => ({
+            accepted: status === "accepted",
+            message: modelInferenceTestMessage(status),
+          }),
+          (error: unknown) => ({
+            accepted: false,
+            message:
+              errorCode(error) === "CONFLICT"
+                ? t`Model connection changed. Reload and try again.`
+                : errorText(error, modelInferenceTestMessage("unavailable")),
+          }),
+        );
       if (!isCurrent()) return;
       setPreflightTesting(false);
-      const message = modelInferenceProbeMessage(result.status, translateRunError);
-      if (result.status === "accepted") setPreflightSuccess(message);
-      else setPreflightFailure({ outcome: "unknown", message });
+      if (feedback.accepted) setPreflightSuccess(feedback.message);
+      else setPreflightFailure({ outcome: "unknown", message: feedback.message });
       return;
     }
     let catalogUpdated = false;

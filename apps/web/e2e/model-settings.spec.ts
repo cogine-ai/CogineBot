@@ -1755,9 +1755,24 @@ test("tests model access with the selected saved or draft API key", async ({ pag
     });
   });
   const requests: unknown[] = [];
+  let connectionChanged = false;
   await page.route("**/rpc/models/probeInference", async (route) => {
     const input = route.request().postDataJSON().json;
     requests.push(input);
+    if (connectionChanged) {
+      await route.fulfill({
+        status: 409,
+        json: {
+          json: {
+            defined: false,
+            code: "CONFLICT",
+            status: 409,
+            message: "Model connection changed. Reload and try again.",
+          },
+        },
+      });
+      return;
+    }
     await route.fulfill({ json: { json: { status: input.apiKey ? "auth" : "accepted" } } });
   });
   await page.route("**/rpc/models/probeCatalog", (route) =>
@@ -1788,6 +1803,16 @@ test("tests model access with the selected saved or draft API key", async ({ pag
   ]);
   await captureScreenshot(page, testInfo, "a1-model-inference-accepted");
 
+  connectionChanged = true;
+  await testModel.click();
+  await expect(
+    settings.getByRole("alert").filter({
+      hasText: "Model connection changed. Reload and try again.",
+    }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(accepted).toHaveCount(0);
+  connectionChanged = false;
+
   const draft = settings.getByLabel("Replace API key", { exact: true });
   await draft.fill("fixture-draft-inference-key");
   await testModel.click();
@@ -1795,9 +1820,45 @@ test("tests model access with the selected saved or draft API key", async ({ pag
     settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
   ).toBeInViewport({ ratio: 1 });
   await expect(draft).toHaveValue("fixture-draft-inference-key");
-  expect(requests[1]).toEqual({
+  expect(requests[2]).toEqual({
     provider: model.provider,
     modelId: model.id,
     apiKey: "fixture-draft-inference-key",
   });
+
+  await settings.getByTestId("settings-nav-general").click();
+  await settings.getByTestId("ui-locale-select").click();
+  await settings.getByRole("option", { name: "简体中文", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await settings.getByTestId("settings-nav-models").click();
+  await settings.getByPlaceholder("搜索提供方").fill("openai");
+  await settings
+    .getByRole("button")
+    .filter({ has: page.getByText("OpenAI", { exact: true }) })
+    .click();
+  const localizedTest = settings.getByRole("button", { name: "测试模型", exact: true });
+  const localizedDraft = settings.getByLabel("替换 API 密钥", { exact: true });
+  await localizedDraft.fill("");
+  await localizedTest.click();
+  await expect(
+    settings.getByRole("status").filter({ hasText: "模型已接收测试请求。" }),
+  ).toBeInViewport({
+    ratio: 1,
+  });
+
+  connectionChanged = true;
+  await localizedTest.click();
+  await expect(
+    settings.getByRole("alert").filter({ hasText: "模型连接已更改，请重新加载后重试。" }),
+  ).toBeInViewport({ ratio: 1 });
+  await captureScreenshot(page, testInfo, "a1-model-inference-connection-changed");
+
+  connectionChanged = false;
+  await localizedDraft.fill("fixture-draft-inference-key");
+  await localizedTest.click();
+  await expect(
+    settings
+      .getByRole("alert")
+      .filter({ hasText: "你的模型提供商拒绝了 API 密钥。请检查连接设置。" }),
+  ).toBeInViewport({ ratio: 1 });
 });

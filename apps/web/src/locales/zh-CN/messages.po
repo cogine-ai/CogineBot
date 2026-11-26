@@ -1190,15 +1190,15 @@ msgstr "检查模型目录"
 msgid "Test model"
 msgstr "测试模型"
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "The model accepted the test request."
 msgstr "模型已接收测试请求。"
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "This key cannot use the selected model."
 msgstr "此密钥无法使用所选模型。"
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "Could not verify this model."
 msgstr "无法验证此模型。"
 

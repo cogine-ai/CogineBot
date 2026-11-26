@@ -1190,15 +1190,15 @@ msgstr "Check models"
 msgid "Test model"
 msgstr "Test model"
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "The model accepted the test request."
 msgstr "The model accepted the test request."
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "This key cannot use the selected model."
 msgstr "This key cannot use the selected model."
 
-#: src/lib/run-error.ts
+#: src/lib/model-connection-preflight.ts
 msgid "Could not verify this model."
 msgstr "Could not verify this model."
 

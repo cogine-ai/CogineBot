@@ -2364,6 +2364,7 @@ it("checks a saved API key without exposing it to the editor", async () => {
   };
   let readback: Promise<(typeof saved)[]> | undefined;
   let probe: Promise<{ models: string[]; catalogUpdated?: true }> | undefined;
+  let connectionChanged = false;
   const normal = state.rpc.getMockImplementation()!;
   state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
     if (procedure === "me")
@@ -2404,8 +2405,10 @@ it("checks a saved API key without exposing it to the editor", async () => {
       return credentials.map(({ providerListedModelIds: _listed, ...rest }) => rest);
     }
     if (procedure === "models/probeCatalog") return probe ?? { models: [saved.modelId] };
-    if (procedure === "models/probeInference")
+    if (procedure === "models/probeInference") {
+      if (connectionChanged) throw new Error("Model connection changed. Reload and try again.");
       return { status: Object.hasOwn(input as object, "apiKey") ? "auth" : "accepted" };
+    }
     return normal(procedure, input);
   });
   await act(async () => root.render(<Models />));
@@ -2517,6 +2520,14 @@ it("checks a saved API key without exposing it to the editor", async () => {
   expect(savedInference?.[2]).toMatchObject({
     timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
   });
+
+  connectionChanged = true;
+  await act(async () => resetI18nForTests("zh-CN"));
+  await act(async () => button("测试模型").click());
+  expect(container.textContent).toContain("模型连接已更改，请重新加载后重试。");
+  expect(container.textContent).not.toContain("The model accepted the test request.");
+  connectionChanged = false;
+  await act(async () => resetI18nForTests("en"));
 
   await edit(key!, "fixture-draft-inference-key");
   await act(async () => button("Test model").click());

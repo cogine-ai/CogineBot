@@ -48,7 +48,6 @@ export async function probeModelInference(
         signal,
         maxRetries: 0,
         maxTokens: OUTPUT_LIMIT,
-        timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS,
         // Do not inherit organization and project defaults from the deployment.
         headers: { "OpenAI-Organization": null, "OpenAI-Project": null },
         onPayload: (payload) => {
