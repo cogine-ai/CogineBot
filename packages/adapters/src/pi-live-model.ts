@@ -22,14 +22,15 @@ export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "a
   );
 }
 
-export function isOfficialOpenRouterChatModel(
+export function isOfficialChatCompletionProbeModel(
   model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
 ) {
+  if (model.api !== "openai-completions" || !isChatModelId(model.id)) return false;
+  if (model.provider === "openrouter") return model.baseUrl === "https://openrouter.ai/api/v1";
   return (
-    model.provider === "openrouter" &&
-    model.api === "openai-completions" &&
-    model.baseUrl === "https://openrouter.ai/api/v1" &&
-    isChatModelId(model.id)
+    model.provider === "groq" &&
+    model.baseUrl === "https://api.groq.com/openai/v1" &&
+    model.id !== "openai/gpt-oss-safeguard-20b"
   );
 }
 const catalogModels = builtinModels();

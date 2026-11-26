@@ -2170,87 +2170,107 @@ test("tests model access with the selected saved or draft API key", async ({ pag
   ).toBeInViewport({ ratio: 1 });
 });
 
-test("offers the OpenRouter model test and checks the replacement key before saving", async ({
-  page,
-}, testInfo) => {
-  await signup(page, `gateway-check-${Date.now()}@example.test`, "password12", "Model fixture");
-  await completeOnboarding(page);
-  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
-  const model = catalog.find(
-    (entry) => entry.provider === "openrouter" && entry.id === "openai/gpt-oss-120b",
-  )!;
-  const saved = await rpc<ModelCredential>(page, "models/connect", {
-    provider: model.provider,
-    apiKey: "fixture-gateway-saved-key",
-    modelId: model.id,
-  });
-  await page.route("**/rpc/models/list", async (route) => {
-    const response = await route.fetch();
-    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
-    await route.fulfill({
-      response,
-      json: {
-        json: json.map((entry) =>
-          entry.id === model.id && entry.provider === model.provider
-            ? { ...entry, inferenceProbe: true }
-            : entry,
-        ),
-      },
+for (const { provider, providerName, rejection, rejectionText } of [
+  {
+    provider: "openrouter",
+    providerName: "OpenRouter",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
+  {
+    provider: "groq",
+    providerName: "Groq",
+    rejection: "auth",
+    rejectionText: /rejected the API key/,
+  },
+] as const) {
+  test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
+    page,
+  }, testInfo) => {
+    await signup(
+      page,
+      `provider-check-${provider}-${Date.now()}@example.test`,
+      "password12",
+      "Model fixture",
+    );
+    await completeOnboarding(page);
+    const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+    const model = catalog.find(
+      (entry) => entry.provider === provider && entry.id === "openai/gpt-oss-120b",
+    )!;
+    const saved = await rpc<ModelCredential>(page, "models/connect", {
+      provider: model.provider,
+      apiKey: "fixture-gateway-saved-key",
+      modelId: model.id,
     });
-  });
-  await page.route("**/rpc/models/probeInference", (route) =>
-    route.fulfill({ json: { json: { status: "accepted" } } }),
-  );
-  await page.route("**/rpc/models/connect", (route) =>
-    route.fulfill({
-      status: 400,
-      json: {
+    await page.route("**/rpc/models/list", async (route) => {
+      const response = await route.fetch();
+      const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+      await route.fulfill({
+        response,
         json: {
-          defined: true,
-          code: "BAD_REQUEST",
-          status: 400,
-          message: "Could not check the model.",
-          data: { inferenceStatus: "credit" },
+          json: json.map((entry) =>
+            entry.id === model.id && entry.provider === model.provider
+              ? { ...entry, inferenceProbe: true }
+              : entry,
+          ),
         },
-      },
-    }),
-  );
+      });
+    });
+    await page.route("**/rpc/models/probeInference", (route) =>
+      route.fulfill({ json: { json: { status: "accepted" } } }),
+    );
+    await page.route("**/rpc/models/connect", (route) =>
+      route.fulfill({
+        status: 400,
+        json: {
+          json: {
+            defined: true,
+            code: "BAD_REQUEST",
+            status: 400,
+            message: "Could not check the model.",
+            data: { inferenceStatus: rejection },
+          },
+        },
+      }),
+    );
 
-  const settings = await openUserSettings(page, "models");
-  await settings.getByPlaceholder("Search providers").fill("OpenRouter");
-  await settings
-    .getByRole("button")
-    .filter({ has: page.getByText("OpenRouter", { exact: true }) })
-    .click();
-  const tested = page.waitForRequest("**/rpc/models/probeInference");
-  await settings.getByRole("button", { name: "Test model", exact: true }).click();
-  expect((await tested).postDataJSON().json).toEqual({
-    provider: model.provider,
-    modelId: model.id,
-    credentialId: saved.id,
-    expectedRevision: saved.connectionRevision,
-  });
-  await expect(
-    settings.getByRole("status").filter({ hasText: "accepted the test request" }),
-  ).toBeInViewport({ ratio: 0.98 });
-  await captureScreenshot(page, testInfo, "a1-openrouter-model-test-accepted");
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill(providerName);
+    await settings
+      .getByRole("button")
+      .filter({ has: page.getByText(providerName, { exact: true }) })
+      .click();
+    const tested = page.waitForRequest("**/rpc/models/probeInference");
+    await settings.getByRole("button", { name: "Test model", exact: true }).click();
+    expect((await tested).postDataJSON().json).toEqual({
+      provider: model.provider,
+      modelId: model.id,
+      credentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+    });
+    await expect(
+      settings.getByRole("status").filter({ hasText: "accepted the test request" }),
+    ).toBeInViewport({ ratio: 0.98 });
+    await captureScreenshot(page, testInfo, `a1-${provider}-model-test-accepted`);
 
-  const draft = settings.getByLabel("Replace API key", { exact: true });
-  const newKey = "fixture-gateway-replacement-key";
-  await draft.fill(newKey);
-  await expect(
-    settings.getByText("Connecting sends one test request that may incur usage charges."),
-  ).toBeInViewport({ ratio: 0.98 });
-  const replacing = page.waitForRequest("**/rpc/models/connect");
-  await settings.getByRole("button", { name: "Replace API key", exact: true }).click();
-  expect((await replacing).postDataJSON().json).toMatchObject({
-    provider: model.provider,
-    modelId: model.id,
-    credentialId: saved.id,
-    expectedRevision: saved.connectionRevision,
-    apiKey: newKey,
-    verifyInference: true,
+    const draft = settings.getByLabel("Replace API key", { exact: true });
+    const newKey = "fixture-gateway-replacement-key";
+    await draft.fill(newKey);
+    await expect(
+      settings.getByText("Connecting sends one test request that may incur usage charges."),
+    ).toBeInViewport({ ratio: 0.98 });
+    const replacing = page.waitForRequest("**/rpc/models/connect");
+    await settings.getByRole("button", { name: "Replace API key", exact: true }).click();
+    expect((await replacing).postDataJSON().json).toMatchObject({
+      provider: model.provider,
+      modelId: model.id,
+      credentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+      apiKey: newKey,
+      verifyInference: true,
+    });
+    await expect(settings.getByRole("alert").filter({ hasText: rejectionText })).toBeVisible();
+    await expect(draft).toHaveValue(newKey);
   });
-  await expect(settings.getByRole("alert").filter({ hasText: /credit limit/ })).toBeVisible();
-  await expect(draft).toHaveValue(newKey);
-});
+}

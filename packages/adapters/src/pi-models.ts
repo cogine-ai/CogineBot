@@ -3,7 +3,7 @@ import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelOAuthSignInMode, ThinkingLevel } from "@rakazo/contracts";
 import { CHATGPT_PLAN_PROVIDER_ID, registerChatGPTPlanCatalog } from "./chatgpt-plan-provider.js";
 import { supplementPiModels } from "./pi-current-models.js";
-import { isOfficialOpenRouterChatModel, isOfficialResponsesModel } from "./pi-live-model.js";
+import { isOfficialChatCompletionProbeModel, isOfficialResponsesModel } from "./pi-live-model.js";
 import { LOCAL_PROVIDER_ID, registerLocalProvider } from "./pi-local-provider.js";
 import { loadProviderOAuth, SUBSCRIPTION_SIGN_IN_PROVIDERS } from "./pi-oauth.js";
 import {
@@ -159,7 +159,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
           : {}),
         ...(probeBaseUrl ? { catalogProbe: true, savedCatalogProbe: true } : {}),
         ...(probeBaseUrl &&
-        (isOfficialResponsesModel(model) || isOfficialOpenRouterChatModel(model))
+        (isOfficialResponsesModel(model) || isOfficialChatCompletionProbeModel(model))
           ? { inferenceProbe: true }
           : {}),
       });

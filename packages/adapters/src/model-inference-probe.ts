@@ -4,7 +4,7 @@ import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
 import { createParser } from "eventsource-parser";
-import { isOfficialOpenRouterChatModel, isOfficialResponsesModel } from "./pi-live-model.js";
+import { isOfficialChatCompletionProbeModel, isOfficialResponsesModel } from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
 const OUTPUT_LIMIT = 1024;
@@ -29,11 +29,13 @@ export async function probeModelInference(
     providerCatalogModel: input.providerCatalogModel,
   });
   if (!model || !apiKey) return "unavailable";
-  const openRouter =
-    input.provider === "openrouter" &&
-    isOfficialOpenRouterChatModel(model) &&
+  const chatCompletions =
+    input.provider === model.provider &&
+    isOfficialChatCompletionProbeModel(model) &&
     Boolean(models.getModel(model.provider, model.id));
-  if (!openRouter && !isOfficialResponsesModel(model)) return "unavailable";
+  if (!chatCompletions && !isOfficialResponsesModel(model)) return "unavailable";
+  const classifyChatFailure = (error: unknown, status?: number) =>
+    chatCompletionFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -62,7 +64,7 @@ export async function probeModelInference(
           // The SDK can omit this field when it treats a key as a sign-in token.
           if (!payload || typeof payload !== "object")
             throw new Error("Invalid model test request");
-          const field = openRouter
+          const field = chatCompletions
             ? "max_tokens" in payload
               ? "max_tokens"
               : "max_completion_tokens"
@@ -90,8 +92,8 @@ export async function probeModelInference(
             ).catch(() => undefined);
             signal.throwIfAborted();
             const error = body && typeof body === "object" && "error" in body ? body.error : body;
-            rejected = openRouter
-              ? openRouterFailureStatus(error, apiKey, response.status)
+            rejected = chatCompletions
+              ? classifyChatFailure(error, response.status)
               : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
             // The SDK's debug logger runs before the application can redact its errors.
             return new Response(null, { status: response.status });
@@ -105,9 +107,13 @@ export async function probeModelInference(
             cancelResponseBody(response);
             throw new Error("Model server did not return an event stream");
           }
-          if (openRouter) {
+          if (chatCompletions) {
             // The SDK drops the numeric status from successful HTTP streams with an error event.
-            const outcome = await readOpenRouterProbe(response.body, signal, apiKey).catch(() => {
+            const outcome = await readChatCompletionProbe(
+              response.body,
+              signal,
+              classifyChatFailure,
+            ).catch(() => {
               signal.throwIfAborted();
               return "unavailable" as const;
             });
@@ -125,7 +131,7 @@ export async function probeModelInference(
           });
         },
         onProviderStreamEvent: (event) => {
-          if (!signal.aborted && !openRouter && createdResponse(event)) {
+          if (!signal.aborted && !chatCompletions && createdResponse(event)) {
             accepted = true;
             stop.abort();
           }
@@ -163,10 +169,12 @@ function createdResponse(event: unknown): boolean {
   );
 }
 
-async function readOpenRouterProbe(
+type ChatFailureClassifier = (error: unknown, status?: number) => ModelInferenceProbeStatus;
+
+async function readChatCompletionProbe(
   body: ReadableStream<Uint8Array> | null,
   signal: AbortSignal,
-  apiKey: string,
+  classifyFailure: ChatFailureClassifier,
 ): Promise<ModelInferenceProbeStatus> {
   if (!body) return "unavailable";
   const reader = body.getReader();
@@ -188,7 +196,7 @@ async function readOpenRouterProbe(
         outcome = "unavailable";
         return;
       }
-      outcome = openRouterChunkOutcome(frame, apiKey, event === "error");
+      outcome = chatCompletionChunkOutcome(frame, classifyFailure, event === "error");
     },
   });
   try {
@@ -211,15 +219,15 @@ async function readOpenRouterProbe(
 
 const chatSuccessFinishReasons = new Set(["stop", "length", "tool_calls", "function_call"]);
 
-function openRouterChunkOutcome(
+function chatCompletionChunkOutcome(
   event: unknown,
-  apiKey: string,
+  classifyFailure: ChatFailureClassifier,
   isErrorEvent: boolean,
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
   const choice = "choices" in event && Array.isArray(event.choices) ? event.choices[0] : undefined;
   const error = ("error" in event ? event.error : undefined) ?? choice?.error;
-  if (error || isErrorEvent) return openRouterFailureStatus(error ?? event, apiKey);
+  if (error || isErrorEvent) return classifyFailure(error ?? event);
   const finish = choice?.finish_reason;
   if (finish != null && !chatSuccessFinishReasons.has(finish)) return "unavailable";
   const delta = choice?.delta;
@@ -240,25 +248,56 @@ function openRouterChunkOutcome(
     return "accepted";
 }
 
-function openRouterFailureStatus(
+function chatCompletionFailureStatus(
+  provider: string,
   error: unknown,
   apiKey: string,
   status?: number,
 ): ModelInferenceProbeStatus {
-  if (error && typeof error === "object") {
-    if (status === undefined && "code" in error && typeof error.code === "number")
-      status = error.code;
-    if ("metadata" in error && error.metadata && typeof error.metadata === "object") {
-      const source = "limit_source" in error.metadata ? error.metadata.limit_source : undefined;
-      if (status === 402 && source === "openrouter_in_flight_budget") return "rate";
-      if (
-        (status === 402 || status === 403) &&
-        (source === "openrouter_key_limit" ||
-          source === "openrouter_workspace_budget" ||
-          source === "openrouter_guardrail_budget")
-      )
-        return "spending";
+  const record = error && typeof error === "object" ? error : undefined;
+  const code = record && "code" in record ? record.code : undefined;
+  status ??= typeof code === "number" ? code : undefined;
+  if (provider === "groq") {
+    if (status === 429 || status === 498) return "rate";
+    if ((status === undefined || status === 400) && code === "blocked_api_access")
+      return "spending";
+    if (status === undefined || status === 400 || status === 403 || status === 404) {
+      switch (code) {
+        case "model_not_found":
+        case "model_decommissioned":
+        case "model_terms_required":
+        case "model_permission_blocked_org":
+        case "model_permission_blocked_project":
+          return "model";
+      }
     }
+    if (
+      status === 400 &&
+      record &&
+      "message" in record &&
+      typeof record.message === "string" &&
+      /^(?:unsupported|unknown|unrecognized)[ _-]model\b(?![ :]+(?:parameters?|fields?|options?|settings?)\b)/i.test(
+        record.message.trim(),
+      )
+    )
+      return "model";
+  }
+  if (
+    provider === "openrouter" &&
+    record &&
+    "metadata" in record &&
+    record.metadata &&
+    typeof record.metadata === "object"
+  ) {
+    const source = "limit_source" in record.metadata ? record.metadata.limit_source : undefined;
+    if (status === 402 && source === "openrouter_in_flight_budget") return "rate";
+    if (
+      (status === 402 || status === 403) &&
+      (source === "openrouter_key_limit" ||
+        source === "openrouter_workspace_budget" ||
+        source === "openrouter_guardrail_budget")
+    )
+      return "spending";
   }
   return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
 }
