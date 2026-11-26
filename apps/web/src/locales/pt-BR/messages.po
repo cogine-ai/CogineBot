@@ -7604,3 +7604,6 @@ msgstr "Não foi possível confirmar a limpeza da memória externa."
 
 msgid "Connecting sends one test request that may incur usage charges."
 msgstr "A conexão envia uma solicitação de teste que pode gerar cobrança pelo uso."
+
+msgid "The model test timed out."
+msgstr "O teste do modelo excedeu o tempo limite."

@@ -7604,3 +7604,6 @@ msgstr "बाहरी मेमोरी की सफ़ाई की पु�
 
 msgid "Connecting sends one test request that may incur usage charges."
 msgstr "कनेक्ट करने पर एक परीक्षण अनुरोध भेजा जाता है, जिस पर उपयोग शुल्क लग सकता है।"
+
+msgid "The model test timed out."
+msgstr "मॉडल परीक्षण की समय-सीमा समाप्त हो गई।"

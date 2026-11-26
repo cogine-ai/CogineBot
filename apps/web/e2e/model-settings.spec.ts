@@ -1761,9 +1761,23 @@ test("checks the replacement key while connecting a model", async ({ page }, tes
   });
   const attempts: unknown[] = [];
   let refuse = true;
+  let releaseRejection!: () => void;
+  const pendingRejection = new Promise<void>((resolve) => {
+    releaseRejection = resolve;
+  });
+  let savedReplacement = false;
+  await page.route("**/rpc/models/credentials", (route) =>
+    savedReplacement
+      ? route.fulfill({
+          status: 503,
+          json: { json: { code: "SERVICE_UNAVAILABLE", status: 503 } },
+        })
+      : route.continue(),
+  );
   await page.route("**/rpc/models/connect", async (route) => {
     attempts.push(route.request().postDataJSON().json);
     if (refuse) {
+      await pendingRejection;
       await route.fulfill({
         status: 400,
         json: {
@@ -1781,6 +1795,7 @@ test("checks the replacement key while connecting a model", async ({ page }, tes
     const response = await route.fetch();
     expect(response.ok()).toBe(true);
     const { json } = await response.json();
+    savedReplacement = true;
     await route.fulfill({ response, json: { json: { ...json, inferenceStatus: "timeout" } } });
   });
 
@@ -1800,6 +1815,9 @@ test("checks the replacement key while connecting a model", async ({ page }, tes
   await expect(cost).toBeInViewport({ ratio: 1 });
   await captureScreenshot(page, testInfo, "a1-connection-test-usage");
   await replace.click();
+  await expect(key).toBeDisabled();
+  await expect(settings.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
+  releaseRejection();
   await expect(
     settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
   ).toBeVisible();
@@ -1824,6 +1842,9 @@ test("checks the replacement key while connecting a model", async ({ page }, tes
   await expect(
     settings.getByRole("status").filter({ hasText: "Saved. Your model provider took too long" }),
   ).toBeInViewport({ ratio: 1 });
+  await expect(
+    settings.getByRole("alert").filter({ hasText: "Could not load model settings" }),
+  ).toBeVisible();
   await expect(key).toHaveValue("");
   await expect(cost).toHaveCount(0);
   expect(attempts).toHaveLength(2);

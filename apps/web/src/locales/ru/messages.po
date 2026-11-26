@@ -7660,3 +7660,6 @@ msgstr "Не удалось подтвердить очистку внешней
 
 msgid "Connecting sends one test request that may incur usage charges."
 msgstr "При подключении отправляется один тестовый запрос, который может тарифицироваться."
+
+msgid "The model test timed out."
+msgstr "Истекло время ожидания проверки модели."

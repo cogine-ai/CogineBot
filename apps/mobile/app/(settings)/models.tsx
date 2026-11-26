@@ -1268,6 +1268,8 @@ function ModelsForm({
     const { savingLimitOnly } = request;
     const pendingOwner = beginPending("connect");
     busyRef.current = true;
+    let committed = false;
+    let connectionNotice: string | undefined;
     try {
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
@@ -1280,16 +1282,19 @@ function ModelsForm({
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
+      committed = true;
+      if (savedConnection.inferenceStatus && savedConnection.inferenceStatus !== "accepted") {
+        connectionNotice = `${t("Saved.")} ${modelInferenceProbeMessage(savedConnection.inferenceStatus, t)}`;
+      }
       acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
       const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      if (savedConnection.inferenceStatus && savedConnection.inferenceStatus !== "accepted") {
-        const message = `${t("Saved.")} ${modelInferenceProbeMessage(savedConnection.inferenceStatus, t)}`;
-        publishFeedback("connection", { notice: message });
-        setCatalogFeedback({ error: false, message });
+      if (connectionNotice) {
+        publishFeedback("connection", { notice: connectionNotice });
+        setCatalogFeedback({ error: false, message: connectionNotice });
         return;
       }
       publishFeedback("connection", {
@@ -1307,10 +1312,16 @@ function ModelsForm({
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
       const rejected = modelConnectInferenceRejection(err);
       publishFeedback("connection", {
-        error: rejected
-          ? modelInferenceProbeMessage(rejected, t)
-          : errorText(err, t("Could not connect this provider")),
+        error: committed
+          ? t("Could not load model settings")
+          : rejected
+            ? modelInferenceProbeMessage(rejected, t)
+            : errorText(err, t("Could not connect this provider")),
       });
+      if (connectionNotice) {
+        setCatalogFeedback({ error: false, message: connectionNotice });
+        AccessibilityInfo.announceForAccessibility(connectionNotice);
+      }
     } finally {
       finishPending(pendingOwner);
     }
@@ -1902,6 +1913,7 @@ function ModelsForm({
               <Pressable
                 accessibilityRole="radio"
                 accessibilityState={{ selected: entry.id === selected.id }}
+                disabled={pending === "connect"}
                 onPress={() => {
                   selectionRevisionRef.current += 1;
                   Keyboard.dismiss();
@@ -2540,6 +2552,7 @@ function ModelsForm({
                     key={group.id}
                     accessibilityRole="button"
                     accessibilityState={{ selected: isSelected }}
+                    disabled={pending === "connect"}
                     onPress={() => chooseProvider(group.id)}
                     style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
                   >
@@ -2565,6 +2578,7 @@ function ModelsForm({
               accessibilityState={{
                 selected: canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? ""),
               }}
+              disabled={pending === "connect"}
               onPress={() => chooseProvider(group.id)}
               style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
             >

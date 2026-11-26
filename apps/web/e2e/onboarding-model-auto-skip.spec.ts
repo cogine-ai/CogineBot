@@ -4,6 +4,10 @@ import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 test("onboarding reports a timed out model check after saving", async ({ page }, testInfo) => {
   let connects = 0;
+  let releaseCheck!: () => void;
+  const pendingCheck = new Promise<void>((resolve) => {
+    releaseCheck = resolve;
+  });
   await page.route("**/rpc/me", async (route) => {
     const response = await route.fetch();
     const { json } = await response.json();
@@ -22,7 +26,7 @@ test("onboarding reports a timed out model check after saving", async ({ page },
       json: {
         json: json.map((entry) =>
           entry.provider === "openai" && entry.catalogProbe
-            ? { ...entry, inferenceProbe: true }
+            ? { ...entry, inferenceProbe: true, thinkingLevels: ["off", "low", "medium"] }
             : entry,
         ),
       },
@@ -35,6 +39,7 @@ test("onboarding reports a timed out model check after saving", async ({ page },
       apiKey: "fixture-onboarding-model-key",
       verifyInference: true,
     });
+    await pendingCheck;
     const response = await route.fetch();
     expect(response.ok()).toBe(true);
     const { json } = await response.json();
@@ -53,8 +58,11 @@ test("onboarding reports a timed out model check after saving", async ({ page },
     page.getByText("Connecting sends one test request that may incur usage charges."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Model", exact: true })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Thinking", exact: true })).toBeDisabled();
+  releaseCheck();
   await expect(
-    page.getByRole("status").filter({ hasText: "Saved. Your model provider took too long" }),
+    page.getByRole("status").filter({ hasText: "Saved. The model test timed out." }),
   ).toBeVisible();
   await expect(page.getByLabel("API key", { exact: true })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "a1-onboarding-model-check-saved-timeout");

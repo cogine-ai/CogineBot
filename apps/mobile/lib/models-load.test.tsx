@@ -2554,6 +2554,7 @@ it("checks a replacement key during connect and keeps a draft after rejection", 
     connectionRevision: 7,
   };
   let refuse = true;
+  let failReadback = false;
   const normal = state.rpc.getMockImplementation()!;
   state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
     if (procedure === "me")
@@ -2563,7 +2564,10 @@ it("checks a replacement key during connect and keeps a draft after rejection", 
         defaultProvider: saved.provider,
         defaultModel: saved.modelId,
       };
-    if (procedure === "models/credentials") return [saved];
+    if (procedure === "models/credentials") {
+      if (failReadback) throw new Error("Fixture credential read failed");
+      return [saved];
+    }
     if (procedure === "models/list")
       return [
         {
@@ -2583,6 +2587,7 @@ it("checks a replacement key during connect and keeps a draft after rejection", 
           data: { inferenceStatus: "auth" },
         });
       saved.connectionRevision += 1;
+      failReadback = true;
       return { ...saved, inferenceStatus: "rate" };
     }
     return normal(procedure, input);
@@ -2615,6 +2620,7 @@ it("checks a replacement key during connect and keeps a draft after rejection", 
   refuse = false;
   await act(async () => button("Replace API key").click());
   expect(container.textContent).toContain("Saved. Your model provider is rate limiting requests.");
+  expect(container.textContent).toContain("Could not load model settings");
   expect(container.textContent).not.toContain(disclosure);
   expect(key.value).toBe("");
   expect(calls()).toHaveLength(2);

@@ -556,7 +556,13 @@ export function OnboardingPage() {
       if (!current()) return;
       if (connection?.inferenceStatus && connection.inferenceStatus !== "accepted") {
         setApiKey("");
-        setConnectionWarning(modelInferenceTestMessage(connection.inferenceStatus));
+        setConnectionWarning(
+          connection.inferenceStatus === "timeout"
+            ? t`The model test timed out.`
+            : connection.inferenceStatus === "rate"
+              ? t`The provider is rate-limiting requests.`
+              : modelInferenceTestMessage(connection.inferenceStatus),
+        );
       } else {
         setStep(nextStepAfterModel(needsIntegrationSetup));
       }
@@ -616,7 +622,10 @@ export function OnboardingPage() {
         ) : null}
         {step === "model" && connectionWarning ? (
           <div>
-            <p className="text-sm text-foreground" role="status">
+            <h1 className="text-[32px] font-medium text-foreground">
+              <Trans>Connect a model</Trans>
+            </h1>
+            <p className="mt-4 text-sm text-foreground" role="status">
               <Trans>Saved.</Trans> {connectionWarning}
             </p>
             <Button
@@ -638,6 +647,7 @@ export function OnboardingPage() {
               </span>
               <Select
                 value={provider}
+                disabled={connecting}
                 onValueChange={(value) => {
                   if (typeof value !== "string" || !value) return;
                   selectProvider(value);
@@ -690,6 +700,7 @@ export function OnboardingPage() {
                     {probeModels.length && !manualModelId ? (
                       <Select
                         value={modelId}
+                        disabled={connecting}
                         onValueChange={(value) => {
                           if (typeof value !== "string") return;
                           const next = value;
@@ -798,6 +809,7 @@ export function OnboardingPage() {
                       invalidatePreflight();
                     }}
                     items={modelItems}
+                    disabled={connecting}
                   >
                     <SelectTrigger aria-label={t`Model`} className="mt-2 w-full">
                       <SelectValue />
@@ -817,6 +829,7 @@ export function OnboardingPage() {
                       </span>
                       <Select
                         value={thinkingLevel ?? DEFAULT_THINKING_LEVEL_OPTION}
+                        disabled={connecting}
                         onValueChange={(value) => {
                           const next = String(value);
                           setThinkingLevel(
@@ -1049,6 +1062,7 @@ export function OnboardingPage() {
                   {subscriptionSignIn ? <Trans>Or paste an API key</Trans> : <Trans>API key</Trans>}
                   <Input
                     id={`${fieldId}-api-key`}
+                    disabled={connecting}
                     value={apiKey}
                     onChange={(e) => updateApiKey(e.target.value)}
                     placeholder="sk-…"

@@ -7902,3 +7902,6 @@ msgstr "No free inodes."
 
 msgid "Connecting sends one test request that may incur usage charges."
 msgstr "Connecting sends one test request that may incur usage charges."
+
+msgid "The model test timed out."
+msgstr "The model test timed out."
