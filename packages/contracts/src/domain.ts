@@ -1315,6 +1315,14 @@ export const ModelCredentialSchema = z.object({
   /** Chat model IDs observed in this revision's trusted provider catalog. */
   providerListedModelIds: z.array(z.string()).optional(),
   savedProviderCatalogModelIds: z.array(z.string()).optional(),
+  /** Directory status of the connection's saved model for the current Space. */
+  savedModelDirectory: z
+    .object({
+      confirmationRequired: z.literal(true).optional(),
+      confirmationUnavailable: z.literal(true).optional(),
+      notListed: z.literal(true).optional(),
+    })
+    .optional(),
   visionModelIds: z.array(z.string()).optional(),
   modelSettings: z.record(z.string(), ModelSettingsSchema).optional(),
   /** Stored secret kind. Absent when the secret could not be read. */

@@ -460,7 +460,9 @@ export const appContract = {
       .output(z.object({ models: z.array(z.string()) })),
     probeCatalog: oc
       .input(ModelCatalogProbeInputSchema)
-      .output(z.object({ models: z.array(z.string()) })),
+      .output(
+        z.object({ models: z.array(z.string()), catalogUpdated: z.literal(true).optional() }),
+      ),
     beginOAuth: oc
       .input(
         z.object({

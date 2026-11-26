@@ -14241,7 +14241,9 @@ async function resolveModelKey(
           providerCatalogModel(provider, modelId) &&
           !isCatalogModelChoice(provider, modelId)
         )
-          throw new UnavailableModelForAuthError("Unknown model for that provider");
+          throw new UnavailableModelForAuthError(
+            "Confirm this model for the current API key or choose another model in Settings.",
+          );
         if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
           liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
             waitMs: waitForThinkingCapabilities ? CODEX_LIVE_RUN_WAIT_MS : 0,
