@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { listPiCatalog } from "./pi-models.js";
-import { ApiKeyModelCatalog } from "./pi-provider-catalog.js";
+import { parseModelSecret } from "./pi-oauth.js";
+import { ApiKeyModelCatalog, ProviderCatalogSelections } from "./pi-provider-catalog.js";
 
 const snapshot = {
   id: "connection-one",
@@ -14,6 +15,54 @@ const bundled = listPiCatalog()
   .filter(({ provider }) => provider === snapshot.provider)
   .map(({ id }) => id);
 const hour = 60 * 60_000;
+
+describe("saved catalog selections", () => {
+  it("uses only server-confirmed IDs for the same account, connection and key", () => {
+    const signer = new ProviderCatalogSelections("fixture-deployment-key");
+    const id = "gpt-fixture-live";
+    const secret = { kind: "api_key" as const, key: "fixture-api-key" };
+    const signed = signer.sign(snapshot, secret, [id]);
+    const owner = { ...snapshot, providerCatalogSelection: signed };
+    expect(signer.read(owner, secret)).toEqual([id]);
+    for (const other of [
+      { ...owner, id: "other-connection" },
+      { ...owner, userId: "other-user" },
+      { ...owner, provider: "openrouter" },
+    ]) {
+      expect(signer.read(other, secret)).toEqual([]);
+    }
+    expect(signer.read(owner, { ...secret, key: "fixture-new-key" })).toEqual([]);
+    expect(
+      signer.read(
+        {
+          ...owner,
+          providerCatalogSelection: { ...signed, modelIds: [id, "gpt-fixture-forged"] },
+        },
+        secret,
+      ),
+    ).toEqual([]);
+    expect(
+      signer.read(
+        {
+          ...owner,
+          providerCatalogSelection: { ...signed, signature: "0".repeat(64) },
+        },
+        secret,
+      ),
+    ).toEqual([]);
+    expect(
+      signer.read(
+        snapshot,
+        parseModelSecret(
+          JSON.stringify({
+            ...secret,
+            providerCatalogSelection: signed,
+          }),
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe("saved API key model catalog", () => {
   it("shares results only for the exact connection and sealed credential version", async () => {

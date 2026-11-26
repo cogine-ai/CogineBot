@@ -51,6 +51,7 @@ import {
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
+  withConnectionCatalogModels,
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -439,8 +440,9 @@ function ModelsForm({
           (entry) =>
             canonicalPiProviderId(entry.provider) === canonicalPiProviderId(nextProvider ?? ""),
         );
+      const nextConnectionCatalog = withConnectionCatalogModels(nextCatalog, nextCredential);
       const nextModel = connectionFormModelId({
-        catalog: nextCatalog,
+        catalog: nextConnectionCatalog,
         provider: nextProvider,
         credential: nextCredential,
         defaults: nextMe,
@@ -457,7 +459,7 @@ function ModelsForm({
       setModelId(nextModel);
       applyConnectionFields(
         connectionFormFields({
-          catalog: nextCatalog,
+          catalog: nextConnectionCatalog,
           provider: nextProvider,
           modelId: nextModel,
           credential: nextCredential,
@@ -646,10 +648,19 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
-  const modelsForProvider = catalog.filter(
+  const connectionCatalog = withConnectionCatalogModels(
+    catalog,
+    credential,
+    connectionRevision,
+    apiKey,
+  );
+  const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
-  const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
+  const selected =
+    modelsForProvider.find((entry) => entry.id === modelId) ??
+    modelsForProvider.find((entry) => entry.id === credential?.modelId) ??
+    modelsForProvider[0];
   const orderedModels = prioritizeProviderListedModels(
     modelsForProvider,
     credential,
@@ -775,6 +786,8 @@ function ModelsForm({
     !isOpenAiCompatible &&
     provider !== "chatgpt-plan" &&
     Boolean(credential) &&
+    selected !== undefined &&
+    catalog.includes(selected) &&
     apiKey.trim().length === 0;
 
   function applyConnectionFields(fields: ReturnType<typeof connectionFormFields>) {
@@ -856,8 +869,9 @@ function ModelsForm({
     setConnectionId(nextCredential?.id ?? null);
     setConnectionRevision(nextCredential?.connectionRevision);
     setSavedBaseUrl(nextCredential?.baseUrl);
+    const nextConnectionCatalog = withConnectionCatalogModels(catalog, nextCredential);
     const nextModelId = connectionFormModelId({
-      catalog,
+      catalog: nextConnectionCatalog,
       provider: nextProvider,
       credential: nextCredential,
       defaults: me,
@@ -868,7 +882,7 @@ function ModelsForm({
     setModelId(nextModelId);
     applyConnectionFields(
       connectionFormFields({
-        catalog,
+        catalog: nextConnectionCatalog,
         provider: nextProvider,
         modelId: nextModelId,
         credential: nextCredential,
@@ -1885,17 +1899,18 @@ function ModelsForm({
     setThinkingLevel(value);
   }
 
+  const settingsModelId = isOpenAiCompatible ? modelId.trim() : (selected?.id ?? "");
   const settingsSelectionRevision = selectionRevisionRef.current;
   const modelSettingsPanel =
     credential &&
-    modelId.trim() &&
+    settingsModelId &&
     (!isOpenAiCompatible ||
-      credential.enabledModelIds?.includes(modelId.trim()) ||
-      credential.modelId === modelId.trim()) ? (
+      credential.enabledModelIds?.includes(settingsModelId) ||
+      credential.modelId === settingsModelId) ? (
       <ModelSettingsPanel
-        key={`${credential.id}:${modelId.trim()}`}
+        key={`${credential.id}:${settingsModelId}`}
         credential={credential}
-        modelId={modelId.trim()}
+        modelId={settingsModelId}
         entry={selected}
         saveSettings={async (values) => {
           const requestContext = await captureApiRequestContext();
@@ -1903,7 +1918,7 @@ function ModelsForm({
             throw new Error(t("Model connection changed. Reload and try again."));
           await rpc(
             "models/saveModelSettings",
-            { credentialId: credential.id, modelId: modelId.trim(), settings: values },
+            { credentialId: credential.id, modelId: settingsModelId, settings: values },
             { requestContext },
           );
         }}
@@ -1913,7 +1928,7 @@ function ModelsForm({
           if (!current()) throw new Error(t("Could not load model settings"));
           const applied = await load({
             provider,
-            modelId,
+            modelId: settingsModelId,
             connectionId: credential.id,
             keepForm: true,
           });

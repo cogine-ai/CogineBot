@@ -483,6 +483,7 @@ export async function runAutoReviewJudge(input: {
   gatewayId?: string;
   baseUrl?: string;
   apiProtocol?: AgentRunModel["apiProtocol"];
+  providerCatalogModel?: AgentRunModel["providerCatalogModel"];
   headers?: AgentRunModel["headers"];
   cacheCapabilities?: CacheCapabilities;
   contextWindow?: number;
@@ -532,6 +533,7 @@ export async function runAutoReviewJudge(input: {
           gatewayId: input.gatewayId,
           baseUrl: input.baseUrl,
           apiProtocol: input.apiProtocol,
+          providerCatalogModel: input.providerCatalogModel,
           headers: input.headers,
           cacheCapabilities: input.cacheCapabilities,
           contextWindow: input.contextWindow,
@@ -587,6 +589,7 @@ export type LlmAutoReviewOptions = {
   gatewayId?: string;
   baseUrl?: string;
   apiProtocol?: AgentRunModel["apiProtocol"];
+  providerCatalogModel?: AgentRunModel["providerCatalogModel"];
   headers?: AgentRunModel["headers"];
   cacheCapabilities?: CacheCapabilities;
   contextWindow?: number;

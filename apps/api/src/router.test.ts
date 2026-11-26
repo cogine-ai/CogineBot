@@ -5819,9 +5819,16 @@ describe("saved model catalog checks", () => {
     return { state, call, credentials, findSecret, load, probe };
   }
 
-  it("automatically lists trusted bundled IDs on an owned credential and shares a warm result", async () => {
+  it("lists supported trusted IDs on an owned credential and shares a warm result", async () => {
     const { credentials, probe } = fixture(true);
-    probe.mockResolvedValue([...bundled, "fixture-unregistered-chat", `echo-${storedKey}`]);
+    probe.mockResolvedValue([
+      ...bundled,
+      "gpt-fixture-new-model",
+      "gpt-fixture-embedding",
+      "gpt-live-1",
+      "fixture-unregistered-chat",
+      `gpt-${storedKey}`,
+    ]);
     expect((await credentials(actor, false))[0]).not.toHaveProperty("providerListedModelIds");
     expect(probe).not.toHaveBeenCalled();
     const result = await credentials();
@@ -5829,10 +5836,12 @@ describe("saved model catalog checks", () => {
       {
         id: savedInput.credentialId,
         connectionRevision: 7,
-        providerListedModelIds: expect.arrayContaining([bundled[0]]),
+        providerListedModelIds: expect.arrayContaining([bundled[0], "gpt-fixture-new-model"]),
       },
     ]);
     expect(JSON.stringify(result)).not.toContain("fixture-unregistered-chat");
+    expect(JSON.stringify(result)).not.toContain("gpt-fixture-embedding");
+    expect(JSON.stringify(result)).not.toContain("gpt-live-1");
     expect(JSON.stringify(result)).not.toContain(storedKey);
     expect(await credentials({ ...actor, spaceId: "space-two" })).toEqual(result);
     expect(await credentials({ ...actor, userId: "other-user" })).toEqual([]);

@@ -11,6 +11,7 @@ import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   canonicalPiProviderId,
   DEFAULT_MODEL_CONTEXT_WINDOW,
+  DISCOVERED_MODEL_LIMITS,
   ModelApiProtocolSchema,
   ModelHeaderRowsSchema,
   modelHeadersInput,
@@ -72,6 +73,60 @@ export function prioritizeProviderListedModels(
     return models;
   const listed = new Set(credential.providerListedModelIds);
   return [...models].sort((a, b) => Number(listed.has(b.id)) - Number(listed.has(a.id)));
+}
+
+/** Add choices from the one connection being edited, leaving the global catalog alone. */
+export function withConnectionCatalogModels(
+  models: ModelCatalogEntry[],
+  credential:
+    | Pick<
+        ModelCredential,
+        | "provider"
+        | "providerListedModelIds"
+        | "savedProviderCatalogModelIds"
+        | "modelId"
+        | "connectionRevision"
+      >
+    | undefined,
+  revision = credential?.connectionRevision,
+  draftKey = "",
+): ModelCatalogEntry[] {
+  if (!credential || revision === undefined || revision !== credential.connectionRevision)
+    return models;
+  const provider = canonicalPiProviderId(credential.provider);
+  const anchor = models.find((entry) => canonicalPiProviderId(entry.provider) === provider);
+  if (!anchor) return models;
+  const known = new Set(
+    models
+      .filter((entry) => canonicalPiProviderId(entry.provider) === provider)
+      .map(({ id }) => id),
+  );
+  const saved = credential.savedProviderCatalogModelIds ?? [];
+  const choices = draftKey.trim()
+    ? saved.filter((id) => id === credential.modelId)
+    : [...(credential.providerListedModelIds ?? []), ...saved];
+  const added = [...new Set(choices)].filter((id) => !known.has(id));
+  if (!added.length) return models;
+  return [
+    ...models,
+    ...added.map(
+      (id): ModelCatalogEntry => ({
+        provider: anchor.provider,
+        providerName: anchor.providerName,
+        id,
+        label: id,
+        billing: anchor.billing,
+        auth: "api-key",
+        subscription: false,
+        ...DISCOVERED_MODEL_LIMITS,
+        reasoning: false,
+        images: false,
+        thinkingLevels: ["off"],
+        catalogProbe: anchor.catalogProbe,
+        savedCatalogProbe: anchor.savedCatalogProbe,
+      }),
+    ),
+  ];
 }
 
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;

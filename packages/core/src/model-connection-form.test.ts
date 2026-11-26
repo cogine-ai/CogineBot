@@ -8,6 +8,7 @@ import {
   modelCatalogProbeInput,
   modelConnectRequest,
   prioritizeProviderListedModels,
+  withConnectionCatalogModels,
 } from "./model-connection-form.js";
 
 const catalog = [
@@ -54,6 +55,45 @@ it("ranks listed choices for the displayed revision while leaving the base order
     "Fixture 2",
     "Fixture 3",
     "Fixture 4",
+  ]);
+});
+
+it("adds new options only for the selected connection and keeps its saved model during a draft", () => {
+  const base = {
+    id: "gpt-base",
+    provider: "openai",
+    label: "Base",
+    billing: "API",
+    subscription: false,
+  };
+  const models = [base];
+  const credential = {
+    provider: "openai",
+    connectionRevision: 7,
+    modelId: "gpt-saved",
+    savedProviderCatalogModelIds: ["gpt-saved", "gpt-other-saved"],
+    providerListedModelIds: ["gpt-base", "gpt-new", "gpt-saved"],
+  };
+  const choices = withConnectionCatalogModels(models, credential, 7);
+  expect(choices.map(({ id }) => id)).toEqual([
+    "gpt-base",
+    "gpt-new",
+    "gpt-saved",
+    "gpt-other-saved",
+  ]);
+  expect(choices[0]).toBe(base);
+  expect(choices[1]).toMatchObject({
+    images: false,
+    reasoning: false,
+    thinkingLevels: ["off"],
+    contextWindow: 32_768,
+    maxTokens: 16_384,
+  });
+  expect(choices[1]?.live).toBeUndefined();
+  expect(withConnectionCatalogModels(models, credential, 6)).toBe(models);
+  expect(withConnectionCatalogModels(models, credential, 7, "draft").map(({ id }) => id)).toEqual([
+    "gpt-base",
+    "gpt-saved",
   ]);
 });
 
