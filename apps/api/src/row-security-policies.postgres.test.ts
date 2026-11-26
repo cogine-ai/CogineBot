@@ -2025,6 +2025,66 @@ postgres("complete database policies (isolated PostgreSQL)", () => {
         data: { expiresAt: new Date(0) },
       });
 
+      const withinProbe = await computer.planCleanup({
+        ...selection,
+        requestNonce: id("expires-during-probe"),
+      });
+      getDiskUsage.mockImplementationOnce(async () => {
+        // Move the database deadline while the workspace read is in progress.
+        await owner.prisma.$executeRaw`
+          UPDATE cogine_storage.computer_cleanup_plans
+          SET "expiresAt" = (clock_timestamp() AT TIME ZONE 'UTC') - interval '1 second'
+          WHERE id = ${withinProbe.id}`;
+        return available;
+      });
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 60_000);
+      try {
+        await expect(
+          computer.confirmCleanup({ ...confirm, planId: withinProbe.id }),
+        ).resolves.toMatchObject({ status: "expired", revision: 1 });
+        await expect(
+          computer.cancelCleanup({ ...update, planId: withinProbe.id }),
+        ).resolves.toMatchObject({ status: "expired", revision: 1 });
+      } finally {
+        now.mockRestore();
+      }
+
+      // Exercise the existing switch lock order while the cleanup request is waiting.
+      const switcher = await owner.pool.connect();
+      let blockedPlan: Promise<unknown> | undefined;
+      try {
+        await switcher.query("BEGIN");
+        await switcher.query("SET LOCAL lock_timeout = '1500ms'");
+        await switcher.query("SELECT id FROM public.computers WHERE id = $1 FOR UPDATE", [
+          computerId,
+        ]);
+        blockedPlan = computer
+          .planCleanup({ ...selection, requestNonce: id("switching-plan") })
+          .catch((error: unknown) => error);
+        await vi.waitFor(
+          async () => {
+            const { rows } = await owner.pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'
+                AND query LIKE '%FOR SHARE OF c%'
+            ) AS waiting`);
+            expect(rows).toEqual([{ waiting: true }]);
+          },
+          { timeout: 2_000 },
+        );
+        await switcher.query('UPDATE public.bots SET "computerSwitching" = true WHERE id = $1', [
+          botId,
+        ]);
+        await switcher.query("COMMIT");
+        await expect(blockedPlan).resolves.toMatchObject({ code: "CONFLICT" });
+      } finally {
+        await switcher.query("ROLLBACK");
+        switcher.release();
+        await blockedPlan;
+        await owner.prisma.bot.update({ where: { id: botId }, data: { computerSwitching: false } });
+      }
+
       const moved = await computer.planCleanup({ ...selection, requestNonce: id("moved-plan") });
       await expect(computer.confirmCleanup(overlap)).resolves.toMatchObject({
         status: "reviewed",

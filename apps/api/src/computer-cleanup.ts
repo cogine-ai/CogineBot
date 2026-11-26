@@ -8,7 +8,8 @@ import type {
   UpdateComputerCleanupInput,
 } from "@rakazo/contracts";
 import { ComputerCleanupEntriesSchema, ComputerCleanupPlanSchema } from "@rakazo/contracts";
-import type { Prisma, PrismaClient } from "@rakazo/db";
+import type { PrismaClient } from "@rakazo/db";
+import { Prisma } from "@rakazo/db";
 import { lockActiveMembership } from "./active-membership.js";
 import {
   computerStorageTarget,
@@ -18,7 +19,29 @@ import {
 
 type StorageContext = Parameters<typeof readComputerDiskUsage>[1] & { sessionId?: string };
 type CleanupDeps = Parameters<typeof readComputerDiskUsage>[2] & { prisma: PrismaClient };
-type PlanRow = NonNullable<Awaited<ReturnType<PrismaClient["computerCleanupPlan"]["findFirst"]>>>;
+type PlanRow = Pick<
+  Prisma.ComputerCleanupPlanGetPayload<Prisma.ComputerCleanupPlanDefaultArgs>,
+  | "id"
+  | "userId"
+  | "spaceId"
+  | "botId"
+  | "computerId"
+  | "homeKey"
+  | "providerRef"
+  | "target"
+  | "confirmationNonce"
+  | "selected"
+  | "revision"
+  | "status"
+  | "expiresAt"
+> & { expired: boolean };
+
+const planSnapshot = Prisma.sql`
+  SELECT id, "userId", "spaceId", "botId", "computerId", "homeKey", "providerRef",
+         target, "confirmationNonce", selected, revision, status, "expiresAt",
+         "expiresAt" <= (clock_timestamp() AT TIME ZONE 'UTC') AS expired
+  FROM cogine_storage.computer_cleanup_plans
+`;
 
 function requireSession(context: StorageContext) {
   context.signal?.throwIfAborted();
@@ -35,10 +58,7 @@ function planDto(row: PlanRow): ComputerCleanupPlan {
     id: row.id,
     botId: row.botId,
     revision: row.revision,
-    status:
-      row.status === "awaiting_confirmation" && row.expiresAt.getTime() <= Date.now()
-        ? "expired"
-        : row.status,
+    status: row.status === "awaiting_confirmation" && row.expired ? "expired" : row.status,
     expiresAt: row.expiresAt.toISOString(),
     selected: row.selected,
   });
@@ -64,6 +84,7 @@ async function checkSelection(
   context: StorageContext,
   deps: CleanupDeps,
 ) {
+  // The receipt records this read-only observation. It carries no authority to mutate a file.
   const probe = await readComputerDiskUsage(input, context, deps);
   if (probe.outcome.status !== "available") throw reviewChanged();
   const paths = new Set(input.selected.map(({ path }) => path));
@@ -77,15 +98,22 @@ async function checkSelection(
 async function lockWorkspace(tx: Prisma.TransactionClient, context: StorageContext, botId: string) {
   await lockActiveMembership(tx, context.actor, requireSession(context));
   const { userId, spaceId } = context.actor;
-  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+  // Match the computer-then-Bot order used when switching workspace assignments.
+  const [computer] = await tx.$queryRaw<Array<{ id: string }>>`
     SELECT c.id FROM public.bots b
     JOIN public.computers c ON c.id = b."computerId" AND c."spaceId" = b."spaceId"
     WHERE b.id = ${botId} AND b."userId" = ${userId}
       AND b."spaceId" = ${spaceId} AND b."archivedAt" IS NULL
-    FOR SHARE OF b, c`;
-  if (!rows.length) throw reviewChanged();
+    FOR SHARE OF c`;
+  if (!computer) throw reviewChanged();
+  const [assignment] = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT id FROM public.bots
+    WHERE id = ${botId} AND "userId" = ${userId}
+      AND "spaceId" = ${spaceId} AND "archivedAt" IS NULL AND "computerId" = ${computer.id}
+    FOR SHARE`;
+  if (!assignment) throw reviewChanged();
   const bot = await tx.bot.findFirst({
-    where: { id: botId, userId, spaceId, archivedAt: null },
+    where: { id: assignment.id, userId, spaceId },
     include: { computer: true },
   });
   if (bot?.computer?.kind !== "docker" || !ownedWorkspace(context.actor, bot))
@@ -117,9 +145,13 @@ export async function planComputerCleanup(
 ) {
   requireSession(context);
   const owner = scope(context);
-  const key = { ...owner, requestNonce: input.requestNonce };
-  const lookup = (db: Pick<PrismaClient, "computerCleanupPlan">) =>
-    db.computerCleanupPlan.findUnique({ where: { spaceId_userId_requestNonce: key } });
+  async function lookup(db: Pick<PrismaClient, "$queryRaw">) {
+    const [row] = await db.$queryRaw<PlanRow[]>`
+      ${planSnapshot}
+      WHERE "spaceId" = ${owner.spaceId} AND "userId" = ${owner.userId}
+        AND "requestNonce" = ${input.requestNonce}`;
+    return row;
+  }
   async function readReceipt() {
     if (!(await lookup(deps.prisma))) return;
     return deps.prisma.$transaction(async (tx) => {
@@ -165,13 +197,15 @@ export async function planComputerCleanup(
 }
 
 async function scopedPlan(
-  db: Pick<PrismaClient, "computerCleanupPlan">,
+  db: Pick<PrismaClient, "$queryRaw">,
   input: UpdateComputerCleanupInput,
   context: StorageContext,
 ) {
-  const row = await db.computerCleanupPlan.findFirst({
-    where: { ...scope(context), id: input.planId, botId: input.botId },
-  });
+  const { userId, spaceId } = context.actor;
+  const [row] = await db.$queryRaw<PlanRow[]>`
+    ${planSnapshot}
+    WHERE id = ${input.planId} AND "botId" = ${input.botId}
+      AND "spaceId" = ${spaceId} AND "userId" = ${userId}`;
   if (!row) throw new ORPCError("NOT_FOUND");
   return row;
 }
@@ -234,7 +268,7 @@ export async function confirmComputerCleanup(
             "confirmationNonce" = ${input.requestNonce}, "confirmedAt" = clock_timestamp() AT TIME ZONE 'UTC'
         WHERE id = ${plan.id} AND "userId" = ${plan.userId} AND "spaceId" = ${plan.spaceId}
           AND status = 'awaiting_confirmation' AND revision = ${input.expectedRevision}
-          AND "expiresAt" > clock_timestamp() AT TIME ZONE 'UTC'`;
+          AND "expiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
       const result = confirmedReceipt(await scopedPlan(tx, input, context), input);
       if (result) return result;
       throw reviewChanged();
@@ -264,7 +298,7 @@ export async function cancelComputerCleanup(
       SET status = 'cancelled', revision = revision + 1
       WHERE id = ${plan.id} AND "userId" = ${plan.userId} AND "spaceId" = ${plan.spaceId}
         AND status = 'awaiting_confirmation' AND revision = ${input.expectedRevision}
-        AND "expiresAt" > clock_timestamp() AT TIME ZONE 'UTC'`;
+        AND "expiresAt" > (clock_timestamp() AT TIME ZONE 'UTC')`;
     const result = planDto(await scopedPlan(tx, input, context));
     if (
       result.status !== "expired" &&
