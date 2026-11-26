@@ -2,8 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeModelInference } from "./model-inference-probe.js";
 import { listPiCatalog } from "./pi-models.js";
 
-const model = listPiCatalog().find((entry) => entry.inferenceProbe)!;
+const model = listPiCatalog().find((entry) => entry.provider === "openai" && entry.inferenceProbe)!;
 const input = { provider: model.provider, modelId: model.id, apiKey: "fixture-inference-key" };
+const openRouterModel = listPiCatalog().find(
+  (entry) => entry.provider === "openrouter" && entry.id === "openai/gpt-oss-120b",
+)!;
+const openRouterInput = {
+  provider: openRouterModel.provider,
+  modelId: openRouterModel.id,
+  apiKey: "fixture-gateway-key",
+};
+
+function chatChunk(choices: unknown[], extra: Record<string, unknown> = {}) {
+  return `data: ${JSON.stringify({ id: "gen-fixture", object: "chat.completion.chunk", choices, ...extra })}\n\n`;
+}
 
 describe("model inference check", () => {
   afterEach(() => {
@@ -49,6 +61,173 @@ describe("model inference check", () => {
       tools: [expect.objectContaining({ name: "noop" })],
     });
     expect(JSON.parse(String(init?.body)).max_output_tokens).toBeLessThanOrEqual(1024);
+  });
+
+  it("waits for a model chunk on OpenRouter and aborts a single bounded tool request", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            const frames = [
+              ": OPENROUTER PROCESSING\n\n",
+              chatChunk([]),
+              chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]),
+            ];
+            for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
+              once: true,
+            });
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0]!;
+    const request = new Request(url, init);
+    expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(request.headers.get("authorization")).toBe(`Bearer ${openRouterInput.apiKey}`);
+    expect(request.redirect).toBe("error");
+    expect(init?.signal?.aborted).toBe(true);
+    const payload = await request.json();
+    expect(payload).toMatchObject({
+      model: openRouterInput.modelId,
+      stream: true,
+      tools: [expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) })],
+    });
+    const limit = payload.max_completion_tokens ?? payload.max_tokens;
+    expect(limit).toBeGreaterThan(0);
+    expect(limit).toBeLessThanOrEqual(1024);
+  });
+
+  it.each([
+    [401, "Invalid API key", "auth"],
+    [402, "Insufficient credits", "credit"],
+    [403, "Key limit exceeded", "spending"],
+    [404, "No endpoints found that support tool use", "model"],
+    [429, "Rate limit exceeded", "rate"],
+    [504, "Gateway timeout", "timeout"],
+  ] as const)("classifies OpenRouter %i (%s) as %s", async (status, message, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { code: status, message } }, { status }),
+    );
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [": OPENROUTER PROCESSING\n\n", "unavailable"],
+    [chatChunk([]), "unavailable"],
+    [chatChunk([{ index: 0, delta: { content: { malformed: true } } }]), "unavailable"],
+    [
+      chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: "network_error" }]),
+      "unavailable",
+    ],
+    [
+      chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: "unknown" }]),
+      "unavailable",
+    ],
+    [
+      chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: "error" }]),
+      "unavailable",
+    ],
+    [
+      [
+        chatChunk([{ index: 0, delta: {}, finish_reason: "error" }]),
+        chatChunk([{ index: 0, delta: { role: "assistant" }, finish_reason: null }]),
+      ].join(""),
+      "unavailable",
+    ],
+    ...(
+      [
+        [401, "auth"],
+        [402, "credit"],
+        [403, "model"],
+        [404, "model"],
+        [429, "rate"],
+        [504, "timeout"],
+      ] as const
+    ).map(
+      ([code, outcome]) =>
+        [chatChunk([], { error: { code, message: "Request failed" } }), outcome] as const,
+    ),
+    [chatChunk([{ index: 0, delta: { content: "partial" }, error: { code: 402 } }]), "credit"],
+    ['event: error\ndata: {"code":429,"message":"Request failed"}\n\n', "rate"],
+  ] as const)(
+    "does not accept an OpenRouter stream without a successful model frame",
+    async (frame, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(`${frame}data: [DONE]\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      );
+      expect(await probeModelInference(openRouterInput, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [402, "openrouter_in_flight_budget", "rate"],
+    [402, "openrouter_credits", "credit"],
+    [402, "openrouter_key_limit", "spending"],
+    [403, "openrouter_workspace_budget", "spending"],
+    [403, "openrouter_guardrail_budget", "spending"],
+  ] as const)(
+    "preserves the meaning of the OpenRouter %i budget source %s",
+    async (status, limit_source, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error: { code: status, metadata: { limit_source } } }, { status }),
+      );
+      expect(await probeModelInference(openRouterInput, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("stops reading OpenRouter responses at the probe byte limit", async () => {
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              const heartbeat = `:${" ".repeat(64 * 1024)}\n\n`;
+              const accepted = chatChunk([{ index: 0, delta: { content: "OK" } }]);
+              controller.enqueue(new TextEncoder().encode(`${heartbeat}${accepted}`));
+            },
+            cancel,
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe("unavailable");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("keeps OpenRouter stream read errors out of SDK diagnostics", async () => {
+    vi.stubEnv("OPENAI_LOG", "debug");
+    const logs = (["debug", "info", "warn", "error"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    const diagnostic = "fixture-stream-diagnostic";
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new Error(`${diagnostic} ${openRouterInput.apiKey}`));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe("unavailable");
+    expect(logs[0]?.mock.calls.length).toBeGreaterThan(0);
+    const recorded = JSON.stringify(logs.flatMap((log) => log.mock.calls));
+    expect(recorded).not.toContain(diagnostic);
+    expect(recorded).not.toContain(openRouterInput.apiKey);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -127,7 +306,7 @@ describe("model inference check", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("reports a timeout when the opened stream never acknowledges the request", async () => {
+  it.each([input, openRouterInput])("times out an idle $provider event stream", async (input) => {
     const deadline = new AbortController();
     vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
     let open!: () => void;
@@ -137,9 +316,10 @@ describe("model inference check", () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (_request, init) => {
       const body = new ReadableStream({
         start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
-            once: true,
-          });
+          if (input.provider === "openai")
+            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
+              once: true,
+            });
         },
         pull: () => open(),
       });
@@ -164,6 +344,16 @@ describe("model inference check", () => {
     expect(await probeModelInference({ ...input, modelId: "gpt-unlisted-probe" }, { fetch })).toBe(
       "unavailable",
     );
+    expect(
+      await probeModelInference({ ...openRouterInput, provider: "anthropic" }, { fetch }),
+    ).toBe("unavailable");
+    vi.stubEnv("PI_DEFAULT_MODEL", "fixture/not-in-router-catalog");
+    expect(
+      await probeModelInference(
+        { ...openRouterInput, modelId: "fixture/not-in-router-catalog" },
+        { fetch },
+      ),
+    ).toBe("unavailable");
     expect(fetch).not.toHaveBeenCalled();
   });
 });

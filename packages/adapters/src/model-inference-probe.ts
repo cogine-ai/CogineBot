@@ -3,18 +3,20 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
-import { isOfficialResponsesModel } from "./pi-live-model.js";
+import { createParser } from "eventsource-parser";
+import { isOfficialOpenRouterChatModel, isOfficialResponsesModel } from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
 const OUTPUT_LIMIT = 1024;
 const ERROR_BODY_LIMIT = 16 * 1024;
+const STREAM_PREFIX_LIMIT = 64 * 1024;
 const context: Context = {
   systemPrompt: "Reply with OK.",
   messages: [{ role: "user", content: "OK?", timestamp: 0 }],
   tools: [{ name: "noop", description: "Does nothing.", parameters: Type.Object({}) }],
 };
 
-/** Test one agent request on the pinned Responses route and stop on acceptance. */
+/** Test one agent request on an eligible provider route and stop on acceptance. */
 export async function probeModelInference(
   input: { provider: string; modelId: string; apiKey: string; providerCatalogModel?: true },
   options: { fetch?: typeof fetch; signal?: AbortSignal } = {},
@@ -26,7 +28,12 @@ export async function probeModelInference(
     apiKey: input.apiKey,
     providerCatalogModel: input.providerCatalogModel,
   });
-  if (!model || !apiKey || !isOfficialResponsesModel(model)) return "unavailable";
+  if (!model || !apiKey) return "unavailable";
+  const openRouter =
+    input.provider === "openrouter" &&
+    isOfficialOpenRouterChatModel(model) &&
+    Boolean(models.getModel(model.provider, model.id));
+  if (!openRouter && !isOfficialResponsesModel(model)) return "unavailable";
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -55,11 +62,16 @@ export async function probeModelInference(
           // The SDK can omit this field when it treats a key as a sign-in token.
           if (!payload || typeof payload !== "object")
             throw new Error("Invalid model test request");
-          const current = "max_output_tokens" in payload ? payload.max_output_tokens : undefined;
+          const field = openRouter
+            ? "max_tokens" in payload
+              ? "max_tokens"
+              : "max_completion_tokens"
+            : "max_output_tokens";
+          const current =
+            field in payload ? (payload as Record<string, unknown>)[field] : undefined;
           return {
             ...payload,
-            max_output_tokens:
-              typeof current === "number" ? Math.min(current, OUTPUT_LIMIT) : OUTPUT_LIMIT,
+            [field]: typeof current === "number" ? Math.min(current, OUTPUT_LIMIT) : OUTPUT_LIMIT,
           };
         },
         fetch: async (request, init) => {
@@ -77,7 +89,10 @@ export async function probeModelInference(
               signal,
             ).catch(() => undefined);
             signal.throwIfAborted();
-            rejected = failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
+            const error = body && typeof body === "object" && "error" in body ? body.error : body;
+            rejected = openRouter
+              ? openRouterFailureStatus(error, apiKey, response.status)
+              : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
             // The SDK's debug logger runs before the application can redact its errors.
             return new Response(null, { status: response.status });
           }
@@ -90,25 +105,27 @@ export async function probeModelInference(
             cancelResponseBody(response);
             throw new Error("Model server did not return an event stream");
           }
+          if (openRouter) {
+            // The SDK drops the numeric status from successful HTTP streams with an error event.
+            const outcome = await readOpenRouterProbe(response.body, signal, apiKey).catch(() => {
+              signal.throwIfAborted();
+              return "unavailable" as const;
+            });
+            accepted = outcome === "accepted";
+            if (!accepted) rejected = outcome;
+            stop.abort();
+            return new Response(null, {
+              status: response.status,
+              headers: { "content-type": "text/event-stream" },
+            });
+          }
           return new Response(response.body, {
             status: response.status,
             headers: { "content-type": "text/event-stream" },
           });
         },
         onProviderStreamEvent: (event) => {
-          if (
-            !signal.aborted &&
-            event &&
-            typeof event === "object" &&
-            "type" in event &&
-            event.type === "response.created" &&
-            "response" in event &&
-            event.response &&
-            typeof event.response === "object" &&
-            "id" in event.response &&
-            typeof event.response.id === "string" &&
-            event.response.id.trim()
-          ) {
+          if (!signal.aborted && !openRouter && createdResponse(event)) {
             accepted = true;
             stop.abort();
           }
@@ -126,6 +143,124 @@ export async function probeModelInference(
   if (accepted) return "accepted";
   if (deadline.aborted) return "timeout";
   return rejected ?? failureStatus(errorDetail, apiKey);
+}
+
+function createdResponse(event: unknown): boolean {
+  if (
+    !event ||
+    typeof event !== "object" ||
+    !("type" in event) ||
+    event.type !== "response.created"
+  )
+    return false;
+  return (
+    "response" in event &&
+    !!event.response &&
+    typeof event.response === "object" &&
+    "id" in event.response &&
+    typeof event.response.id === "string" &&
+    Boolean(event.response.id.trim())
+  );
+}
+
+async function readOpenRouterProbe(
+  body: ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+  apiKey: string,
+): Promise<ModelInferenceProbeStatus> {
+  if (!body) return "unavailable";
+  const reader = body.getReader();
+  const cancel = () => void reader.cancel().catch(() => undefined);
+  signal.addEventListener("abort", cancel, { once: true });
+  const decoder = new TextDecoder();
+  let outcome: ModelInferenceProbeStatus | undefined;
+  const parser = createParser({
+    onEvent({ data, event }) {
+      if (outcome) return;
+      if (data === "[DONE]") {
+        outcome = "unavailable";
+        return;
+      }
+      let frame: unknown;
+      try {
+        frame = JSON.parse(data);
+      } catch {
+        outcome = "unavailable";
+        return;
+      }
+      outcome = openRouterChunkOutcome(frame, apiKey, event === "error");
+    },
+  });
+  try {
+    let remaining = STREAM_PREFIX_LIMIT;
+    while (!outcome && remaining > 0) {
+      signal.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.feed(decoder.decode(value.subarray(0, remaining), { stream: true }));
+      remaining -= value.byteLength;
+    }
+    signal.throwIfAborted();
+    return outcome ?? "unavailable";
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader.releaseLock();
+  }
+}
+
+const chatSuccessFinishReasons = new Set(["stop", "length", "tool_calls", "function_call"]);
+
+function openRouterChunkOutcome(
+  event: unknown,
+  apiKey: string,
+  isErrorEvent: boolean,
+): ModelInferenceProbeStatus | undefined {
+  if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
+  const choice = "choices" in event && Array.isArray(event.choices) ? event.choices[0] : undefined;
+  const error = ("error" in event ? event.error : undefined) ?? choice?.error;
+  if (error || isErrorEvent) return openRouterFailureStatus(error ?? event, apiKey);
+  const finish = choice?.finish_reason;
+  if (finish != null && !chatSuccessFinishReasons.has(finish)) return "unavailable";
+  const delta = choice?.delta;
+  if (
+    "object" in event &&
+    event.object === "chat.completion.chunk" &&
+    "id" in event &&
+    typeof event.id === "string" &&
+    event.id.trim() &&
+    delta &&
+    typeof delta === "object" &&
+    (delta.role === "assistant" ||
+      [delta.content, delta.reasoning, delta.reasoning_content].some(
+        (text) => typeof text === "string" && text.length > 0,
+      ) ||
+      (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0))
+  )
+    return "accepted";
+}
+
+function openRouterFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  if (error && typeof error === "object") {
+    if (status === undefined && "code" in error && typeof error.code === "number")
+      status = error.code;
+    if ("metadata" in error && error.metadata && typeof error.metadata === "object") {
+      const source = "limit_source" in error.metadata ? error.metadata.limit_source : undefined;
+      if (status === 402 && source === "openrouter_in_flight_budget") return "rate";
+      if (
+        (status === 402 || status === 403) &&
+        (source === "openrouter_key_limit" ||
+          source === "openrouter_workspace_budget" ||
+          source === "openrouter_guardrail_budget")
+      )
+        return "spending";
+    }
+  }
+  return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
 }
 
 function failureStatus(error: string, apiKey: string, status?: number): ModelInferenceProbeStatus {

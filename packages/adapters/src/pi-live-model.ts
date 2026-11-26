@@ -21,6 +21,17 @@ export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "a
     model.baseUrl === providerCatalogBaseUrl
   );
 }
+
+export function isOfficialOpenRouterChatModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "openrouter" &&
+    model.api === "openai-completions" &&
+    model.baseUrl === "https://openrouter.ai/api/v1" &&
+    isChatModelId(model.id)
+  );
+}
 const catalogModels = builtinModels();
 
 /** The supported catalog and runtime must share the official Responses route. */
