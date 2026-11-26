@@ -33,6 +33,7 @@ import type {
   McpConnector,
   MemoryProviderResolver,
   MessagingInstallations,
+  ModelDirectoryFailure,
   NativeConnectorProvider,
   PluginRead,
   ProviderCatalogSelections,
@@ -246,7 +247,6 @@ import {
   intervalUsesAnchor,
   isOneShotRoutineCrons,
   MODEL_INFERENCE_PROBE_MESSAGES,
-  modelConnectInferenceRejection,
   modelSettingsDefaults,
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
@@ -2393,6 +2393,7 @@ export function createRouter(deps: RouterDeps) {
                 inferenceProbesEnabled && input.verifyInference === true,
               )
             : false;
+          if (typeof confirmNewModel === "string") throw modelInferenceRejection(confirmNewModel);
           const probeModelId =
             input.verifyInference && input.apiKey?.trim()
               ? (requested ?? defaultCatalogModelId(input.provider, plaintext))
@@ -2621,7 +2622,7 @@ export function createRouter(deps: RouterDeps) {
         await target.ensureCurrent();
         try {
           if (discovered && "snapshot" in target) {
-            await confirmProviderCatalogChoice(
+            const confirmation = await confirmProviderCatalogChoice(
               deps,
               apiKeyCatalog,
               target.snapshot,
@@ -2631,7 +2632,7 @@ export function createRouter(deps: RouterDeps) {
               target.plaintext,
               true,
             );
-            await target.ensureCurrent();
+            if (typeof confirmation === "string") return { status: confirmation };
           }
           return {
             status: await probeInference(
@@ -2644,12 +2645,6 @@ export function createRouter(deps: RouterDeps) {
               { signal: context.signal },
             ),
           };
-        } catch (error) {
-          if (error instanceof ORPCError && error.code === "BAD_REQUEST") {
-            const status = modelConnectInferenceRejection(error);
-            if (status) return { status };
-          }
-          throw error;
         } finally {
           await target.ensureCurrent();
         }
@@ -2749,7 +2744,7 @@ export function createRouter(deps: RouterDeps) {
               input.modelId,
               auth.plaintext,
               auth.plaintext,
-            ));
+            )) === true;
           const prepared =
             confirmNewModel && auth ? { ...auth, catalogModelId: input.modelId } : auth;
           await withSerializableRetry(() =>
@@ -10437,13 +10432,13 @@ async function confirmProviderCatalogChoice(
   plaintext: string,
   previousPlaintext?: string,
   checkingInference = false,
-): Promise<boolean> {
+): Promise<boolean | "model" | "unavailable" | ModelDirectoryFailure> {
   const secret = parseModelSecret(plaintext);
   const selections = deps.providerCatalogSelections;
   if (snapshot && selections?.read(snapshot, secret).includes(modelId)) return false;
   const previousKey = plaintextApiKey(previousPlaintext);
   if (!catalog || !selections || !snapshot || secret.kind !== "api_key" || !previousKey) {
-    if (checkingInference) throw modelInferenceRejection("unavailable");
+    if (checkingInference) return "unavailable";
     throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
   }
   const connection = {
@@ -10468,9 +10463,9 @@ async function confirmProviderCatalogChoice(
   });
   if (!(await checkCurrent()))
     throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
-  if (checkingInference && failure) throw modelInferenceRejection(failure);
+  if (checkingInference && failure) return failure;
   if (!listed?.includes(modelId)) {
-    if (checkingInference) throw modelInferenceRejection(fresh ? "model" : "unavailable");
+    if (checkingInference) return fresh ? "model" : "unavailable";
     throw new ORPCError("BAD_REQUEST", {
       message: fresh
         ? "This model is missing from the provider’s list. You can choose another model."

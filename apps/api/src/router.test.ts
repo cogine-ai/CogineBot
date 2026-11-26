@@ -6062,6 +6062,20 @@ describe("saved model catalog checks", () => {
     );
   });
 
+  it("does not start inference if the saved key changes during directory confirmation", async () => {
+    const { confirm, infer, inference, probe, state } = fixture(true);
+    const modelId = "gpt-fixture-dynamic-choice";
+    confirm(modelId);
+    probe.mockImplementationOnce(async () => {
+      state.plaintext = "fixture-concurrently-rotated-model-key";
+      return [...bundled, modelId];
+    });
+    const result = await infer({ ...savedInput, modelId, apiKey: "fixture-candidate-key" });
+    expect(result.status).toBe(409);
+    expect(probe).toHaveBeenCalledOnce();
+    expect(inference).not.toHaveBeenCalled();
+  });
+
   it.each([
     [401, "auth"],
     [429, "rate"],
