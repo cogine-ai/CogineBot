@@ -1308,6 +1308,8 @@ export const ModelCredentialSchema = z.object({
   maxImagesPerPrompt: z.number().int().min(1).max(1000).optional(),
   thinkingLevels: z.array(ThinkingLevelSchema).optional(),
   enabledModelIds: z.array(z.string()).optional(),
+  /** Bundled chat model IDs observed in this revision's trusted provider catalog. */
+  providerListedModelIds: z.array(z.string()).optional(),
   visionModelIds: z.array(z.string()).optional(),
   modelSettings: z.record(z.string(), ModelSettingsSchema).optional(),
   /** Stored secret kind. Absent when the secret could not be read. */

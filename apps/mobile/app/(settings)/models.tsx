@@ -48,6 +48,7 @@ import {
   modelCatalogProbeOutcome,
   modelConnectRequest,
   modelThinkingLevels,
+  prioritizeProviderListedModels,
   savedCompatibleModelIds,
   toggleEnabledModelId,
 } from "@rakazo/core";
@@ -372,7 +373,11 @@ function ModelsForm({
       const [nextMe, nextCatalog, nextCredentials, nextReferences] = await Promise.all([
         rpc<MobileMe>("me", {}, { requestContext }),
         rpc<MobileModel[]>("models/list", {}, { requestContext }),
-        rpc<MobileModelCredential[]>("models/credentials", {}, { requestContext }),
+        rpc<MobileModelCredential[]>(
+          "models/credentials",
+          { includeProviderCatalog: !preferred.keepConnectionState },
+          { requestContext },
+        ),
         rpc<{ references: ModelCredentialReference[] }>(
           "models/references",
           {},
@@ -636,16 +641,27 @@ function ModelsForm({
         })();
     return list.filter((group) => !connectedProviderIds.has(canonicalPiProviderId(group.id)));
   }, [groups, featuredProviders, showAllProviders, connectedProviderIds]);
+  const credential = credentials.find(
+    (entry) =>
+      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
+      entry.id === connectionId,
+  );
   const modelsForProvider = catalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
+  const orderedModels = prioritizeProviderListedModels(
+    modelsForProvider,
+    credential,
+    connectionRevision,
+    apiKey,
+  );
   const showModelSearch = modelsForProvider.length > MODEL_SEARCH_THRESHOLD;
   // Hide a query typed for another provider until load()/chooseProvider clears it.
   const modelQuery = modelSearch.provider === provider ? modelSearch.query : "";
   const matchedModels = showModelSearch
-    ? filterModelCatalog(modelsForProvider, modelQuery)
-    : modelsForProvider;
+    ? filterModelCatalog(orderedModels, modelQuery)
+    : orderedModels;
   // Use and Save still apply to the staged model, so its radio stays visible.
   const stagedModelHidden =
     showModelSearch &&
@@ -664,11 +680,6 @@ function ModelsForm({
   const isCloudflareGateway = provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID;
   const cloudflareRoutingReady =
     !isCloudflareGateway || cloudflareGatewayRouting({ accountId, gatewayId }) !== undefined;
-  const credential = credentials.find(
-    (entry) =>
-      canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
-      entry.id === connectionId,
-  );
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const modelReasoning = credential
     ? credentialModelSettings(credential, modelId).reasoning === true

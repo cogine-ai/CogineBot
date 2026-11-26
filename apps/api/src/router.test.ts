@@ -13,6 +13,7 @@ import {
   EncryptedSecretStore,
   IntegrationProviderSettings,
   LocalAgentHomeStore,
+  listPiCatalog,
   screenLeaseIdForRun,
   serializeModelSecret,
 } from "@rakazo/adapters";
@@ -5712,11 +5713,16 @@ describe("saved model catalog checks", () => {
   const savedInput = { provider: "openai", credentialId: "stored-model", expectedRevision: 7 };
   const storedKey = "fixture-credential-value";
 
-  function fixture() {
+  const bundled = listPiCatalog()
+    .filter((m) => m.provider === "openai")
+    .map(({ id }) => id);
+
+  function fixture(modelLiveCatalogEnabled = false) {
     const state = {
       revision: 7,
       ciphertext: "fixture-sealed-key",
       allowed: true,
+      authorizationUnavailable: false,
       secretId: "fixture-secret",
       plaintext: storedKey,
     };
@@ -5739,35 +5745,168 @@ describe("saved model catalog checks", () => {
         : null,
     );
     const load = vi.fn(async () => state.plaintext);
+    const findCredentials = vi.fn(async ({ where }) =>
+      where.userId === actor.userId
+        ? [
+            {
+              id: savedInput.credentialId,
+              provider: savedInput.provider,
+              label: "Fixture connection",
+              preferences: [{ modelId: bundled[0], isDefault: true }],
+              secretId: state.secretId,
+              connectionRevision: state.revision,
+            },
+          ]
+        : [],
+    );
+    const findSecrets = vi.fn(async ({ where }) =>
+      where.userId === actor.userId &&
+      where.spaceId === null &&
+      where.id.in.includes(state.secretId)
+        ? [{ id: state.secretId, ciphertext: state.ciphertext }]
+        : [],
+    );
     const handler = new RPCHandler(
       createRouter({
         prisma: {
-          userModelCredential: { findFirst: findCredential },
-          secret: { findFirst: findSecret },
+          userModelCredential: { findFirst: findCredential, findMany: findCredentials },
+          secret: { findFirst: findSecret, findMany: findSecrets },
         },
         secrets: { load },
         catalogProbe: probe,
-        env: { defaultProvider: "fake", defaultModel: "fixture", sandboxProvider: "fake" },
+        env: {
+          defaultProvider: "fake",
+          defaultModel: "fixture",
+          sandboxProvider: "fake",
+          agentRuntime: "pi",
+          modelLiveCatalogEnabled,
+        },
       } as unknown as RouterDeps),
     );
-    async function call(input: unknown, currentActor = actor, signal?: AbortSignal) {
+    async function request(
+      method: string,
+      input: unknown,
+      currentActor: Actor,
+      signal?: AbortSignal,
+    ) {
       const { response } = await handler.handle(
-        new Request("http://127.0.0.1/rpc/models/probeCatalog", {
+        new Request(`http://127.0.0.1/rpc/models/${method}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ json: input }),
         }),
         {
           prefix: "/rpc",
-          context: { actor: currentActor, signal, stillAuthorized: async () => state.allowed },
+          context: {
+            actor: currentActor,
+            signal,
+            stillAuthorized: async () => {
+              if (state.authorizationUnavailable)
+                throw new Error("Fixture membership lookup failed");
+              return state.allowed;
+            },
+          },
         },
       );
       if (!response) throw new Error("Expected a catalog response");
       return { status: response.status, body: await response.json() };
     }
+    const call = (input: unknown, currentActor = actor, signal?: AbortSignal) =>
+      request("probeCatalog", input, currentActor, signal);
+    const credentials = async (currentActor = actor, includeProviderCatalog = true) =>
+      (await request("credentials", { includeProviderCatalog }, currentActor)).body.json;
 
-    return { state, call, findSecret, load, probe };
+    return { state, call, credentials, findSecret, load, probe };
   }
+
+  it("automatically lists trusted bundled IDs on an owned credential and shares a warm result", async () => {
+    const { credentials, probe } = fixture(true);
+    probe.mockResolvedValue([...bundled, "fixture-unregistered-chat", `echo-${storedKey}`]);
+    expect((await credentials(actor, false))[0]).not.toHaveProperty("providerListedModelIds");
+    expect(probe).not.toHaveBeenCalled();
+    const result = await credentials();
+    expect(result).toMatchObject([
+      {
+        id: savedInput.credentialId,
+        connectionRevision: 7,
+        providerListedModelIds: expect.arrayContaining([bundled[0]]),
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("fixture-unregistered-chat");
+    expect(JSON.stringify(result)).not.toContain(storedKey);
+    expect(await credentials({ ...actor, spaceId: "space-two" })).toEqual(result);
+    expect(await credentials({ ...actor, userId: "other-user" })).toEqual([]);
+    expect(probe).toHaveBeenCalledExactlyOnceWith(
+      { provider: "openai", apiKey: storedKey },
+      undefined,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("keeps the manual check enabled when the deployment turns automatic lookup off", async () => {
+    const { credentials, call, probe } = fixture();
+    expect((await credentials())[0]).not.toHaveProperty("providerListedModelIds");
+    expect(probe).not.toHaveBeenCalled();
+    expect((await call(savedInput)).status).toBe(200);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["partial", "failed"] as const)(
+    "keeps a %s response out of the picker",
+    async (outcome) => {
+      const { credentials, probe } = fixture(true);
+      if (outcome === "partial") probe.mockResolvedValue([bundled[0]]);
+      else probe.mockRejectedValue(new Error("Fixture catalog temporarily unavailable"));
+      expect((await credentials())[0]).not.toHaveProperty("providerListedModelIds");
+      expect((await credentials())[0]).not.toHaveProperty("providerListedModelIds");
+      expect(probe).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["revision", "ciphertext", "external-key", "authorization"] as const)(
+    "drops an automatic result when %s changes while it loads",
+    async (change) => {
+      const { credentials, state, probe } = fixture(true);
+      probe.mockImplementationOnce(async () => {
+        if (change === "revision") state.revision++;
+        else if (change === "ciphertext") state.ciphertext = "new-fixture-ciphertext";
+        else if (change === "external-key") state.plaintext = "fixture-new-credential-value";
+        else state.allowed = false;
+        return bundled;
+      });
+      expect((await credentials())[0]).not.toHaveProperty("providerListedModelIds");
+      if (change === "authorization") {
+        expect((await credentials())[0]).not.toHaveProperty("providerListedModelIds");
+        expect(probe).toHaveBeenCalledTimes(1);
+      } else {
+        state.plaintext = "fixture-new-credential-value";
+        probe.mockResolvedValueOnce(bundled);
+        expect((await credentials())[0]).toHaveProperty("providerListedModelIds");
+        expect(probe).toHaveBeenLastCalledWith(
+          { provider: "openai", apiKey: state.plaintext },
+          undefined,
+          expect.any(AbortSignal),
+        );
+      }
+    },
+  );
+
+  it.each(["credential", "authorization"] as const)(
+    "keeps the credential readback if the optional %s check fails after the probe",
+    async (failure) => {
+      const { credentials, probe, findSecret, state } = fixture(true);
+      probe.mockImplementationOnce(async () => {
+        if (failure === "credential")
+          findSecret.mockRejectedValueOnce(new Error("Fixture secret lookup failed"));
+        else state.authorizationUnavailable = true;
+        return bundled;
+      });
+      const [connection] = await credentials();
+      expect(connection).toMatchObject({ id: savedInput.credentialId, connectionRevision: 7 });
+      expect(connection).not.toHaveProperty("providerListedModelIds");
+      expect(probe).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("tests only the owned stored key, and discards a key reflected as a model ID", async () => {
     const { call, load, probe } = fixture();

@@ -67,6 +67,28 @@ export async function loadConnectionSecret(
   }
 }
 
+export async function modelCatalogConnectionCurrent(
+  prisma: Pick<PrismaClient, "userModelCredential" | "secret">,
+  snapshot: {
+    id: string;
+    userId: string;
+    provider: string;
+    secretId: string;
+    connectionRevision: number;
+    ciphertext: string;
+  },
+): Promise<boolean> {
+  const { ciphertext, ...connection } = snapshot;
+  const [row, secret] = await Promise.all([
+    prisma.userModelCredential.findFirst({ where: connection, select: { id: true } }),
+    prisma.secret.findFirst({
+      where: { id: connection.secretId, userId: connection.userId, spaceId: null, ciphertext },
+      select: { id: true },
+    }),
+  ]);
+  return Boolean(row && secret);
+}
+
 export type PreparedModelBindingSecret = {
   modelCredentialId: string;
   secretId: string;

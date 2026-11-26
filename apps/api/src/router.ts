@@ -39,6 +39,7 @@ import type {
   TicketChangeNotifier,
 } from "@rakazo/adapters";
 import {
+  ApiKeyModelCatalog,
   acquireComputerExecutionLease,
   applyCodexLiveCatalog,
   applyTeachingDesktopInput,
@@ -422,6 +423,7 @@ import {
   assertConnectionRevision,
   listModelConnectionReferences,
   loadConnectionSecret,
+  modelCatalogConnectionCurrent,
   refuseAccountModelReferences,
   validateModelBinding,
 } from "./model-bindings.js";
@@ -923,6 +925,7 @@ export interface RouterDeps {
   env: {
     ticketBoardEnabled?: boolean;
     agentRuntime: string;
+    modelLiveCatalogEnabled?: boolean;
     teamChatJudgeProvider?: string;
     teamChatJudgeModel?: string;
     defaultProvider: string;
@@ -1301,6 +1304,12 @@ export function createRouter(deps: RouterDeps) {
       },
     );
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
+  const apiKeyCatalog =
+    deps.env.modelLiveCatalogEnabled &&
+    deps.env.agentRuntime !== "scripted" &&
+    !deps.scriptedRuntime
+      ? new ApiKeyModelCatalog({ probe: deps.catalogProbe })
+      : undefined;
   const saveSubscription =
     (actor: Actor): SaveSubscription =>
     async (login, session) => {
@@ -2027,12 +2036,15 @@ export function createRouter(deps: RouterDeps) {
         // runtime cannot execute it, so it stays out of the user-facing catalog.
         return deps.env.agentRuntime === "scripted" ? [...catalog, scriptedCatalogEntry] : catalog;
       }),
-      credentials: authed.models.credentials.handler(async ({ context }) => {
+      credentials: authed.models.credentials.handler(async ({ context, input }) => {
+        const { actor, signal, stillAuthorized } = context;
+        const { userId, spaceId } = actor;
+        const catalogCache = input?.includeProviderCatalog ? apiKeyCatalog : undefined;
         const rows = await deps.prisma.userModelCredential.findMany({
-          where: { userId: context.actor.userId },
+          where: { userId },
           include: {
             preferences: {
-              where: { userId: context.actor.userId, spaceId: context.actor.spaceId },
+              where: { userId, spaceId },
             },
           },
           orderBy: newestModelCredentialOrder,
@@ -2041,14 +2053,15 @@ export function createRouter(deps: RouterDeps) {
           ? await deps.prisma.secret.findMany({
               where: {
                 id: { in: rows.map((row) => row.secretId) },
-                userId: context.actor.userId,
+                userId,
                 spaceId: null,
               },
               select: { id: true, ciphertext: true },
             })
           : [];
         const ciphertextById = new Map(secrets.map((secret) => [secret.id, secret.ciphertext]));
-        return Promise.all(
+        let probeAuthorization: Promise<boolean> | undefined;
+        const readback = await Promise.all(
           rows.map(async (row) => {
             const preference = row.preferences[0];
             const selected = {
@@ -2058,21 +2071,65 @@ export function createRouter(deps: RouterDeps) {
               thinkingLevel: preference?.thinkingLevel ?? null,
             };
             const ciphertext = ciphertextById.get(row.secretId);
-            if (!ciphertext) return modelCredentialDto(selected);
+            if (!ciphertext) return { credential: modelCredentialDto(selected) };
+            let plaintext: string;
+            let credential: ReturnType<typeof modelCredentialDto>;
             try {
-              return modelCredentialDto(
-                selected,
-                await deps.secrets.load(ciphertext, row.secretId),
-              );
+              plaintext = await deps.secrets.load(ciphertext, row.secretId);
+              credential = modelCredentialDto(selected, plaintext);
             } catch (error) {
               if (error instanceof SecretStoreUnavailableError)
                 throw new ORPCError("SERVICE_UNAVAILABLE", {
                   message: "Model connection is unavailable.",
                 });
-              return modelCredentialDto(selected);
+              return { credential: modelCredentialDto(selected) };
             }
+            if (!catalogCache || credential.authKind !== "api_key" || signal?.aborted)
+              return { credential };
+            const secret = parseModelSecret(plaintext);
+            if (secret.kind !== "api_key") return { credential };
+            const apiKey = secret.key.trim();
+            const snapshot = {
+              id: row.id,
+              userId,
+              provider: row.provider,
+              secretId: row.secretId,
+              connectionRevision: row.connectionRevision,
+              ciphertext,
+            };
+            const current = async () => {
+              if (!(await modelCatalogConnectionCurrent(deps.prisma, snapshot))) return false;
+              const latest = parseModelSecret(await deps.secrets.load(ciphertext, row.secretId));
+              return latest.kind === "api_key" && latest.key.trim() === apiKey;
+            };
+            const listed = await catalogCache.read(snapshot, apiKey, async () => {
+              probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
+              return (
+                (await probeAuthorization) &&
+                !signal?.aborted &&
+                (await current()) &&
+                !signal?.aborted
+              );
+            });
+            return listed ? { credential, catalog: { current, listed } } : { credential };
           }),
         );
+        const credentials = readback.map(({ credential }) => credential);
+        if (!readback.some((entry) => entry.catalog) || signal?.aborted) return credentials;
+        try {
+          if (stillAuthorized && !(await stillAuthorized())) return credentials;
+          const verified = await Promise.all(
+            readback.map(async ({ credential, catalog }) =>
+              catalog && (await catalog.current())
+                ? { ...credential, providerListedModelIds: catalog.listed }
+                : credential,
+            ),
+          );
+          return signal?.aborted ? credentials : verified;
+        } catch {
+          // Directory observations are optional. Preserve the completed credential readback.
+          return credentials;
+        }
       }),
       backups: authed.models.backups.handler(async ({ context }) =>
         listSpaceBackupModels(deps.prisma, context.actor),
@@ -2401,9 +2458,10 @@ export function createRouter(deps: RouterDeps) {
         if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
         assertConnectionRevision(credential, input.expectedRevision);
         const secretId = credential.secretId;
+        const connectionRevision = input.expectedRevision;
         const readCurrentCredential = () =>
           deps.prisma.userModelCredential.findFirst({
-            where: { ...owner, connectionRevision: input.expectedRevision, secretId },
+            where: { ...owner, connectionRevision, secretId },
             select: { id: true },
           });
         const connectionChanged = () =>
@@ -2429,14 +2487,13 @@ export function createRouter(deps: RouterDeps) {
         async function ensureCurrent() {
           signal?.throwIfAborted();
           if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
-          const [row, secret] = await Promise.all([
-            readCurrentCredential(),
-            deps.prisma.secret.findFirst({
-              where: { id: secretId, userId: actor.userId, spaceId: null, ciphertext },
-              select: { id: true },
-            }),
-          ]);
-          if (!row || !secret) throw connectionChanged();
+          const current = await modelCatalogConnectionCurrent(deps.prisma, {
+            ...owner,
+            connectionRevision,
+            secretId,
+            ciphertext,
+          });
+          if (!current) throw connectionChanged();
           signal?.throwIfAborted();
         }
 

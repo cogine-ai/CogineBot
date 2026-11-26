@@ -436,7 +436,9 @@ export const appContract = {
     defaults: oc.output(ModelDefaultsSchema),
     updateDefaults: oc.input(UpdateModelDefaultsInput).output(UpdateModelDefaultsResult),
     list: oc.output(z.array(ModelCatalogEntrySchema)),
-    credentials: oc.output(z.array(ModelCredentialSchema)),
+    credentials: oc
+      .input(z.object({ includeProviderCatalog: z.boolean().optional() }).optional())
+      .output(z.array(ModelCredentialSchema)),
     references: oc
       .input(z.object({ credentialId: Id.optional() }))
       .output(z.object({ references: z.array(ModelCredentialReferenceSchema) })),

@@ -56,6 +56,24 @@ export function modelCatalogProbeOutcome(modelId: string | undefined, models: re
   return selected && !models.includes(selected) ? "missing" : "listed";
 }
 
+/** Only rank discovery choices. Current selections and saved model order use the base catalog. */
+export function prioritizeProviderListedModels(
+  models: ModelCatalogEntry[],
+  credential: Pick<ModelCredential, "providerListedModelIds" | "connectionRevision"> | undefined,
+  revision: number | undefined,
+  draftKey: string,
+): ModelCatalogEntry[] {
+  if (
+    !credential?.providerListedModelIds?.length ||
+    revision === undefined ||
+    revision !== credential.connectionRevision ||
+    draftKey.trim()
+  )
+    return models;
+  const listed = new Set(credential.providerListedModelIds);
+  return [...models].sort((a, b) => Number(listed.has(b.id)) - Number(listed.has(a.id)));
+}
+
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;
 type DefaultModel = { defaultProvider: string | null; defaultModel: string | null };
 
