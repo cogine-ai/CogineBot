@@ -428,6 +428,7 @@ describe("CodexCatalogCache", () => {
     // Let the hard deadline retire the hung refresh, then move past the
     // failure TTL so the next read revalidates instead of serving the miss.
     await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
     now += 2_000;
     expect(await cache.read("user-1", account())).toBeUndefined();
     await vi.waitFor(async () => {
@@ -435,6 +436,26 @@ describe("CodexCatalogCache", () => {
       expect(retry?.[0]?.slug).toBe(SPARK);
     });
     expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not send a bearer that becomes available after the refresh deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let unlock!: (token: string) => void;
+      const lateToken = new Promise<string>((resolve) => {
+        unlock = resolve;
+      });
+      const fetchImpl = listFetch();
+      const cache = new CodexCatalogCache({ fetch: fetchImpl, waitMs: 10, deadlineMs: 40 });
+      const read = cache.read("user-1", { accountId: ACCOUNT_ID, accessToken: () => lateToken });
+      await vi.advanceTimersByTimeAsync(40);
+      expect(await read).toBeUndefined();
+      unlock(ACCESS_TOKEN);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("negative-caches failures for the failure TTL", async () => {
