@@ -10,6 +10,7 @@ const procedures = new Set([
   "models/connect",
   "models/probeOpenAiCompatible",
   "models/probeCatalog",
+  "models/probeInference",
   "models/beginOAuth",
   "models/chatgptProfiles",
   "models/submitOAuthCode",

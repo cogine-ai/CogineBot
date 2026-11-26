@@ -751,6 +751,11 @@ export const DE_MESSAGES: Record<string, string> = {
   "Finish signing in in your browser:": "Schließe die Anmeldung im Browser ab:",
   "Found {count} model.": "{count} Modell gefunden.",
   "Check models": "Modelle prüfen",
+  "Test model": "Modell testen",
+  "The model accepted the test request.": "Das Modell hat die Testanfrage angenommen.",
+  "This key cannot use the selected model.":
+    "Dieser Schlüssel kann das ausgewählte Modell nicht verwenden.",
+  "Could not verify this model.": "Dieses Modell konnte nicht überprüft werden.",
   "Testing…": "Wird getestet…",
   "No models listed.": "Keine Modelle gelistet.",
   "Model listed by the provider.": "Der Anbieter listet dieses Modell auf.",

@@ -13,6 +13,14 @@ export function isChatModelId(id: string): boolean {
 }
 
 const providerCatalogBaseUrl = "https://api.openai.com/v1";
+
+export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
+  return (
+    model.provider === "openai" &&
+    model.api === "openai-responses" &&
+    model.baseUrl === providerCatalogBaseUrl
+  );
+}
 const catalogModels = builtinModels();
 
 /** The supported catalog and runtime must share the official Responses route. */
@@ -29,12 +37,7 @@ export function providerCatalogModel(
   )
     return undefined;
   const siblings = models.getProvider(provider)?.getModels();
-  if (
-    !siblings?.length ||
-    siblings.some(
-      (model) => model.api !== "openai-responses" || model.baseUrl !== providerCatalogBaseUrl,
-    )
-  )
+  if (!siblings?.length || siblings.some((model) => !isOfficialResponsesModel(model)))
     return undefined;
   // The list endpoint only establishes availability for this key. It provides
   // no evidence about context, modalities, reasoning, or pricing.

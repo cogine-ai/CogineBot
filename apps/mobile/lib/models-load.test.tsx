@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ModelDefaults, ThinkingDefaults, UpdateModelDefaultsInput } from "@rakazo/contracts";
-import { defaultModelChoiceKey } from "@rakazo/contracts";
+import { defaultModelChoiceKey, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
@@ -2384,6 +2384,7 @@ it("checks a saved API key without exposing it to the editor", async () => {
           billing: "API",
           catalogProbe: true,
           savedCatalogProbe: true,
+          inferenceProbe: true,
         },
         {
           provider: saved.provider,
@@ -2403,6 +2404,8 @@ it("checks a saved API key without exposing it to the editor", async () => {
       return credentials.map(({ providerListedModelIds: _listed, ...rest }) => rest);
     }
     if (procedure === "models/probeCatalog") return probe ?? { models: [saved.modelId] };
+    if (procedure === "models/probeInference")
+      return { status: Object.hasOwn(input as object, "apiKey") ? "auth" : "accepted" };
     return normal(procedure, input);
   });
   await act(async () => root.render(<Models />));
@@ -2498,4 +2501,32 @@ it("checks a saved API key without exposing it to the editor", async () => {
   ).toMatchObject({ credentialId: saved.id, expectedRevision: 10 });
   expect(container.textContent).toContain("Model listed by the provider.");
   expect(container.textContent).not.toContain("Model connection changed. Check models again.");
+
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeInference"),
+  ).toEqual([]);
+  await act(async () => button("Test model").click());
+  expect(container.textContent).toContain("The model accepted the test request.");
+  const savedInference = state.rpc.mock.calls.find(([name]) => name === "models/probeInference");
+  expect(savedInference?.[1]).toEqual({
+    provider: saved.provider,
+    modelId: saved.modelId,
+    credentialId: saved.id,
+    expectedRevision: 10,
+  });
+  expect(savedInference?.[2]).toMatchObject({
+    timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
+  });
+
+  await edit(key!, "fixture-draft-inference-key");
+  await act(async () => button("Test model").click());
+  expect(container.textContent).toContain("rejected the API key");
+  expect(key?.value).toBe("fixture-draft-inference-key");
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeInference").at(-1)?.[1],
+  ).toEqual({
+    provider: saved.provider,
+    modelId: saved.modelId,
+    apiKey: "fixture-draft-inference-key",
+  });
 });

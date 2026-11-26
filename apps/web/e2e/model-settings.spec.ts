@@ -1729,3 +1729,75 @@ for (const notListed of [true, false]) {
     await expect(settings.getByText(message, { exact: true })).toHaveCount(0);
   });
 }
+
+test("tests model access with the selected saved or draft API key", async ({ page }, testInfo) => {
+  await signup(page, `model-access-${Date.now()}@example.test`, "password12", "Model fixture");
+  await completeOnboarding(page);
+  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+  const model = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
+  const saved = await rpc<ModelCredential>(page, "models/connect", {
+    provider: model.provider,
+    apiKey: "fixture-saved-inference-key",
+    modelId: model.id,
+  });
+  await page.route("**/rpc/models/list", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+    await route.fulfill({
+      response,
+      json: {
+        json: json.map((entry) =>
+          entry.id === model.id && entry.provider === model.provider
+            ? { ...entry, inferenceProbe: true }
+            : entry,
+        ),
+      },
+    });
+  });
+  const requests: unknown[] = [];
+  await page.route("**/rpc/models/probeInference", async (route) => {
+    const input = route.request().postDataJSON().json;
+    requests.push(input);
+    await route.fulfill({ json: { json: { status: input.apiKey ? "auth" : "accepted" } } });
+  });
+  await page.route("**/rpc/models/probeCatalog", (route) =>
+    route.fulfill({ json: { json: { models: [model.id] } } }),
+  );
+
+  const settings = await openUserSettings(page, "models");
+  await settings.getByPlaceholder("Search providers").fill("openai");
+  await settings
+    .getByRole("button")
+    .filter({ has: page.getByText("OpenAI", { exact: true }) })
+    .click();
+  await settings.getByRole("button", { name: "Check models", exact: true }).click();
+  await expect(settings.getByText("Chat was not tested.", { exact: false })).toBeVisible();
+  expect(requests).toEqual([]);
+
+  const testModel = settings.getByRole("button", { name: "Test model", exact: true });
+  await testModel.click();
+  const accepted = settings.getByRole("status").filter({ hasText: "accepted the test request" });
+  await expect(accepted).toBeInViewport({ ratio: 1 });
+  expect(requests).toEqual([
+    {
+      provider: model.provider,
+      modelId: model.id,
+      credentialId: saved.id,
+      expectedRevision: saved.connectionRevision,
+    },
+  ]);
+  await captureScreenshot(page, testInfo, "a1-model-inference-accepted");
+
+  const draft = settings.getByLabel("Replace API key", { exact: true });
+  await draft.fill("fixture-draft-inference-key");
+  await testModel.click();
+  await expect(
+    settings.getByRole("alert").filter({ hasText: "rejected the API key" }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(draft).toHaveValue("fixture-draft-inference-key");
+  expect(requests[1]).toEqual({
+    provider: model.provider,
+    modelId: model.id,
+    apiKey: "fixture-draft-inference-key",
+  });
+});

@@ -116,6 +116,7 @@ export * from "./messaging-platforms.js";
 export * from "./messaging-team-chat-emulator.js";
 export * from "./model-connect.js";
 export { modelConnectionErrorMessage } from "./model-connection-errors.js";
+export { probeModelInference } from "./model-inference-probe.js";
 export * from "./model-oauth-sessions.js";
 export * from "./model-selection.js";
 export * from "./model-settings.js";
