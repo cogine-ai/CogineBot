@@ -1,5 +1,5 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import type { ModelCredential } from "@rakazo/contracts";
+import type { ModelConnectResult } from "@rakazo/contracts";
 import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   cloudflareGatewayRouting,
@@ -21,6 +21,8 @@ import {
   clampCatalogThinkingLevel,
   createModelProbe,
   initialModelProbeState,
+  modelConnectChecksInference,
+  modelConnectInferenceRejection,
   pickCatalogModelId,
 } from "@rakazo/core";
 import {
@@ -48,11 +50,12 @@ import type { ModelPreflightFailure } from "../lib/model-connection-preflight";
 import {
   classifyModelConnectionFailure,
   loadStoredModelAuth,
+  modelInferenceTestMessage,
   modelPreflightSuccessMessage,
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { rpc } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 
@@ -153,6 +156,9 @@ export function OnboardingPage() {
   const deploymentDefaultModelRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const connectAttempt = useRef<AbortController | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectionWarning, setConnectionWarning] = useState<string | null>(null);
   const [preflightTesting, setPreflightTesting] = useState(false);
   const [preflightTarget, setPreflightTarget] = useState<
     "api-key" | "sign-in" | "compatible" | null
@@ -227,6 +233,7 @@ export function OnboardingPage() {
       })
       .catch(() => setStep("bot"));
     return () => {
+      connectAttempt.current?.abort();
       modelProbe.invalidate();
     };
   }, []);
@@ -257,6 +264,7 @@ export function OnboardingPage() {
       : [];
   const subscriptionSignIn = selected?.signIn !== undefined;
   const acceptsKey = selected?.auth !== "oauth";
+  const verifyInference = selected?.id === modelId && modelConnectChecksInference(selected, apiKey);
   const signInLabel = selected?.oauthLabel ?? t`Sign in`;
   const openAiCompatibleReady = openAiCompatibleConnectReady({
     baseUrl,
@@ -298,6 +306,7 @@ export function OnboardingPage() {
   );
 
   function invalidatePreflight() {
+    connectAttempt.current?.abort();
     preflightRevisionRef.current += 1;
     setPreflightTesting(false);
     setPreflightTarget(null);
@@ -454,10 +463,16 @@ export function OnboardingPage() {
   }
 
   async function saveModel() {
-    if (!canSaveModel) return;
+    if (!canSaveModel || probing || preflightTesting || connectAttempt.current) return;
+    const controller = new AbortController();
+    const spaceGeneration = currentSpaceSelectionGeneration();
+    const current = () =>
+      !controller.signal.aborted && spaceGeneration === currentSpaceSelectionGeneration();
+    connectAttempt.current = controller;
+    setConnecting(true);
     setError(null);
     try {
-      let connection: ModelCredential | undefined;
+      let connection: ModelConnectResult | undefined;
       if (isOpenAiCompatible) {
         const parsedMaxImagesPerPrompt = parseModelMaxImagesPerPrompt(
           maxImagesPerPrompt,
@@ -484,46 +499,83 @@ export function OnboardingPage() {
           );
           return;
         }
-        connection = await rpc.models.connect({
-          provider,
-          baseUrl: baseUrl.trim(),
-          modelId: modelId.trim(),
-          reasoning,
-          thinkingLevel: stagedThinkingLevel(),
-          maxTokens: parsedMaxTokens,
-          contextWindow: parsedContextWindow,
-          supportsImages,
-          maxImagesPerPrompt: maxImagesPerPromptInput,
-          apiKey: apiKey.trim() || undefined,
-          label: selected?.providerName ?? provider,
-        });
+        connection = await rpc.models.connect(
+          {
+            provider,
+            baseUrl: baseUrl.trim(),
+            modelId: modelId.trim(),
+            reasoning,
+            thinkingLevel: stagedThinkingLevel(),
+            maxTokens: parsedMaxTokens,
+            contextWindow: parsedContextWindow,
+            supportsImages,
+            maxImagesPerPrompt: maxImagesPerPromptInput,
+            apiKey: apiKey.trim() || undefined,
+            label: selected?.providerName ?? provider,
+          },
+          { signal: controller.signal },
+        );
       } else if (apiKey) {
-        connection = await rpc.models.connect({
-          provider,
-          apiKey,
-          ...(isCloudflareGateway
-            ? { accountId: accountId.trim(), gatewayId: gatewayId.trim() }
-            : {}),
-          modelId,
-          thinkingLevel: stagedThinkingLevel(),
-          label: selected?.providerName ?? provider,
-        });
+        connection = await rpc.models.connect(
+          {
+            provider,
+            apiKey,
+            ...(verifyInference ? { verifyInference: true as const } : {}),
+            ...(isCloudflareGateway
+              ? { accountId: accountId.trim(), gatewayId: gatewayId.trim() }
+              : {}),
+            modelId,
+            thinkingLevel: stagedThinkingLevel(),
+            label: selected?.providerName ?? provider,
+          },
+          { signal: controller.signal },
+        );
       }
+      if (!current()) return;
       // Catalog providers keep the staged effort on the saved model preference;
       // openai-compatible already stored its level inside the endpoint config.
       const level = stagedThinkingLevel();
-      if (level && !isOpenAiCompatible && modelId && connection?.connectionRevision !== undefined) {
-        await rpc.models.setDefault({
-          provider,
-          modelId,
-          modelCredentialId: connection.id,
-          expectedRevision: connection.connectionRevision,
-          thinkingLevel: level,
-        });
+      if (
+        connection?.inferenceStatus === undefined &&
+        level &&
+        !isOpenAiCompatible &&
+        modelId &&
+        connection?.connectionRevision !== undefined
+      ) {
+        await rpc.models.setDefault(
+          {
+            provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: connection.connectionRevision,
+            thinkingLevel: level,
+          },
+          { signal: controller.signal },
+        );
       }
-      setStep(nextStepAfterModel(needsIntegrationSetup));
+      if (!current()) return;
+      if (connection?.inferenceStatus && connection.inferenceStatus !== "accepted") {
+        setApiKey("");
+        setConnectionWarning(
+          connection.inferenceStatus === "timeout"
+            ? t`The model test timed out.`
+            : connection.inferenceStatus === "rate"
+              ? t`The provider is rate-limiting requests.`
+              : modelInferenceTestMessage(connection.inferenceStatus),
+        );
+      } else {
+        setStep(nextStepAfterModel(needsIntegrationSetup));
+      }
     } catch (err) {
-      setError(errorText(err, t`Could not save model`));
+      if (current()) {
+        const rejected = modelConnectInferenceRejection(err);
+        setError(
+          rejected ? modelInferenceTestMessage(rejected) : errorText(err, t`Could not save model`),
+        );
+      }
+    } finally {
+      connectAttempt.current = null;
+      setConnecting(false);
     }
   }
 
@@ -568,7 +620,23 @@ export function OnboardingPage() {
             <Trans>Loading…</Trans>
           </p>
         ) : null}
-        {step === "model" ? (
+        {step === "model" && connectionWarning ? (
+          <div>
+            <h1 className="text-[32px] font-medium text-foreground">
+              <Trans>Connect a model</Trans>
+            </h1>
+            <p className="mt-4 text-sm text-foreground" role="status">
+              <Trans>Saved.</Trans> {connectionWarning}
+            </p>
+            <Button
+              className="mt-6"
+              onClick={() => setStep(nextStepAfterModel(needsIntegrationSetup))}
+            >
+              <Trans>Continue</Trans>
+            </Button>
+          </div>
+        ) : null}
+        {step === "model" && !connectionWarning ? (
           <div>
             <h1 className="text-[32px] font-medium text-foreground">
               <Trans>Connect a model</Trans>
@@ -579,6 +647,7 @@ export function OnboardingPage() {
               </span>
               <Select
                 value={provider}
+                disabled={connecting}
                 onValueChange={(value) => {
                   if (typeof value !== "string" || !value) return;
                   selectProvider(value);
@@ -605,6 +674,7 @@ export function OnboardingPage() {
                     <Input
                       id={`${fieldId}-base-url`}
                       value={baseUrl}
+                      disabled={connecting}
                       onChange={(e) => updateBaseUrl(e.target.value)}
                       aria-label={t`OpenAI-compatible server URL`}
                       placeholder="http://127.0.0.1:8000/v1"
@@ -615,7 +685,7 @@ export function OnboardingPage() {
                   <div className="mt-3">
                     <Button
                       variant="outline"
-                      disabled={probing || !baseUrl.trim()}
+                      disabled={connecting || probing || !baseUrl.trim()}
                       onClick={() => void probeServerModels()}
                     >
                       {probing ? <Trans>Finding…</Trans> : <Trans>Find models</Trans>}
@@ -631,6 +701,7 @@ export function OnboardingPage() {
                     {probeModels.length && !manualModelId ? (
                       <Select
                         value={modelId}
+                        disabled={connecting}
                         onValueChange={(value) => {
                           if (typeof value !== "string") return;
                           const next = value;
@@ -662,6 +733,7 @@ export function OnboardingPage() {
                     ) : (
                       <Input
                         value={modelId}
+                        disabled={connecting}
                         onChange={(e) => {
                           setManualModelId(true);
                           setModelId(e.target.value);
@@ -676,6 +748,7 @@ export function OnboardingPage() {
                       <Button
                         variant="link"
                         size="xs"
+                        disabled={connecting}
                         className="mt-2 px-0 text-muted-foreground"
                         onClick={() => {
                           setManualModelId(false);
@@ -688,6 +761,7 @@ export function OnboardingPage() {
                     ) : null}
                   </div>
                   <ModelThinkingOptions
+                    disabled={connecting}
                     reasoning={reasoning}
                     onReasoningChange={(value) => {
                       setReasoning(value);
@@ -739,6 +813,7 @@ export function OnboardingPage() {
                       invalidatePreflight();
                     }}
                     items={modelItems}
+                    disabled={connecting}
                   >
                     <SelectTrigger aria-label={t`Model`} className="mt-2 w-full">
                       <SelectValue />
@@ -758,6 +833,7 @@ export function OnboardingPage() {
                       </span>
                       <Select
                         value={thinkingLevel ?? DEFAULT_THINKING_LEVEL_OPTION}
+                        disabled={connecting}
                         onValueChange={(value) => {
                           const next = String(value);
                           setThinkingLevel(
@@ -943,6 +1019,7 @@ export function OnboardingPage() {
                   <Trans>Account ID</Trans>
                   <Input
                     id={`${fieldId}-account-id`}
+                    disabled={connecting}
                     value={accountId}
                     onChange={(event) => setAccountId(event.target.value)}
                     autoComplete="off"
@@ -957,6 +1034,7 @@ export function OnboardingPage() {
                   <Trans>Gateway ID</Trans>
                   <Input
                     id={`${fieldId}-gateway-id`}
+                    disabled={connecting}
                     value={gatewayId}
                     onChange={(event) => setGatewayId(event.target.value)}
                     autoComplete="off"
@@ -974,6 +1052,7 @@ export function OnboardingPage() {
                   </summary>
                   <Input
                     aria-label={t`API key`}
+                    disabled={connecting}
                     value={apiKey}
                     onChange={(e) => updateApiKey(e.target.value)}
                     placeholder={t`Optional`}
@@ -990,6 +1069,7 @@ export function OnboardingPage() {
                   {subscriptionSignIn ? <Trans>Or paste an API key</Trans> : <Trans>API key</Trans>}
                   <Input
                     id={`${fieldId}-api-key`}
+                    disabled={connecting}
                     value={apiKey}
                     onChange={(e) => updateApiKey(e.target.value)}
                     placeholder="sk-…"
@@ -1025,9 +1105,17 @@ export function OnboardingPage() {
               </p>
             ) : null}
             {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
+            {verifyInference ? (
+              <p className="mt-4 text-sm text-muted-foreground">
+                <Trans>Connecting sends one test request that may incur usage charges.</Trans>
+              </p>
+            ) : null}
             <div className="mt-6 flex gap-3">
-              <Button disabled={!canSaveModel} onClick={() => void saveModel()}>
-                <Trans>Continue</Trans>
+              <Button
+                disabled={!canSaveModel || connecting || probing || preflightTesting}
+                onClick={() => void saveModel()}
+              >
+                {connecting ? <Trans>Saving…</Trans> : <Trans>Continue</Trans>}
               </Button>
             </div>
           </div>

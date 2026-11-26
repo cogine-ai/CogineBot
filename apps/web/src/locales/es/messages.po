@@ -7601,3 +7601,9 @@ msgstr "Mensajes borrados. No se pudo confirmar la limpieza de la memoria extern
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "No se pudo confirmar la limpieza de la memoria externa."
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "Al conectar, se envía una solicitud de prueba que puede generar cargos por uso."
+
+msgid "The model test timed out."
+msgstr "La prueba del modelo superó el tiempo de espera."

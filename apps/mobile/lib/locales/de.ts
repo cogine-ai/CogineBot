@@ -752,6 +752,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Found {count} model.": "{count} Modell gefunden.",
   "Check models": "Modelle prüfen",
   "Test model": "Modell testen",
+  "Connecting sends one test request that may incur usage charges.":
+    "Beim Verbinden wird eine Testanfrage gesendet, für die Nutzungsgebühren anfallen können.",
   "The model accepted the test request.": "Das Modell hat die Testanfrage angenommen.",
   "This key cannot use the selected model.":
     "Dieser Schlüssel kann das ausgewählte Modell nicht verwenden.",

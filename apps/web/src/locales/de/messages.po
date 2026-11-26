@@ -7657,3 +7657,9 @@ msgstr "Nachrichten gelöscht. Die Bereinigung des externen Speichers konnte nic
 #: src/pages/Shell.tsx
 msgid "External memory cleanup could not be confirmed."
 msgstr "Die Bereinigung des externen Speichers konnte nicht bestätigt werden."
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "Beim Verbinden wird eine Testanfrage gesendet, für die Nutzungsgebühren anfallen können."
+
+msgid "The model test timed out."
+msgstr "Der Modelltest hat das Zeitlimit überschritten."

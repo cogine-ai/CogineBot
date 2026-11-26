@@ -3082,6 +3082,7 @@ describe("model credential persistence", () => {
     const finish = vi.fn();
     const assertSaving = vi.fn();
     const recordConnected = vi.fn();
+    const inference = vi.fn().mockResolvedValue("accepted");
     const claim = {
       id: "fixture-signin",
       userId: actor.userId,
@@ -3129,6 +3130,7 @@ describe("model credential persistence", () => {
         finish,
         sessions: { assertSaving, recordConnected },
       },
+      modelInferenceProbe: inference,
       env: {
         defaultProvider: "openrouter",
         defaultModel: options?.envDefaultModel ?? "openai/gpt-5.6-luna",
@@ -3145,23 +3147,133 @@ describe("model credential persistence", () => {
       assertSaving,
       recordConnected,
       claim,
+      inference,
       deps,
       tx,
       handler: new RPCHandler(createRouter(deps)),
     };
   }
 
-  async function call(handler: RPCHandler<never>, path: string, body: unknown): Promise<Response> {
+  async function call(
+    handler: RPCHandler<never>,
+    path: string,
+    body: unknown,
+    stillAuthorized?: () => Promise<boolean>,
+  ): Promise<Response> {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ json: body }),
       }),
-      { prefix: "/rpc", context: { actor } },
+      { prefix: "/rpc", context: { actor, stillAuthorized } },
     );
     return response;
   }
+
+  const verifiedConnect = {
+    provider: "openai",
+    modelId: listPiCatalog().find((entry) => entry.inferenceProbe)!.id,
+    apiKey: "fixture-connect-key",
+    verifyInference: true,
+  };
+
+  it.each(["auth", "model", "credit", "spending"])(
+    "refuses to save a new key with a conclusive %s failure",
+    async (failure) => {
+      const { deps, handler, inference, tx } = persistDeps();
+      inference.mockResolvedValueOnce(failure);
+      const response = await call(handler, "models/connect", verifiedConnect);
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body.json).toMatchObject({ code: "BAD_REQUEST", data: { inferenceStatus: failure } });
+      expect(JSON.stringify(body)).not.toContain(verifiedConnect.apiKey);
+      expect(inference).toHaveBeenCalledOnce();
+      expect(deps.secrets.put).not.toHaveBeenCalled();
+      expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["accepted", "rate", "timeout", "unavailable"])(
+    "commits the tested key and reports %s on the write receipt",
+    async (status) => {
+      const { deps, handler, inference, tx } = persistDeps();
+      inference.mockResolvedValueOnce(status);
+      const response = await call(handler, "models/connect", {
+        ...verifiedConnect,
+        apiKey: `  ${verifiedConnect.apiKey}  `,
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.json).toMatchObject({
+        id: "cred-1",
+        modelId: verifiedConnect.modelId,
+        inferenceStatus: status,
+      });
+      expect(JSON.stringify(body)).not.toContain(verifiedConnect.apiKey);
+      expect(inference).toHaveBeenCalledExactlyOnceWith(
+        {
+          provider: verifiedConnect.provider,
+          modelId: verifiedConnect.modelId,
+          apiKey: verifiedConnect.apiKey,
+        },
+        expect.objectContaining({}),
+      );
+      expect(inference.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.userModelCredential.create.mock.invocationCallOrder[0]!,
+      );
+      expect(deps.secrets.put).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps legacy connects and unsupported providers free of inference requests", async () => {
+    const { handler, inference } = persistDeps();
+    for (const input of [
+      { ...verifiedConnect, verifyInference: undefined },
+      { ...verifiedConnect, provider: "anthropic", modelId: undefined },
+    ]) {
+      const response = await call(handler, "models/connect", input);
+      expect(response.status).toBe(200);
+      expect((await response.json()).json).not.toHaveProperty("inferenceStatus");
+    }
+    expect(inference).not.toHaveBeenCalled();
+  });
+
+  it("checks authorization on both sides of the provider wait", async () => {
+    const { deps, handler, inference } = persistDeps();
+    let authorized = false;
+    expect(
+      (await call(handler, "models/connect", verifiedConnect, async () => authorized)).status,
+    ).toBe(403);
+    expect(inference).not.toHaveBeenCalled();
+    authorized = true;
+    inference.mockImplementationOnce(async () => {
+      authorized = false;
+      return "accepted";
+    });
+    expect(
+      (await call(handler, "models/connect", verifiedConnect, async () => authorized)).status,
+    ).toBe(403);
+    expect(inference).toHaveBeenCalledOnce();
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite a connection created during the first key check", async () => {
+    const { deps, handler, inference, tx } = persistDeps();
+    inference.mockImplementationOnce(async () => {
+      tx.userModelCredential.findFirst.mockResolvedValueOnce({
+        id: "newer-connection",
+        provider: verifiedConnect.provider,
+        connectionRevision: 1,
+      });
+      return "accepted";
+    });
+    const response = await call(handler, "models/connect", verifiedConnect);
+    expect(response.status).toBe(409);
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    expect(tx.secret.create).not.toHaveBeenCalled();
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+  });
 
   it("locks the ChatGPT user/provider slot before finalization reads or creates its first credential", async () => {
     const { begin, tx, handler, claim, assertSaving, recordConnected } = persistDeps();

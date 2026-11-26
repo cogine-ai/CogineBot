@@ -217,6 +217,7 @@ import {
   MAX_ENABLED_MODEL_IDS,
   MAX_MODEL_SETTINGS_PER_CONNECTION,
   MCP_OAUTH_CLIENT_REQUIRED,
+  ModelConnectInferenceRejectionSchema,
   modelOutputLeavesInputRoom,
   normalizeCreateBotProfile,
   normalizeOpenAiCompatibleBaseUrl,
@@ -244,6 +245,7 @@ import {
   hasMixedOneShotSchedule,
   intervalUsesAnchor,
   isOneShotRoutineCrons,
+  MODEL_INFERENCE_PROBE_MESSAGES,
   modelSettingsDefaults,
   resolveGroupTargetBotIds,
   THREAD_HIDDEN_RUN_TRIGGERS,
@@ -1313,6 +1315,12 @@ export function createRouter(deps: RouterDeps) {
     );
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const inferenceProbesEnabled = deps.env.agentRuntime === "pi" && !deps.scriptedRuntime;
+  const probeInference = deps.modelInferenceProbe ?? probeModelInference;
+  const canProbeInference = (provider: string, modelId: string) =>
+    inferenceProbesEnabled &&
+    listPiCatalog().some(
+      (model) => model.inferenceProbe && model.provider === provider && model.id === modelId,
+    );
   const apiKeyCatalog =
     deps.env.modelLiveCatalogEnabled &&
     deps.env.agentRuntime !== "scripted" &&
@@ -2374,7 +2382,32 @@ export function createRouter(deps: RouterDeps) {
                   previousPlaintext,
                 )
               : false;
-          return await persistModelCredential(
+          const probeModelId =
+            input.verifyInference && input.apiKey?.trim()
+              ? (requested ?? defaultCatalogModelId(input.provider, plaintext))
+              : undefined;
+          let inferenceStatus: Awaited<ReturnType<typeof probeModelInference>> | undefined;
+          if (probeModelId && canProbeInference(input.provider, probeModelId)) {
+            const saved = parseModelSecret(plaintext);
+            if (saved.kind === "api_key") {
+              await ensureModelProbeAuthorized(context);
+              inferenceStatus = await probeInference(
+                { provider: input.provider, modelId: probeModelId, apiKey: saved.key },
+                { signal: context.signal },
+              );
+              await ensureModelProbeAuthorized(context);
+              const rejection = ModelConnectInferenceRejectionSchema.safeParse({ inferenceStatus });
+              if (rejection.success)
+                throw new ORPCError("BAD_REQUEST", {
+                  data: rejection.data,
+                  message: MODEL_INFERENCE_PROBE_MESSAGES[rejection.data.inferenceStatus].replace(
+                    "{provider}",
+                    "Your model provider",
+                  ),
+                });
+            }
+          }
+          const saved = await persistModelCredential(
             deps,
             context.actor,
             {
@@ -2385,6 +2418,7 @@ export function createRouter(deps: RouterDeps) {
               credentialId: existing?.id ?? input.credentialId,
               expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
               ...(existing ? { expectedCiphertext } : {}),
+              expectNewConnection: inferenceStatus !== undefined && !existing,
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
               catalogModelId: confirmNewModel ? (requested ?? undefined) : undefined,
@@ -2395,6 +2429,7 @@ export function createRouter(deps: RouterDeps) {
             },
             codexCatalog,
           );
+          return inferenceStatus === undefined ? saved : { ...saved, inferenceStatus };
         } catch (error) {
           if (context.signal?.aborted || (error instanceof Error && error.name === "AbortError"))
             throw error;
@@ -2540,22 +2575,13 @@ export function createRouter(deps: RouterDeps) {
         return updated ? { models, catalogUpdated: true as const } : { models };
       }),
       probeInference: authed.models.probeInference.handler(async ({ context, input }) => {
-        if (
-          !inferenceProbesEnabled ||
-          !listPiCatalog().some(
-            (model) =>
-              model.inferenceProbe &&
-              model.provider === input.provider &&
-              model.id === input.modelId,
-          )
-        )
+        if (!canProbeInference(input.provider, input.modelId))
           return { status: "unavailable" as const };
 
         const target =
           "apiKey" in input
             ? { key: input.apiKey, ensureCurrent: () => ensureModelProbeAuthorized(context) }
             : await loadSavedModelProbeKey(deps, context, input);
-        const probeInference = deps.modelInferenceProbe ?? probeModelInference;
         await target.ensureCurrent();
         try {
           return {
@@ -10476,6 +10502,7 @@ async function persistModelCredential(
     credentialId?: string;
     expectedRevision?: number;
     expectedCiphertext?: string | null;
+    expectNewConnection?: boolean;
     thinkingLevel?: string | null;
     supportsImages?: boolean;
     signal?: AbortSignal;
@@ -10537,6 +10564,10 @@ async function persistModelCredential(
                   orderBy: newestModelCredentialOrder,
                 });
           if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+          if (input.expectNewConnection && existing)
+            throw new ORPCError("CONFLICT", {
+              message: "Model connection changed. Reload and try again.",
+            });
           if (
             input.oauthSession &&
             ((existing?.id ?? null) !== input.oauthSession.credentialId ||

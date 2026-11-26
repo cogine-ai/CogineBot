@@ -7899,3 +7899,9 @@ msgstr "Not enough storage to upload this file."
 #: src/components/computer/ComputerStorage.tsx
 msgid "No free inodes."
 msgstr "No free inodes."
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "Connecting sends one test request that may incur usage charges."
+
+msgid "The model test timed out."
+msgstr "The model test timed out."

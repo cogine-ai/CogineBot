@@ -40,6 +40,8 @@ import {
   initialModelProbeState,
   matchesSearchQuery,
   modelCatalogProbeInput,
+  modelConnectChecksInference,
+  modelConnectInferenceRejection,
   modelConnectRequest,
   modelThinkingLevels,
   prioritizeProviderListedModels,
@@ -169,6 +171,7 @@ export function ModelSettingsOverlay({
   const [codeCopied, copyOAuthCode] = useCopyText();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<"connect" | "default" | "disconnect" | null>(null);
+  const connectionSaving = useRef(false);
   const pendingOwnerRef = useRef(0);
   function beginPending(next: "connect" | "default" | "disconnect") {
     const owner = ++pendingOwnerRef.current;
@@ -995,7 +998,7 @@ export function ModelSettingsOverlay({
     const revision = selectionRevisionRef.current;
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
-    if (!selected) return;
+    if (!selected || busy || preflightTesting || connectionSaving.current) return;
     const request = modelConnectRequest({
       form: {
         apiKey,
@@ -1040,13 +1043,16 @@ export function ModelSettingsOverlay({
     const { savingLimitOnly } = request;
     setError(null);
     setNotice(null);
+    connectionSaving.current = true;
     const pendingOwner = beginPending("connect");
+    let committed = false;
     try {
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
       const savedConnection = await rpc.models.connect(request.input, {
         context: { spaceId: scope?.spaceId },
       });
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
+      committed = true;
       if (scope)
         setConnectionSave({
           userId: scope.userId,
@@ -1056,9 +1062,15 @@ export function ModelSettingsOverlay({
         });
       setApiKey("");
       setHeaderRows(null);
+      const { inferenceStatus } = savedConnection;
+      const unconfirmed = inferenceStatus !== undefined && inferenceStatus !== "accepted";
+      setNotice(
+        unconfirmed ? `${t`Saved.`} ${modelInferenceTestMessage(inferenceStatus)}` : t`Saved.`,
+      );
+      detailScrollRef.current?.scrollTo({ top: 0 });
       const effective = await refresh(savedConnection.id);
       if (!operationCurrent(revision, scope, spaceGeneration)) return;
-      detailScrollRef.current?.scrollTo({ top: 0 });
+      if (unconfirmed) return;
       setNotice(
         isOpenAiCompatible ||
           savingLimitOnly ||
@@ -1070,9 +1082,18 @@ export function ModelSettingsOverlay({
           : t`Connected and using ${selected.label}.`,
       );
     } catch (err) {
-      if (operationCurrent(revision, scope, spaceGeneration))
-        setError(errorText(err, t`Could not connect this provider`));
+      if (operationCurrent(revision, scope, spaceGeneration)) {
+        const rejected = modelConnectInferenceRejection(err);
+        setError(
+          committed
+            ? t`Could not load model settings`
+            : rejected
+              ? modelInferenceTestMessage(rejected)
+              : errorText(err, t`Could not connect this provider`),
+        );
+      }
     } finally {
+      connectionSaving.current = false;
       finishPending(pendingOwner);
     }
   }
@@ -1166,6 +1187,7 @@ export function ModelSettingsOverlay({
       <button
         key={group.id}
         type="button"
+        disabled={pending === "connect"}
         aria-current={isSelected ? "true" : undefined}
         onClick={() => chooseProvider(group.id)}
         className={`flex w-full items-center gap-3 border-b border-border px-3.5 py-3 text-start last:border-0 ${
@@ -1206,6 +1228,7 @@ export function ModelSettingsOverlay({
             <Trans>Model</Trans>
           </span>
           <ModelPicker
+            disabled={pending === "connect"}
             options={prioritizeProviderListedModels(
               modelsForProvider,
               credential,
@@ -1561,6 +1584,7 @@ export function ModelSettingsOverlay({
               )}
               <Input
                 id="model-api-key"
+                disabled={pending === "connect"}
                 value={apiKey}
                 onChange={(event) => updateApiKey(event.target.value)}
                 placeholder={credential?.hasKey ? t`Paste a replacement key` : "sk-…"}
@@ -1612,13 +1636,21 @@ export function ModelSettingsOverlay({
               ) : null}
             </>
           ) : null}
+          {modelConnectChecksInference(selected, apiKey) ? (
+            <p className="mt-3 text-sm text-muted-foreground">
+              <Trans>Connecting sends one test request that may incur usage charges.</Trans>
+            </p>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
             className="mt-3 rounded-full"
             size="sm"
             disabled={
-              busy || !cloudflareRoutingReady || (!builtinLimitSave && apiKey.trim().length < 8)
+              busy ||
+              preflightTesting ||
+              !cloudflareRoutingReady ||
+              (!builtinLimitSave && apiKey.trim().length < 8)
             }
             onClick={() => void connectKey()}
           >
@@ -2365,10 +2397,12 @@ export function ModelSettingsOverlay({
 function ModelPicker({
   options,
   value,
+  disabled,
   onChange,
 }: {
   options: ModelCatalogEntry[];
   value: string;
+  disabled: boolean;
   onChange: (value: string) => void;
 }) {
   const { t } = useLingui();
@@ -2539,9 +2573,10 @@ function ModelPicker({
         ref={triggerRef}
         type="button"
         role="combobox"
+        disabled={disabled}
         aria-label={t`Model`}
         aria-controls={listboxId}
-        aria-expanded={open}
+        aria-expanded={open && !disabled}
         aria-haspopup="listbox"
         className="flex h-10 w-full items-center justify-between rounded-lg border border-input bg-transparent px-3 text-start text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
         onClick={() => setOpen((current) => !current)}
@@ -2552,7 +2587,7 @@ function ModelPicker({
           <ChevronDown size={16} strokeWidth={1.8} />
         </span>
       </button>
-      {open ? (
+      {open && !disabled ? (
         <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10">
           <input
             ref={searchRef}

@@ -120,7 +120,9 @@ import {
   ModelBackupListSchema,
   ModelCatalogEntrySchema,
   ModelCatalogProbeInputSchema,
+  ModelConnectInferenceRejectionSchema,
   ModelConnectInputSchema,
+  ModelConnectResultSchema,
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
   ModelInferenceProbeInputSchema,
@@ -446,7 +448,10 @@ export const appContract = {
       .output(z.object({ references: z.array(ModelCredentialReferenceSchema) })),
     backups: oc.output(z.array(ModelBackupChoiceSchema)),
     setBackups: oc.input(ModelBackupListSchema).output(z.object({ ok: z.literal(true) })),
-    connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
+    connect: oc
+      .input(ModelConnectInputSchema)
+      .output(ModelConnectResultSchema)
+      .errors({ BAD_REQUEST: { data: ModelConnectInferenceRejectionSchema.optional() } }),
     saveModelSettings: oc.input(ModelSettingsSaveSchema).output(z.object({ ok: z.literal(true) })),
     probeOpenAiCompatible: oc
       .input(

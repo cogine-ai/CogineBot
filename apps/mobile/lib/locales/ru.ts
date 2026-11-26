@@ -1026,6 +1026,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "Found {count} model.": "Найдена {count} модель.",
   "Check models": "Проверить список моделей",
   "Test model": "Тестировать модель",
+  "Connecting sends one test request that may incur usage charges.":
+    "При подключении отправляется один тестовый запрос, который может тарифицироваться.",
   "The model accepted the test request.": "Модель приняла тестовый запрос.",
   "This key cannot use the selected model.":
     "Этот ключ не позволяет использовать выбранную модель.",

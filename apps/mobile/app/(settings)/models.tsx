@@ -1,6 +1,7 @@
 import type {
   ModelApiProtocol,
   ModelBackupChoice,
+  ModelConnectResult,
   ModelCredentialReference,
   ModelHeaderRow,
   ModelInferenceProbeStatus,
@@ -48,6 +49,8 @@ import {
   matchesSearchQuery,
   modelCatalogProbeInput,
   modelCatalogProbeOutcome,
+  modelConnectChecksInference,
+  modelConnectInferenceRejection,
   modelConnectRequest,
   modelInferenceProbeMessage,
   modelThinkingLevels,
@@ -1213,7 +1216,7 @@ function ModelsForm({
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
     const sessionGeneration = currentSessionGeneration();
-    if (!selected) return;
+    if (!selected || busyRef.current) return;
     const request = modelConnectRequest({
       form: {
         apiKey,
@@ -1264,21 +1267,36 @@ function ModelsForm({
     }
     const { savingLimitOnly } = request;
     const pendingOwner = beginPending("connect");
+    busyRef.current = true;
+    let committed = false;
+    let connectionNotice: string | undefined;
     try {
       const requestContext = await captureApiRequestContext();
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
-      const savedConnection = await rpc<MobileModelCredential>("models/connect", request.input, {
+      const savedConnection = await rpc<ModelConnectResult>("models/connect", request.input, {
         requestContext,
+        ...(request.input.verifyInference
+          ? { timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000 }
+          : {}),
       });
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
+      committed = true;
+      if (savedConnection.inferenceStatus && savedConnection.inferenceStatus !== "accepted") {
+        connectionNotice = `${t("Saved.")} ${modelInferenceProbeMessage(savedConnection.inferenceStatus, t)}`;
+      }
       acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
       const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
+      if (connectionNotice) {
+        publishFeedback("connection", { notice: connectionNotice });
+        setCatalogFeedback({ error: false, message: connectionNotice });
+        return;
+      }
       publishFeedback("connection", {
         notice:
           isOpenAiCompatible ||
@@ -1292,8 +1310,22 @@ function ModelsForm({
       });
     } catch (err) {
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration)) return;
+      if (committed) {
+        const reloadError = t("Could not load model settings");
+        publishFeedback("connection", {
+          error: connectionNotice ? reloadError : `${t("Saved.")} ${reloadError}`,
+        });
+        if (connectionNotice) {
+          setCatalogFeedback({ error: false, message: connectionNotice });
+          AccessibilityInfo.announceForAccessibility(connectionNotice);
+        }
+        return;
+      }
+      const rejected = modelConnectInferenceRejection(err);
       publishFeedback("connection", {
-        error: errorText(err, t("Could not connect this provider")),
+        error: rejected
+          ? modelInferenceProbeMessage(rejected, t)
+          : errorText(err, t("Could not connect this provider")),
       });
     } finally {
       finishPending(pendingOwner);
@@ -1886,6 +1918,7 @@ function ModelsForm({
               <Pressable
                 accessibilityRole="radio"
                 accessibilityState={{ selected: entry.id === selected.id }}
+                disabled={pending === "connect"}
                 onPress={() => {
                   selectionRevisionRef.current += 1;
                   Keyboard.dismiss();
@@ -2187,6 +2220,11 @@ function ModelsForm({
               </Text>
             ) : null}
 
+            {modelConnectChecksInference(selected, apiKey) ? (
+              <Text style={[styles.secondary, { marginTop: 12 }]}>
+                {t("Connecting sends one test request that may incur usage charges.")}
+              </Text>
+            ) : null}
             <NativeActionButton
               disabled={
                 busy || !cloudflareRoutingReady || (!builtinLimitSave && apiKey.trim().length < 8)
@@ -2519,6 +2557,7 @@ function ModelsForm({
                     key={group.id}
                     accessibilityRole="button"
                     accessibilityState={{ selected: isSelected }}
+                    disabled={pending === "connect"}
                     onPress={() => chooseProvider(group.id)}
                     style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
                   >
@@ -2544,6 +2583,7 @@ function ModelsForm({
               accessibilityState={{
                 selected: canonicalPiProviderId(group.id) === canonicalPiProviderId(provider ?? ""),
               }}
+              disabled={pending === "connect"}
               onPress={() => chooseProvider(group.id)}
               style={({ pressed }) => [styles.providerRow, pressed && styles.pressed]}
             >

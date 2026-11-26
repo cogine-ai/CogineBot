@@ -7971,3 +7971,9 @@ msgstr "存储空间不足，无法上传此文件。"
 #: src/components/computer/ComputerStorage.tsx
 msgid "No free inodes."
 msgstr "没有可用的 inode。"
+
+msgid "Connecting sends one test request that may incur usage charges."
+msgstr "连接时会发送一次测试请求，可能产生用量费用。"
+
+msgid "The model test timed out."
+msgstr "模型测试超时。"
