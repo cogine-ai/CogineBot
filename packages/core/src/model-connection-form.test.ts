@@ -147,23 +147,21 @@ it("tests a discovered model only when its connection and server advertise suppo
   const enabled = { ...saved, providerCatalogInferenceProbe: "replacement" as const };
   const discovered = withConnectionCatalogModels([base], enabled)[1];
   expect(discovered).toMatchObject({ id: modelId, inferenceProbe: true });
-  const savedRequest = modelCatalogProbeInput(discovered, "", saved, 7);
-  const draftRequest = modelCatalogProbeInput(discovered, "fixture-draft");
-  expect(modelInferenceProbeInput(discovered, savedRequest, saved, 7)).toEqual({
+  expect(modelInferenceProbeInput(discovered, "", saved, 7)).toEqual({
     provider: base.provider,
     modelId,
     credentialId: saved.id,
     expectedRevision: 7,
   });
-  expect(modelInferenceProbeInput(discovered, draftRequest, saved, 7)).toEqual({
+  expect(modelInferenceProbeInput(discovered, "fixture-draft", saved, 7)).toEqual({
     provider: base.provider,
     modelId,
     apiKey: "fixture-draft",
     credentialId: saved.id,
     expectedRevision: 7,
   });
-  expect(modelInferenceProbeInput(discovered, draftRequest, saved, 6)).toBeUndefined();
-  expect(modelInferenceProbeInput(base, draftRequest, saved, 7)).toEqual({
+  expect(modelInferenceProbeInput(discovered, "fixture-draft", saved, 6)).toBeUndefined();
+  expect(modelInferenceProbeInput(base, "fixture-draft", saved, 7)).toEqual({
     provider: base.provider,
     modelId: base.id,
     apiKey: "fixture-draft",
@@ -178,6 +176,33 @@ it("tests a discovered model only when its connection and server advertise suppo
   expect(withConnectionCatalogModels([base], retained, 7, "fixture-draft")[1]?.inferenceProbe).toBe(
     true,
   );
+});
+
+it("tests a model without a directory probe using the draft or current API key", () => {
+  const model = {
+    id: "fixture-claude",
+    provider: "anthropic",
+    label: "Claude",
+    billing: "API",
+    inferenceProbe: true as const,
+  };
+  const saved = credential({ provider: model.provider, authKind: "api_key" });
+  expect(modelCatalogProbeInput(model, "fixture-draft", saved, 7)).toBeUndefined();
+  expect(modelInferenceProbeInput(model, " fixture-draft ", saved, 7)).toEqual({
+    provider: model.provider,
+    modelId: model.id,
+    apiKey: "fixture-draft",
+  });
+  expect(modelInferenceProbeInput(model, "", saved, 7)).toEqual({
+    provider: model.provider,
+    modelId: model.id,
+    credentialId: saved.id,
+    expectedRevision: 7,
+  });
+  expect(modelInferenceProbeInput(model, "short", saved, 7)).toBeUndefined();
+  expect(modelInferenceProbeInput(model, "", saved, 6)).toBeUndefined();
+  expect(modelInferenceProbeInput(model, "", { ...saved, provider: "openai" }, 7)).toBeUndefined();
+  expect(modelInferenceProbeInput(model, "", { ...saved, authKind: "oauth" }, 7)).toBeUndefined();
 });
 
 function draft(overrides: Partial<ConnectionFormDraft> = {}): ConnectionFormDraft {

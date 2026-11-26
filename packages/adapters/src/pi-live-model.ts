@@ -33,6 +33,17 @@ export function isOfficialChatCompletionProbeModel(
     model.id !== "openai/gpt-oss-safeguard-20b"
   );
 }
+
+export function isOfficialAnthropicProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl">,
+) {
+  return (
+    model.provider === "anthropic" &&
+    model.api === "anthropic-messages" &&
+    model.baseUrl === "https://api.anthropic.com"
+  );
+}
+
 const catalogModels = builtinModels();
 
 /** The supported catalog and runtime must share the official Responses route. */

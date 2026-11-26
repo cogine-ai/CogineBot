@@ -505,7 +505,7 @@ export function ModelSettingsOverlay({
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const inferenceRequest = modelInferenceProbeInput(
     selected,
-    catalogRequest,
+    apiKey,
     credential,
     connectionRevision,
   );
@@ -818,24 +818,26 @@ export function ModelSettingsOverlay({
   }
 
   async function testApiKeyConnection(testInference = false) {
-    if (!selected || !catalogRequest || (testInference && !inferenceRequest)) return;
-    const request = testInference ? inferenceRequest : catalogRequest;
+    const [kind, request] = testInference
+      ? (["inference", inferenceRequest] as const)
+      : (["api-key", catalogRequest] as const);
+    if (!selected || !request) return;
     checkedConnectionRef.current =
-      request && "credentialId" in request
+      "credentialId" in request
         ? { credentialId: request.credentialId, expectedRevision: request.expectedRevision }
         : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
     const isCurrent = () =>
       preflightStillCurrent(revision) && spaceGeneration === currentSpaceSelectionGeneration();
-    setPreflightTarget(testInference ? "inference" : "api-key");
+    setPreflightTarget(kind);
     setPreflightTesting(true);
     setPreflightSuccess(null);
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
-    if (testInference && inferenceRequest) {
-      const feedback = await rpc.models.probeInference(inferenceRequest).then(
+    if (kind === "inference") {
+      const feedback = await rpc.models.probeInference(request).then(
         ({ status }) => ({
           accepted: status === "accepted",
           message: modelInferenceTestMessage(status),
@@ -860,7 +862,7 @@ export function ModelSettingsOverlay({
       provider: selected.provider,
       modelId: selected.id,
       catalogProbe: true,
-      catalogRequest,
+      catalogRequest: request,
       probeCatalog: async (input) => {
         const response = await rpc.models.probeCatalog(input);
         catalogUpdated = response.catalogUpdated === true;
@@ -868,8 +870,8 @@ export function ModelSettingsOverlay({
       },
     });
     if (!isCurrent()) return;
-    if (catalogUpdated && "credentialId" in catalogRequest) {
-      const applied = await refresh(catalogRequest.credentialId, { keepForm: true }).catch(
+    if (catalogUpdated && "credentialId" in request) {
+      const applied = await refresh(request.credentialId, { keepForm: true }).catch(
         () => undefined,
       );
       if (!isCurrent()) return;
@@ -1608,33 +1610,35 @@ export function ModelSettingsOverlay({
               />
             </label>
           ) : null}
-          {acceptsKey && selected?.catalogProbe ? (
+          {acceptsKey && (selected?.catalogProbe || selected?.inferenceProbe) ? (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-3 rounded-full"
-                disabled={busy || preflightTesting || !catalogRequest}
-                onClick={() => void testApiKeyConnection()}
-              >
-                {catalogRequest &&
-                "credentialId" in catalogRequest &&
-                !(preflightTesting && preflightTarget === "api-key") ? (
-                  <Trans>Check models</Trans>
-                ) : (
-                  modelPreflightTestingLabel(
-                    preflightTesting && preflightTarget === "api-key",
-                    "api-key",
-                  )
-                )}
-              </Button>
+              {selected.catalogProbe ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 rounded-full"
+                  disabled={busy || preflightTesting || !catalogRequest}
+                  onClick={() => void testApiKeyConnection()}
+                >
+                  {catalogRequest &&
+                  "credentialId" in catalogRequest &&
+                  !(preflightTesting && preflightTarget === "api-key") ? (
+                    <Trans>Check models</Trans>
+                  ) : (
+                    modelPreflightTestingLabel(
+                      preflightTesting && preflightTarget === "api-key",
+                      "api-key",
+                    )
+                  )}
+                </Button>
+              ) : null}
               {selected.inferenceProbe ? (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="ml-2 mt-3 rounded-full"
+                  className={selected.catalogProbe ? "ml-2 mt-3 rounded-full" : "mt-3 rounded-full"}
                   disabled={busy || preflightTesting || !inferenceRequest}
                   onClick={() => void testApiKeyConnection(true)}
                 >

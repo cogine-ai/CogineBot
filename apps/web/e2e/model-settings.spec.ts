@@ -2170,18 +2170,27 @@ test("tests model access with the selected saved or draft API key", async ({ pag
   ).toBeInViewport({ ratio: 1 });
 });
 
-for (const { provider, providerName, rejection, rejectionText } of [
+for (const { provider, providerName, modelId, rejection, rejectionText } of [
   {
     provider: "openrouter",
     providerName: "OpenRouter",
+    modelId: "openai/gpt-oss-120b",
     rejection: "credit",
     rejectionText: /credit limit/,
   },
   {
     provider: "groq",
     providerName: "Groq",
+    modelId: "openai/gpt-oss-120b",
     rejection: "auth",
     rejectionText: /rejected the API key/,
+  },
+  {
+    provider: "anthropic",
+    providerName: "Anthropic",
+    modelId: "claude-haiku-5-5",
+    rejection: "model",
+    rejectionText: /cannot use the selected model/,
   },
 ] as const) {
   test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
@@ -2195,9 +2204,7 @@ for (const { provider, providerName, rejection, rejectionText } of [
     );
     await completeOnboarding(page);
     const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
-    const model = catalog.find(
-      (entry) => entry.provider === provider && entry.id === "openai/gpt-oss-120b",
-    )!;
+    const model = catalog.find((entry) => entry.provider === provider && entry.id === modelId)!;
     const saved = await rpc<ModelCredential>(page, "models/connect", {
       provider: model.provider,
       apiKey: "fixture-gateway-saved-key",
@@ -2241,6 +2248,11 @@ for (const { provider, providerName, rejection, rejectionText } of [
       .getByRole("button")
       .filter({ has: page.getByText(providerName, { exact: true }) })
       .click();
+    if (provider === "anthropic") {
+      await expect(settings.getByRole("button", { name: "Check models", exact: true })).toHaveCount(
+        0,
+      );
+    }
     const tested = page.waitForRequest("**/rpc/models/probeInference");
     await settings.getByRole("button", { name: "Test model", exact: true }).click();
     expect((await tested).postDataJSON().json).toEqual({
@@ -2257,9 +2269,11 @@ for (const { provider, providerName, rejection, rejectionText } of [
     const draft = settings.getByLabel("Replace API key", { exact: true });
     const newKey = "fixture-gateway-replacement-key";
     await draft.fill(newKey);
-    await expect(
-      settings.getByText("Connecting sends one test request that may incur usage charges."),
-    ).toBeInViewport({ ratio: 0.98 });
+    const feeNotice = settings.getByText(
+      "Connecting sends one test request that may incur usage charges.",
+    );
+    await feeNotice.scrollIntoViewIfNeeded();
+    await expect(feeNotice).toBeInViewport({ ratio: 0.98 });
     const replacing = page.waitForRequest("**/rpc/models/connect");
     await settings.getByRole("button", { name: "Replace API key", exact: true }).click();
     expect((await replacing).postDataJSON().json).toMatchObject({

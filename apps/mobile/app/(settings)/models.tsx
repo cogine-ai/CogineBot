@@ -709,7 +709,7 @@ function ModelsForm({
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const inferenceRequest = modelInferenceProbeInput(
     selected,
-    catalogRequest,
+    apiKey,
     credential,
     connectionRevision,
   );
@@ -1000,8 +1000,10 @@ function ModelsForm({
   }
 
   async function testCatalogConnection(testInference = false) {
-    if (!catalogRequest || !selected || busyRef.current || (testInference && !inferenceRequest))
-      return;
+    const [kind, request] = testInference
+      ? (["inference", inferenceRequest] as const)
+      : (["test", catalogRequest] as const);
+    if (!selected || !request || busyRef.current) return;
     clearFeedback();
     const revision = selectionRevisionRef.current;
     const catalogGeneration = catalogCheckGenerationRef.current;
@@ -1015,15 +1017,15 @@ function ModelsForm({
       setCatalogFeedback({ message, error });
       AccessibilityInfo.announceForAccessibility(message);
     }
-    const pendingOwner = beginPending(testInference ? "inference" : "test");
+    const pendingOwner = beginPending(kind);
     busyRef.current = true;
     try {
       const context = await captureApiRequestContext();
       if (!isCurrent(context)) return;
-      if (testInference && inferenceRequest) {
+      if (kind === "inference") {
         const { status } = await rpc<{ status: ModelInferenceProbeStatus }>(
           "models/probeInference",
-          inferenceRequest,
+          request,
           {
             requestContext: context,
             skipSpaceAuthRecovery: true,
@@ -1036,18 +1038,18 @@ function ModelsForm({
       }
       const { models, catalogUpdated } = await rpc<{ models: string[]; catalogUpdated?: true }>(
         "models/probeCatalog",
-        catalogRequest,
+        request,
         { requestContext: context, skipSpaceAuthRecovery: true },
       );
       if (!isCurrent(context)) return;
-      if (catalogUpdated && "credentialId" in catalogRequest) {
+      if (catalogUpdated && "credentialId" in request) {
         const applied = await load({
-          connectionId: catalogRequest.credentialId,
+          connectionId: request.credentialId,
           keepForm: true,
           keepCatalogCheck: true,
         }).catch(() => undefined);
         if (!isCurrent(context)) return;
-        if (applied?.connectionRevision !== catalogRequest.expectedRevision) {
+        if (applied?.connectionRevision !== request.expectedRevision) {
           report(
             applied
               ? t("Model connection changed. Check models again.")

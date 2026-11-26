@@ -13,6 +13,13 @@ const openRouterInput = {
   apiKey: "fixture-gateway-key",
 };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
+const anthropicInput = {
+  provider: "anthropic",
+  modelId: "claude-haiku-5-5",
+  apiKey: "fixture-claude-key",
+};
+const anthropicStart =
+  'event: message_start\ndata: {"type":"message_start","message":{"type":"message","id":"msg-fixture","role":"assistant","model":"claude-haiku-5-5"}}\n\n';
 
 function chatChunk(choices: unknown[], extra: Record<string, unknown> = {}) {
   return `data: ${JSON.stringify({ id: "gen-fixture", object: "chat.completion.chunk", choices, ...extra })}\n\n`;
@@ -117,6 +124,123 @@ describe("model inference check", () => {
     );
     expect(await probeModelInference(groqInput, { fetch })).toBe(outcome);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("sends one bounded Claude Messages tool request and stops at message_start", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "fixture-deployment-bearer");
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              const frames = ['event: ping\ndata: {"type":"ping"}\n\n', anthropicStart];
+              for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame));
+            },
+            cancel,
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    const models = listPiCatalog().filter((entry) => entry.provider === "anthropic");
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.every((entry) => entry.inferenceProbe && !entry.catalogProbe)).toBe(true);
+    expect(await probeModelInference(anthropicInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0]!;
+    const request = new Request(url, init);
+    expect(request.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(request.headers.get("x-api-key")).toBe(anthropicInput.apiKey);
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(request.redirect).toBe("error");
+    expect(init?.signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledOnce();
+    const payload = await request.json();
+    expect(payload).toMatchObject({
+      model: anthropicInput.modelId,
+      stream: true,
+    });
+    expect(
+      payload.tools.filter((tool: { defer_loading?: boolean }) => !tool.defer_loading),
+    ).toEqual([expect.objectContaining({ name: "noop" })]);
+    expect(payload.max_tokens).toBeGreaterThan(0);
+    expect(payload.max_tokens).toBeLessThanOrEqual(1024);
+  });
+
+  it.each([
+    [401, "authentication_error", "Rejected", undefined, "auth"],
+    [403, "permission_error", "Model access denied", undefined, "model"],
+    [404, "not_found_error", "Model missing", undefined, "model"],
+    [402, "billing_error", "Billing required", undefined, "credit"],
+    [
+      400,
+      "invalid_request_error",
+      "Your credit balance is too low to access the API.",
+      undefined,
+      "credit",
+    ],
+    [400, "invalid_request_error", "Workspace spend limit exceeded", undefined, "spending"],
+    [400, "invalid_request_error", "Unrecognized field", undefined, "unavailable"],
+    [429, "rate_limit_error", "Usage limit reached", "enforced_spend_limit_reached", "spending"],
+    [429, "rate_limit_error", "Usage limit reached", undefined, "rate"],
+    [500, "timeout_error", "Request failed", undefined, "timeout"],
+    [529, "overloaded_error", "Overloaded", undefined, "unavailable"],
+    [529, "overloaded_error", "Overloaded", "enforced_spend_limit_reached", "unavailable"],
+  ] as const)("classifies Claude HTTP %i %s (%s)", async (status, type, message, code, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json(
+        {
+          type: "error",
+          error: { type, message, ...(code ? { details: { error_code: code } } : {}) },
+        },
+        { status },
+      ),
+    );
+    expect(await probeModelInference(anthropicInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['event: ping\ndata: {"type":"ping"}\n\n', "unavailable"],
+    [
+      'event: message_start\ndata: {"type":"message_start","message":{"type":"message","role":"assistant","id":""}}\n\n',
+      "unavailable",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error"}}\n\n' +
+        anthropicStart,
+      "unavailable",
+    ],
+    ['event: error\ndata: {"type":"error","error":{"type":"permission_error"}}\n\n', "model"],
+    ['event: error\ndata: {"type":"error","error":{"type":"billing_error"}}\n\n', "credit"],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"rate_limit_error","details":{"error_code":"enforced_spend_limit_reached"}}}\n\n',
+      "spending",
+    ],
+  ] as const)(
+    "requires a Claude message frame and accounts for stream errors (%s)",
+    async (body, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(body, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      );
+      expect(await probeModelInference(anthropicInput, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not send subscription credentials or guess a Claude route for unregistered models", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const input of [
+      { ...anthropicInput, apiKey: "sk-ant-oat-fixture-only" },
+      { ...anthropicInput, modelId: "claude-fixture-unknown" },
+      { ...anthropicInput, modelId: openRouterInput.modelId },
+    ]) {
+      expect(await probeModelInference(input, { fetch })).toBe("unavailable");
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -366,35 +490,38 @@ describe("model inference check", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it.each([input, openRouterInput])("times out an idle $provider event stream", async (input) => {
-    const deadline = new AbortController();
-    vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
-    let open!: () => void;
-    const opened = new Promise<void>((resolve) => {
-      open = resolve;
-    });
-    const fetch = vi.fn<typeof globalThis.fetch>(async (_request, init) => {
-      const body = new ReadableStream({
-        start(controller) {
-          if (input.provider === "openai")
-            init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
-              once: true,
-            });
-        },
-        pull: () => open(),
+  it.each([input, openRouterInput, anthropicInput])(
+    "times out an idle $provider event stream",
+    async (input) => {
+      const deadline = new AbortController();
+      vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
       });
-      return new Response(body, { headers: { "content-type": "text/event-stream" } });
-    });
-    const settled = vi.fn();
-    const pending = probeModelInference(input, { fetch });
-    void pending.then(settled);
-    await opened;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled).not.toHaveBeenCalled();
-    deadline.abort(new DOMException("Too slow", "TimeoutError"));
-    expect(await pending).toBe("timeout");
-    expect(fetch).toHaveBeenCalledOnce();
-  });
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_request, init) => {
+        const body = new ReadableStream({
+          start(controller) {
+            if (input.provider === "openai")
+              init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
+                once: true,
+              });
+          },
+          pull: () => open(),
+        });
+        return new Response(body, { headers: { "content-type": "text/event-stream" } });
+      });
+      const settled = vi.fn();
+      const pending = probeModelInference(input, { fetch });
+      void pending.then(settled);
+      await opened;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).not.toHaveBeenCalled();
+      deadline.abort(new DOMException("Too slow", "TimeoutError"));
+      expect(await pending).toBe("timeout");
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not contact another provider or guess a dynamic model", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();

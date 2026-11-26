@@ -4,7 +4,11 @@ import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
 import { createParser } from "eventsource-parser";
-import { isOfficialChatCompletionProbeModel, isOfficialResponsesModel } from "./pi-live-model.js";
+import {
+  isOfficialAnthropicProbeModel,
+  isOfficialChatCompletionProbeModel,
+  isOfficialResponsesModel,
+} from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
 const OUTPUT_LIMIT = 1024;
@@ -28,14 +32,15 @@ export async function probeModelInference(
     apiKey: input.apiKey,
     providerCatalogModel: input.providerCatalogModel,
   });
-  if (!model || !apiKey) return "unavailable";
-  const chatCompletions =
-    input.provider === model.provider &&
-    isOfficialChatCompletionProbeModel(model) &&
-    Boolean(models.getModel(model.provider, model.id));
-  if (!chatCompletions && !isOfficialResponsesModel(model)) return "unavailable";
-  const classifyChatFailure = (error: unknown, status?: number) =>
-    chatCompletionFailureStatus(model.provider, error, apiKey, status);
+  if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
+  const builtIn = Boolean(models.getModel(model.provider, model.id));
+  const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
+  const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
+  if (!anthropic && !chatCompletions && !isOfficialResponsesModel(model)) return "unavailable";
+  const classifyFailure = (error: unknown, status?: number) =>
+    anthropic
+      ? anthropicFailureStatus(error, apiKey, status)
+      : chatCompletionFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -64,11 +69,12 @@ export async function probeModelInference(
           // The SDK can omit this field when it treats a key as a sign-in token.
           if (!payload || typeof payload !== "object")
             throw new Error("Invalid model test request");
-          const field = chatCompletions
-            ? "max_tokens" in payload
+          const field =
+            anthropic || (chatCompletions && "max_tokens" in payload)
               ? "max_tokens"
-              : "max_completion_tokens"
-            : "max_output_tokens";
+              : chatCompletions
+                ? "max_completion_tokens"
+                : "max_output_tokens";
           const current =
             field in payload ? (payload as Record<string, unknown>)[field] : undefined;
           return {
@@ -77,6 +83,14 @@ export async function probeModelInference(
           };
         },
         fetch: async (request, init) => {
+          if (anthropic) {
+            const headers = new Headers(
+              init?.headers ?? (request instanceof Request ? request.headers : undefined),
+            );
+            // The provider SDK also accepts pasted subscription tokens and can switch auth modes.
+            if (headers.get("x-api-key") !== apiKey || headers.has("authorization"))
+              throw new Error("Model test requires API key authentication");
+          }
           let response: Response;
           try {
             response = await transport(request, { ...init, redirect: "error" });
@@ -92,9 +106,10 @@ export async function probeModelInference(
             ).catch(() => undefined);
             signal.throwIfAborted();
             const error = body && typeof body === "object" && "error" in body ? body.error : body;
-            rejected = chatCompletions
-              ? classifyChatFailure(error, response.status)
-              : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
+            rejected =
+              chatCompletions || anthropic
+                ? classifyFailure(error, response.status)
+                : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
             // The SDK's debug logger runs before the application can redact its errors.
             return new Response(null, { status: response.status });
           }
@@ -107,12 +122,12 @@ export async function probeModelInference(
             cancelResponseBody(response);
             throw new Error("Model server did not return an event stream");
           }
-          if (chatCompletions) {
-            // The SDK drops the numeric status from successful HTTP streams with an error event.
-            const outcome = await readChatCompletionProbe(
-              response.body,
-              signal,
-              classifyChatFailure,
+          if (chatCompletions || anthropic) {
+            // Interpret provider frames before the SDK turns stream errors into diagnostic text.
+            const outcome = await readModelProbeFrames(response.body, signal, (frame, event) =>
+              anthropic
+                ? anthropicFrameOutcome(frame, classifyFailure, event)
+                : chatCompletionChunkOutcome(frame, classifyFailure, event === "error"),
             ).catch(() => {
               signal.throwIfAborted();
               return "unavailable" as const;
@@ -131,7 +146,7 @@ export async function probeModelInference(
           });
         },
         onProviderStreamEvent: (event) => {
-          if (!signal.aborted && !chatCompletions && createdResponse(event)) {
+          if (!signal.aborted && !chatCompletions && !anthropic && createdResponse(event)) {
             accepted = true;
             stop.abort();
           }
@@ -169,12 +184,12 @@ function createdResponse(event: unknown): boolean {
   );
 }
 
-type ChatFailureClassifier = (error: unknown, status?: number) => ModelInferenceProbeStatus;
+type StreamFailureClassifier = (error: unknown) => ModelInferenceProbeStatus;
 
-async function readChatCompletionProbe(
+async function readModelProbeFrames(
   body: ReadableStream<Uint8Array> | null,
   signal: AbortSignal,
-  classifyFailure: ChatFailureClassifier,
+  frameOutcome: (frame: unknown, event?: string) => ModelInferenceProbeStatus | undefined,
 ): Promise<ModelInferenceProbeStatus> {
   if (!body) return "unavailable";
   const reader = body.getReader();
@@ -196,7 +211,7 @@ async function readChatCompletionProbe(
         outcome = "unavailable";
         return;
       }
-      outcome = chatCompletionChunkOutcome(frame, classifyFailure, event === "error");
+      outcome = frameOutcome(frame, event);
     },
   });
   try {
@@ -221,7 +236,7 @@ const chatSuccessFinishReasons = new Set(["stop", "length", "tool_calls", "funct
 
 function chatCompletionChunkOutcome(
   event: unknown,
-  classifyFailure: ChatFailureClassifier,
+  classifyFailure: StreamFailureClassifier,
   isErrorEvent: boolean,
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
@@ -246,6 +261,80 @@ function chatCompletionChunkOutcome(
       (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0))
   )
     return "accepted";
+}
+
+function anthropicFrameOutcome(
+  frame: unknown,
+  classifyFailure: StreamFailureClassifier,
+  event?: string,
+): ModelInferenceProbeStatus | undefined {
+  if (!frame || typeof frame !== "object") return event === "error" ? "unavailable" : undefined;
+  const type = "type" in frame ? frame.type : undefined;
+  if (event === "error" || type === "error" || "error" in frame)
+    return classifyFailure("error" in frame ? frame.error : undefined);
+  if (type !== "message_start" || (event && event !== "message_start")) return;
+  const message = "message" in frame ? frame.message : undefined;
+  if (
+    message &&
+    typeof message === "object" &&
+    "type" in message &&
+    message.type === "message" &&
+    "role" in message &&
+    message.role === "assistant" &&
+    "id" in message &&
+    typeof message.id === "string" &&
+    message.id.trim()
+  )
+    return "accepted";
+}
+
+function anthropicFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  const record = error && typeof error === "object" ? error : undefined;
+  const type = record && "type" in record ? record.type : undefined;
+  const details = record && "details" in record ? record.details : undefined;
+  const code =
+    details && typeof details === "object" && "error_code" in details
+      ? details.error_code
+      : undefined;
+  if (
+    status === 408 ||
+    status === 504 ||
+    ((status === 500 || status === undefined) && type === "timeout_error")
+  )
+    return "timeout";
+  if (status !== undefined && status >= 500) return "unavailable";
+  if (
+    (status === 400 || status === 429 || status === undefined) &&
+    code === "enforced_spend_limit_reached"
+  )
+    return "spending";
+  if (status === 429) return "rate";
+  if (status === 401) return "auth";
+  if (status === 402) return "credit";
+  if (status === 403 || status === 404) return "model";
+  if (status === undefined) {
+    switch (type) {
+      case "authentication_error":
+        return "auth";
+      case "billing_error":
+        return "credit";
+      case "permission_error":
+      case "not_found_error":
+        return "model";
+      case "rate_limit_error":
+        return "rate";
+    }
+  }
+  if ((status === 400 || status === undefined) && type === "invalid_request_error") {
+    const outcome = failureStatus(JSON.stringify(record), apiKey, status);
+    // Legacy billing refusals can use the same envelope as ordinary validation errors.
+    if (outcome === "credit" || outcome === "spending") return outcome;
+  }
+  return "unavailable";
 }
 
 function chatCompletionFailureStatus(
