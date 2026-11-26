@@ -106,7 +106,11 @@ function StorageResult({
           <Trans>Computer is not running.</Trans>
         ) : null}
         {!pending && outcome?.status === "changed" ? (
-          <Trans>Computer changed. Open Storage again.</Trans>
+          expectedTarget ? (
+            <Trans>Computer changed. Open Storage from the Files toolbar.</Trans>
+          ) : (
+            <Trans>Computer changed. Open Storage again.</Trans>
+          )
         ) : null}
         {!pending && outcome?.status === "available" ? (
           <>

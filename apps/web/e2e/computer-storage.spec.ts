@@ -128,9 +128,18 @@ test("offers a target-bound recovery after a managed upload reports storage exha
   const dialog = page.getByRole("dialog", { name: "Storage" });
   expect(inputs).toEqual([]);
   await dialog.getByRole("button", { name: "Diagnose storage" }).click();
-  await expect(dialog.getByText("Computer changed. Open Storage again.")).toBeVisible();
+  await expect(
+    dialog.getByText("Computer changed. Open Storage from the Files toolbar."),
+  ).toBeVisible();
   expect(inputs).toEqual([{ botId, expectedTarget: target }]);
 
+  await page.keyboard.press("Escape");
+  await files
+    .getByRole("button", { name: "Storage", exact: true })
+    .filter({ hasNotText: "Storage" })
+    .click();
+  await dialog.getByRole("button", { name: "Diagnose storage" }).click();
+  await expect.poll(() => inputs).toEqual([{ botId, expectedTarget: target }, { botId }]);
   await page.keyboard.press("Escape");
   await page.unroute("**/rpc/computer/uploadFile");
   const uploads: string[] = [];

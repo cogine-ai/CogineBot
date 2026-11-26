@@ -7839,6 +7839,10 @@ msgid "Computer changed. Open Storage again."
 msgstr "Computer changed. Open Storage again."
 
 #: src/components/computer/ComputerStorage.tsx
+msgid "Computer changed. Open Storage from the Files toolbar."
+msgstr "Computer changed. Open Storage from the Files toolbar."
+
+#: src/components/computer/ComputerStorage.tsx
 msgid "Partial results"
 msgstr "Partial results"
 

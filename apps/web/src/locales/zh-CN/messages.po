@@ -7911,6 +7911,10 @@ msgid "Computer changed. Open Storage again."
 msgstr "电脑已切换，请重新打开存储空间。"
 
 #: src/components/computer/ComputerStorage.tsx
+msgid "Computer changed. Open Storage from the Files toolbar."
+msgstr "电脑已切换，请从文件工具栏打开存储空间。"
+
+#: src/components/computer/ComputerStorage.tsx
 msgid "Partial results"
 msgstr "部分结果"
 

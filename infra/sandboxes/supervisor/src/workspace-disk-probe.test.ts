@@ -160,6 +160,25 @@ describe("managed workspace write failure receipts", () => {
     }),
   );
 
+  it.runIf(process.platform === "linux")(
+    "keeps a failed dangling link open generic without a volume receipt",
+    () =>
+      fixture(async (root) => {
+        await symlink("missing.txt", path.join(root, "alias.txt"));
+        const writer = `import errno, os
+open_file = os.open
+def fail_open(name, flags, *args, **kwargs):
+    if name == "alias.txt" and flags & os.O_TRUNC:
+        raise OSError(errno.ENOSPC, "volume attribution unavailable")
+    return open_file(name, flags, *args, **kwargs)
+os.open = fail_open
+${workspaceWrite}`;
+        const outcome = await python(writer, [root, "alias.txt", "0"], { stdin: "fixture" });
+        expect(outcome.code).not.toBe(0);
+        expect(capturedWorkspaceDiskFull(outcome)).toBe(false);
+      }),
+  );
+
   it("does not classify stdout, tracebacks, or unknown exit codes as a receipt", () => {
     expect(
       capturedWorkspaceDiskFull({ code: 0, stdout: "workspace-write:ENOSPC:v1\n", stderr: "" }),

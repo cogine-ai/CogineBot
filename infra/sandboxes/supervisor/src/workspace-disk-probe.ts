@@ -219,8 +219,8 @@ try:
     try:
         fd = os.open(name, flags | os.O_EXCL, 0o666, dir_fd=parent)
     except FileExistsError:
-        # The resolved file may be on another mount. Its descriptor is the
-        # evidence for write, flush, chmod, and close failures.
+        # Leave link resolution and its permission checks to the kernel.
+        # Without a returned descriptor, the volume of a failed open is unknown.
         fd = os.open(name, flags | os.O_TRUNC, 0o666, dir_fd=parent)
     except OSError as error:
         fail(error, workspace_mount is not None and known_mount(parent) == workspace_mount)
