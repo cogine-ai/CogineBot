@@ -119,6 +119,7 @@ import {
   ModelBackupChoiceSchema,
   ModelBackupListSchema,
   ModelCatalogEntrySchema,
+  ModelCatalogProbeInputSchema,
   ModelConnectInputSchema,
   ModelCredentialReferenceSchema,
   ModelCredentialSchema,
@@ -456,12 +457,7 @@ export const appContract = {
       )
       .output(z.object({ models: z.array(z.string()) })),
     probeCatalog: oc
-      .input(
-        z.object({
-          provider: z.string().trim().min(1),
-          apiKey: z.string().trim().min(8),
-        }),
-      )
+      .input(ModelCatalogProbeInputSchema)
       .output(z.object({ models: z.array(z.string()) })),
     beginOAuth: oc
       .input(

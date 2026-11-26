@@ -1024,6 +1024,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "Display name": "Отображаемое имя",
   "exact-model-id": "exact-model-id",
   "Found {count} model.": "Найдена {count} модель.",
+  "Check models": "Проверить список моделей",
+  "Testing…": "Проверка…",
+  "No models listed.": "Модели не перечислены.",
+  "Model listed by the provider.": "Поставщик указал эту модель в списке.",
+  "This model is missing from the connection's model list.":
+    "Этой модели нет в списке подключения.",
+  "Could not list models.": "Не удалось получить список моделей.",
   "Found {count} models.": "Найдено моделей: {count}.",
   "http://127.0.0.1:8000/v1": "http://127.0.0.1:8000/v1",
   "http://localhost:53692/callback?code=…": "http://localhost:53692/callback?code=…",

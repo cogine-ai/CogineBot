@@ -5,6 +5,7 @@ import {
   compatibleConnectionReady,
   connectionFormFields,
   connectionFormModelId,
+  modelCatalogProbeInput,
   modelConnectRequest,
 } from "./model-connection-form.js";
 
@@ -630,5 +631,35 @@ describe("local connection ownership and validation", () => {
         credentialId: null,
       }),
     ).toEqual({ status: "invalid", field: "outputRoom" });
+  });
+});
+
+describe("modelCatalogProbeInput", () => {
+  const entry = { provider: "openai", catalogProbe: true, savedCatalogProbe: true as const };
+  const saved = credential({ provider: "openai", authKind: "api_key" });
+  it("binds an empty draft to the displayed saved connection revision", () => {
+    expect(modelCatalogProbeInput(entry, "", saved, 7)).toEqual({
+      provider: "openai",
+      credentialId: saved.id,
+      expectedRevision: 7,
+    });
+    expect(modelCatalogProbeInput(entry, "", saved, 6)).toBeUndefined();
+    expect(
+      modelCatalogProbeInput({ ...entry, savedCatalogProbe: undefined }, "", saved, 7),
+    ).toBeUndefined();
+    expect(modelCatalogProbeInput(entry, "", { ...saved, authKind: "oauth" }, 7)).toBeUndefined();
+    expect(
+      modelCatalogProbeInput(entry, "", { ...saved, provider: "openrouter" }, 7),
+    ).toBeUndefined();
+  });
+  it("tests only the replacement draft when the user types one", () => {
+    expect(modelCatalogProbeInput(entry, "  fixture-key  ", saved, 7)).toEqual({
+      provider: "openai",
+      apiKey: "fixture-key",
+    });
+    expect(modelCatalogProbeInput(entry, "short", saved, 7)).toBeUndefined();
+    expect(
+      modelCatalogProbeInput({ ...entry, catalogProbe: false }, "fixture-key", saved, 7),
+    ).toBeUndefined();
   });
 });

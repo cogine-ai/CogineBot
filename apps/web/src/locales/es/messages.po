@@ -1182,6 +1182,10 @@ msgstr "Apps de chat, canales de grupo y conexiones de agentes."
 msgid "Chat Settings"
 msgstr "Configuración del chat"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "Comprobar modelos"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

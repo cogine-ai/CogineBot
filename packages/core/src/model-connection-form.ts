@@ -1,6 +1,7 @@
 import type {
   ModelApiProtocol,
   ModelCatalogEntry,
+  ModelCatalogProbeInput,
   ModelConnectInput,
   ModelCredential,
   ModelHeaderRow,
@@ -27,6 +28,33 @@ import {
   pickCatalogModelId,
 } from "./model-providers.js";
 import { credentialModelSettings } from "./model-settings-form.js";
+
+/** A replacement draft always takes precedence over the saved connection. */
+export function modelCatalogProbeInput(
+  entry: Pick<ModelCatalogEntry, "provider" | "catalogProbe" | "savedCatalogProbe"> | undefined,
+  draftKey: string,
+  credential?: Pick<ModelCredential, "id" | "provider" | "authKind" | "connectionRevision">,
+  expectedRevision?: number,
+): ModelCatalogProbeInput | undefined {
+  if (!entry?.catalogProbe) return undefined;
+  const apiKey = draftKey.trim();
+  if (apiKey) return apiKey.length >= 8 ? { provider: entry.provider, apiKey } : undefined;
+  if (
+    !entry.savedCatalogProbe ||
+    credential?.authKind !== "api_key" ||
+    !expectedRevision ||
+    expectedRevision !== credential.connectionRevision ||
+    canonicalPiProviderId(credential.provider) !== canonicalPiProviderId(entry.provider)
+  )
+    return undefined;
+  return { provider: credential.provider, credentialId: credential.id, expectedRevision };
+}
+
+export function modelCatalogProbeOutcome(modelId: string | undefined, models: readonly string[]) {
+  if (models.length === 0) return "empty";
+  const selected = modelId?.trim();
+  return selected && !models.includes(selected) ? "missing" : "listed";
+}
 
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;
 type DefaultModel = { defaultProvider: string | null; defaultModel: string | null };

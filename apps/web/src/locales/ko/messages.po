@@ -1182,6 +1182,10 @@ msgstr "채팅 앱, 그룹 채널 및 Agent 연결을 관리합니다."
 msgid "Chat Settings"
 msgstr "채팅 설정"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "모델 확인"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

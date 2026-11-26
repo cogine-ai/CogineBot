@@ -1182,6 +1182,10 @@ msgstr "Приложения чата, групповые каналы и под
 msgid "Chat Settings"
 msgstr "Настройки чата"
 
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Check models"
+msgstr "Проверить список моделей"
+
 #: src/components/ComputersUnavailableHint.tsx
 #: src/components/integrations/NativeAccountConnect.tsx
 #: src/pages/HostComputerPrompt.tsx

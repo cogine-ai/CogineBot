@@ -750,6 +750,13 @@ export const DE_MESSAGES: Record<string, string> = {
   "Finding…": "Suche läuft…",
   "Finish signing in in your browser:": "Schließe die Anmeldung im Browser ab:",
   "Found {count} model.": "{count} Modell gefunden.",
+  "Check models": "Modelle prüfen",
+  "Testing…": "Wird getestet…",
+  "No models listed.": "Keine Modelle gelistet.",
+  "Model listed by the provider.": "Der Anbieter listet dieses Modell auf.",
+  "This model is missing from the connection's model list.":
+    "Dieses Modell fehlt in der Modellliste der Verbindung.",
+  "Could not list models.": "Die Modelle konnten nicht aufgelistet werden.",
   "Found {count} models.": "{count} Modelle gefunden.",
   "Maximum images per request": "Maximale Bilder pro Anfrage",
   "Maximum output tokens": "Maximale Ausgabetokens",

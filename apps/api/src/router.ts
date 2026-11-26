@@ -889,6 +889,8 @@ export interface RouterDeps {
   chatgptPlanFetch?: typeof fetch;
   /** Live Codex catalog seam; defaults to the shared per-process cache. */
   codexCatalog?: CodexLiveCatalog;
+  /** The pinned models-list transport can be replaced in offline tests. */
+  catalogProbe?: typeof probeCatalogProviderModels;
   /** Capability of the composed runtime, including an explicit override. */
   scriptedRuntime?: boolean;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
@@ -2371,17 +2373,78 @@ export function createRouter(deps: RouterDeps) {
         },
       ),
       probeCatalog: authed.models.probeCatalog.handler(async ({ context, input }) => {
-        try {
-          const models = await probeCatalogProviderModels(
-            { provider: input.provider, apiKey: input.apiKey },
-            undefined,
-            context.signal,
-          );
-          return { models };
-        } catch (error) {
-          throw new ORPCError("BAD_REQUEST", {
-            message: error instanceof Error ? error.message : "Could not list models",
+        const { actor, signal, stillAuthorized } = context;
+        const probe = deps.catalogProbe ?? probeCatalogProviderModels;
+
+        async function listModels(apiKey: string) {
+          try {
+            signal?.throwIfAborted();
+            const models = await probe({ provider: input.provider, apiKey }, undefined, signal);
+            signal?.throwIfAborted();
+            // The catalog response is external data and can reflect the active key.
+            return models.filter((id) => !id.includes(apiKey.trim()));
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            throw new ORPCError("BAD_REQUEST", {
+              message: modelConnectionErrorMessage(error, { apiKey }),
+            });
+          }
+        }
+
+        if ("apiKey" in input) return { models: await listModels(input.apiKey) };
+
+        const owner = { id: input.credentialId, userId: actor.userId, provider: input.provider };
+        const credential = await deps.prisma.userModelCredential.findFirst({
+          where: owner,
+          select: { secretId: true, connectionRevision: true },
+        });
+        if (!credential) throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
+        assertConnectionRevision(credential, input.expectedRevision);
+        const secretId = credential.secretId;
+        const readCurrentCredential = () =>
+          deps.prisma.userModelCredential.findFirst({
+            where: { ...owner, connectionRevision: input.expectedRevision, secretId },
+            select: { id: true },
           });
+        const connectionChanged = () =>
+          new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
+        const { plaintext, ciphertext } = await loadConnectionSecret(
+          deps.prisma,
+          deps.secrets,
+          actor.userId,
+          secretId,
+        ).catch(async (error: unknown) => {
+          if (!(await readCurrentCredential())) throw connectionChanged();
+          throw error;
+        });
+        let saved: ReturnType<typeof parseModelSecret>;
+        try {
+          saved = parseModelSecret(plaintext);
+        } catch {
+          throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+        }
+        if (saved.kind !== "api_key" || !saved.key.trim())
+          throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+
+        async function ensureCurrent() {
+          signal?.throwIfAborted();
+          if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
+          const [row, secret] = await Promise.all([
+            readCurrentCredential(),
+            deps.prisma.secret.findFirst({
+              where: { id: secretId, userId: actor.userId, spaceId: null, ciphertext },
+              select: { id: true },
+            }),
+          ]);
+          if (!row || !secret) throw connectionChanged();
+          signal?.throwIfAborted();
+        }
+
+        await ensureCurrent();
+        try {
+          return { models: await listModels(saved.key) };
+        } finally {
+          await ensureCurrent();
         }
       }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {

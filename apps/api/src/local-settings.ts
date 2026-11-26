@@ -29,9 +29,21 @@ export function mountLocalSettings(
   deps: {
     token?: string;
     prisma: PrismaClient;
-    rpc: RPCHandler<{ actor: Actor | null; signal?: AbortSignal }>;
+    rpc: RPCHandler<{
+      actor: Actor | null;
+      signal?: AbortSignal;
+      stillAuthorized?: () => Promise<boolean>;
+    }>;
   },
 ) {
+  const readOwner = async () => {
+    const owner = await runAsSystem("find the local settings deployment owner", () =>
+      deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+    );
+    return owner?.ownerUserId
+      ? requireMembership(deps.prisma, owner.ownerUserId).catch(() => null)
+      : null;
+  };
   app.use(`${LOCAL_SETTINGS_RPC}/*`, async (c) => {
     c.header("cache-control", "no-store");
     if (!validLocalSettingsToken(deps.token, c.req.header(LOCAL_SETTINGS_TOKEN_HEADER))) {
@@ -40,12 +52,7 @@ export function mountLocalSettings(
     if (c.req.method !== "POST" || !isLocalSettingsProcedure(new URL(c.req.url).pathname)) {
       return c.json({ error: "Not available in local settings" }, 403);
     }
-    const owner = await runAsSystem("find the local settings deployment owner", () =>
-      deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
-    );
-    const actor = owner?.ownerUserId
-      ? await requireMembership(deps.prisma, owner.ownerUserId).catch(() => null)
-      : null;
+    const actor = await readOwner();
     if (!actor?.isDeploymentOwner) {
       return c.json(
         { error: "Create the server owner account before configuring local settings" },
@@ -54,7 +61,18 @@ export function mountLocalSettings(
     }
     const { matched, response } = await deps.rpc.handle(c.req.raw, {
       prefix: LOCAL_SETTINGS_RPC,
-      context: { actor, signal: c.req.raw.signal },
+      context: {
+        actor,
+        signal: c.req.raw.signal,
+        stillAuthorized: async () => {
+          const owner = await readOwner();
+          return Boolean(
+            owner?.isDeploymentOwner &&
+              owner.userId === actor.userId &&
+              owner.spaceId === actor.spaceId,
+          );
+        },
+      },
     });
     if (!matched) return c.notFound();
     return c.newResponse(response.body, response);
