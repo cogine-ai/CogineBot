@@ -20,7 +20,7 @@ def mount(fd):
 // Linux descriptor-relative reads keep traversal on the managed workspace mount.
 // O_PATH opens metadata only, including for sockets, device files, and symlinks.
 export const workspaceDiskProbe = String.raw`
-import json, os, select, stat, sys, threading, unicodedata
+import json, os, select, stat, sys, threading, time, unicodedata
 
 home, bot = sys.argv[1:]
 max_entries = 2000
@@ -150,12 +150,21 @@ def main():
 # Exec creation and hijacking can lag. No filesystem work begins until the
 # supervisor passes the post-attach budget over the open stream.
 maximum_ms = ${COMPUTER_DISK_USAGE_TIMEOUT_MS}
-if not select.select([0], [], [], maximum_ms / 1000)[0]:
-    sys.exit(124)
-start = os.read(0, 16)
+start = b""
+handshake_deadline = time.monotonic() + maximum_ms / 1000
+while len(start) < 16 and not start.endswith(b"\n"):
+    remaining = handshake_deadline - time.monotonic()
+    if remaining <= 0 or not select.select([0], [], [], remaining)[0]:
+        sys.exit(124)
+    chunk = os.read(0, 16 - len(start))
+    if not chunk:
+        sys.exit(125)
+    start += chunk
 if not start.endswith(b"\n") or not start[:-1].isdigit():
     sys.exit(125)
 timeout_ms = int(start)
+if timeout_ms == 0:
+    sys.exit(124)
 if not 0 < timeout_ms <= maximum_ms:
     sys.exit(125)
 threading.Thread(target=guard, args=(timeout_ms,), daemon=True).start()

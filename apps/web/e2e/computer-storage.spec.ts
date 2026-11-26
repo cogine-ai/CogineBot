@@ -134,25 +134,44 @@ test("offers a target-bound recovery after a managed upload reports storage exha
   await page.keyboard.press("Escape");
   await page.unroute("**/rpc/computer/uploadFile");
   const uploads: string[] = [];
-  let releaseFirst!: () => void;
-  const first = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
+  let firstFile = "";
+  let first: Promise<void>;
   await page.route("**/rpc/computer/uploadFile", async (route) => {
-    uploads.push(route.request().postDataJSON().json.path);
-    if (uploads.length === 1) await first;
+    const path = route.request().postDataJSON().json.path;
+    uploads.push(path);
+    if (path === firstFile) await first;
     await route.fulfill({ json: { json: { ok: true } } });
   });
-  await files.locator('input[type="file"]').setInputFiles([
-    { name: "first.txt", mimeType: "text/plain", buffer: Buffer.from("first") },
-    { name: "second.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
-  ]);
-  try {
-    await expect.poll(() => uploads).toEqual(["first.txt"]);
-    await viewport.getByRole("button", { name: "Browser", exact: true }).click();
-    await expect(files).toBeHidden();
-  } finally {
-    releaseFirst();
+
+  const browser = viewport.getByRole("button", { name: "Browser", exact: true });
+  for (const [label, dismiss] of [
+    ["collapse", browser],
+    ["close", viewport.getByRole("button", { name: "Close Files", exact: true })],
+  ] as const) {
+    firstFile = `${label}-first.txt`;
+    const second = `${label}-second.txt`;
+    let releaseFirst!: () => void;
+    first = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const before = uploads.length;
+    await files
+      .locator('input[type="file"]')
+      .setInputFiles(
+        [firstFile, second].map((name) => ({
+          name,
+          mimeType: "text/plain",
+          buffer: Buffer.from(name),
+        })),
+      );
+    try {
+      await expect.poll(() => uploads.slice(before)).toEqual([firstFile]);
+      await dismiss.click();
+      await expect(files).toBeHidden();
+    } finally {
+      releaseFirst();
+    }
+    await expect.poll(() => uploads.slice(before)).toEqual([firstFile, second]);
+    if (label === "collapse") await browser.click();
   }
-  await expect.poll(() => uploads).toEqual(["first.txt", "second.txt"]);
 });

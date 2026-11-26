@@ -183,14 +183,15 @@ export function FilesApp({
     setError(null);
     const scope = captureRpcRecoveryScope();
     const originalVisibility = visibility.current;
-    const current = () => owner === uploadOwner.current && isRpcRecoveryScopeCurrent(scope);
+    const sameScope = () => isRpcRecoveryScopeCurrent(scope);
+    const current = () => owner === uploadOwner.current && sameScope();
     try {
       for (const file of Array.from(files)) {
         if (file.size > ATTACHMENT_MAX_BYTES) {
           throw new Error(t`File is too large to upload.`);
         }
         const contentBase64 = await readFileAsBase64(file);
-        if (!current()) return;
+        if (!sameScope()) return;
         await rpc.computer.uploadFile({
           botId,
           path: path ? `${path}/${file.name}` : file.name,

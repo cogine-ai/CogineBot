@@ -139,6 +139,13 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
       expect(output.data.partial).toBe(true);
       expect(Buffer.byteLength(result.stdout)).toBeLessThan(64 * 1024);
     }));
+
+  it("accepts a fragmented startup budget", () =>
+    fixture(async (root) => {
+      const fragmented = `import os\nread = os.read\nos.read = lambda fd, size: read(fd, min(size, 1))\n${workspaceDiskProbe}`;
+      const result = await python(fragmented, [root, ""], { budget: 2000 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: "available" });
+    }));
 });
 
 describe("managed workspace write failure receipts", () => {
