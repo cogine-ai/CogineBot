@@ -50,6 +50,7 @@ import {
   modelThinkingLevels,
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
+  selectedModelDirectoryStatus,
   toggleEnabledModelId,
   withConnectionCatalogModels,
 } from "@rakazo/core";
@@ -114,11 +115,17 @@ import { errorText } from "../../lib/user-error";
 const MODEL_SEARCH_THRESHOLD = 10;
 
 type ModelLoadOptions = {
+  keepCatalogCheck?: boolean;
   provider?: string;
   modelId?: string;
   connectionId?: string;
   keepForm?: boolean;
   keepConnectionState?: boolean;
+};
+
+type ModelLoadResult = {
+  me: MobileMe;
+  connectionRevision?: number;
 };
 
 type FeedbackAnchor = "probe" | "model" | "connection";
@@ -364,10 +371,10 @@ function ModelsForm({
   }, [settings.cancelOAuth]);
 
   const load = useCallback(
-    async (preferred: ModelLoadOptions = {}) => {
+    async (preferred: ModelLoadOptions = {}): Promise<ModelLoadResult | undefined> => {
       setError(null);
       const generation = ++modelRequestGenerationRef.current;
-      if (!preferred.keepConnectionState) invalidateCatalogCheck();
+      if (!preferred.keepConnectionState && !preferred.keepCatalogCheck) invalidateCatalogCheck();
       const selectionRevision = selectionRevisionRef.current;
       const spaceGeneration = currentSpaceSelectionGeneration();
       const requestContext = await captureApiRequestContext();
@@ -394,8 +401,8 @@ function ModelsForm({
         return;
       meRef.current = nextMe;
       setMe(nextMe);
-      if (preferred.keepConnectionState) return nextMe;
-      invalidateCatalogCheck();
+      if (preferred.keepConnectionState) return { me: nextMe };
+      if (!preferred.keepCatalogCheck) invalidateCatalogCheck();
       setDefaultsRevision((revision) => revision + 1);
       setReferences(nextReferences.references);
       backupOptionsSnapshotRef.current = new Map(
@@ -406,13 +413,13 @@ function ModelsForm({
       );
       setCatalog(nextCatalog);
       setCredentials(nextCredentials);
-      if (selectionRevision !== selectionRevisionRef.current) return nextMe;
+      if (selectionRevision !== selectionRevisionRef.current) return { me: nextMe };
       if (preferred.keepForm) {
         const current = nextCredentials.find((entry) => entry.id === preferred.connectionId);
         setConnectionRevision(current?.connectionRevision);
         setSavedBaseUrl(current?.baseUrl);
         if (current) acceptSavedBackupConnection(current, nextCatalog);
-        return nextMe;
+        return { me: nextMe, connectionRevision: current?.connectionRevision };
       }
       const nextProvider =
         (preferred.provider &&
@@ -467,7 +474,7 @@ function ModelsForm({
       );
       setHeaderRows(null);
       setShowHeaders(false);
-      return nextMe;
+      return { me: nextMe };
     },
     [invalidateCatalogCheck],
   );
@@ -551,7 +558,7 @@ function ModelsForm({
       const generation = modelRequestGenerationRef.current;
       const isCurrent = () => generation === modelRequestGenerationRef.current;
       void refresh
-        .then((nextMe) => (nextMe && isCurrent() ? loadBackupModels(nextMe) : undefined))
+        .then((loaded) => (loaded && isCurrent() ? loadBackupModels(loaded.me) : undefined))
         .catch((err: unknown) => {
           if (!isCurrent()) return;
           publishFeedback("connection", {
@@ -747,6 +754,16 @@ function ModelsForm({
     enabledModelIds,
     probeModels,
   );
+  const directoryStatus = selectedModelDirectoryStatus(
+    credential,
+    connectionRevision,
+    selected?.id,
+    apiKey,
+  );
+  const needsModelConfirmation = directoryStatus?.confirmationRequired === true;
+  const cannotConfirmModel =
+    needsModelConfirmation &&
+    (directoryStatus?.notListed || directoryStatus?.confirmationUnavailable);
   const isActive =
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
@@ -756,6 +773,7 @@ function ModelsForm({
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials =
     canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
+  const saveThinkingOnly = isActive && !usingServerCredentials && !needsModelConfirmation;
   const acceptsKey = selected?.auth !== "oauth";
   const subscriptionSignIn = selected?.signIn !== undefined;
   // Effort levels for the staged catalog model — "off" stays out, matching the
@@ -983,11 +1001,29 @@ function ModelsForm({
     try {
       const context = await captureApiRequestContext();
       if (!isCurrent(context)) return;
-      const { models } = await rpc<{ models: string[] }>("models/probeCatalog", catalogRequest, {
-        requestContext: context,
-        skipSpaceAuthRecovery: true,
-      });
+      const { models, catalogUpdated } = await rpc<{ models: string[]; catalogUpdated?: true }>(
+        "models/probeCatalog",
+        catalogRequest,
+        { requestContext: context, skipSpaceAuthRecovery: true },
+      );
       if (!isCurrent(context)) return;
+      if (catalogUpdated && "credentialId" in catalogRequest) {
+        const applied = await load({
+          connectionId: catalogRequest.credentialId,
+          keepForm: true,
+          keepCatalogCheck: true,
+        }).catch(() => undefined);
+        if (!isCurrent(context)) return;
+        if (applied?.connectionRevision !== catalogRequest.expectedRevision) {
+          report(
+            applied
+              ? t("Model connection changed. Check models again.")
+              : t("Could not load model settings"),
+            true,
+          );
+          return;
+        }
+      }
       const outcome = modelCatalogProbeOutcome(selected.id, models);
       report(
         outcome === "empty"
@@ -1030,7 +1066,7 @@ function ModelsForm({
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
     const sessionGeneration = currentSessionGeneration();
-    if (!selected || !credential || connectionRevision === undefined) return;
+    if (!selected || !credential || connectionRevision === undefined || cannotConfirmModel) return;
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
     if (isOpenAiCompatible && !activeModelId) return;
     Keyboard.dismiss();
@@ -1051,9 +1087,7 @@ function ModelsForm({
           // openai-compatible still owns its level inside the stored endpoint config.
           ...(!isOpenAiCompatible
             ? {
-                ...(isActive && !usingServerCredentials
-                  ? { updateThinkingLevelOnly: true as const }
-                  : {}),
+                ...(saveThinkingOnly ? { updateThinkingLevelOnly: true as const } : {}),
                 thinkingLevel: clampCatalogThinkingLevel(
                   thinkingLevel,
                   selected.thinkingLevels,
@@ -1215,7 +1249,7 @@ function ModelsForm({
       acceptSavedBackupConnection(savedConnection, catalog);
       setApiKey("");
       setHeaderRows(null);
-      const effective = await load({ provider, modelId, connectionId: savedConnection.id });
+      const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
       if (!operationCurrent(revision, scope, spaceGeneration, sessionGeneration, requestContext))
         return;
       publishFeedback("connection", {
@@ -1260,7 +1294,7 @@ function ModelsForm({
     oauthLoginIdRef.current = null;
     setOauth(null);
     acceptSavedBackupConnection(savedConnection, catalog);
-    const effective = await load({ provider, modelId, connectionId: savedConnection.id });
+    const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
     if (!isCurrent()) return;
     publishFeedback("connection", {
       notice:
@@ -1810,6 +1844,15 @@ function ModelsForm({
             value={modelQuery}
           />
         ) : null}
+        {directoryStatus ? (
+          <Text style={styles.secondary} accessibilityLiveRegion="polite">
+            {directoryStatus.confirmationUnavailable
+              ? t("Confirmation is unavailable for this connection. Choose another model.")
+              : directoryStatus.notListed
+                ? t("This model is missing from the provider’s list. You can choose another model.")
+                : t("Confirm this model for the current API key, or choose another.")}
+          </Text>
+        ) : null}
         <View style={styles.card}>
           {visibleModels.map((entry, index) => (
             <Fragment key={`${entry.provider}:${entry.id}`}>
@@ -2289,10 +2332,11 @@ function ModelsForm({
   ) : null;
 
   const saveRow =
-    credential && (!isActive || thinkingDirty || usingServerCredentials) ? (
+    credential && (!saveThinkingOnly || thinkingDirty) ? (
       <NativeActionButton
         disabled={
           busy ||
+          cannotConfirmModel ||
           (isOpenAiCompatible &&
             (!modelId.trim() ||
               !canUseCompatibleModelAsDefault(credential.enabledModelIds, modelId.trim())))
@@ -2300,7 +2344,7 @@ function ModelsForm({
         label={
           pending === "default"
             ? t("Switching…")
-            : isActive && !usingServerCredentials
+            : saveThinkingOnly
               ? t("Save")
               : t("Use this model")
         }

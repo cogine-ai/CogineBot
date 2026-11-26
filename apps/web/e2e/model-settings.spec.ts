@@ -1580,3 +1580,152 @@ test("prioritizes automatically listed models for a saved connection", async ({
     });
   await expect(settings.getByText(`Now using ${discovered}.`, { exact: true })).toBeVisible();
 });
+
+for (const notListed of [true, false]) {
+  test(`retains a saved model that needs confirmation (${notListed ? "missing" : "listed"})`, async ({
+    page,
+  }, testInfo) => {
+    await signup(
+      page,
+      `saved-directory-${Date.now()}@example.test`,
+      "password12",
+      "Directory fixture",
+    );
+    await completeOnboarding(page);
+    const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+    const bundled = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
+    const modelId = "gpt-fixture-saved-directory-model";
+    const saved = await rpc<ModelCredential>(page, "models/connect", {
+      provider: "openai",
+      apiKey: "fixture-saved-directory-key",
+      modelId: bundled.id,
+    });
+    let choice: Record<string, unknown> | undefined;
+    let listedAgain = !notListed;
+    let failSettingsReadback = false;
+    await page.route("**/rpc/me", async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          json: {
+            ...payload.json,
+            defaultProvider: "openai",
+            defaultModel: choice?.modelId ?? modelId,
+            defaultModelCredentialId: saved.id,
+          },
+        },
+      });
+    });
+    await page.route("**/rpc/models/credentials", async (route) => {
+      if (
+        failSettingsReadback &&
+        route.request().postDataJSON()?.json?.includeProviderCatalog === true
+      ) {
+        await route.abort("failed");
+        return;
+      }
+      const response = await route.fetch();
+      const payload = (await response.json()) as { json: ModelCredential[] };
+      const json = payload.json.map((item) =>
+        item.id === saved.id
+          ? {
+              ...item,
+              modelId: choice?.modelId ?? modelId,
+              ...(!choice
+                ? {
+                    savedModelDirectory: {
+                      confirmationRequired: true,
+                      ...(!listedAgain ? { notListed: true } : {}),
+                    },
+                  }
+                : {
+                    savedProviderCatalogModelIds: [modelId],
+                  }),
+            }
+          : item,
+      );
+      await route.fulfill({ response, json: { json } });
+    });
+    await page.route("**/rpc/models/setDefault", async (route) => {
+      choice = route.request().postDataJSON().json;
+      await route.fulfill({ json: { json: { ok: true } } });
+    });
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill("openai");
+    await settings
+      .getByRole("button")
+      .filter({ has: page.getByText("OpenAI", { exact: true }) })
+      .click();
+    const picker = settings.getByRole("combobox", { name: "Model", exact: true });
+    const useModel = settings.getByRole("button", { name: "Use this model", exact: true });
+    await expect(picker).toHaveText(modelId);
+    const message = notListed
+      ? "This model is missing from the provider’s list. You can choose another model."
+      : "Confirm this model for the current API key, or choose another.";
+    await expect(settings.getByText(message, { exact: true })).toBeVisible();
+    if (!notListed) {
+      await page.route("**/rpc/models/probeCatalog", async (route) => {
+        listedAgain = false;
+        await route.fulfill({ json: { json: { models: [bundled.id], catalogUpdated: true } } });
+      });
+      await settings.getByRole("button", { name: "Check models", exact: true }).click();
+      await expect(
+        settings.getByRole("status").filter({ hasText: "missing from the provider’s list" }),
+      ).toBeVisible();
+      await page.unroute("**/rpc/models/probeCatalog");
+    }
+    if (!listedAgain) {
+      await expect(useModel).toBeDisabled();
+      if (notListed)
+        await captureScreenshot(page, testInfo, "a1-saved-model-missing-from-directory");
+      await picker.click();
+      await settings.getByRole("option", { name: bundled.label, exact: true }).click();
+      await expect(useModel).toBeEnabled();
+      await picker.click();
+      await settings.getByRole("option", { name: modelId, exact: true }).click();
+      await expect(useModel).toBeDisabled();
+      await page.route("**/rpc/models/probeCatalog", async (route) => {
+        listedAgain = true;
+        await route.fulfill({
+          json: { json: { models: [bundled.id, modelId], catalogUpdated: true } },
+        });
+      });
+      const checkModels = settings.getByRole("button", { name: "Check models", exact: true });
+      if (notListed) {
+        failSettingsReadback = true;
+        await checkModels.click();
+        const loadError = settings.getByRole("alert").filter({
+          hasText: "Could not load model settings",
+        });
+        await expect(loadError).toBeInViewport({ ratio: 1 });
+        await expect(settings.getByText("Chat was not tested.", { exact: false })).toHaveCount(0);
+        await expect(picker).toHaveText(modelId);
+        await expect(useModel).toBeDisabled();
+        await captureScreenshot(page, testInfo, "a1-model-catalog-refresh-failure");
+        failSettingsReadback = false;
+      }
+      await checkModels.click();
+      await expect(
+        settings.getByText("Confirm this model for the current API key, or choose another.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(settings.getByText("Could not load model settings")).toHaveCount(0);
+    }
+    await expect(useModel).toBeEnabled();
+    await useModel.click();
+    await expect
+      .poll(() => choice)
+      .toMatchObject({
+        provider: "openai",
+        modelId,
+        modelCredentialId: saved.id,
+        expectedRevision: saved.connectionRevision,
+      });
+    expect(choice).not.toHaveProperty("updateThinkingLevelOnly");
+    await expect(settings.getByText(`Now using ${modelId}.`, { exact: true })).toBeVisible();
+    await expect(settings.getByText(message, { exact: true })).toHaveCount(0);
+  });
+}

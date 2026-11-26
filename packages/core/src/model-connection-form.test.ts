@@ -8,6 +8,7 @@ import {
   modelCatalogProbeInput,
   modelConnectRequest,
   prioritizeProviderListedModels,
+  selectedModelDirectoryStatus,
   withConnectionCatalogModels,
 } from "./model-connection-form.js";
 
@@ -56,6 +57,27 @@ it("ranks listed choices for the displayed revision while leaving the base order
     "Fixture 3",
     "Fixture 4",
   ]);
+});
+
+it("keeps the unconfirmed saved model scoped to the current connection and revision", () => {
+  const catalog = [
+    { id: "gpt-base", provider: "openai", label: "Base", billing: "API", subscription: false },
+  ];
+  const status = { confirmationRequired: true as const, notListed: true as const };
+  const saved = {
+    provider: "openai",
+    modelId: "gpt-saved",
+    connectionRevision: 7,
+    savedModelDirectory: status,
+  };
+  expect(withConnectionCatalogModels(catalog, saved).map(({ id }) => id)).toEqual([
+    "gpt-base",
+    "gpt-saved",
+  ]);
+  expect(selectedModelDirectoryStatus(saved, 7, "gpt-saved", "")).toBe(status);
+  expect(selectedModelDirectoryStatus(saved, 6, "gpt-saved", "")).toBeUndefined();
+  expect(selectedModelDirectoryStatus(saved, 7, "gpt-base", "")).toBeUndefined();
+  expect(selectedModelDirectoryStatus(saved, 7, "gpt-saved", "draft")).toBeUndefined();
 });
 
 it("adds new options only for the selected connection and keeps its saved model during a draft", () => {

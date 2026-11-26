@@ -4,6 +4,7 @@ type CatalogEntry<T> = {
   models?: T[];
   fetchedAt: number;
   expiresAt: number;
+  manualObservationOrder?: number;
 };
 
 type CatalogCacheOptions = {
@@ -19,7 +20,10 @@ type CatalogCacheOptions = {
 /** Bounded stale-while-revalidate lifecycle for account-scoped model catalogs. */
 export class LiveCatalogCache<T> {
   private readonly entries = new Map<string, CatalogEntry<T>>();
-  private readonly pending = new Map<string, Promise<T[] | undefined>>();
+  private readonly pending = new Map<
+    string,
+    { result: Promise<T[] | undefined>; superseded: { value: boolean } }
+  >();
 
   constructor(private readonly options: CatalogCacheOptions) {}
 
@@ -36,18 +40,38 @@ export class LiveCatalogCache<T> {
     let work = this.pending.get(key);
     if (!work) {
       if (this.pending.size >= this.options.maxEntries) return lastGood;
-      work = this.refresh(key, fetchModels);
+      const superseded = { value: false };
+      work = { result: this.refresh(key, fetchModels, superseded), superseded };
       this.pending.set(key, work);
     }
     if (entry || waitMs === 0) return lastGood;
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(undefined), waitMs);
-      void work.then((models) => {
+      void work.result.then((models) => {
         clearTimeout(timer);
         resolve(models);
       });
     });
+  }
+
+  record(key: string, models: T[], manualObservationOrder: number): boolean {
+    if ((this.entries.get(key)?.manualObservationOrder ?? 0) > manualObservationOrder) return false;
+    const pending = this.pending.get(key);
+    if (pending) pending.superseded.value = true;
+    const fetchedAt = this.options.now();
+    this.store(key, {
+      models,
+      fetchedAt,
+      manualObservationOrder,
+      expiresAt: fetchedAt + this.options.ttlMs,
+    });
+    return true;
+  }
+
+  isFresh(key: string, models: readonly T[]): boolean {
+    const entry = this.entries.get(key);
+    return entry?.models === models && this.options.now() < entry.fetchedAt + this.options.ttlMs;
   }
 
   private trusted(entry: CatalogEntry<T> | undefined, now: number): T[] | undefined {
@@ -57,6 +81,7 @@ export class LiveCatalogCache<T> {
   private async refresh(
     key: string,
     fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T>>,
+    superseded: { value: boolean },
   ): Promise<T[] | undefined> {
     const controller = new AbortController();
     const failed = { attempted: true, models: undefined } as const;
@@ -72,10 +97,10 @@ export class LiveCatalogCache<T> {
     const result = await Promise.race([work, deadline]);
     clearTimeout(timer);
     this.pending.delete(key);
-    if (!result.attempted) return undefined;
-
     const prior = this.entries.get(key);
     const now = this.options.now();
+    if (superseded.value) return this.trusted(prior, now);
+    if (!result.attempted) return undefined;
     const models = result.models?.length ? result.models : undefined;
     const entry = models
       ? { models, fetchedAt: now, expiresAt: now + this.options.ttlMs }
@@ -84,10 +109,14 @@ export class LiveCatalogCache<T> {
           fetchedAt: prior?.fetchedAt ?? now,
           expiresAt: now + this.options.failureTtlMs,
         };
+    this.store(key, { ...entry, manualObservationOrder: prior?.manualObservationOrder });
+    return models;
+  }
+
+  private store(key: string, entry: CatalogEntry<T>) {
     if (!this.entries.has(key) && this.entries.size >= this.options.maxEntries) {
       this.entries.delete(this.entries.keys().next().value!);
     }
     this.entries.set(key, entry);
-    return models;
   }
 }

@@ -75,6 +75,7 @@ export class ApiKeyModelCatalog {
   private readonly cache: LiveCatalogCache<string>;
   private readonly probe: typeof probeCatalogProviderModels;
   private readonly versionKey = randomBytes(32);
+  private manualObservationOrder = 0;
 
   constructor({
     probe = probeCatalogProviderModels,
@@ -92,19 +93,58 @@ export class ApiKeyModelCatalog {
     });
   }
 
-  read(
+  async read(
     connection: CatalogConnection,
     apiKey: string,
     current: () => Promise<boolean>,
   ): Promise<string[] | undefined> {
+    return (await this.observe(connection, apiKey, current)).models;
+  }
+
+  async observe(
+    connection: CatalogConnection,
+    apiKey: string,
+    current: () => Promise<boolean>,
+  ): Promise<{ models: string[] | undefined; fresh: boolean }> {
+    const scope = this.scope(connection, apiKey);
+    if (!scope) return { models: undefined, fresh: false };
+    const models = await this.cache.read(scope.key, async (signal) => {
+      if (!(await current()) || signal.aborted) return { attempted: false };
+      const listed = await this.probe({ provider: scope.provider, apiKey }, undefined, signal);
+      return { attempted: true, models: trustedModels(scope, apiKey, listed) };
+    });
+    return { models, fresh: models !== undefined && this.cache.isFresh(scope.key, models) };
+  }
+
+  nextManualObservationOrder(): number {
+    return ++this.manualObservationOrder;
+  }
+
+  /** Reuse the exact-key result of a successful manual directory check. */
+  record(
+    connection: CatalogConnection,
+    apiKey: string,
+    listed: readonly string[],
+    manualObservationOrder: number,
+  ): boolean {
+    const scope = this.scope(connection, apiKey);
+    if (!scope) return false;
+    const models = trustedModels(scope, apiKey, listed);
+    if (!models) return false;
+    return this.cache.record(scope.key, models, manualObservationOrder);
+  }
+
+  private scope(connection: CatalogConnection, apiKey: string) {
     const provider = canonicalPiProviderId(connection.provider);
     const endpoint = catalogProviderProbeBaseUrl(provider);
-    if (!endpoint || !apiKey) return Promise.resolve(undefined);
+    if (!endpoint || !apiKey) return undefined;
     const version = createHash("sha256").update(connection.ciphertext).digest("hex");
     // External stores can rotate a key in place without changing the persisted reference.
     const keyVersion = createHmac("sha256", this.versionKey).update(apiKey).digest("hex");
-    return this.cache.read(
-      JSON.stringify([
+    return {
+      provider,
+      endpoint,
+      key: JSON.stringify([
         connection.userId,
         connection.id,
         provider,
@@ -114,25 +154,23 @@ export class ApiKeyModelCatalog {
         version,
         keyVersion,
       ]),
-      async (signal) => {
-        if (!(await current()) || signal.aborted) return { attempted: false };
-        const listed = new Set(await this.probe({ provider, apiKey }, undefined, signal));
-        const bundled = listPiCatalog().filter((entry) => entry.provider === provider);
-        const eligible = [...listed].filter(
-          (id) => isChatModelId(id) && !id.endsWith(":batch") && !id.includes(apiKey),
-        );
-        const known = new Set(bundled.map(({ id }) => id));
-        const eligibleKnownCount = eligible.filter((id) => known.has(id)).length;
-        return {
-          attempted: true,
-          models:
-            known.size > 0 && eligibleKnownCount >= Math.ceil(bundled.length / 4)
-              ? eligible.filter(
-                  (id) => known.has(id) || providerCatalogModel(provider, id)?.baseUrl === endpoint,
-                )
-              : undefined,
-        };
-      },
-    );
+    };
   }
+}
+
+function trustedModels(
+  { provider, endpoint }: { provider: string; endpoint: string },
+  apiKey: string,
+  listed: readonly string[],
+) {
+  const bundled = listPiCatalog().filter((entry) => entry.provider === provider);
+  const eligible = [...new Set(listed)].filter(
+    (id) => isChatModelId(id) && !id.endsWith(":batch") && !id.includes(apiKey),
+  );
+  const known = new Set(bundled.map(({ id }) => id));
+  const eligibleKnownCount = eligible.filter((id) => known.has(id)).length;
+  if (known.size === 0 || eligibleKnownCount < Math.ceil(bundled.length / 4)) return undefined;
+  return eligible.filter(
+    (id) => known.has(id) || providerCatalogModel(provider, id)?.baseUrl === endpoint,
+  );
 }

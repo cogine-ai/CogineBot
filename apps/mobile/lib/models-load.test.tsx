@@ -2363,7 +2363,7 @@ it("checks a saved API key without exposing it to the editor", async () => {
     providerListedModelIds: ["fixture-listed-chat"],
   };
   let readback: Promise<(typeof saved)[]> | undefined;
-  let probe: Promise<{ models: string[] }> | undefined;
+  let probe: Promise<{ models: string[]; catalogUpdated?: true }> | undefined;
   const normal = state.rpc.getMockImplementation()!;
   state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
     if (procedure === "me")
@@ -2465,14 +2465,37 @@ it("checks a saved API key without exposing it to the editor", async () => {
     state.blur?.();
     state.blur = state.focus?.();
   });
-  const currentProbe = deferred<{ models: string[] }>();
+  const currentProbe = deferred<{ models: string[]; catalogUpdated?: true }>();
   probe = currentProbe.promise;
   await act(async () => button("Check models").click());
   expect(
     state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog").at(-1)?.[1],
   ).toMatchObject({ expectedRevision: 9 });
   await act(async () => obsoleteReadback.reject(new Error("Superseded refresh failed")));
-  await act(async () => currentProbe.resolve({ models: [saved.modelId] }));
+  await act(async () => currentProbe.resolve({ models: [saved.modelId], catalogUpdated: true }));
   expect(container.textContent).not.toContain("Superseded refresh failed");
   expect(container.textContent).toContain("Model listed by the provider.");
+
+  const failedReadback = deferred<(typeof saved)[]>();
+  readback = failedReadback.promise;
+  await act(async () => button("Check models").click());
+  await act(async () => failedReadback.reject(new Error("Connection read failed")));
+  expect(container.textContent).toContain("Could not load model settings");
+  expect(container.textContent).not.toContain("Model listed by the provider.");
+  expect(container.textContent).not.toContain("Model connection changed. Check models again.");
+
+  const rotatedConnection = deferred<(typeof saved)[]>();
+  readback = rotatedConnection.promise;
+  probe = Promise.resolve({ models: [saved.modelId], catalogUpdated: true });
+  await act(async () => button("Check models").click());
+  expect(button("Testing…").disabled).toBe(true);
+  await act(async () => rotatedConnection.resolve([{ ...saved, connectionRevision: 10 }]));
+  expect(container.textContent).not.toContain("Model listed by the provider.");
+  expect(container.textContent).toContain("Model connection changed. Check models again.");
+  await act(async () => button("Check models").click());
+  expect(
+    state.rpc.mock.calls.filter(([procedure]) => procedure === "models/probeCatalog").at(-1)?.[1],
+  ).toMatchObject({ credentialId: saved.id, expectedRevision: 10 });
+  expect(container.textContent).toContain("Model listed by the provider.");
+  expect(container.textContent).not.toContain("Model connection changed. Check models again.");
 });

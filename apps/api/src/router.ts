@@ -2084,6 +2084,16 @@ export function createRouter(deps: RouterDeps) {
               credential = modelCredentialDto(selected, plaintext);
               const saved = deps.providerCatalogSelections?.read(row, parseModelSecret(plaintext));
               if (saved?.length) credential.savedProviderCatalogModelIds = saved;
+              if (
+                credential.authKind === "api_key" &&
+                credential.modelId &&
+                dynamicProviderCatalogModel(row.provider, credential.modelId) &&
+                !saved?.includes(credential.modelId)
+              )
+                credential.savedModelDirectory = {
+                  confirmationRequired: true,
+                  ...(!apiKeyCatalog ? { confirmationUnavailable: true } : {}),
+                };
             } catch (error) {
               if (error instanceof SecretStoreUnavailableError)
                 throw new ORPCError("SERVICE_UNAVAILABLE", {
@@ -2105,16 +2115,20 @@ export function createRouter(deps: RouterDeps) {
               ciphertext,
             };
             const current = () => modelCatalogKeyCurrent(deps, snapshot, apiKey);
-            const listed = await catalogCache.read(snapshot, apiKey, async () => {
-              probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
-              return (
-                (await probeAuthorization) &&
-                !signal?.aborted &&
-                (await current()) &&
-                !signal?.aborted
-              );
-            });
-            return listed ? { credential, catalog: { current, listed } } : { credential };
+            const { models: listed, fresh } = await catalogCache.observe(
+              snapshot,
+              apiKey,
+              async () => {
+                probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
+                return (
+                  (await probeAuthorization) &&
+                  !signal?.aborted &&
+                  (await current()) &&
+                  !signal?.aborted
+                );
+              },
+            );
+            return listed ? { credential, catalog: { current, listed, fresh } } : { credential };
           }),
         );
         const credentials = readback.map(({ credential }) => credential);
@@ -2122,11 +2136,27 @@ export function createRouter(deps: RouterDeps) {
         try {
           if (stillAuthorized && !(await stillAuthorized())) return credentials;
           const verified = await Promise.all(
-            readback.map(async ({ credential, catalog }) =>
-              catalog && (await catalog.current())
-                ? { ...credential, providerListedModelIds: catalog.listed }
-                : credential,
-            ),
+            readback.map(async ({ credential, catalog }) => {
+              if (!catalog || !(await catalog.current())) return credential;
+              const savedModel = credential.modelId;
+              const notListed =
+                catalog.fresh &&
+                savedModel !== undefined &&
+                providerCatalogModel(credential.provider, savedModel) !== undefined &&
+                !catalog.listed.includes(savedModel);
+              return {
+                ...credential,
+                providerListedModelIds: catalog.listed,
+                ...(notListed
+                  ? {
+                      savedModelDirectory: {
+                        ...credential.savedModelDirectory,
+                        notListed: true as const,
+                      },
+                    }
+                  : {}),
+              };
+            }),
           );
           return signal?.aborted ? credentials : verified;
         } catch {
@@ -2518,25 +2548,28 @@ export function createRouter(deps: RouterDeps) {
         if (saved.kind !== "api_key" || !saved.key.trim())
           throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
 
+        const key = saved.key.trim();
+        const snapshot = { ...owner, connectionRevision, secretId, ciphertext };
         async function ensureCurrent() {
           signal?.throwIfAborted();
           if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
-          const current = await modelCatalogConnectionCurrent(deps.prisma, {
-            ...owner,
-            connectionRevision,
-            secretId,
-            ciphertext,
-          });
-          if (!current) throw connectionChanged();
+          if (!(await modelCatalogKeyCurrent(deps, snapshot, key))) throw connectionChanged();
           signal?.throwIfAborted();
         }
 
         await ensureCurrent();
+        let models: string[];
+        let observationOrder: number | undefined;
         try {
-          return { models: await listModels(saved.key) };
+          models = await listModels(saved.key);
+          observationOrder = apiKeyCatalog?.nextManualObservationOrder();
         } finally {
           await ensureCurrent();
         }
+        const updated =
+          observationOrder !== undefined &&
+          apiKeyCatalog?.record(snapshot, key, models, observationOrder);
+        return updated ? { models, catalogUpdated: true as const } : { models };
       }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {
         const isChatGPTPlan = input.provider === CHATGPT_PLAN_PROVIDER_ID;
@@ -10330,11 +10363,19 @@ async function confirmProviderCatalogChoice(
       return false;
     return modelCatalogKeyCurrent(deps, connection, previousKey);
   };
-  const listed = await catalog.read(connection, secret.key.trim(), checkCurrent);
+  const { models: listed, fresh } = await catalog.observe(
+    connection,
+    secret.key.trim(),
+    checkCurrent,
+  );
   if (!(await checkCurrent()))
     throw new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
   if (!listed?.includes(modelId))
-    throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
+    throw new ORPCError("BAD_REQUEST", {
+      message: fresh
+        ? "This model is missing from the provider’s list. You can choose another model."
+        : "Confirm this model for the current API key, or choose another.",
+    });
   return true;
 }
 

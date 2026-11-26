@@ -754,6 +754,12 @@ export const DE_MESSAGES: Record<string, string> = {
   "Testing…": "Wird getestet…",
   "No models listed.": "Keine Modelle gelistet.",
   "Model listed by the provider.": "Der Anbieter listet dieses Modell auf.",
+  "Confirm this model for the current API key, or choose another.":
+    "Bestätige dieses Modell für den aktuellen API-Schlüssel oder wähle ein anderes.",
+  "Confirmation is unavailable for this connection. Choose another model.":
+    "Für diese Verbindung ist keine Bestätigung möglich. Wähle ein anderes Modell.",
+  "This model is missing from the provider’s list. You can choose another model.":
+    "Dieses Modell fehlt in der Liste des Anbieters. Du kannst ein anderes Modell wählen.",
   "This model is missing from the connection's model list.":
     "Dieses Modell fehlt in der Modellliste der Verbindung.",
   "Could not list models.": "Die Modelle konnten nicht aufgelistet werden.",
@@ -1532,6 +1538,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "Could not save model settings": "Modelleinstellungen konnten nicht gespeichert werden",
   "Maximum output tokens must be below the context limit.":
     "Die maximale Anzahl der Ausgabetokens muss unter dem Kontextlimit liegen.",
+  "Model connection changed. Check models again.":
+    "Die Modellverbindung wurde geändert. Prüfe die Modelle erneut.",
   "Model connection changed. Reload and try again.":
     "Die Modellverbindung wurde geändert. Neu laden und erneut versuchen.",
   "First run": "Erste Ausführung",

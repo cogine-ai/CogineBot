@@ -110,6 +110,61 @@ describe("saved API key model catalog", () => {
     expect(ranked?.some((id) => id.endsWith(":batch"))).toBe(false);
   });
 
+  it("keeps stale results available for ordering without making fresh absence claims", async () => {
+    vi.useFakeTimers();
+    try {
+      const probe = vi.fn().mockResolvedValueOnce(bundled).mockRejectedValue(new Error("fixture"));
+      const catalog = new ApiKeyModelCatalog({ probe });
+      const observe = () => catalog.observe(snapshot, "fixture-api-key", async () => true);
+      expect(await observe()).toMatchObject({ fresh: true });
+      await vi.advanceTimersByTimeAsync(6 * hour);
+      expect(await observe()).toMatchObject({ models: expect.any(Array), fresh: false });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await observe()).toMatchObject({ models: expect.any(Array), fresh: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains a trusted manual result when an older automatic lookup completes later", async () => {
+    let deliver!: (ids: string[]) => void;
+    const probe = vi.fn(
+      () =>
+        new Promise<string[]>((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    const catalog = new ApiKeyModelCatalog({ probe });
+    const modelId = "gpt-fixture-manual";
+    const read = catalog.observe(snapshot, "fixture-api-key", async () => true);
+    await Promise.resolve();
+    expect(
+      catalog.record(snapshot, "fixture-api-key", [modelId], catalog.nextManualObservationOrder()),
+    ).toBe(false);
+    expect(
+      catalog.record(
+        snapshot,
+        "fixture-api-key",
+        [...bundled, modelId],
+        catalog.nextManualObservationOrder(),
+      ),
+    ).toBe(true);
+    deliver(bundled);
+    expect(await read).toMatchObject({ models: expect.arrayContaining([modelId]), fresh: true });
+    expect(await catalog.read(snapshot, "fixture-api-key", async () => true)).toContain(modelId);
+    expect(probe).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a trusted manual result with an older observation order", async () => {
+    const catalog = new ApiKeyModelCatalog({ probe: vi.fn() });
+    const older = catalog.nextManualObservationOrder();
+    const newer = catalog.nextManualObservationOrder();
+    const modelId = "gpt-fixture-restored";
+    expect(catalog.record(snapshot, "fixture-api-key", [...bundled, modelId], newer)).toBe(true);
+    expect(catalog.record(snapshot, "fixture-api-key", bundled, older)).toBe(false);
+    expect(await catalog.read(snapshot, "fixture-api-key", async () => true)).toContain(modelId);
+  });
+
   it("expires successful results after six hours, backs off failures and stops serving old lists after a day", async () => {
     vi.useFakeTimers();
     try {

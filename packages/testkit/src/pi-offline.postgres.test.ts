@@ -24,6 +24,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const provider = "openai";
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
+    const qualifiedKey = "fixture-qualified-model-key";
     const modelId = "gpt-fixture-discovered-model";
     const rejectedId = "gpt-fixture-not-in-directory";
     const otherModelIds = ["gpt-fixture-discovered-second", "gpt-fixture-discovered-third"];
@@ -31,12 +32,13 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const originalModel = bundled[0]!.id;
     const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => [
       ...bundled.map(({ id }) => id),
-      ...(key === apiKey ? [modelId, ...otherModelIds] : []),
+      ...(key === apiKey || key === qualifiedKey ? [modelId, ...otherModelIds] : []),
       "gpt-fixture-realtime",
     ]);
+    let expectedWireKey = apiKey;
     const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("https://api.openai.com/v1/responses");
-      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${apiKey}`);
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${expectedWireKey}`);
       expect(JSON.parse(String(init?.body))).toMatchObject({ model: modelId, stream: true });
       const message = {
         id: "msg_directory_fixture",
@@ -251,6 +253,93 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const thread = await rpc(app, cookie, "threads/get", { botId: bot.id });
       expect(JSON.stringify(thread)).toContain("Used the selected model.");
       expect(JSON.stringify(thread)).not.toContain(apiKey);
+      // Another Space can replace an account connection while this Space retains its model and limits.
+      const { spaceId } = await rpc<{ spaceId: string }>(app, cookie, "me");
+      await select(modelId, confirmed?.connectionRevision);
+      await rpc(app, cookie, "models/saveModelSettings", {
+        credentialId: saved.id,
+        modelId,
+        settings: { contextWindow: 32_000, maxTokens: 1024 },
+      });
+      const otherSpace = await rpc<{ id: string }>(app, cookie, "spaces/create", {
+        name: "Other models",
+      });
+      const rotate = (apiKey: string, expectedRevision?: number) =>
+        rpc<ModelCredential>(
+          app,
+          cookie,
+          "models/connect",
+          {
+            provider,
+            modelId: originalModel,
+            credentialId: saved.id,
+            expectedRevision,
+            apiKey,
+          },
+          otherSpace.id,
+        );
+      const missing = await rotate(differentKey, confirmed?.connectionRevision);
+      const readSaved = async () =>
+        (
+          await rpc<ModelCredential[]>(
+            app,
+            cookie,
+            "models/credentials",
+            { includeProviderCatalog: true },
+            spaceId,
+          )
+        ).find(({ id }) => id === saved.id);
+      expect(await readSaved()).toMatchObject({
+        modelId,
+        modelSettings: { [modelId]: { contextWindow: 32_000, maxTokens: 1024 } },
+        savedModelDirectory: { confirmationRequired: true, notListed: true },
+      });
+      await expect(select(modelId, missing.connectionRevision)).rejects.toThrow(
+        /models\/setDefault: 400/,
+      );
+      const qualified = await rotate(qualifiedKey, missing.connectionRevision);
+      expect((await readSaved())?.savedModelDirectory).toEqual({ confirmationRequired: true });
+      await select(modelId, qualified.connectionRevision);
+      expect(await readSaved()).toMatchObject({
+        modelId,
+        savedProviderCatalogModelIds: [modelId],
+        modelSettings: { [modelId]: { contextWindow: 32_000, maxTokens: 1024 } },
+      });
+      expect(await readSaved()).not.toHaveProperty("savedModelDirectory");
+      expectedWireKey = qualifiedKey;
+      const recovered = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+        botId: bot.id,
+        text: "Use the confirmed model after replacing its key.",
+      });
+      await expect
+        .poll(
+          async () => {
+            const row = await handles.prisma.run.findUnique({
+              where: { id: recovered.runId },
+              select: {
+                status: true,
+                error: true,
+                modelProvider: true,
+                modelId: true,
+                modelCredentialId: true,
+              },
+            });
+            if (row?.status === "failed")
+              throw new Error(
+                `Recovered Run failed: ${row.error}; wire calls: ${modelFetch.mock.calls.length}`,
+              );
+            return row;
+          },
+          { timeout: 15_000, interval: 100 },
+        )
+        .toMatchObject({
+          status: "completed",
+          modelProvider: provider,
+          modelId,
+          modelCredentialId: saved.id,
+        });
+      expect(modelFetch).toHaveBeenCalledTimes(3);
+
       // Header-safe JSON may be the actual key text. It cannot introduce any
       // caller-supplied proof fields, even on an ordinary bundled-model save.
       const forgedKey = JSON.stringify({
@@ -262,7 +351,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const replaced = await rpc<ModelCredential>(app, cookie, "models/connect", {
         provider,
         credentialId: saved.id,
-        expectedRevision: confirmed?.connectionRevision,
+        expectedRevision: qualified.connectionRevision,
         apiKey: forgedKey,
         modelId: originalModel,
       });
@@ -1007,10 +1096,16 @@ async function rpc<T>(
   cookie: string,
   procedure: string,
   input: unknown = {},
+  spaceId?: string,
 ): Promise<T> {
   const response = await app.request(`/rpc/${procedure}`, {
     method: "POST",
-    headers: { "content-type": "application/json", cookie, origin: fixtureOrigin },
+    headers: {
+      "content-type": "application/json",
+      cookie,
+      origin: fixtureOrigin,
+      ...(spaceId ? { "x-rakazo-space-id": spaceId } : {}),
+    },
     body: JSON.stringify({ json: input }),
   });
   const body = (await response.json()) as { json?: T; error?: { message?: string } };

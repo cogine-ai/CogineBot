@@ -14,6 +14,7 @@ import {
   IntegrationProviderSettings,
   LocalAgentHomeStore,
   listPiCatalog,
+  ProviderCatalogSelections,
   screenLeaseIdForRun,
   serializeModelSecret,
 } from "@rakazo/adapters";
@@ -5718,7 +5719,15 @@ describe("saved model catalog checks", () => {
     .map(({ id }) => id);
 
   function fixture(modelLiveCatalogEnabled = false) {
+    const selections = new ProviderCatalogSelections("fixture-deployment-key");
+    const owner = {
+      id: savedInput.credentialId,
+      provider: savedInput.provider,
+      userId: actor.userId,
+    };
     const state = {
+      modelId: bundled[0]!,
+      proof: undefined as ReturnType<typeof selections.sign> | undefined,
       revision: 7,
       ciphertext: "fixture-sealed-key",
       allowed: true,
@@ -5752,7 +5761,9 @@ describe("saved model catalog checks", () => {
               id: savedInput.credentialId,
               provider: savedInput.provider,
               label: "Fixture connection",
-              preferences: [{ modelId: bundled[0], isDefault: true }],
+              preferences: [{ modelId: state.modelId, isDefault: true }],
+              providerCatalogSelection: state.proof,
+              userId: actor.userId,
               secretId: state.secretId,
               connectionRevision: state.revision,
             },
@@ -5774,6 +5785,7 @@ describe("saved model catalog checks", () => {
         },
         secrets: { load },
         catalogProbe: probe,
+        providerCatalogSelections: selections,
         env: {
           defaultProvider: "fake",
           defaultModel: "fixture",
@@ -5816,7 +5828,11 @@ describe("saved model catalog checks", () => {
     const credentials = async (currentActor = actor, includeProviderCatalog = true) =>
       (await request("credentials", { includeProviderCatalog }, currentActor)).body.json;
 
-    return { state, call, credentials, findSecret, load, probe };
+    const confirm = (modelId: string) => {
+      state.modelId = modelId;
+      state.proof = selections.sign(owner, { kind: "api_key", key: storedKey }, [modelId]);
+    };
+    return { state, call, credentials, findSecret, load, probe, confirm };
   }
 
   it("lists supported trusted IDs on an owned credential and shares a warm result", async () => {
@@ -5850,6 +5866,75 @@ describe("saved model catalog checks", () => {
       undefined,
       expect.any(AbortSignal),
     );
+  });
+
+  it("retains the confirmed ID when a trusted directory no longer lists it", async () => {
+    const { credentials, probe, confirm } = fixture(true);
+    const modelId = "gpt-fixture-saved";
+    confirm(modelId);
+    probe.mockResolvedValue(bundled);
+    expect((await credentials())[0]).toMatchObject({
+      modelId,
+      savedProviderCatalogModelIds: [modelId],
+      savedModelDirectory: { notListed: true },
+    });
+    expect((await credentials(actor, false))[0]).not.toHaveProperty("savedModelDirectory");
+  });
+
+  it("requires new confirmation after the stored key changes without proving retirement", async () => {
+    const { credentials, state, probe, confirm } = fixture(true);
+    const modelId = "gpt-fixture-saved";
+    confirm(modelId);
+    probe.mockResolvedValue([...bundled, modelId]);
+    expect((await credentials())[0]).not.toHaveProperty("savedModelDirectory");
+    state.plaintext = "fixture-rotated-credential-value";
+    probe.mockRejectedValue(new Error("Directory is temporarily unavailable"));
+    const [saved] = await credentials();
+    expect(saved).toMatchObject({ modelId, savedModelDirectory: { confirmationRequired: true } });
+    expect(saved).not.toHaveProperty("providerListedModelIds");
+    expect(saved).not.toHaveProperty("savedProviderCatalogModelIds");
+    expect(saved.savedModelDirectory).not.toHaveProperty("notListed");
+  });
+
+  it("refreshes trusted saved-key status from an explicit check without a second probe", async () => {
+    const { credentials, state, probe, confirm, call } = fixture(true);
+    const modelId = "gpt-fixture-saved";
+    confirm(modelId);
+    state.plaintext = "fixture-rotated-credential-value";
+    probe.mockResolvedValueOnce(bundled).mockResolvedValueOnce([...bundled, modelId]);
+    expect((await credentials())[0]?.savedModelDirectory).toEqual({
+      confirmationRequired: true,
+      notListed: true,
+    });
+    expect(await call(savedInput)).toMatchObject({
+      status: 200,
+      body: { json: { catalogUpdated: true } },
+    });
+    expect((await credentials())[0]?.savedModelDirectory).toEqual({ confirmationRequired: true });
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards a manual observation when the key changes in place during the check", async () => {
+    const { call, state, probe, credentials } = fixture(true);
+    probe.mockImplementationOnce(async () => {
+      state.plaintext = "fixture-rotated-credential-value";
+      return bundled;
+    });
+    expect((await call(savedInput)).status).toBe(409);
+    probe.mockResolvedValueOnce([...bundled, "gpt-fixture-new-key-only"]);
+    expect((await credentials())[0]?.providerListedModelIds).toContain("gpt-fixture-new-key-only");
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a retained choice visible when automatic confirmation is disabled", async () => {
+    const { credentials, state, probe, confirm } = fixture();
+    confirm("gpt-fixture-saved");
+    state.plaintext = "fixture-rotated-credential-value";
+    expect((await credentials())[0]?.savedModelDirectory).toEqual({
+      confirmationRequired: true,
+      confirmationUnavailable: true,
+    });
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it("keeps the manual check enabled when the deployment turns automatic lookup off", async () => {
@@ -5924,7 +6009,9 @@ describe("saved model catalog checks", () => {
       status: 200,
       body: { json: { models: ["example-chat"] } },
     });
-    expect(load).toHaveBeenCalledExactlyOnceWith("fixture-sealed-key", "fixture-secret");
+    expect(load.mock.calls).toEqual(
+      Array.from({ length: 3 }, () => ["fixture-sealed-key", "fixture-secret"]),
+    );
     expect(probe).toHaveBeenCalledExactlyOnceWith(
       { provider: "openai", apiKey: storedKey },
       undefined,

@@ -84,6 +84,7 @@ export function withConnectionCatalogModels(
         | "provider"
         | "providerListedModelIds"
         | "savedProviderCatalogModelIds"
+        | "savedModelDirectory"
         | "modelId"
         | "connectionRevision"
       >
@@ -101,7 +102,9 @@ export function withConnectionCatalogModels(
       .filter((entry) => canonicalPiProviderId(entry.provider) === provider)
       .map(({ id }) => id),
   );
-  const saved = credential.savedProviderCatalogModelIds ?? [];
+  const saved = [...(credential.savedProviderCatalogModelIds ?? [])];
+  if (credential.savedModelDirectory?.confirmationRequired && credential.modelId)
+    saved.push(credential.modelId);
   const choices = draftKey.trim()
     ? saved.filter((id) => id === credential.modelId)
     : [...(credential.providerListedModelIds ?? []), ...saved];
@@ -127,6 +130,23 @@ export function withConnectionCatalogModels(
       }),
     ),
   ];
+}
+
+/** The status belongs to the saved ID on the exact revision being edited. */
+export function selectedModelDirectoryStatus(
+  credential:
+    | Pick<ModelCredential, "modelId" | "connectionRevision" | "savedModelDirectory">
+    | undefined,
+  revision: number | undefined,
+  selectedId: string | undefined,
+  draftKey: string,
+) {
+  return revision !== undefined &&
+    revision === credential?.connectionRevision &&
+    credential.modelId === selectedId &&
+    !draftKey.trim()
+    ? credential.savedModelDirectory
+    : undefined;
 }
 
 type CatalogModel = Pick<ModelCatalogEntry, "provider" | "id" | "thinkingLevels">;

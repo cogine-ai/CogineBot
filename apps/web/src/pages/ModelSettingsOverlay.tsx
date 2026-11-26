@@ -44,6 +44,7 @@ import {
   modelThinkingLevels,
   prioritizeProviderListedModels,
   savedCompatibleModelIds,
+  selectedModelDirectoryStatus,
   toggleEnabledModelId,
   withConnectionCatalogModels,
 } from "@rakazo/core";
@@ -542,6 +543,16 @@ export function ModelSettingsOverlay({
     displayedEffort && activeLevels.some((level) => level !== "off")
       ? thinkingLevelLabel(displayedEffort)
       : null;
+  const directoryStatus = selectedModelDirectoryStatus(
+    credential,
+    connectionRevision,
+    selected?.id,
+    apiKey,
+  );
+  const needsModelConfirmation = directoryStatus?.confirmationRequired === true;
+  const cannotConfirmModel =
+    needsModelConfirmation &&
+    (directoryStatus?.notListed || directoryStatus?.confirmationUnavailable);
   const isActive =
     canonicalPiProviderId(me?.defaultProvider ?? "") ===
       canonicalPiProviderId(selected?.provider ?? "") &&
@@ -551,6 +562,7 @@ export function ModelSettingsOverlay({
   // Space still bills the host while this provider matches; model id alone is not credentials.
   const usingServerCredentials =
     canonicalPiProviderId(provider) === canonicalPiProviderId(me?.hostCredentialProvider ?? "");
+  const saveThinkingOnly = isActive && !usingServerCredentials && !needsModelConfirmation;
   const acceptsKey = selected?.auth !== "oauth";
   const subscriptionSignIn = selected?.signIn !== undefined;
   // Effort levels for the staged catalog model — "off" stays out, matching the
@@ -800,13 +812,18 @@ export function ModelSettingsOverlay({
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
+    let catalogUpdated = false;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
       modelId: selected.id,
       catalogProbe: true,
       catalogRequest,
-      probeCatalog: rpc.models.probeCatalog,
+      probeCatalog: async (input) => {
+        const response = await rpc.models.probeCatalog(input);
+        catalogUpdated = response.catalogUpdated === true;
+        return response;
+      },
     });
     if (
       !contextCurrent() ||
@@ -814,6 +831,22 @@ export function ModelSettingsOverlay({
       spaceGeneration !== currentSpaceSelectionGeneration()
     )
       return;
+    if (catalogUpdated && "credentialId" in catalogRequest) {
+      const applied = await refresh(catalogRequest.credentialId, { keepForm: true }).catch(
+        () => undefined,
+      );
+      if (
+        !contextCurrent() ||
+        !preflightStillCurrent(revision) ||
+        spaceGeneration !== currentSpaceSelectionGeneration()
+      )
+        return;
+      if (!applied) {
+        setPreflightTesting(false);
+        setPreflightFailure({ outcome: "unknown", message: t`Could not load model settings` });
+        return;
+      }
+    }
     setPreflightTesting(false);
     if (result.ok) {
       setPreflightSuccess(modelPreflightSuccessMessage(result.discoveredModels.length));
@@ -903,7 +936,7 @@ export function ModelSettingsOverlay({
     const revision = selectionRevisionRef.current;
     const scope = me;
     const spaceGeneration = currentSpaceSelectionGeneration();
-    if (!selected || !credential || connectionRevision === undefined) return;
+    if (!selected || !credential || connectionRevision === undefined || cannotConfirmModel) return;
     const activeModelId = isOpenAiCompatible ? modelId.trim() : selected.id;
     if (isOpenAiCompatible && !activeModelId) return;
     setError(null);
@@ -921,9 +954,7 @@ export function ModelSettingsOverlay({
           // openai-compatible still owns its level inside the stored endpoint config.
           ...(!isOpenAiCompatible
             ? {
-                ...(isActive && !usingServerCredentials
-                  ? { updateThinkingLevelOnly: true as const }
-                  : {}),
+                ...(saveThinkingOnly ? { updateThinkingLevelOnly: true as const } : {}),
                 thinkingLevel: clampCatalogThinkingLevel(
                   thinkingLevel,
                   selected.thinkingLevels,
@@ -1183,6 +1214,21 @@ export function ModelSettingsOverlay({
               setNotice(null);
             }}
           />
+          {directoryStatus ? (
+            <p className="mt-2 text-sm text-muted-foreground" role="status">
+              {directoryStatus.confirmationUnavailable ? (
+                <Trans>
+                  Confirmation is unavailable for this connection. Choose another model.
+                </Trans>
+              ) : directoryStatus.notListed ? (
+                <Trans>
+                  This model is missing from the provider’s list. You can choose another model.
+                </Trans>
+              ) : (
+                <Trans>Confirm this model for the current API key, or choose another.</Trans>
+              )}
+            </p>
+          ) : null}
           {provider !== "chatgpt-plan" && !credential ? (
             <ModelThinkingOptions
               showThinking={false}
@@ -1617,7 +1663,7 @@ export function ModelSettingsOverlay({
   ) : null;
 
   const saveButton =
-    credential && (!isActive || thinkingDirty || usingServerCredentials) ? (
+    credential && (!saveThinkingOnly || thinkingDirty) ? (
       <div className="mt-6">
         <Button
           type="button"
@@ -1626,6 +1672,7 @@ export function ModelSettingsOverlay({
           size="sm"
           disabled={
             busy ||
+            cannotConfirmModel ||
             (isOpenAiCompatible &&
               (!modelId.trim() ||
                 !canUseCompatibleModelAsDefault(credential.enabledModelIds, modelId.trim())))
@@ -1634,7 +1681,7 @@ export function ModelSettingsOverlay({
         >
           {pending === "default" ? (
             <Trans>Switching…</Trans>
-          ) : isActive && !usingServerCredentials ? (
+          ) : saveThinkingOnly ? (
             <Trans>Save</Trans>
           ) : (
             <Trans>Use this model</Trans>
