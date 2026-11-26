@@ -147,6 +147,7 @@ vi.mock("../components/computer-maintenance-actions", () => ({
 }));
 
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
+vi.mock("../components/computer-storage", () => ({ ComputerStorageRow: () => null }));
 
 vi.mock("./api", () => ({
   captureApiRequestContext: async () => ({ apiBase: "https://api.example.test" }),

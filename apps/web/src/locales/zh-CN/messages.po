@@ -7881,3 +7881,51 @@ msgstr "新任务会在匹配的模型支持时使用此级别。以下 Space �
 
 msgid "Connection reasoning effort"
 msgstr "连接的推理级别"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Storage"
+msgstr "存储空间"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Diagnose storage"
+msgstr "诊断存储空间"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Diagnosing…"
+msgstr "正在诊断…"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not diagnose storage."
+msgstr "无法诊断存储空间。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Storage diagnostics are unavailable for this computer."
+msgstr "这台电脑不支持存储诊断。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Computer is not running."
+msgstr "电脑未运行。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Computer changed. Open Storage again."
+msgstr "电脑已切换，请重新打开存储空间。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Computer changed. Open Storage from the Files toolbar."
+msgstr "电脑已切换，请从文件工具栏打开存储空间。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Partial results"
+msgstr "部分结果"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "{free} available of {total}"
+msgstr "{total} 中有 {free} 可用"
+
+#: src/components/computer/FilesApp.tsx
+msgid "Not enough storage to upload this file."
+msgstr "存储空间不足，无法上传此文件。"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "No free inodes."
+msgstr "没有可用的 inode。"

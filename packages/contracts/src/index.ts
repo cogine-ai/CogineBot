@@ -10,6 +10,7 @@ export * from "./bot-settings.js";
 export * from "./bot-templates.js";
 export * from "./builtin-tools.js";
 export * from "./cloudflare-ai-gateway.js";
+export * from "./computer-storage.js";
 export * from "./deployment-transfer.js";
 export * from "./desktop.js";
 export * from "./domain.js";

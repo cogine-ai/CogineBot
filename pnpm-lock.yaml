@@ -489,6 +489,9 @@ importers:
       '@hono/node-server':
         specifier: 2.1.1
         version: 2.1.1(hono@4.13.18)
+      '@rakazo/contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
       '@rakazo/core':
         specifier: workspace:*
         version: link:../../../packages/core

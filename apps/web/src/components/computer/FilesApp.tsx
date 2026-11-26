@@ -1,8 +1,17 @@
 import { useLingui } from "@lingui/react/macro";
-import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
+import { ORPCError } from "@orpc/client";
+import { ATTACHMENT_MAX_BYTES, ComputerStorageRecoverySchema } from "@rakazo/contracts";
 import { Button } from "@rakazo/ui-web";
 import { ArrowLeft, Download, File, Folder, Upload } from "lucide-react";
-import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type DragEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { decodeArtifactBase64, downloadArtifactBytes } from "../../lib/artifact-open";
 import {
   basename,
@@ -13,9 +22,16 @@ import {
   subscribeComputerCommands,
 } from "../../lib/computer-workspace";
 import { isFileDrag, readFileAsBase64 } from "../../lib/pending-attachments";
-import { rpc } from "../../lib/rpc";
+import {
+  captureRpcRecoveryScope,
+  isRpcRecoveryScopeCurrent,
+  rpc,
+  rpcRecoveryScopeKey,
+  subscribeRpcRecoveryScope,
+} from "../../lib/rpc";
 import { useObjectUrl } from "../../lib/use-object-url";
 import { errorText } from "../../lib/user-error";
+import { ComputerStorageButton } from "./ComputerStorage";
 
 type Entry = ComputerFileEntry;
 type Preview =
@@ -50,8 +66,28 @@ export function FilesApp({
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    recovery?: { target: string; scope: ReturnType<typeof captureRpcRecoveryScope> };
+  } | null>(null);
   const [busy, setBusy] = useState(false);
+  const scopeKey = useSyncExternalStore(subscribeRpcRecoveryScope, rpcRecoveryScopeKey);
+  const uploadOwner = useRef<{ uploading: boolean } | null>(null);
+  const visibility = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    uploadOwner.current = { uploading: false };
+    setError(null);
+    setBusy(false);
+    return () => {
+      uploadOwner.current = null;
+    };
+  }, [botId, scopeKey]);
+  useLayoutEffect(() => {
+    visibility.current = visible ? {} : null;
+    return () => {
+      visibility.current = null;
+    };
+  }, [visible]);
   const input = useRef<HTMLInputElement>(null);
   const loadGeneration = useRef(0);
 
@@ -67,7 +103,7 @@ export function FilesApp({
         setPreview(null);
       } catch (cause) {
         if (generation !== loadGeneration.current) return;
-        setError(errorText(cause, t`Could not list files`));
+        setError({ message: errorText(cause, t`Could not list files`) });
       }
     },
     [botId, t],
@@ -121,7 +157,7 @@ export function FilesApp({
         setPreview({ path: entry.path, kind: "text", content: file.content });
       }
     } catch (cause) {
-      setError(errorText(cause, t`Could not open file`));
+      setError({ message: errorText(cause, t`Could not open file`) });
     }
   }
 
@@ -135,29 +171,53 @@ export function FilesApp({
         decodeArtifactBase64(file.contentBase64),
       );
     } catch (cause) {
-      setError(errorText(cause, t`Could not download file`));
+      setError({ message: errorText(cause, t`Could not download file`) });
     }
   }
 
   async function upload(files: FileList | File[]) {
+    const owner = uploadOwner.current;
+    if (!owner || owner.uploading) return;
+    owner.uploading = true;
     setBusy(true);
     setError(null);
+    const scope = captureRpcRecoveryScope();
+    const originalVisibility = visibility.current;
+    const sameScope = () => isRpcRecoveryScopeCurrent(scope);
+    const current = () => owner === uploadOwner.current && sameScope();
     try {
       for (const file of Array.from(files)) {
         if (file.size > ATTACHMENT_MAX_BYTES) {
           throw new Error(t`File is too large to upload.`);
         }
+        const contentBase64 = await readFileAsBase64(file);
+        if (!sameScope()) return;
         await rpc.computer.uploadFile({
           botId,
           path: path ? `${path}/${file.name}` : file.name,
-          contentBase64: await readFileAsBase64(file),
+          contentBase64,
         });
       }
-      await load(path);
+      if (current()) await load(path);
     } catch (cause) {
-      setError(errorText(cause, t`Could not upload file`));
+      if (!current()) return;
+      if (cause instanceof ORPCError && cause.code === "COMPUTER_STORAGE_FULL") {
+        const recovery = ComputerStorageRecoverySchema.safeParse(cause.data);
+        if (recovery.success && recovery.data.botId === botId) {
+          setError({
+            message: t`Not enough storage to upload this file.`,
+            recovery:
+              originalVisibility && originalVisibility === visibility.current
+                ? { target: recovery.data.expectedTarget, scope }
+                : undefined,
+          });
+          return;
+        }
+      }
+      setError({ message: errorText(cause, t`Could not upload file`) });
     } finally {
-      setBusy(false);
+      owner.uploading = false;
+      if (current()) setBusy(false);
     }
   }
 
@@ -190,6 +250,7 @@ export function FilesApp({
         <span className="min-w-0 flex-1 truncate text-muted-foreground" dir="auto">
           ~/{location}
         </span>
+        {visible ? <ComputerStorageButton botId={botId} /> : null}
         {preview ? (
           <Button
             variant="ghost"
@@ -225,8 +286,13 @@ export function FilesApp({
         ) : null}
       </div>
       {error ? (
-        <div role="alert" className="px-3 py-2 text-destructive">
-          {error}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+          <span role="alert" className="text-destructive">
+            {error.message}
+          </span>
+          {visible && error.recovery && isRpcRecoveryScopeCurrent(error.recovery.scope) ? (
+            <ComputerStorageButton botId={botId} expectedTarget={error.recovery.target} />
+          ) : null}
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">

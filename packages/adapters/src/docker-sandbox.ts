@@ -18,6 +18,13 @@ import type {
   ScreenSession,
   TerminalRequest,
 } from "@rakazo/adapter-kit";
+import { ComputerStorageFullError } from "@rakazo/adapter-kit";
+import type { ComputerDiskProbeOutcome, ManagedDiskProbe } from "@rakazo/contracts";
+import {
+  COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES,
+  ComputerDiskProbeOutcomeSchema,
+  ManagedWorkspaceFullSchema,
+} from "@rakazo/contracts";
 import { boundedSandboxCommandTimeoutMs, resolveSupervisorToken } from "@rakazo/core";
 import { outgoingCorrelationHeaders } from "@rakazo/logging";
 import {
@@ -463,6 +470,32 @@ export class DockerSandboxProvider implements SandboxProvider {
     return readSandboxJson<ComputerFileEntry[]>(res, context.signal);
   }
 
+  async getDiskUsage(
+    computer: ComputerRef,
+    request: ManagedDiskProbe,
+    context: AdapterContext,
+  ): Promise<ComputerDiskProbeOutcome> {
+    if (computer.kind !== "docker") return { status: "unsupported" };
+    const res = await fetch(this.url(`/computers/${computer.id}/disk-usage`), {
+      method: "POST",
+      headers: { ...this.headers(context, computer.botId), "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: context.signal,
+    });
+    if (!res.ok) {
+      cancelResponseBody(res);
+      // A supervisor from an older deployment has no probe endpoint.
+      return { status: res.status === 404 ? "unsupported" : "unavailable" };
+    }
+    const data = await readSandboxJson<unknown>(
+      res,
+      context.signal,
+      COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES,
+    );
+    const outcome = ComputerDiskProbeOutcomeSchema.safeParse(data);
+    return outcome.success ? outcome.data : { status: "unavailable" };
+  }
+
   async readFile(
     computer: ComputerRef,
     filePath: string,
@@ -500,7 +533,24 @@ export class DockerSandboxProvider implements SandboxProvider {
       }),
       signal: context.signal,
     });
-    if (!res.ok) throw new Error(`sandbox file write failed: ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 507) {
+        const signal = AbortSignal.any([
+          context.signal,
+          AbortSignal.timeout(SANDBOX_ERROR_RESPONSE_TIMEOUT_MS),
+        ]);
+        const data = await readSandboxJson<unknown>(
+          res,
+          signal,
+          MAX_SANDBOX_ERROR_RESPONSE_BYTES,
+        ).catch(() => undefined);
+        if (ManagedWorkspaceFullSchema.safeParse(data).success)
+          throw new ComputerStorageFullError(computer);
+      } else {
+        cancelResponseBody(res);
+      }
+      throw new Error(`sandbox file write failed: ${res.status}`);
+    }
   }
 
   async *exportWorkspace(computer: ComputerRef, context: AdapterContext) {

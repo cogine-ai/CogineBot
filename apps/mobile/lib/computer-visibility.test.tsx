@@ -25,7 +25,11 @@ const state = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("./api", () => ({ rpc: state.rpc, currentApiBase: () => "https://api.example.test" }));
+vi.mock("./api", () => ({
+  rpc: state.rpc,
+  currentApiBase: () => "https://api.example.test",
+  captureApiRequestContext: async () => ({}),
+}));
 vi.mock("./mobile-scope", () => ({
   captureMobileScope: () => state.scope,
   isMobileScopeCurrent: (scope: string) => scope === state.scope,
@@ -100,6 +104,13 @@ vi.mock("../components/computer-maintenance-actions", () => ({
   ComputerMaintenanceActions: () => null,
 }));
 vi.mock("../components/computer-mode-picker", () => ({ ComputerModePicker: () => null }));
+vi.mock("../components/settings-group", () => ({
+  SettingsRow: ({ title, onPress }: { title: string; onPress: () => void }) => (
+    <button type="button" onClick={onPress}>
+      {title}
+    </button>
+  ),
+}));
 vi.mock("../components/glass-icon-button", () => ({ GlassIconButton: () => null }));
 vi.mock("../components/native-action-button", () => ({
   NativeActionButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
@@ -146,6 +157,7 @@ let statusError: Error | undefined;
 let nextStatus: Promise<ComputerStatus> | undefined;
 let nextScreen: Promise<{ url: string | null }> | undefined;
 let nextHeartbeat: Promise<unknown> | undefined;
+let nextDiskUsage: Promise<unknown> | undefined;
 const calls = (proc: string) => state.rpc.mock.calls.filter(([name]) => name === proc);
 
 async function render() {
@@ -184,6 +196,7 @@ beforeEach(() => {
   nextStatus = undefined;
   nextScreen = undefined;
   nextHeartbeat = undefined;
+  nextDiskUsage = undefined;
   state.rpc.mockImplementation(async (proc: string, body: { botId: string }) => {
     if (proc === "computer/status") {
       if (statusError) throw statusError;
@@ -201,6 +214,11 @@ beforeEach(() => {
       nextHeartbeat = undefined;
       return pending ?? { ok: true };
     }
+    if (proc === "computer/diskUsage") {
+      return (
+        nextDiskUsage ?? { botId: body.botId, target: null, outcome: { status: "not_running" } }
+      );
+    }
     return { ok: true };
   });
   host = document.createElement("div");
@@ -214,6 +232,36 @@ afterEach(async () => {
   expect(state.scopeListeners.size).toBe(0);
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("only diagnoses storage on explicit action and cancels results after the app is hidden", async () => {
+  const stalled = deferred<unknown>();
+  nextDiskUsage = stalled.promise;
+  await render();
+  const click = async (label: string) => {
+    const button = [...host.querySelectorAll("button")].find(
+      (entry) => entry.textContent === label,
+    );
+    expect(button).toBeDefined();
+    await act(async () => button?.click());
+  };
+  const bootCalls = calls("computer/boot").length;
+  await click("Storage");
+  expect(calls("computer/diskUsage")).toHaveLength(0);
+  await click("Diagnose storage");
+  const [call] = calls("computer/diskUsage");
+  expect(call?.[1]).toEqual({ botId: "bot-a", expectedTarget: undefined });
+  const signal = call?.[2]?.signal;
+  expect(signal?.aborted).toBe(false);
+  await appState("background");
+  expect(signal?.aborted).toBe(true);
+  await appState("active");
+  await act(async () =>
+    stalled.resolve({ botId: "bot-a", target: "b".repeat(64), outcome: { status: "not_running" } }),
+  );
+  expect(host.textContent).not.toContain("Computer is not running.");
+  expect(calls("computer/diskUsage")).toHaveLength(1);
+  expect(calls("computer/boot")).toHaveLength(bootCalls);
 });
 
 it.each(["background", "inactive", null])(

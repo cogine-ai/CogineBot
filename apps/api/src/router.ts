@@ -12,6 +12,7 @@ import type {
   UsageOperationKind,
 } from "@rakazo/adapter-kit";
 import {
+  ComputerStorageFullError,
   computerControlExpireJobKey,
   MEMORY_REVISION_CONFLICT_ERROR,
   messagingDeliverJob,
@@ -385,6 +386,7 @@ import {
   resolveBusyBotName,
   toComputerStatus,
 } from "./computer-status.js";
+import { readComputerDiskUsage, workspaceFullRecovery } from "./computer-storage.js";
 import { createDeploymentTransferService } from "./deployment-transfer.js";
 import { searchIntegrationCatalog } from "./integration-catalog.js";
 import {
@@ -1192,6 +1194,7 @@ interface RouterRequestContext {
   sessionUserId?: string;
   supportsWebsiteLoginCard?: boolean;
   signal?: AbortSignal;
+  diskUsageDeadline?: number;
   /** Server-owned transport evidence for a successfully committed synchronous action. */
   auditRequestIp?: () => Promise<string | undefined>;
   /** Re-runs the request's auth so a long-lived stream notices sign-out and revocation. */
@@ -4010,6 +4013,9 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     computer: {
+      diskUsage: authed.computer.diskUsage.handler(({ context, input }) =>
+        readComputerDiskUsage(input, context, { getBot: repos.getBot, sandbox: deps.sandbox }),
+      ),
       status: authed.computer.status.handler(async ({ context, input }) =>
         computerStatus(deps, context.actor, input.botId),
       ),
@@ -4702,11 +4708,25 @@ export function createRouter(deps: RouterDeps) {
           throw new ORPCError("CONFLICT", { message: "Computer control changed; try again" });
         }
         scheduleComputerSleep(deps.jobs, computer.id);
-        await deps.sandbox.writeFile(
-          toComputerRef(computer),
-          { path: storedPath, content },
-          computerContext(context.actor, bot.id, "upload"),
-        );
+        const ref = toComputerRef(computer);
+        try {
+          await deps.sandbox.writeFile(
+            ref,
+            { path: storedPath, content },
+            computerContext(context.actor, bot.id, "upload"),
+          );
+        } catch (error) {
+          if (error instanceof ComputerStorageFullError && error.computer === ref) {
+            const recovery = workspaceFullRecovery(context.actor, bot);
+            if (recovery)
+              throw new ORPCError("COMPUTER_STORAGE_FULL", {
+                status: 507,
+                message: "Not enough storage to upload this file.",
+                data: recovery,
+              });
+          }
+          throw error;
+        }
         return { ok: true as const };
       }),
       commands: authed.computer.commands.handler(async ({ context, input }) => {

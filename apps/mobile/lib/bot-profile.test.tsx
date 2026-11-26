@@ -7,6 +7,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import BotProfile from "../app/bot-profile";
 
+vi.mock("../components/computer-storage", () => ({ ComputerStorageRow: () => null }));
+
 const state = vi.hoisted(() => ({
   rpc: vi.fn(),
   push: vi.fn(),

@@ -10,6 +10,7 @@ import {
 } from "react";
 import { Alert, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { BotAvatar } from "../components/bot-avatar";
+import { ComputerStorageRow } from "../components/computer-storage";
 import { glassHeaderOptions } from "../components/glass-title";
 import {
   SettingsGroup,
@@ -363,6 +364,7 @@ function Profile({
               }}
             />
           ) : null}
+          {!readOnly ? <ComputerStorageRow botId={botId} /> : null}
         </SettingsGroup>
       ) : null}
       <SettingsGroup label={t("Routines")}>

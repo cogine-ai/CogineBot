@@ -49,6 +49,7 @@ import {
   UndoBotSettingsInput,
   UndoBotSettingsResult,
 } from "./bot-settings.js";
+import { ComputerDiskUsageInputSchema, ComputerDiskUsageResultSchema } from "./computer-storage.js";
 import {
   DeploymentTransferApproveInput,
   DeploymentTransferCancelInput,
@@ -725,6 +726,7 @@ export const appContract = {
     markUnread: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
   },
   computer: {
+    diskUsage: oc.input(ComputerDiskUsageInputSchema).output(ComputerDiskUsageResultSchema),
     status: oc.input(botId).output(ComputerStatusSchema),
     boot: oc
       .input(botId.extend({ onlyIfRunning: z.boolean().optional() }))
