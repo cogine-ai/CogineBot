@@ -2269,13 +2269,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     const draft = settings.getByLabel("Replace API key", { exact: true });
     const newKey = "fixture-gateway-replacement-key";
     await draft.fill(newKey);
-    const feeNotice = settings.getByText(
-      "Connecting sends one test request that may incur usage charges.",
-    );
-    await feeNotice.scrollIntoViewIfNeeded();
-    await expect(feeNotice).toBeInViewport({ ratio: 0.98 });
+    const submit = settings.getByRole("button", { name: "Replace API key", exact: true });
+    await submit.evaluate((button) => button.scrollIntoView({ block: "center" }));
+    await expect(
+      settings.getByText("Connecting sends one test request that may incur usage charges."),
+    ).toBeInViewport({ ratio: 0.98 });
     const replacing = page.waitForRequest("**/rpc/models/connect");
-    await settings.getByRole("button", { name: "Replace API key", exact: true }).click();
+    await submit.click();
     expect((await replacing).postDataJSON().json).toMatchObject({
       provider: model.provider,
       modelId: model.id,

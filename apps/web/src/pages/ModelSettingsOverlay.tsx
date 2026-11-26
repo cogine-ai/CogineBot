@@ -817,10 +817,11 @@ export function ModelSettingsOverlay({
     });
   }
 
-  async function testApiKeyConnection(testInference = false) {
-    const [kind, request] = testInference
-      ? (["inference", inferenceRequest] as const)
-      : (["api-key", catalogRequest] as const);
+  async function testApiKeyConnection(target: "api-key" | "inference") {
+    const [kind, request] =
+      target === "inference"
+        ? (["inference", inferenceRequest] as const)
+        : (["api-key", catalogRequest] as const);
     if (!selected || !request) return;
     checkedConnectionRef.current =
       "credentialId" in request
@@ -1619,7 +1620,7 @@ export function ModelSettingsOverlay({
                   size="sm"
                   className="mt-3 rounded-full"
                   disabled={busy || preflightTesting || !catalogRequest}
-                  onClick={() => void testApiKeyConnection()}
+                  onClick={() => void testApiKeyConnection("api-key")}
                 >
                   {catalogRequest &&
                   "credentialId" in catalogRequest &&
@@ -1640,7 +1641,7 @@ export function ModelSettingsOverlay({
                   size="sm"
                   className={selected.catalogProbe ? "ml-2 mt-3 rounded-full" : "mt-3 rounded-full"}
                   disabled={busy || preflightTesting || !inferenceRequest}
-                  onClick={() => void testApiKeyConnection(true)}
+                  onClick={() => void testApiKeyConnection("inference")}
                 >
                   {preflightTesting && preflightTarget === "inference" ? (
                     <Trans>Testing…</Trans>

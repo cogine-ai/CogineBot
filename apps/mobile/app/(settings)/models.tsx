@@ -999,10 +999,11 @@ function ModelsForm({
     });
   }
 
-  async function testCatalogConnection(testInference = false) {
-    const [kind, request] = testInference
-      ? (["inference", inferenceRequest] as const)
-      : (["test", catalogRequest] as const);
+  async function testKeyConnection(target: "test" | "inference") {
+    const [kind, request] =
+      target === "inference"
+        ? (["inference", inferenceRequest] as const)
+        : (["test", catalogRequest] as const);
     if (!selected || !request || busyRef.current) return;
     clearFeedback();
     const revision = selectionRevisionRef.current;
@@ -1070,11 +1071,12 @@ function ModelsForm({
       );
     } catch (error) {
       if (!isCurrent()) return;
-      const fallback = testInference
-        ? modelInferenceProbeMessage("unavailable", t)
-        : t("Could not list models.");
+      const fallback =
+        kind === "inference"
+          ? modelInferenceProbeMessage("unavailable", t)
+          : t("Could not list models.");
       const message = errorText(error, fallback);
-      report(testInference ? t(message) : message, true);
+      report(kind === "inference" ? t(message) : message, true);
     } finally {
       finishPending(pendingOwner);
     }
@@ -2205,7 +2207,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !catalogRequest}
                 label={pending === "test" ? t("Testing…") : t("Check models")}
-                onPress={() => void testCatalogConnection()}
+                onPress={() => void testKeyConnection("test")}
                 prominence="secondary"
                 style={{ marginTop: 12 }}
               />
@@ -2215,7 +2217,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !inferenceRequest}
                 label={pending === "inference" ? t("Testing…") : t("Test model")}
-                onPress={() => void testCatalogConnection(true)}
+                onPress={() => void testKeyConnection("inference")}
                 prominence="secondary"
                 style={{ marginTop: 8 }}
               />

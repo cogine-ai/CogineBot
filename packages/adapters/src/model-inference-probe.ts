@@ -37,9 +37,15 @@ export async function probeModelInference(
   const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
   if (!anthropic && !chatCompletions && !isOfficialResponsesModel(model)) return "unavailable";
+  // A probe confirms one selected model. Some registered Claude models request a
+  // second, potentially billable model when the first one refuses a normal run.
+  const probeModel =
+    anthropic && model.compat && "allowedFallbackModels" in model.compat
+      ? { ...model, compat: { ...model.compat, allowedFallbackModels: [] } }
+      : model;
   const classifyFailure = (error: unknown, status?: number) =>
     anthropic
-      ? anthropicFailureStatus(error, apiKey, status)
+      ? anthropicFailureStatus(error, status)
       : chatCompletionFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
@@ -56,7 +62,7 @@ export async function probeModelInference(
   try {
     const stream = reliableModelStream(
       models,
-      model,
+      probeModel,
       context,
       {
         apiKey,
@@ -126,7 +132,7 @@ export async function probeModelInference(
             // Interpret provider frames before the SDK turns stream errors into diagnostic text.
             const outcome = await readModelProbeFrames(response.body, signal, (frame, event) =>
               anthropic
-                ? anthropicFrameOutcome(frame, classifyFailure, event)
+                ? anthropicFrameOutcome(frame, model.id, classifyFailure, event)
                 : chatCompletionChunkOutcome(frame, classifyFailure, event === "error"),
             ).catch(() => {
               signal.throwIfAborted();
@@ -265,6 +271,7 @@ function chatCompletionChunkOutcome(
 
 function anthropicFrameOutcome(
   frame: unknown,
+  requestedModel: string,
   classifyFailure: StreamFailureClassifier,
   event?: string,
 ): ModelInferenceProbeStatus | undefined {
@@ -275,24 +282,28 @@ function anthropicFrameOutcome(
   if (type !== "message_start" || (event && event !== "message_start")) return;
   const message = "message" in frame ? frame.message : undefined;
   if (
-    message &&
-    typeof message === "object" &&
-    "type" in message &&
-    message.type === "message" &&
-    "role" in message &&
-    message.role === "assistant" &&
-    "id" in message &&
-    typeof message.id === "string" &&
-    message.id.trim()
+    !message ||
+    typeof message !== "object" ||
+    !("type" in message) ||
+    message.type !== "message" ||
+    !("role" in message) ||
+    message.role !== "assistant" ||
+    !("id" in message) ||
+    typeof message.id !== "string" ||
+    !message.id.trim() ||
+    !("model" in message) ||
+    typeof message.model !== "string"
   )
-    return "accepted";
+    return "unavailable";
+  // The Claude 4.5 aliases can report the dated snapshot of the same model.
+  const aliasSnapshot =
+    requestedModel.endsWith("-4-5") &&
+    message.model.startsWith(`${requestedModel}-`) &&
+    /^\d{8}$/.test(message.model.slice(requestedModel.length + 1));
+  return message.model === requestedModel || aliasSnapshot ? "accepted" : "unavailable";
 }
 
-function anthropicFailureStatus(
-  error: unknown,
-  apiKey: string,
-  status?: number,
-): ModelInferenceProbeStatus {
+function anthropicFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
   const record = error && typeof error === "object" ? error : undefined;
   const type = record && "type" in record ? record.type : undefined;
   const details = record && "details" in record ? record.details : undefined;
@@ -309,7 +320,7 @@ function anthropicFailureStatus(
   if (status !== undefined && status >= 500) return "unavailable";
   if (
     (status === 400 || status === 429 || status === undefined) &&
-    code === "enforced_spend_limit_reached"
+    (code === "enforced_spend_limit_reached" || code === "contract_spend_limit_reached")
   )
     return "spending";
   if (status === 429) return "rate";
@@ -330,9 +341,15 @@ function anthropicFailureStatus(
     }
   }
   if ((status === 400 || status === undefined) && type === "invalid_request_error") {
-    const outcome = failureStatus(JSON.stringify(record), apiKey, status);
-    // Legacy billing refusals can use the same envelope as ordinary validation errors.
-    if (outcome === "credit" || outcome === "spending") return outcome;
+    if (code === "claude_code_key_creator_not_member") return "auth";
+    if (code === "organization_on_hold") return "model";
+    const message = record && "message" in record ? record.message : undefined;
+    if (typeof message === "string") {
+      // These billing refusals share the same envelope as ordinary validation errors.
+      if (/^Your credit balance is too low\b/i.test(message)) return "credit";
+      if (/^You have reached your specified (?:workspace )?API usage limits\b/i.test(message))
+        return "spending";
+    }
   }
   return "unavailable";
 }

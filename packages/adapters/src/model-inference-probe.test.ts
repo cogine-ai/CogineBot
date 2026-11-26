@@ -168,6 +168,30 @@ describe("model inference check", () => {
   });
 
   it.each([
+    ["claude-fable-5", "claude-opus-4-8", "unavailable"],
+    ["claude-fable-5", "claude-fable-5", "accepted"],
+    ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "accepted"],
+    ["claude-haiku-5-5", "claude-haiku-5-5-20251001", "unavailable"],
+  ] as const)(
+    "probes only %s when the response names %s",
+    async (modelId, servedModel, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(anthropicStart.replace("claude-haiku-5-5", servedModel), {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      );
+      expect(await probeModelInference({ ...anthropicInput, modelId }, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.headers.get("anthropic-beta") ?? "").not.toContain("fallback");
+      const payload = await request.json();
+      expect(payload.model).toBe(modelId);
+      expect(payload).not.toHaveProperty("fallbacks");
+    },
+  );
+
+  it.each([
     [401, "authentication_error", "Rejected", undefined, "auth"],
     [403, "permission_error", "Model access denied", undefined, "model"],
     [404, "not_found_error", "Model missing", undefined, "model"],
@@ -179,9 +203,26 @@ describe("model inference check", () => {
       undefined,
       "credit",
     ],
-    [400, "invalid_request_error", "Workspace spend limit exceeded", undefined, "spending"],
+    [
+      400,
+      "invalid_request_error",
+      "You have reached your specified API usage limits.",
+      undefined,
+      "spending",
+    ],
+    [
+      400,
+      "invalid_request_error",
+      "You have reached your specified workspace API usage limits.",
+      undefined,
+      "spending",
+    ],
+    [400, "invalid_request_error", "Invalid parameter: credit_balance", undefined, "unavailable"],
+    [400, "invalid_request_error", "Request denied", "claude_code_key_creator_not_member", "auth"],
+    [400, "invalid_request_error", "Request denied", "organization_on_hold", "model"],
     [400, "invalid_request_error", "Unrecognized field", undefined, "unavailable"],
     [429, "rate_limit_error", "Usage limit reached", "enforced_spend_limit_reached", "spending"],
+    [429, "rate_limit_error", "Usage limit reached", "contract_spend_limit_reached", "spending"],
     [429, "rate_limit_error", "Usage limit reached", undefined, "rate"],
     [500, "timeout_error", "Request failed", undefined, "timeout"],
     [529, "overloaded_error", "Overloaded", undefined, "unavailable"],

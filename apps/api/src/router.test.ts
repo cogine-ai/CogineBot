@@ -3341,6 +3341,17 @@ describe("model credential persistence", () => {
         Response.json({ error: { type: "permission_error" } }, { status: 403 }),
       )
       .mockResolvedValueOnce(
+        Response.json(
+          {
+            error: {
+              type: "rate_limit_error",
+              details: { error_code: "contract_spend_limit_reached" },
+            },
+          },
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
         new Response(frame, { headers: { "content-type": "text/event-stream" } }),
       );
     const handler = new RPCHandler(
@@ -3352,6 +3363,11 @@ describe("model credential persistence", () => {
     const blocked = await call(handler, "models/connect", { ...input, verifyInference: true });
     expect(blocked.status).toBe(400);
     expect((await blocked.json()).json).toMatchObject({ data: { inferenceStatus: "model" } });
+    const spendBlocked = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(spendBlocked.status).toBe(400);
+    expect((await spendBlocked.json()).json).toMatchObject({
+      data: { inferenceStatus: "spending" },
+    });
     expect(deps.secrets.put).not.toHaveBeenCalled();
     expect(tx.userModelCredential.create).not.toHaveBeenCalled();
 
@@ -3364,7 +3380,7 @@ describe("model credential persistence", () => {
     });
     expect(deps.secrets.put).toHaveBeenCalledOnce();
     expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     for (const [url, init] of fetch.mock.calls) {
       const request = new Request(url, init);
       expect(new URL(request.url).origin).toBe("https://api.anthropic.com");
