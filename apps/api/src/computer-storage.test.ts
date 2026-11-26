@@ -1,6 +1,6 @@
 import { createRouterClient } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
-import { ComputerStorageFullError } from "@rakazo/adapters";
+import { ComputerStorageFullError } from "@rakazo/adapter-kit";
 import type { Actor, ComputerDiskProbeOutcome } from "@rakazo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RouterDeps } from "./router.js";

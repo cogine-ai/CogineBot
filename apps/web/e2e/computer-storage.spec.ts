@@ -13,6 +13,14 @@ test("opens storage while stopped and diagnoses only on request", async ({ page 
     bootCalls++;
     return route.abort();
   });
+  // Exercise the real authenticated transport before substituting supported-provider data.
+  const withoutCapability = await rpc<{ botId: string; outcome: { status: string } }>(
+    page,
+    "computer/diskUsage",
+    { botId },
+  );
+  expect(withoutCapability.botId).toBe(botId);
+  expect(["not_running", "unsupported"]).toContain(withoutCapability.outcome.status);
   await page.route("**/rpc/computer/diskUsage", (route) => {
     inputs.push(route.request().postDataJSON().json);
     return route.fulfill({
@@ -122,4 +130,29 @@ test("offers a target-bound recovery after a managed upload reports storage exha
   await dialog.getByRole("button", { name: "Diagnose storage" }).click();
   await expect(dialog.getByText("Computer changed. Open Storage again.")).toBeVisible();
   expect(inputs).toEqual([{ botId, expectedTarget: target }]);
+
+  await page.keyboard.press("Escape");
+  await page.unroute("**/rpc/computer/uploadFile");
+  const uploads: string[] = [];
+  let releaseFirst!: () => void;
+  const first = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  await page.route("**/rpc/computer/uploadFile", async (route) => {
+    uploads.push(route.request().postDataJSON().json.path);
+    if (uploads.length === 1) await first;
+    await route.fulfill({ json: { json: { ok: true } } });
+  });
+  await files.locator('input[type="file"]').setInputFiles([
+    { name: "first.txt", mimeType: "text/plain", buffer: Buffer.from("first") },
+    { name: "second.txt", mimeType: "text/plain", buffer: Buffer.from("second") },
+  ]);
+  try {
+    await expect.poll(() => uploads).toEqual(["first.txt"]);
+    await viewport.getByRole("button", { name: "Browser", exact: true }).click();
+    await expect(files).toBeHidden();
+  } finally {
+    releaseFirst();
+  }
+  await expect.poll(() => uploads).toEqual(["first.txt", "second.txt"]);
 });

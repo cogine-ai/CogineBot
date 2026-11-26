@@ -23,7 +23,7 @@ async function fixture<T>(test: (root: string) => Promise<T>) {
 async function python(
   script: string,
   args: string[],
-  options: { stdin?: string; disconnect?: boolean } = {},
+  options: { stdin?: string; disconnect?: boolean; budget?: number } = {},
 ) {
   const child = spawn("python3", ["-I", "-S", "-c", script, ...args], {
     timeout: 5_000,
@@ -37,6 +37,7 @@ async function python(
     stderr += text;
   });
   if (options.stdin !== undefined || options.disconnect) child.stdin.end(options.stdin);
+  if (options.budget !== undefined) child.stdin.write(`${options.budget}\n`);
   const [code] = (await once(child, "close")) as [number];
   return { code, stdout, stderr };
 }
@@ -59,7 +60,7 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
       await symlink(make("bots/other"), make("bots/selected/link"));
       await link(make("bots/other/other.txt"), make("bots/selected/hardlink.txt"));
 
-      const result = await python(workspaceDiskProbe, [root, "selected", "2000"]);
+      const result = await python(workspaceDiskProbe, [root, "selected"], { budget: 2000 });
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
       expect(ComputerDiskProbeOutcomeSchema.parse(JSON.parse(result.stdout))).toEqual({
@@ -86,7 +87,7 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
       await symlink(path.join(root, "target-bots"), path.join(root, "bots"));
       await symlink(root, path.join(root, "linked-home"));
       for (const home of [root, path.join(root, "linked-home")]) {
-        const result = await python(workspaceDiskProbe, [home, "selected", "2000"]);
+        const result = await python(workspaceDiskProbe, [home, "selected"], { budget: 2000 });
         expect(JSON.parse(result.stdout)).toEqual({ status: "unavailable" });
       }
     }));
@@ -98,7 +99,7 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
           writeFile(path.join(root, `entry-${index.toString().padStart(3, "0")}.txt`), "fixture"),
         ),
       );
-      const result = await python(workspaceDiskProbe, [root, "", "2000"]);
+      const result = await python(workspaceDiskProbe, [root, ""], { budget: 2000 });
       const output = ComputerDiskProbeOutcomeSchema.parse(JSON.parse(result.stdout));
       expect(output.status).toBe("available");
       if (output.status !== "available") return;
@@ -111,20 +112,46 @@ describe.runIf(process.platform === "linux")("managed Linux workspace scanner", 
   it("terminates on the scanner deadline or input disconnect even in a stalled scan", () =>
     fixture(async (root) => {
       const blocked = `import os, time\nos.scandir = lambda *_: time.sleep(30)\n${workspaceDiskProbe}`;
-      expect((await python(blocked, [root, "", "50"])).code).toBe(124);
-      expect((await python(blocked, [root, "", "5000"], { disconnect: true })).code).toBe(125);
+      expect((await python(blocked, [root, ""], { budget: 50 })).code).toBe(124);
+      const notStarted = `import os\ndef unexpected(*args, **kwargs): raise RuntimeError("traversed before authorization")\nos.open = unexpected\n${workspaceDiskProbe}`;
+      expect(await python(notStarted, [root, ""], { disconnect: true })).toEqual({
+        code: 125,
+        stdout: "",
+        stderr: "",
+      });
+    }));
+
+  it("returns partial diagnostics when escaped names exceed the wire budget", () =>
+    fixture(async (root) => {
+      const deep = path.join(root, '"'.repeat(200), '"'.repeat(200));
+      await mkdir(deep, { recursive: true });
+      await Promise.all(
+        Array.from({ length: 100 }, (_, i) =>
+          writeFile(path.join(deep, `${'"'.repeat(100)}${i}.txt`), "fixture"),
+        ),
+      );
+      const result = await python(workspaceDiskProbe, [root, ""], { budget: 2000 });
+      const output = ComputerDiskProbeOutcomeSchema.parse(JSON.parse(result.stdout));
+      expect(output.status).toBe("available");
+      if (output.status !== "available") return;
+      expect(output.data.candidates.length).toBeGreaterThan(0);
+      expect(output.data.candidates.length).toBeLessThan(100);
+      expect(output.data.partial).toBe(true);
+      expect(Buffer.byteLength(result.stdout)).toBeLessThan(64 * 1024);
     }));
 });
 
 describe("managed workspace write failure receipts", () => {
-  it.each([
+  it.runIf(process.platform === "linux").each([
     [28, true],
     [13, false],
-  ])("recognizes actual writer errno %s", async (errno, recognized) => {
-    const script = `import os\ndef fail(*args, **kwargs): raise OSError(${errno}, "synthetic")\nos.makedirs = fail\n${workspaceWrite}`;
-    const outcome = await python(script, ["/synthetic/notes.txt", "0"], { stdin: "" });
-    expect(capturedWorkspaceDiskFull(outcome)).toBe(recognized);
-  });
+  ])("recognizes actual writer errno %s on the mounted workspace", (errno, recognized) =>
+    fixture(async (root) => {
+      const script = `import os\ndef fail(*args, **kwargs): raise OSError(${errno}, "synthetic")\nos.mkdir = fail\n${workspaceWrite}`;
+      const outcome = await python(script, [root, "nested/notes.txt", "0"], { stdin: "" });
+      expect(capturedWorkspaceDiskFull(outcome)).toBe(recognized);
+    }),
+  );
 
   it("does not classify stdout, tracebacks, or unknown exit codes as a receipt", () => {
     expect(

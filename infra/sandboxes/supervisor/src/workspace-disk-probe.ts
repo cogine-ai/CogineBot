@@ -4,35 +4,43 @@ import {
   COMPUTER_DISK_USAGE_MAX_CANDIDATES,
   COMPUTER_DISK_USAGE_MAX_DEPTH,
   COMPUTER_DISK_USAGE_MAX_PATH_BYTES,
+  COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES,
+  COMPUTER_DISK_USAGE_TIMEOUT_MS,
 } from "@rakazo/contracts";
 
-// Linux descriptor-relative reads keep traversal on the managed workspace mount.
-// O_PATH opens metadata only, including for sockets, device files, and symlinks.
-export const workspaceDiskProbe = String.raw`
-import json, os, select, stat, sys, threading, unicodedata
-
-home, bot, timeout_ms = sys.argv[1:]
-max_entries = 2000
-max_depth = ${COMPUTER_DISK_USAGE_MAX_DEPTH}
-max_candidates = ${COMPUTER_DISK_USAGE_MAX_CANDIDATES}
-max_path_bytes = ${COMPUTER_DISK_USAGE_MAX_PATH_BYTES}
-directory = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY
-entry_flags = os.O_PATH | os.O_NOFOLLOW
-excluded = frozenset(${JSON.stringify(COMPUTER_DISK_USAGE_EXCLUDED_NAMES)})
-excluded_suffix = tuple(${JSON.stringify(COMPUTER_DISK_USAGE_EXCLUDED_SUFFIXES)})
-
-def guard():
-    # Docker leaves stdin open for this operation. A disconnect closes it even
-    # if the scanner is still inside a filesystem call.
-    readable, _, _ = select.select([0], [], [], int(timeout_ms) / 1000)
-    os._exit(125 if readable else 124)
-
+const mountIdentity = `
 def mount(fd):
     with open("/proc/self/fdinfo/" + str(fd), encoding="ascii") as info:
         for line in info:
             if line.startswith("mnt_id:"):
                 return int(line.split()[1])
     raise OSError("mount identity unavailable")
+`;
+
+// Linux descriptor-relative reads keep traversal on the managed workspace mount.
+// O_PATH opens metadata only, including for sockets, device files, and symlinks.
+export const workspaceDiskProbe = String.raw`
+import json, os, select, stat, sys, threading, unicodedata
+
+home, bot = sys.argv[1:]
+max_entries = 2000
+max_depth = ${COMPUTER_DISK_USAGE_MAX_DEPTH}
+max_candidates = ${COMPUTER_DISK_USAGE_MAX_CANDIDATES}
+max_path_bytes = ${COMPUTER_DISK_USAGE_MAX_PATH_BYTES}
+# Leave room for the result envelope and Docker's stream framing.
+max_candidate_bytes = ${COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES} - 1024
+directory = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY
+entry_flags = os.O_PATH | os.O_NOFOLLOW
+excluded = frozenset(${JSON.stringify(COMPUTER_DISK_USAGE_EXCLUDED_NAMES)})
+excluded_suffix = tuple(${JSON.stringify(COMPUTER_DISK_USAGE_EXCLUDED_SUFFIXES)})
+
+${mountIdentity}
+
+def guard(timeout_ms):
+    # The supervisor keeps stdin open after sending the budget. A disconnect
+    # closes it even while the scanner is inside a filesystem call.
+    readable, _, _ = select.select([0], [], [], timeout_ms / 1000)
+    os._exit(125 if readable else 124)
 
 def workspace():
     # The parent is in the managed image and the home itself is a fixed mount.
@@ -120,17 +128,37 @@ def main():
     if identity(after) != identity(root_info) or mount(current) != work_mount:
         return {"status": "unavailable"}
     rows.sort(key=lambda file: (-file[0], file[1]))
+    candidates = []
+    remaining = max_candidate_bytes
+    for size, name in rows[:max_candidates]:
+        candidate = {"path": name, "logicalBytes": size}
+        encoded_bytes = len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        remaining -= encoded_bytes + 1
+        if remaining < 0:
+            break
+        candidates.append(candidate)
     return {"status": "available", "data": {
         "volume": {
             "totalBytes": filesystem.f_blocks * filesystem.f_frsize,
             "availableBytes": filesystem.f_bavail * filesystem.f_frsize,
             "availableInodes": filesystem.f_favail if filesystem.f_files else None,
         },
-        "candidates": [{"path": name, "logicalBytes": size} for size, name in rows[:max_candidates]],
-        "partial": partial or len(rows) > max_candidates,
+        "candidates": candidates,
+        "partial": partial or len(rows) > len(candidates),
     }}
 
-threading.Thread(target=guard, daemon=True).start()
+# Exec creation and hijacking can lag. No filesystem work begins until the
+# supervisor passes the post-attach budget over the open stream.
+maximum_ms = ${COMPUTER_DISK_USAGE_TIMEOUT_MS}
+if not select.select([0], [], [], maximum_ms / 1000)[0]:
+    sys.exit(124)
+start = os.read(0, 16)
+if not start.endswith(b"\n") or not start[:-1].isdigit():
+    sys.exit(125)
+timeout_ms = int(start)
+if not 0 < timeout_ms <= maximum_ms:
+    sys.exit(125)
+threading.Thread(target=guard, args=(timeout_ms,), daemon=True).start()
 try:
     result = main()
 except OSError:
@@ -142,17 +170,61 @@ print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
 // generic failure and is never interpreted as proof of exhausted storage.
 export const workspaceWrite = `
 import errno, os, sys
-target = sys.argv[1]
-try:
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "wb") as file:
-        file.write(sys.stdin.buffer.read())
-    os.chmod(target, 0o700 if sys.argv[2] == "1" else 0o600)
-except OSError as error:
-    if error.errno != errno.ENOSPC:
-        raise
+home, relative, executable = sys.argv[1:]
+${mountIdentity}
+
+def known_mount(fd):
+    try:
+        return mount(fd)
+    except OSError:
+        return None
+
+def fail(error, workspace_volume):
+    if error.errno != errno.ENOSPC or not workspace_volume:
+        raise error
     print("workspace-write:ENOSPC:v1", flush=True)
     sys.exit(77)
+
+# Open directory descriptors rather than changing existing symlink behavior.
+# Only errors on the identified workspace mount can point to its diagnosis.
+directory = os.O_PATH | os.O_DIRECTORY
+parent = os.open(home, directory)
+workspace_mount = known_mount(parent)
+parts = relative.split("/")
+try:
+    for name in parts[:-1]:
+        try:
+            child = os.open(name, directory, dir_fd=parent)
+        except FileNotFoundError:
+            try:
+                os.mkdir(name, dir_fd=parent)
+            except FileExistsError:
+                pass
+            except OSError as error:
+                fail(error, workspace_mount is not None and known_mount(parent) == workspace_mount)
+            child = os.open(name, directory, dir_fd=parent)
+        os.close(parent)
+        parent = child
+    name = parts[-1] or "."
+    flags = os.O_WRONLY | os.O_CREAT
+    try:
+        fd = os.open(name, flags | os.O_EXCL, 0o666, dir_fd=parent)
+    except FileExistsError:
+        # The resolved file may be on another mount. Its descriptor is the
+        # evidence for write, flush, chmod, and close failures.
+        fd = os.open(name, flags | os.O_TRUNC, 0o666, dir_fd=parent)
+    except OSError as error:
+        fail(error, workspace_mount is not None and known_mount(parent) == workspace_mount)
+    workspace_volume = workspace_mount is not None and known_mount(fd) == workspace_mount
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(sys.stdin.buffer.read())
+            file.flush()
+            os.fchmod(file.fileno(), 0o700 if executable == "1" else 0o600)
+    except OSError as error:
+        fail(error, workspace_volume)
+finally:
+    os.close(parent)
 `;
 
 export function capturedWorkspaceDiskFull(output: {

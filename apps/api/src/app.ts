@@ -891,6 +891,22 @@ async function buildApp(
         }),
     );
   }
+  const diskUsageDeadlines = new WeakMap<object, number>();
+  app.use("/rpc/*", async (c, next) => {
+    const path = new URL(c.req.raw.url).pathname.replace(/\/$/, "");
+    if (path !== "/rpc/computer/diskUsage") return next();
+    const request = c.req.raw;
+    const timeout = AbortSignal.timeout(COMPUTER_DISK_USAGE_TIMEOUT_MS);
+    const signal = AbortSignal.any([request.signal, timeout]);
+    diskUsageDeadlines.set(c, performance.now() + COMPUTER_DISK_USAGE_TIMEOUT_MS);
+    c.req.raw = new Request(request, { signal });
+    try {
+      await withAbort(next(), signal);
+    } catch (error) {
+      if (timeout.aborted && !request.signal.aborted) return c.body(null, 504);
+      throw error;
+    }
+  });
   mountApiRequestBodyLimits(app);
   mountDeploymentTransferHttp(app, deploymentTransfer);
   mountScreenTarget(app, prisma, env.screenProxySecret);
@@ -902,66 +918,51 @@ async function buildApp(
     return auth.handler(emptyAuthBodyAsJson(c.req.raw));
   });
   mountLocalSettings(app, { token: env.desktopStackToken, prisma, rpc });
-  const requestSession = async (request: Request) =>
+  const requestSession = async (request: Request, signal?: AbortSignal) =>
     runAsSystem("authenticate the request session", async () => {
+      signal?.throwIfAborted();
       const session = await auth.api.getSession({ headers: sessionHeaders(request) });
+      signal?.throwIfAborted();
       if (!session?.user) return null;
       const actor = await actorFromMembership(
         requireMembership(prisma, session.user.id, request.headers.get("x-rakazo-space-id")),
       );
       return { actor, sessionId: session.session.id, sessionUserId: session.user.id };
     });
-  const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
+  const sessionActor = async (request: Request, signal?: AbortSignal) =>
+    (await requestSession(request, signal))?.actor ?? null;
   const bindAuditRequestIp = createAuditRequestIpReader(env.trustedProxies);
   app.use("/rpc/*", async (c, next) => {
-    const path = new URL(c.req.raw.url).pathname.replace(/\/$/, "");
-    const diskUsage = path === "/rpc/computer/diskUsage";
-    const diskUsageDeadline = diskUsage
-      ? performance.now() + COMPUTER_DISK_USAGE_TIMEOUT_MS
-      : undefined;
-    const timeout = diskUsage ? AbortSignal.timeout(COMPUTER_DISK_USAGE_TIMEOUT_MS) : undefined;
-    const requestSignal = c.req.raw.signal;
-    const budgetSignal = timeout ? AbortSignal.any([requestSignal, timeout]) : undefined;
-    const session = await withAbort(requestSession(c.req.raw), budgetSignal).catch(
-      (error: unknown) => {
-        if (timeout?.aborted && !requestSignal.aborted) return undefined;
-        throw error;
-      },
-    );
-    if (session === undefined) return c.body(null, 504);
+    const diskUsageDeadline = diskUsageDeadlines.get(c);
+    const authSignal = diskUsageDeadline === undefined ? undefined : c.req.raw.signal;
+    const session = await requestSession(c.req.raw, authSignal);
     const actor = session?.actor ?? null;
     if (actor) {
       enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
     }
-    const result = await withAbort(
-      rpc.handle(c.req.raw, {
-        prefix: "/rpc",
-        context: {
-          actor,
-          sessionId: session?.sessionId,
-          sessionAuthenticated: Boolean(session),
-          sessionUserId: session?.sessionUserId,
-          auditRequestIp: actor ? bindAuditRequestIp(c) : undefined,
-          supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
-          signal: requestSignal,
-          diskUsageDeadline,
-          // Same user in the same space, so leaving the space also ends a stream.
-          // A database failure rejects this check; only a missing membership is unauthorized.
-          stillAuthorized: async () => {
-            const current = await sessionActor(c.req.raw);
-            return Boolean(
-              actor && current?.userId === actor.userId && current.spaceId === actor.spaceId,
-            );
-          },
+    authSignal?.throwIfAborted();
+    const { matched, response } = await rpc.handle(c.req.raw, {
+      prefix: "/rpc",
+      context: {
+        actor,
+        sessionId: session?.sessionId,
+        sessionAuthenticated: Boolean(session),
+        sessionUserId: session?.sessionUserId,
+        auditRequestIp: actor ? bindAuditRequestIp(c) : undefined,
+        supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
+        signal: c.req.raw.signal,
+        diskUsageDeadline,
+        // Same user in the same space, so leaving the space also ends a stream.
+        // A database failure rejects this check; only a missing membership is unauthorized.
+        stillAuthorized: async () => {
+          const current = await sessionActor(c.req.raw, authSignal);
+          return Boolean(
+            actor && current?.userId === actor.userId && current.spaceId === actor.spaceId,
+          );
         },
-      }),
-      budgetSignal,
-    ).catch((error: unknown) => {
-      if (timeout?.aborted && !requestSignal.aborted) return undefined;
-      throw error;
+      },
     });
-    if (!result) return c.body(null, 504);
-    if (result.matched) return c.newResponse(result.response.body, result.response);
+    if (matched) return c.newResponse(response.body, response);
     await next();
   });
   mountVoiceHttpRoutes(

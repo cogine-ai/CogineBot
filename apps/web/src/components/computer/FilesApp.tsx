@@ -66,22 +66,28 @@ export function FilesApp({
   const [path, setPath] = useState("");
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [storageRecovery, setStorageRecovery] = useState<{
-    target: string;
-    scope: ReturnType<typeof captureRpcRecoveryScope>;
+  const [error, setError] = useState<{
+    message: string;
+    recovery?: { target: string; scope: ReturnType<typeof captureRpcRecoveryScope> };
   } | null>(null);
+  const [busy, setBusy] = useState(false);
   const scopeKey = useSyncExternalStore(subscribeRpcRecoveryScope, rpcRecoveryScopeKey);
-  const uploadOwner = useRef<object | null>(null);
+  const uploadOwner = useRef<{ uploading: boolean } | null>(null);
+  const visibility = useRef<object | null>(null);
   useLayoutEffect(() => {
-    uploadOwner.current = visible ? {} : null;
-    setStorageRecovery(null);
+    uploadOwner.current = { uploading: false };
+    setError(null);
     setBusy(false);
     return () => {
       uploadOwner.current = null;
     };
-  }, [visible, botId, scopeKey]);
+  }, [botId, scopeKey]);
+  useLayoutEffect(() => {
+    visibility.current = visible ? {} : null;
+    return () => {
+      visibility.current = null;
+    };
+  }, [visible]);
   const input = useRef<HTMLInputElement>(null);
   const loadGeneration = useRef(0);
 
@@ -97,7 +103,7 @@ export function FilesApp({
         setPreview(null);
       } catch (cause) {
         if (generation !== loadGeneration.current) return;
-        setError(errorText(cause, t`Could not list files`));
+        setError({ message: errorText(cause, t`Could not list files`) });
       }
     },
     [botId, t],
@@ -151,7 +157,7 @@ export function FilesApp({
         setPreview({ path: entry.path, kind: "text", content: file.content });
       }
     } catch (cause) {
-      setError(errorText(cause, t`Could not open file`));
+      setError({ message: errorText(cause, t`Could not open file`) });
     }
   }
 
@@ -165,18 +171,19 @@ export function FilesApp({
         decodeArtifactBase64(file.contentBase64),
       );
     } catch (cause) {
-      setError(errorText(cause, t`Could not download file`));
+      setError({ message: errorText(cause, t`Could not download file`) });
     }
   }
 
   async function upload(files: FileList | File[]) {
+    const owner = uploadOwner.current;
+    if (!owner || owner.uploading) return;
+    owner.uploading = true;
     setBusy(true);
     setError(null);
-    setStorageRecovery(null);
-    const owner = uploadOwner.current;
     const scope = captureRpcRecoveryScope();
-    const current = () =>
-      Boolean(owner && owner === uploadOwner.current) && isRpcRecoveryScopeCurrent(scope);
+    const originalVisibility = visibility.current;
+    const current = () => owner === uploadOwner.current && isRpcRecoveryScopeCurrent(scope);
     try {
       for (const file of Array.from(files)) {
         if (file.size > ATTACHMENT_MAX_BYTES) {
@@ -196,13 +203,19 @@ export function FilesApp({
       if (cause instanceof ORPCError && cause.code === "COMPUTER_STORAGE_FULL") {
         const recovery = ComputerStorageRecoverySchema.safeParse(cause.data);
         if (recovery.success && recovery.data.botId === botId) {
-          setStorageRecovery({ target: recovery.data.expectedTarget, scope });
-          setError(t`Not enough storage to upload this file.`);
+          setError({
+            message: t`Not enough storage to upload this file.`,
+            recovery:
+              originalVisibility && originalVisibility === visibility.current
+                ? { target: recovery.data.expectedTarget, scope }
+                : undefined,
+          });
           return;
         }
       }
-      setError(errorText(cause, t`Could not upload file`));
+      setError({ message: errorText(cause, t`Could not upload file`) });
     } finally {
+      owner.uploading = false;
       if (current()) setBusy(false);
     }
   }
@@ -274,10 +287,10 @@ export function FilesApp({
       {error ? (
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
           <span role="alert" className="text-destructive">
-            {error}
+            {error.message}
           </span>
-          {visible && storageRecovery && isRpcRecoveryScopeCurrent(storageRecovery.scope) ? (
-            <ComputerStorageButton botId={botId} expectedTarget={storageRecovery.target} />
+          {visible && error.recovery && isRpcRecoveryScopeCurrent(error.recovery.scope) ? (
+            <ComputerStorageButton botId={botId} expectedTarget={error.recovery.target} />
           ) : null}
         </div>
       ) : null}

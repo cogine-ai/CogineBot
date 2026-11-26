@@ -99,8 +99,7 @@ export async function readComputerDiskUsage(
     if (input.expectedTarget !== undefined && input.expectedTarget !== target)
       return finish({ status: "changed" });
     if (!computer || !workspace) return finish({ status: "not_running" });
-    if (computer.kind !== "docker" && computer.kind !== "e2b")
-      return finish({ status: "unsupported" });
+    if (computer.kind === "desktop") return finish({ status: "unsupported" });
     if (bot.computerSwitching || computer.maintenanceId || computer.stopRequestedAt)
       return finish({ status: "unavailable" });
     if (computer.state !== "running" || computer.restorePending || !computer.providerRef)

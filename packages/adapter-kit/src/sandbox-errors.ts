@@ -1,4 +1,12 @@
 import { COMPUTER_RATE_LIMITED_ERROR_MESSAGE } from "@rakazo/contracts";
+import type { ComputerRef } from "./types.js";
+
+/** A managed write confirmed that its own workspace volume is out of space. */
+export class ComputerStorageFullError extends Error {
+  constructor(readonly computer: ComputerRef) {
+    super("Not enough storage to write the workspace file.");
+  }
+}
 
 /** A provider reports a confirmed nonzero exit through its error channel. */
 export class SandboxCommandExitError extends Error {

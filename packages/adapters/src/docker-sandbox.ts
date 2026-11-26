@@ -18,6 +18,7 @@ import type {
   ScreenSession,
   TerminalRequest,
 } from "@rakazo/adapter-kit";
+import { ComputerStorageFullError } from "@rakazo/adapter-kit";
 import type { ComputerDiskProbeOutcome, ManagedDiskProbe } from "@rakazo/contracts";
 import {
   COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES,
@@ -118,13 +119,6 @@ function sandboxGoneError(computer: ComputerRef): Error {
   return Object.assign(new Error(`sandbox ${computer.id} is not running`), {
     name: "SandboxNotFoundError",
   });
-}
-
-/** Raised only for a disk-full receipt from the managed workspace writer. */
-export class ComputerStorageFullError extends Error {
-  constructor(readonly computer: ComputerRef) {
-    super("The computer has no available storage.");
-  }
 }
 
 export class DockerSandboxProvider implements SandboxProvider {

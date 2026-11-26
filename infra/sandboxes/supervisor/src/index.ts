@@ -766,6 +766,7 @@ app.post("/computers/:id/disk-usage", bodyLimit({ maxSize: 1024 }), async (c) =>
       c.req.param("id"),
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
+      signal,
     );
     signal.throwIfAborted();
     if (!info.State.Running || info.State.Paused || info.State.Restarting)
@@ -774,8 +775,8 @@ app.post("/computers/:id/disk-usage", bodyLimit({ maxSize: 1024 }), async (c) =>
       ({ Destination }) => Destination === workspaceTarget(""),
     );
     if (!workspaceMount) return c.json({ status: "unsupported" as const });
-    const timeoutMs = Math.floor(input.data.timeoutMs - (performance.now() - started));
-    if (timeoutMs <= 0) return c.json({ status: "timeout" as const });
+    const deadline = started + input.data.timeoutMs;
+    if (performance.now() >= deadline) return c.json({ status: "timeout" as const });
 
     const container = docker.getContainer(info.Id);
     const result = await runContainerCommand(
@@ -788,14 +789,18 @@ app.post("/computers/:id/disk-usage", bodyLimit({ maxSize: 1024 }), async (c) =>
         workspaceDiskProbe,
         workspaceTarget(""),
         input.data.workspace.kind === "team" ? input.data.workspace.botId : "",
-        String(timeoutMs),
       ],
-      { signal, maxOutputBytes: COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES },
+      {
+        signal,
+        maxOutputBytes: COMPUTER_DISK_USAGE_MAX_RESPONSE_BYTES,
+        stdin: () => `${Math.max(0, Math.floor(deadline - performance.now()))}\n`,
+      },
     );
     if (result.code === 124 || signal.aborted) return c.json({ status: "timeout" as const });
     if (result.code !== 0 || !result.terminalStateVerified)
       return c.json({ status: "unavailable" as const });
-    const current = await container.inspect();
+    const inspection = { abortSignal: signal };
+    const current = await container.inspect(inspection);
     signal.throwIfAborted();
     if (
       !current.State.Running ||
@@ -827,10 +832,10 @@ app.post("/computers/:id/files", async (c) => {
       c.req.header("x-rakazo-bot-id"),
       c.req.header("x-rakazo-space-id"),
     );
-    const target = workspaceTarget(normalizeWorkspaceRelative(body.path));
+    const relative = normalizeWorkspaceRelative(body.path);
     const result = await writeContainerFile(
       container,
-      target,
+      relative,
       Buffer.from(body.content, "base64"),
       body.executable,
     );
@@ -1362,10 +1367,16 @@ async function isManagedSpaceContainer(
 
 class ComputerIdentityError extends Error {}
 
-async function managedContainer(id: string, botId?: string, spaceId?: string) {
+async function managedContainer(
+  id: string,
+  botId?: string,
+  spaceId?: string,
+  signal?: AbortSignal,
+) {
   if (!botId || !spaceId) throw new ComputerIdentityError("missing computer identity");
   const container = docker.getContainer(id);
-  const info = await container.inspect();
+  const inspection = { abortSignal: signal };
+  const info = await container.inspect(inspection);
   if (!isRakazoContainer(info, botId, spaceId))
     throw new ComputerIdentityError("computer identity mismatch");
   return { container, info };
@@ -2079,7 +2090,7 @@ async function runContainerCommand(
     signal?: AbortSignal;
     maxOutputBytes?: number;
     /** Written to stdin without closing it; requires `signal`, whose abort closes stdin. */
-    stdin?: string;
+    stdin?: string | (() => string);
     /** Live stdout/stderr. The returned buffers are still the full demuxed result. */
     onOutput?: (chunk: { stream: "stdout" | "stderr"; data: string }) => void;
   } = {},
@@ -2099,6 +2110,7 @@ async function runContainerCommand(
     AttachStdout: true,
     AttachStderr: true,
     ...(options.signal ? { AttachStdin: true } : {}),
+    abortSignal: options.signal,
     WorkingDir: options.workingDir ?? "/home/rakazo",
     Env: options.env ?? [
       "DISPLAY=:1",
@@ -2107,8 +2119,14 @@ async function runContainerCommand(
     ],
   });
   options.signal?.throwIfAborted();
-  const stream = await exec.start({ hijack: true, stdin: Boolean(options.signal) });
-  if (options.stdin !== undefined) stream.write(options.stdin);
+  const start = { hijack: true, stdin: Boolean(options.signal), abortSignal: options.signal };
+  const stream = await exec.start(start);
+  if (options.signal?.aborted) {
+    stream.destroy();
+    options.signal.throwIfAborted();
+  }
+  if (options.stdin !== undefined)
+    stream.write(typeof options.stdin === "function" ? options.stdin() : options.stdin);
   const chunks: Buffer[] = [];
   let outputBytes = 0;
   const demuxer = options.onOutput ? createDockerStreamDemuxer() : undefined;
@@ -2147,7 +2165,8 @@ async function runContainerCommand(
       if (piece.data) options.onOutput(piece);
     }
   }
-  const inspect = await exec.inspect();
+  const inspection = { abortSignal: options.signal };
+  const inspect = await exec.inspect(inspection);
   const code = inspect.ExitCode ?? 0;
   const needsCompletionMarker = Boolean(completionMarker) && (code === 124 || code === 137);
   const completed =
@@ -2225,12 +2244,21 @@ async function observeContainer(container: Docker.Container, display = ":1") {
 
 async function writeContainerFile(
   container: Docker.Container,
-  target: string,
+  relative: string,
   content: Buffer,
   executable = false,
 ) {
   const exec = await container.exec({
-    Cmd: ["/usr/bin/python3", "-I", "-S", "-c", workspaceWrite, target, executable ? "1" : "0"],
+    Cmd: [
+      "/usr/bin/python3",
+      "-I",
+      "-S",
+      "-c",
+      workspaceWrite,
+      workspaceTarget(""),
+      relative,
+      executable ? "1" : "0",
+    ],
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,

@@ -12,6 +12,7 @@ import type {
   UsageOperationKind,
 } from "@rakazo/adapter-kit";
 import {
+  ComputerStorageFullError,
   computerControlExpireJobKey,
   MEMORY_REVISION_CONFLICT_ERROR,
   messagingDeliverJob,
@@ -52,7 +53,6 @@ import {
   ComputerBusyError,
   ComputerCheckpointChangedError,
   ComputerRecoveryRequiredError,
-  ComputerStorageFullError,
   canTrustComputerGoneError,
   canUsePlatformModel,
   clearInactiveUserComputerControl,
