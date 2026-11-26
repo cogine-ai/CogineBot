@@ -1556,4 +1556,15 @@ export const RU_MESSAGES: Record<string, string> = {
   On: "Включено",
   Off: "Выключено",
   Reload: "Обновить",
+  Storage: "Хранилище",
+  "Diagnose storage": "Проверить хранилище",
+  "Diagnosing…": "Идёт проверка…",
+  "Could not diagnose storage.": "Не удалось проверить хранилище.",
+  "Storage diagnostics are unavailable for this computer.":
+    "Диагностика хранилища недоступна для этого компьютера.",
+  "Computer is not running.": "Компьютер не запущен.",
+  "Computer changed. Open Storage again.": "Компьютер сменился. Откройте хранилище снова.",
+  "Partial results": "Частичные результаты",
+  "{free} available of {total}": "Доступно {free} из {total}",
+  "No free inodes.": "Нет свободных inode.",
 };

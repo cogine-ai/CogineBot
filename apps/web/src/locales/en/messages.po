@@ -7809,3 +7809,47 @@ msgstr "New runs use this level on supported, matching models. These Spaces may 
 
 msgid "Connection reasoning effort"
 msgstr "Connection reasoning effort"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Storage"
+msgstr "Storage"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Diagnose storage"
+msgstr "Diagnose storage"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Diagnosing…"
+msgstr "Diagnosing…"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Could not diagnose storage."
+msgstr "Could not diagnose storage."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Storage diagnostics are unavailable for this computer."
+msgstr "Storage diagnostics are unavailable for this computer."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Computer is not running."
+msgstr "Computer is not running."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Computer changed. Open Storage again."
+msgstr "Computer changed. Open Storage again."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "Partial results"
+msgstr "Partial results"
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "{free} available of {total}"
+msgstr "{free} available of {total}"
+
+#: src/components/computer/FilesApp.tsx
+msgid "Not enough storage to upload this file."
+msgstr "Not enough storage to upload this file."
+
+#: src/components/computer/ComputerStorage.tsx
+msgid "No free inodes."
+msgstr "No free inodes."

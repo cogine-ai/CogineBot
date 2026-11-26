@@ -42,6 +42,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   const exportWorkspace = vi.fn<() => AsyncIterable<never>>();
   const providerRead = vi.fn().mockResolvedValue(Buffer.from("partial provider contents"));
   const providerWrite = vi.fn().mockResolvedValue(undefined);
+  const getDiskUsage = vi.fn().mockResolvedValue({ status: "not_running" });
   let root: string;
   let home: LocalAgentHomeStore;
   let desktop: DesktopSandboxProvider;
@@ -54,6 +55,8 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
   let uploadComputerFile: () => Promise<unknown>;
   let bootComputer: () => Promise<unknown>;
   let switchComputerMode: () => Promise<unknown>;
+  let storage: (target?: string) => Promise<unknown>;
+  let otherActorStorage: () => Promise<unknown>;
 
   beforeAll(async () => {
     database = createDb(databaseUrl!);
@@ -102,6 +105,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
         inspectPowerState,
         readFile: providerRead,
         writeFile: providerWrite,
+        getDiskUsage,
         isRunning: desktop.isRunning.bind(desktop),
         provision: desktop.provision.bind(desktop),
         prepare: desktop.prepare.bind(desktop),
@@ -129,6 +133,10 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
       });
     bootComputer = () => client.computer.boot({ botId });
     switchComputerMode = () => client.bots.setComputer({ botId, mode: "team" });
+    storage = (expectedTarget) => client.computer.diskUsage({ botId, expectedTarget });
+    const otherActor = { ...actor, userId: "other-fixture-user" };
+    const other = createRouterClient(createRouter(deps), { context: { actor: otherActor } });
+    otherActorStorage = () => other.computer.diskUsage({ botId });
   });
 
   beforeEach(async () => {
@@ -139,6 +147,7 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     exportWorkspace.mockClear();
     providerRead.mockClear();
     providerWrite.mockClear();
+    getDiskUsage.mockReset().mockResolvedValue({ status: "not_running" });
     casCounts.length = 0;
     afterSnapshot = undefined;
     botId = `heartbeat-bot-${randomUUID()}`;
@@ -177,6 +186,40 @@ describePostgres("computer attendance lifecycle compare-and-swap", () => {
     await database.prisma.organization.deleteMany({ where: { id: organizationId } });
     await database.prisma.$disconnect();
     await database.pool.end();
+  });
+
+  it("rechecks committed workspace ownership and generation before returning storage details", async () => {
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { kind: "docker", scopeKey: `team:${spaceId}` },
+    });
+    getDiskUsage.mockImplementationOnce(async () => {
+      await database.prisma.computer.update({
+        where: { id: computerId },
+        data: { screenGeneration: { increment: 1 } },
+      });
+      return {
+        status: "available",
+        data: {
+          volume: { totalBytes: 1024, availableBytes: 512, availableInodes: 10 },
+          candidates: [{ path: "fixture.txt", logicalBytes: 8 }],
+          partial: false,
+        },
+      };
+    });
+    await expect(otherActorStorage()).rejects.toBeDefined();
+    expect(getDiskUsage).not.toHaveBeenCalled();
+    const reply = await storage();
+    expect(reply).toMatchObject({ botId, outcome: { status: "changed" } });
+    expect(getDiskUsage).toHaveBeenCalledOnce();
+    expect(keepAlive).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(casCounts).toHaveLength(0);
+    // Keep the shared test Space's unique Team slot free for later fixtures.
+    await database.prisma.computer.update({
+      where: { id: computerId },
+      data: { scopeKey: computerId },
+    });
   });
 
   it("keeps an authorized Team view alive without assuming the viewer owns the computer", async () => {

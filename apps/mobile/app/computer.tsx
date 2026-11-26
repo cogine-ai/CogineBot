@@ -25,6 +25,7 @@ import { ComputerKeyboardBar } from "../components/computer-keyboard-bar";
 import { ComputerMaintenanceActions } from "../components/computer-maintenance-actions";
 import { ComputerModePicker } from "../components/computer-mode-picker";
 import { ComputerSavedFiles } from "../components/computer-saved-files";
+import { ComputerStorageRow } from "../components/computer-storage";
 import { GlassIconButton } from "../components/glass-icon-button";
 import { NativeActionButton } from "../components/native-action-button";
 import { currentApiBase, rpc } from "../lib/api";
@@ -633,6 +634,7 @@ export default function Computer() {
         disabled={!viewVisible || switching || powerUnavailable}
         onChange={(mode) => void setComputerMode(mode)}
       />
+      {botId && viewVisible ? <ComputerStorageRow botId={botId} /> : null}
 
       <Modal
         visible={visible && !powerUnavailable && (booting || computerOpen)}

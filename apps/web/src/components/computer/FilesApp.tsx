@@ -1,8 +1,17 @@
 import { useLingui } from "@lingui/react/macro";
-import { ATTACHMENT_MAX_BYTES } from "@rakazo/contracts";
+import { ORPCError } from "@orpc/client";
+import { ATTACHMENT_MAX_BYTES, ComputerStorageRecoverySchema } from "@rakazo/contracts";
 import { Button } from "@rakazo/ui-web";
 import { ArrowLeft, Download, File, Folder, Upload } from "lucide-react";
-import { type DragEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type DragEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { decodeArtifactBase64, downloadArtifactBytes } from "../../lib/artifact-open";
 import {
   basename,
@@ -13,9 +22,16 @@ import {
   subscribeComputerCommands,
 } from "../../lib/computer-workspace";
 import { isFileDrag, readFileAsBase64 } from "../../lib/pending-attachments";
-import { rpc } from "../../lib/rpc";
+import {
+  captureRpcRecoveryScope,
+  isRpcRecoveryScopeCurrent,
+  rpc,
+  rpcRecoveryScopeKey,
+  subscribeRpcRecoveryScope,
+} from "../../lib/rpc";
 import { useObjectUrl } from "../../lib/use-object-url";
 import { errorText } from "../../lib/user-error";
+import { ComputerStorageButton } from "./ComputerStorage";
 
 type Entry = ComputerFileEntry;
 type Preview =
@@ -52,6 +68,20 @@ export function FilesApp({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [storageRecovery, setStorageRecovery] = useState<{
+    target: string;
+    scope: ReturnType<typeof captureRpcRecoveryScope>;
+  } | null>(null);
+  const scopeKey = useSyncExternalStore(subscribeRpcRecoveryScope, rpcRecoveryScopeKey);
+  const uploadOwner = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    uploadOwner.current = visible ? {} : null;
+    setStorageRecovery(null);
+    setBusy(false);
+    return () => {
+      uploadOwner.current = null;
+    };
+  }, [visible, botId, scopeKey]);
   const input = useRef<HTMLInputElement>(null);
   const loadGeneration = useRef(0);
 
@@ -142,22 +172,38 @@ export function FilesApp({
   async function upload(files: FileList | File[]) {
     setBusy(true);
     setError(null);
+    setStorageRecovery(null);
+    const owner = uploadOwner.current;
+    const scope = captureRpcRecoveryScope();
+    const current = () =>
+      Boolean(owner && owner === uploadOwner.current) && isRpcRecoveryScopeCurrent(scope);
     try {
       for (const file of Array.from(files)) {
         if (file.size > ATTACHMENT_MAX_BYTES) {
           throw new Error(t`File is too large to upload.`);
         }
+        const contentBase64 = await readFileAsBase64(file);
+        if (!current()) return;
         await rpc.computer.uploadFile({
           botId,
           path: path ? `${path}/${file.name}` : file.name,
-          contentBase64: await readFileAsBase64(file),
+          contentBase64,
         });
       }
-      await load(path);
+      if (current()) await load(path);
     } catch (cause) {
+      if (!current()) return;
+      if (cause instanceof ORPCError && cause.code === "COMPUTER_STORAGE_FULL") {
+        const recovery = ComputerStorageRecoverySchema.safeParse(cause.data);
+        if (recovery.success && recovery.data.botId === botId) {
+          setStorageRecovery({ target: recovery.data.expectedTarget, scope });
+          setError(t`Not enough storage to upload this file.`);
+          return;
+        }
+      }
       setError(errorText(cause, t`Could not upload file`));
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
@@ -190,6 +236,7 @@ export function FilesApp({
         <span className="min-w-0 flex-1 truncate text-muted-foreground" dir="auto">
           ~/{location}
         </span>
+        {visible ? <ComputerStorageButton botId={botId} /> : null}
         {preview ? (
           <Button
             variant="ghost"
@@ -225,8 +272,13 @@ export function FilesApp({
         ) : null}
       </div>
       {error ? (
-        <div role="alert" className="px-3 py-2 text-destructive">
-          {error}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+          <span role="alert" className="text-destructive">
+            {error}
+          </span>
+          {visible && storageRecovery && isRpcRecoveryScopeCurrent(storageRecovery.scope) ? (
+            <ComputerStorageButton botId={botId} expectedTarget={storageRecovery.target} />
+          ) : null}
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">

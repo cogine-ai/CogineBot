@@ -175,6 +175,7 @@ import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerActiveLimit } from "../components/computer/ComputerActiveLimit";
+import { ComputerStorageButton } from "../components/computer/ComputerStorage";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { FilesApp } from "../components/computer/FilesApp";
 import { WorkspaceSaveStatus } from "../components/computer/WorkspaceSaveStatus";
@@ -6942,9 +6943,12 @@ export function ShellPage() {
                     </button>
                   ) : null}
                 </div>
-                <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
-                  {t`${active.name}'s screen`}
-                </p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="min-w-0 truncate text-[13.5px] text-muted-foreground" dir="auto">
+                    {t`${active.name}'s screen`}
+                  </p>
+                  <ComputerStorageButton botId={active.id} />
+                </div>
                 {computer?.state === "running" && computer.activeLimitAt ? (
                   <p className="mt-2 text-xs text-muted-foreground">
                     <Trans>At the runtime limit, pausing may stop background tasks.</Trans>

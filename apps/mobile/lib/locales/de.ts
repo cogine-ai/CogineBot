@@ -1564,4 +1564,16 @@ export const DE_MESSAGES: Record<string, string> = {
   On: "Ein",
   Off: "Aus",
   Reload: "Neu laden",
+  Storage: "Speicher",
+  "Diagnose storage": "Speicher prüfen",
+  "Diagnosing…": "Wird geprüft…",
+  "Could not diagnose storage.": "Der Speicher konnte nicht geprüft werden.",
+  "Storage diagnostics are unavailable for this computer.":
+    "Die Speicherdiagnose ist für diesen Computer nicht verfügbar.",
+  "Computer is not running.": "Der Computer läuft nicht.",
+  "Computer changed. Open Storage again.":
+    "Der Computer hat gewechselt. Öffne den Speicher erneut.",
+  "Partial results": "Teilergebnisse",
+  "{free} available of {total}": "{free} von {total} verfügbar",
+  "No free inodes.": "Keine freien Inodes.",
 };

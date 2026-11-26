@@ -86,11 +86,12 @@ import {
   sandboxProviderOptionsFromEnv,
   stripeBillingConfigFromEnv,
   toTeamChatInbound,
+  withAbort,
   withSecretPersistence,
 } from "@rakazo/adapters";
 import { createAuth, isBlockedAuthPath, loopbackTwinOrigins } from "@rakazo/auth";
 import type { Actor, AuthCapabilities } from "@rakazo/contracts";
-import { WEBSITE_LOGIN_CARD_HEADER } from "@rakazo/contracts";
+import { COMPUTER_DISK_USAGE_TIMEOUT_MS, WEBSITE_LOGIN_CARD_HEADER } from "@rakazo/contracts";
 import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
 import type { Pool, PrismaClient } from "@rakazo/db";
 import {
@@ -913,32 +914,54 @@ async function buildApp(
   const sessionActor = async (request: Request) => (await requestSession(request))?.actor ?? null;
   const bindAuditRequestIp = createAuditRequestIpReader(env.trustedProxies);
   app.use("/rpc/*", async (c, next) => {
-    const session = await requestSession(c.req.raw);
+    const path = new URL(c.req.raw.url).pathname.replace(/\/$/, "");
+    const diskUsage = path === "/rpc/computer/diskUsage";
+    const diskUsageDeadline = diskUsage
+      ? performance.now() + COMPUTER_DISK_USAGE_TIMEOUT_MS
+      : undefined;
+    const timeout = diskUsage ? AbortSignal.timeout(COMPUTER_DISK_USAGE_TIMEOUT_MS) : undefined;
+    const requestSignal = c.req.raw.signal;
+    const budgetSignal = timeout ? AbortSignal.any([requestSignal, timeout]) : undefined;
+    const session = await withAbort(requestSession(c.req.raw), budgetSignal).catch(
+      (error: unknown) => {
+        if (timeout?.aborted && !requestSignal.aborted) return undefined;
+        throw error;
+      },
+    );
+    if (session === undefined) return c.body(null, 504);
     const actor = session?.actor ?? null;
     if (actor) {
       enrichLogContext({ "user.id": actor.userId, "space.id": actor.spaceId });
     }
-    const { matched, response } = await rpc.handle(c.req.raw, {
-      prefix: "/rpc",
-      context: {
-        actor,
-        sessionId: session?.sessionId,
-        sessionAuthenticated: Boolean(session),
-        sessionUserId: session?.sessionUserId,
-        auditRequestIp: actor ? bindAuditRequestIp(c) : undefined,
-        supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
-        signal: c.req.raw.signal,
-        // Same user in the same space, so leaving the space also ends a stream.
-        // A database failure rejects this check; only a missing membership is unauthorized.
-        stillAuthorized: async () => {
-          const current = await sessionActor(c.req.raw);
-          return Boolean(
-            actor && current?.userId === actor.userId && current.spaceId === actor.spaceId,
-          );
+    const result = await withAbort(
+      rpc.handle(c.req.raw, {
+        prefix: "/rpc",
+        context: {
+          actor,
+          sessionId: session?.sessionId,
+          sessionAuthenticated: Boolean(session),
+          sessionUserId: session?.sessionUserId,
+          auditRequestIp: actor ? bindAuditRequestIp(c) : undefined,
+          supportsWebsiteLoginCard: c.req.header(WEBSITE_LOGIN_CARD_HEADER) === "1",
+          signal: requestSignal,
+          diskUsageDeadline,
+          // Same user in the same space, so leaving the space also ends a stream.
+          // A database failure rejects this check; only a missing membership is unauthorized.
+          stillAuthorized: async () => {
+            const current = await sessionActor(c.req.raw);
+            return Boolean(
+              actor && current?.userId === actor.userId && current.spaceId === actor.spaceId,
+            );
+          },
         },
-      },
+      }),
+      budgetSignal,
+    ).catch((error: unknown) => {
+      if (timeout?.aborted && !requestSignal.aborted) return undefined;
+      throw error;
     });
-    if (matched) return c.newResponse(response.body, response);
+    if (!result) return c.body(null, 504);
+    if (result.matched) return c.newResponse(result.response.body, result.response);
     await next();
   });
   mountVoiceHttpRoutes(
