@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 
 import type { ModelDefaults, ThinkingDefaults, UpdateModelDefaultsInput } from "@rakazo/contracts";
-import { defaultModelChoiceKey, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
+import {
+  defaultModelChoiceKey,
+  MODEL_DIRECTORY_PROBE_TIMEOUT_MS,
+  MODEL_INFERENCE_PROBE_TIMEOUT_MS,
+} from "@rakazo/contracts";
 import { modelOptionKey } from "@rakazo/core";
 import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
@@ -2545,6 +2549,7 @@ it("checks a saved API key without exposing it to the editor", async () => {
 it.each(["rate", "accepted"] as const)(
   "checks a replacement key and keeps the %s write receipt",
   async (inferenceStatus) => {
+    const dynamic = inferenceStatus === "accepted";
     const saved = {
       id: "fixture-model-connection",
       provider: "openai",
@@ -2552,8 +2557,14 @@ it.each(["rate", "accepted"] as const)(
       hasKey: true,
       isDefault: true,
       authKind: "api_key",
-      modelId: "fixture-chat",
+      modelId: dynamic ? "gpt-fixture-directory-model" : "fixture-chat",
       connectionRevision: 7,
+      ...(dynamic
+        ? {
+            savedModelDirectory: { confirmationRequired: true, notListed: true },
+            providerCatalogInferenceProbe: "replacement",
+          }
+        : {}),
     };
     let refuse = true;
     let failReadback = false;
@@ -2575,11 +2586,12 @@ it.each(["rate", "accepted"] as const)(
           {
             provider: saved.provider,
             providerName: "OpenAI",
-            id: saved.modelId,
+            id: "fixture-chat",
             label: "Example Chat",
             auth: "api-key",
             billing: "API",
             catalogProbe: true,
+            savedCatalogProbe: true,
             inferenceProbe: true,
           },
         ];
@@ -2592,14 +2604,29 @@ it.each(["rate", "accepted"] as const)(
         failReadback = true;
         return { ...saved, inferenceStatus };
       }
+      if (procedure === "models/probeInference") return { status: "accepted" };
       return normal(procedure, input);
     });
     await act(async () => root.render(<Models />));
     const disclosure = "Connecting sends one test request that may incur usage charges.";
     expect(container.textContent).not.toContain(disclosure);
+    if (dynamic) expect(container.textContent).not.toContain("Test model");
     const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await edit(key, "fixture-connect-replacement-key");
     expect(container.textContent).toContain(disclosure);
+    if (dynamic) {
+      await act(async () => button("Test model").click());
+      expect(container.textContent).toContain("The model accepted the test request.");
+      expect(
+        state.rpc.mock.calls.find(([name]) => name === "models/probeInference")?.[1],
+      ).toMatchObject({
+        provider: saved.provider,
+        modelId: saved.modelId,
+        credentialId: saved.id,
+        expectedRevision: 7,
+        apiKey: "fixture-connect-replacement-key",
+      });
+    }
     await act(async () => {
       const replace = button("Replace API key");
       replace.click();
@@ -2617,7 +2644,8 @@ it.each(["rate", "accepted"] as const)(
       verifyInference: true,
     });
     expect(calls()[0]?.[2]).toMatchObject({
-      timeoutMs: MODEL_INFERENCE_PROBE_TIMEOUT_MS + 5_000,
+      timeoutMs:
+        MODEL_INFERENCE_PROBE_TIMEOUT_MS + (dynamic ? MODEL_DIRECTORY_PROBE_TIMEOUT_MS : 0) + 5_000,
     });
     refuse = false;
     await act(async () => button("Replace API key").click());

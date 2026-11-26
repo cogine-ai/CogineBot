@@ -7,6 +7,7 @@ import {
   connectionFormModelId,
   modelCatalogProbeInput,
   modelConnectRequest,
+  modelInferenceProbeInput,
   prioritizeProviderListedModels,
   selectedModelDirectoryStatus,
   withConnectionCatalogModels,
@@ -117,6 +118,66 @@ it("adds new options only for the selected connection and keeps its saved model 
     "gpt-base",
     "gpt-saved",
   ]);
+});
+
+it("tests a discovered model only when its connection and server advertise support", () => {
+  const base = {
+    id: "gpt-base",
+    provider: "openai",
+    label: "Base",
+    billing: "API",
+    catalogProbe: true,
+    savedCatalogProbe: true as const,
+    inferenceProbe: true as const,
+  };
+  const modelId = "gpt-discovered";
+  const saved = credential({
+    provider: base.provider,
+    authKind: "api_key",
+    modelId,
+    savedProviderCatalogModelIds: [modelId],
+  });
+  const legacy = withConnectionCatalogModels([base], saved)[1];
+  expect(legacy?.inferenceProbe).toBeUndefined();
+  const signed = { ...saved, providerCatalogInferenceProbe: "saved" as const };
+  expect(withConnectionCatalogModels([base], signed)[1]?.inferenceProbe).toBe(true);
+  expect(
+    withConnectionCatalogModels([base], signed, 7, "fixture-draft")[1]?.inferenceProbe,
+  ).toBeUndefined();
+  const enabled = { ...saved, providerCatalogInferenceProbe: "replacement" as const };
+  const discovered = withConnectionCatalogModels([base], enabled)[1];
+  expect(discovered).toMatchObject({ id: modelId, inferenceProbe: true });
+  const savedRequest = modelCatalogProbeInput(discovered, "", saved, 7);
+  const draftRequest = modelCatalogProbeInput(discovered, "fixture-draft");
+  expect(modelInferenceProbeInput(discovered, savedRequest, saved, 7)).toEqual({
+    provider: base.provider,
+    modelId,
+    credentialId: saved.id,
+    expectedRevision: 7,
+  });
+  expect(modelInferenceProbeInput(discovered, draftRequest, saved, 7)).toEqual({
+    provider: base.provider,
+    modelId,
+    apiKey: "fixture-draft",
+    credentialId: saved.id,
+    expectedRevision: 7,
+  });
+  expect(modelInferenceProbeInput(discovered, draftRequest, saved, 6)).toBeUndefined();
+  expect(modelInferenceProbeInput(base, draftRequest, saved, 7)).toEqual({
+    provider: base.provider,
+    modelId: base.id,
+    apiKey: "fixture-draft",
+  });
+
+  const retained = {
+    ...enabled,
+    savedProviderCatalogModelIds: undefined,
+    savedModelDirectory: { confirmationRequired: true as const },
+  };
+  expect(withConnectionCatalogModels([base], retained)[1]?.inferenceProbe).toBeUndefined();
+  expect(withConnectionCatalogModels([base], retained, 7, "fixture-draft")[1]?.inferenceProbe).toBe(
+    true,
+  );
 });
 
 function draft(overrides: Partial<ConnectionFormDraft> = {}): ConnectionFormDraft {

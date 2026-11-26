@@ -5,6 +5,7 @@ import type {
   ModelConnectInput,
   ModelCredential,
   ModelHeaderRow,
+  ModelInferenceProbeInput,
   ModelInferenceProbeStatus,
   ThinkingLevel,
 } from "@rakazo/contracts";
@@ -34,11 +35,17 @@ import { credentialModelSettings } from "./model-settings-form.js";
 import type { RunErrorTranslator } from "./run-error.js";
 import { RUN_ERROR_LIMIT_MESSAGES } from "./run-error.js";
 
+type ConnectionCatalogEntry = ModelCatalogEntry & { connectionCatalogModel?: true };
+type CatalogProbeCredential = Pick<
+  ModelCredential,
+  "id" | "provider" | "authKind" | "connectionRevision"
+>;
+
 /** A replacement draft always takes precedence over the saved connection. */
 export function modelCatalogProbeInput(
   entry: Pick<ModelCatalogEntry, "provider" | "catalogProbe" | "savedCatalogProbe"> | undefined,
   draftKey: string,
-  credential?: Pick<ModelCredential, "id" | "provider" | "authKind" | "connectionRevision">,
+  credential?: CatalogProbeCredential,
   expectedRevision?: number,
 ): ModelCatalogProbeInput | undefined {
   if (!entry?.catalogProbe) return undefined;
@@ -53,6 +60,21 @@ export function modelCatalogProbeInput(
   )
     return undefined;
   return { provider: credential.provider, credentialId: credential.id, expectedRevision };
+}
+
+export function modelInferenceProbeInput(
+  entry: ConnectionCatalogEntry | undefined,
+  catalogRequest: ModelCatalogProbeInput | undefined,
+  credential: CatalogProbeCredential | undefined,
+  expectedRevision: number | undefined,
+): ModelInferenceProbeInput | undefined {
+  if (!entry?.inferenceProbe || !catalogRequest) return undefined;
+  if (entry.connectionCatalogModel && "apiKey" in catalogRequest) {
+    const owner = modelCatalogProbeInput(entry, "", credential, expectedRevision);
+    if (!owner || !("credentialId" in owner)) return undefined;
+    return { ...catalogRequest, ...owner, modelId: entry.id };
+  }
+  return { ...catalogRequest, modelId: entry.id };
 }
 
 export function modelCatalogProbeOutcome(modelId: string | undefined, models: readonly string[]) {
@@ -121,6 +143,7 @@ export function withConnectionCatalogModels(
         | "provider"
         | "providerListedModelIds"
         | "savedProviderCatalogModelIds"
+        | "providerCatalogInferenceProbe"
         | "savedModelDirectory"
         | "modelId"
         | "connectionRevision"
@@ -128,7 +151,7 @@ export function withConnectionCatalogModels(
     | undefined,
   revision = credential?.connectionRevision,
   draftKey = "",
-): ModelCatalogEntry[] {
+): ConnectionCatalogEntry[] {
   if (!credential || revision === undefined || revision !== credential.connectionRevision)
     return models;
   const provider = canonicalPiProviderId(credential.provider);
@@ -139,10 +162,14 @@ export function withConnectionCatalogModels(
       .filter((entry) => canonicalPiProviderId(entry.provider) === provider)
       .map(({ id }) => id),
   );
-  const saved = [...(credential.savedProviderCatalogModelIds ?? [])];
+  const confirmed = new Set(credential.savedProviderCatalogModelIds);
+  const listed = new Set(credential.providerListedModelIds);
+  const hasDraft = Boolean(draftKey.trim());
+  const probeMode = credential.providerCatalogInferenceProbe;
+  const saved = [...confirmed];
   if (credential.savedModelDirectory?.confirmationRequired && credential.modelId)
     saved.push(credential.modelId);
-  const choices = draftKey.trim()
+  const choices = hasDraft
     ? saved.filter((id) => id === credential.modelId)
     : [...(credential.providerListedModelIds ?? []), ...saved];
   const added = [...new Set(choices)].filter((id) => !known.has(id));
@@ -150,7 +177,7 @@ export function withConnectionCatalogModels(
   return [
     ...models,
     ...added.map(
-      (id): ModelCatalogEntry => ({
+      (id): ConnectionCatalogEntry => ({
         provider: anchor.provider,
         providerName: anchor.providerName,
         id,
@@ -164,6 +191,14 @@ export function withConnectionCatalogModels(
         thinkingLevels: ["off"],
         catalogProbe: anchor.catalogProbe,
         savedCatalogProbe: anchor.savedCatalogProbe,
+        connectionCatalogModel: true,
+        ...((
+          hasDraft
+            ? probeMode === "replacement"
+            : probeMode && (confirmed.has(id) || listed.has(id))
+        )
+          ? { inferenceProbe: true }
+          : {}),
       }),
     ),
   ];
