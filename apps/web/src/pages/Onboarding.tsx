@@ -424,9 +424,9 @@ export function OnboardingPage() {
   }
 
   async function testApiKeyConnection() {
-    if (!selected?.catalogProbe) return;
+    if (!selected?.catalogProbe || directoryScope !== rpcRecoveryScopeKey()) return;
     const revision = preflightRevisionRef.current;
-    const scopeKey = rpcRecoveryScopeKey();
+    const scopeKey = directoryScope;
     setPreflightTarget("api-key");
     setPreflightTesting(true);
     setPreflightSuccess(null);
