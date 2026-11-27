@@ -2551,6 +2551,7 @@ it.each([
   { provider: "openai", providerName: "OpenAI", inferenceStatus: "accepted", dynamic: true },
   { provider: "openrouter", providerName: "OpenRouter", inferenceStatus: "rate", dynamic: false },
   { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
+  { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "rate", dynamic: false },
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {
@@ -2594,8 +2595,7 @@ it.each([
             label: "Example Chat",
             auth: "api-key",
             billing: "API",
-            catalogProbe: true,
-            savedCatalogProbe: true,
+            ...(provider === "anthropic" ? {} : { catalogProbe: true, savedCatalogProbe: true }),
             inferenceProbe: true,
           },
         ];
@@ -2615,6 +2615,17 @@ it.each([
     const disclosure = "Connecting sends one test request that may incur usage charges.";
     expect(container.textContent).not.toContain(disclosure);
     if (dynamic) expect(container.textContent).not.toContain("Test model");
+    if (provider === "anthropic") {
+      expect(container.textContent).not.toContain("Check models");
+      await act(async () => button("Test model").click());
+      expect(container.textContent).toContain("The model accepted the test request.");
+      expect(state.rpc.mock.calls.find(([name]) => name === "models/probeInference")?.[1]).toEqual({
+        provider,
+        modelId: saved.modelId,
+        credentialId: saved.id,
+        expectedRevision: 7,
+      });
+    }
     const key = container.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await edit(key, "fixture-connect-replacement-key");
     expect(container.textContent).toContain(disclosure);

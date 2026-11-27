@@ -3233,7 +3233,7 @@ describe("model credential persistence", () => {
     const { handler, inference } = persistDeps();
     for (const input of [
       { ...verifiedConnect, verifyInference: undefined },
-      { ...verifiedConnect, provider: "anthropic", modelId: undefined },
+      { ...verifiedConnect, provider: "google", modelId: undefined },
     ]) {
       const response = await call(handler, "models/connect", input);
       expect(response.status).toBe(200);
@@ -3320,6 +3320,75 @@ describe("model credential persistence", () => {
       expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
     },
   );
+
+  it("checks the Anthropic Messages route and draft key before a first connection", async () => {
+    const { deps, tx } = persistDeps();
+    const input = {
+      provider: "anthropic",
+      modelId: "claude-haiku-5-5",
+      apiKey: "fixture-claude-draft",
+    };
+    const model = listPiCatalog().find(
+      (entry) => entry.provider === input.provider && entry.id === input.modelId,
+    );
+    expect(model?.inferenceProbe).toBe(true);
+    expect(model?.catalogProbe).toBeUndefined();
+    const frame =
+      'event: message_start\ndata: {"type":"message_start","message":{"type":"message","id":"msg-fixture","role":"assistant","model":"claude-haiku-5-5"}}\n\n';
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json({ error: { type: "permission_error" } }, { status: 403 }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            error: {
+              type: "rate_limit_error",
+              details: { error_code: "contract_spend_limit_reached" },
+            },
+          },
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(frame, { headers: { "content-type": "text/event-stream" } }),
+      );
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const blocked = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(blocked.status).toBe(400);
+    expect((await blocked.json()).json).toMatchObject({ data: { inferenceStatus: "model" } });
+    const spendBlocked = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(spendBlocked.status).toBe(400);
+    expect((await spendBlocked.json()).json).toMatchObject({
+      data: { inferenceStatus: "spending" },
+    });
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+
+    const saved = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      provider: input.provider,
+      modelId: input.modelId,
+      inferenceStatus: "accepted",
+    });
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+    expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [url, init] of fetch.mock.calls) {
+      const request = new Request(url, init);
+      expect(new URL(request.url).origin).toBe("https://api.anthropic.com");
+      expect(new URL(request.url).pathname).toBe("/v1/messages");
+      expect(request.headers.get("x-api-key")).toBe(input.apiKey);
+      expect(await request.json()).toMatchObject({ model: input.modelId });
+    }
+  });
 
   it("checks authorization on both sides of the provider wait", async () => {
     const { deps, handler, inference } = persistDeps();

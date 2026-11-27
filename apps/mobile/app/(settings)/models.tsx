@@ -709,7 +709,7 @@ function ModelsForm({
   const catalogRequest = modelCatalogProbeInput(selected, apiKey, credential, connectionRevision);
   const inferenceRequest = modelInferenceProbeInput(
     selected,
-    catalogRequest,
+    apiKey,
     credential,
     connectionRevision,
   );
@@ -999,9 +999,12 @@ function ModelsForm({
     });
   }
 
-  async function testCatalogConnection(testInference = false) {
-    if (!catalogRequest || !selected || busyRef.current || (testInference && !inferenceRequest))
-      return;
+  async function testKeyConnection(target: "test" | "inference") {
+    const [kind, request] =
+      target === "inference"
+        ? (["inference", inferenceRequest] as const)
+        : (["test", catalogRequest] as const);
+    if (!selected || !request || busyRef.current) return;
     clearFeedback();
     const revision = selectionRevisionRef.current;
     const catalogGeneration = catalogCheckGenerationRef.current;
@@ -1015,15 +1018,15 @@ function ModelsForm({
       setCatalogFeedback({ message, error });
       AccessibilityInfo.announceForAccessibility(message);
     }
-    const pendingOwner = beginPending(testInference ? "inference" : "test");
+    const pendingOwner = beginPending(kind);
     busyRef.current = true;
     try {
       const context = await captureApiRequestContext();
       if (!isCurrent(context)) return;
-      if (testInference && inferenceRequest) {
+      if (kind === "inference") {
         const { status } = await rpc<{ status: ModelInferenceProbeStatus }>(
           "models/probeInference",
-          inferenceRequest,
+          request,
           {
             requestContext: context,
             skipSpaceAuthRecovery: true,
@@ -1036,18 +1039,18 @@ function ModelsForm({
       }
       const { models, catalogUpdated } = await rpc<{ models: string[]; catalogUpdated?: true }>(
         "models/probeCatalog",
-        catalogRequest,
+        request,
         { requestContext: context, skipSpaceAuthRecovery: true },
       );
       if (!isCurrent(context)) return;
-      if (catalogUpdated && "credentialId" in catalogRequest) {
+      if (catalogUpdated && "credentialId" in request) {
         const applied = await load({
-          connectionId: catalogRequest.credentialId,
+          connectionId: request.credentialId,
           keepForm: true,
           keepCatalogCheck: true,
         }).catch(() => undefined);
         if (!isCurrent(context)) return;
-        if (applied?.connectionRevision !== catalogRequest.expectedRevision) {
+        if (applied?.connectionRevision !== request.expectedRevision) {
           report(
             applied
               ? t("Model connection changed. Check models again.")
@@ -1068,11 +1071,12 @@ function ModelsForm({
       );
     } catch (error) {
       if (!isCurrent()) return;
-      const fallback = testInference
-        ? modelInferenceProbeMessage("unavailable", t)
-        : t("Could not list models.");
+      const fallback =
+        kind === "inference"
+          ? modelInferenceProbeMessage("unavailable", t)
+          : t("Could not list models.");
       const message = errorText(error, fallback);
-      report(testInference ? t(message) : message, true);
+      report(kind === "inference" ? t(message) : message, true);
     } finally {
       finishPending(pendingOwner);
     }
@@ -2203,7 +2207,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !catalogRequest}
                 label={pending === "test" ? t("Testing…") : t("Check models")}
-                onPress={() => void testCatalogConnection()}
+                onPress={() => void testKeyConnection("test")}
                 prominence="secondary"
                 style={{ marginTop: 12 }}
               />
@@ -2213,7 +2217,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !inferenceRequest}
                 label={pending === "inference" ? t("Testing…") : t("Test model")}
-                onPress={() => void testCatalogConnection(true)}
+                onPress={() => void testKeyConnection("inference")}
                 prominence="secondary"
                 style={{ marginTop: 8 }}
               />

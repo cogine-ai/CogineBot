@@ -51,12 +51,21 @@ export function modelCatalogProbeInput(
   if (!entry?.catalogProbe) return undefined;
   const apiKey = draftKey.trim();
   if (apiKey) return apiKey.length >= 8 ? { provider: entry.provider, apiKey } : undefined;
+  return entry.savedCatalogProbe
+    ? savedModelProbeInput(entry.provider, credential, expectedRevision)
+    : undefined;
+}
+
+function savedModelProbeInput(
+  provider: string,
+  credential: CatalogProbeCredential | undefined,
+  expectedRevision: number | undefined,
+) {
   if (
-    !entry.savedCatalogProbe ||
     credential?.authKind !== "api_key" ||
     !expectedRevision ||
     expectedRevision !== credential.connectionRevision ||
-    canonicalPiProviderId(credential.provider) !== canonicalPiProviderId(entry.provider)
+    canonicalPiProviderId(credential.provider) !== canonicalPiProviderId(provider)
   )
     return undefined;
   return { provider: credential.provider, credentialId: credential.id, expectedRevision };
@@ -64,17 +73,19 @@ export function modelCatalogProbeInput(
 
 export function modelInferenceProbeInput(
   entry: ConnectionCatalogEntry | undefined,
-  catalogRequest: ModelCatalogProbeInput | undefined,
+  draftKey: string,
   credential: CatalogProbeCredential | undefined,
   expectedRevision: number | undefined,
 ): ModelInferenceProbeInput | undefined {
-  if (!entry?.inferenceProbe || !catalogRequest) return undefined;
-  if (entry.connectionCatalogModel && "apiKey" in catalogRequest) {
-    const owner = modelCatalogProbeInput(entry, "", credential, expectedRevision);
-    if (!owner || !("credentialId" in owner)) return undefined;
-    return { ...catalogRequest, ...owner, modelId: entry.id };
+  if (!entry?.inferenceProbe) return undefined;
+  const apiKey = draftKey.trim();
+  if (apiKey && apiKey.length < 8) return undefined;
+  if (apiKey && !entry.connectionCatalogModel) {
+    return { provider: entry.provider, modelId: entry.id, apiKey };
   }
-  return { ...catalogRequest, modelId: entry.id };
+  const owner = savedModelProbeInput(entry.provider, credential, expectedRevision);
+  if (!owner) return undefined;
+  return { ...owner, modelId: entry.id, ...(apiKey ? { apiKey } : {}) };
 }
 
 export function modelCatalogProbeOutcome(modelId: string | undefined, models: readonly string[]) {
