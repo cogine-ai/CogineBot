@@ -131,9 +131,10 @@ describe("request model catalogs", () => {
   });
 
   it.each([
-    ["openai", "gpt-fixture-model", "https://api.openai.com/v1"],
-    ["xai", "grok-fixture-model", "https://api.x.ai/v1"],
-  ])("resolves a confirmed %s model on its API-key Responses route", (provider, id, baseUrl) => {
+    ["openai", "gpt-fixture-model", "https://api.openai.com/v1", "openai-responses"],
+    ["xai", "grok-fixture-model", "https://api.x.ai/v1", "openai-responses"],
+    ["deepseek", "deepseek-fixture-model", "https://api.deepseek.com", "openai-completions"],
+  ])("resolves a confirmed %s model on its API-key route", (provider, id, baseUrl, api) => {
     const choice = { provider, id, apiKey: "fixture-connection-key" };
     expect(resolveRuntimeModel(choice).model).toBeUndefined();
     expect(
@@ -146,7 +147,7 @@ describe("request model catalogs", () => {
     ).toMatchObject({
       id,
       provider,
-      api: "openai-responses",
+      api,
       baseUrl,
       reasoning: false,
       input: ["text"],
@@ -163,6 +164,7 @@ describe("request model catalogs", () => {
       { id: "gpt-live-1" },
       { id: "grok-imagine-fixture" },
       { id: "grok-fixture-voice" },
+      { id: "deepseek-fixture-live.preview" },
       { apiKey: undefined },
     ]) {
       expect(
@@ -179,6 +181,21 @@ describe("request model catalogs", () => {
         getProvider: () => ({ getModels: () => [known, { ...known, ...differentRoute }] }),
       } as unknown as Models;
       expect(providerCatalogModel("xai", "grok-fixture-dynamic", registry)).toBeUndefined();
+    },
+  );
+
+  it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-responses" }])(
+    "rejects a mixed DeepSeek catalog route with $baseUrl$api",
+    (differentRoute) => {
+      const known = {
+        provider: "deepseek",
+        api: "openai-completions",
+        baseUrl: "https://api.deepseek.com",
+      };
+      const registry = {
+        getProvider: () => ({ getModels: () => [known, { ...known, ...differentRoute }] }),
+      } as unknown as Models;
+      expect(providerCatalogModel("deepseek", "deepseek-fixture-model", registry)).toBeUndefined();
     },
   );
 

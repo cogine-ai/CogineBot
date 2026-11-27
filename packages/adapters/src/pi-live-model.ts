@@ -14,6 +14,7 @@ export function isChatModelId(id: string): boolean {
 
 const openAiResponsesBaseUrl = "https://api.openai.com/v1";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
+const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 
 export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
@@ -34,12 +35,23 @@ export function isOfficialXaiResponsesProbeModel(
   );
 }
 
+export function isOfficialDeepSeekChatCompletionModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "deepseek" &&
+    model.api === "openai-completions" &&
+    model.baseUrl === deepseekCompletionsBaseUrl &&
+    isChatModelId(model.id)
+  );
+}
+
 export function isOfficialChatCompletionProbeModel(
   model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
 ) {
+  if (model.provider === "deepseek") return isOfficialDeepSeekChatCompletionModel(model);
   if (model.api !== "openai-completions" || !isChatModelId(model.id)) return false;
   if (model.provider === "openrouter") return model.baseUrl === "https://openrouter.ai/api/v1";
-  if (model.provider === "deepseek") return model.baseUrl === "https://api.deepseek.com";
   return (
     model.provider === "groq" &&
     model.baseUrl === "https://api.groq.com/openai/v1" &&
@@ -72,60 +84,80 @@ export function isOfficialGeminiProbeModel(
 
 const catalogModels = builtinModels();
 
-function providerCatalogResponsesUrl(provider: string, models: Models): string | undefined {
-  const baseUrl =
-    provider === "openai"
-      ? openAiResponsesBaseUrl
-      : provider === "xai"
-        ? xaiResponsesBaseUrl
-        : undefined;
-  if (!baseUrl) return undefined;
+type CatalogRoute = {
+  api: "openai-responses" | "openai-completions";
+  baseUrl: string;
+  acceptsId: (id: string) => boolean;
+};
+
+const catalogRoutes = new Map<string, CatalogRoute>([
+  [
+    "openai",
+    {
+      api: "openai-responses",
+      baseUrl: openAiResponsesBaseUrl,
+      acceptsId: (id) =>
+        /^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) && !/^gpt-live(?:-|$)/i.test(id),
+    },
+  ],
+  [
+    "xai",
+    {
+      api: "openai-responses",
+      baseUrl: xaiResponsesBaseUrl,
+      acceptsId: (id) =>
+        /^grok-[a-z0-9][a-z0-9._-]{0,506}$/i.test(id) &&
+        !/[-._](?:imagine|voice|live)(?:[-._]|$)/i.test(id),
+    },
+  ],
+  [
+    "deepseek",
+    {
+      api: "openai-completions",
+      baseUrl: deepseekCompletionsBaseUrl,
+      acceptsId: (id) =>
+        /^deepseek-[a-z0-9][a-z0-9._-]{0,502}$/i.test(id) &&
+        !/[-._](?:voice|live)(?:[-._]|$)/i.test(id),
+    },
+  ],
+]);
+
+function providerCatalogRoute(provider: string, models: Models): CatalogRoute | undefined {
+  const route = catalogRoutes.get(provider);
+  if (!route) return undefined;
   const siblings = models.getProvider(provider)?.getModels();
   if (
     !siblings?.length ||
     siblings.some(
       (model) =>
-        model.provider !== provider ||
-        model.api !== "openai-responses" ||
-        model.baseUrl !== baseUrl,
+        model.provider !== provider || model.api !== route.api || model.baseUrl !== route.baseUrl,
     )
   )
     return undefined;
-  return baseUrl;
+  return route;
 }
 
 export function supportsProviderCatalogModels(provider: string): boolean {
-  return providerCatalogResponsesUrl(provider, catalogModels) !== undefined;
+  return providerCatalogRoute(provider, catalogModels) !== undefined;
 }
 
-/** The supported catalog and runtime must share the official Responses route. */
+/** The supported catalog and runtime must share the official provider route. */
 export function providerCatalogModel(
   provider: string,
   id: string,
   models: Models = catalogModels,
-): Model<"openai-responses"> | undefined {
+): Model<CatalogRoute["api"]> | undefined {
   if (!isChatModelId(id)) return undefined;
-  if (
-    provider === "openai" &&
-    (!/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) || /^gpt-live(?:-|$)/i.test(id))
-  )
-    return undefined;
-  if (
-    provider === "xai" &&
-    (!/^grok-[a-z0-9][a-z0-9._-]{0,506}$/i.test(id) ||
-      /[-._](?:imagine|voice|live)(?:[-._]|$)/i.test(id))
-  )
-    return undefined;
-  const baseUrl = providerCatalogResponsesUrl(provider, models);
-  if (!baseUrl) return undefined;
-  // The list endpoint only establishes availability for this key. It provides
-  // no evidence about context, modalities, reasoning, or pricing.
+  const route = providerCatalogRoute(provider, models);
+  if (!route?.acceptsId(id)) return undefined;
+  // The directory reader retains only IDs. Use conservative limits until
+  // context, modalities, reasoning, and pricing have been verified separately.
   return {
     id,
     name: id,
     provider,
-    api: "openai-responses",
-    baseUrl,
+    api: route.api,
+    baseUrl: route.baseUrl,
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

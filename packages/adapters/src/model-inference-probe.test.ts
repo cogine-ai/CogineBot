@@ -378,10 +378,44 @@ describe("model inference check", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("does not probe unknown DeepSeek or similarly named gateway models", async () => {
+  it("sends a confirmed DeepSeek directory model on the official route with thinking off", async () => {
+    const modelId = "deepseek-fixture-verified";
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(chatChunk([{ delta: { content: "OK" } }]), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(
+      await probeModelInference(
+        { ...deepseekInput, modelId, providerCatalogModel: true },
+        { fetch },
+      ),
+    ).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://api.deepseek.com/chat/completions");
+    expect(request.headers.get("authorization")).toBe(`Bearer ${deepseekInput.apiKey}`);
+    expect(request.redirect).toBe("error");
+    expect(await request.json()).toMatchObject({
+      model: modelId,
+      stream: true,
+      max_tokens: 1024,
+      thinking: { type: "disabled" },
+      tools: [expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) })],
+    });
+  });
+
+  it("does not probe unconfirmed DeepSeek or similarly named gateway models", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(
+      await probeModelInference(
+        { ...deepseekInput, modelId: "deepseek-fixture-unlisted" },
+        { fetch },
+      ),
+    ).toBe("unavailable");
     for (const modelId of [
-      "deepseek-fixture-unlisted",
+      "deepseek-fixture-voice",
       "deepseek/deepseek-v4-pro",
       openRouterInput.modelId,
     ]) {

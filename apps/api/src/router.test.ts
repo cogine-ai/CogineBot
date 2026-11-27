@@ -3188,6 +3188,11 @@ describe("model credential persistence", () => {
     provider: "xai",
     modelId: "grok-fixture-new-directory-model",
   };
+  const deepSeekDraftModel = {
+    ...draftModel,
+    provider: "deepseek",
+    modelId: "deepseek-fixture-new-directory-model",
+  };
   const draftCatalog = listPiCatalog()
     .filter(({ provider }) => provider === draftModel.provider)
     .map(({ id }) => id);
@@ -3210,7 +3215,9 @@ describe("model credential persistence", () => {
     return { ...fixture, handler, catalogProbe, selections, bundled };
   }
 
-  it.each([draftModel, grokDraftModel])("checks a first $provider model draft", async (model) => {
+  const draftModels = [draftModel, grokDraftModel, deepSeekDraftModel];
+
+  it.each(draftModels)("checks a first $provider model draft", async (model) => {
     const { handler, catalogProbe, inference, tx, selections, bundled } = draftCatalogFixture(
       true,
       model,
@@ -3223,7 +3230,8 @@ describe("model credential persistence", () => {
       "grok-imagine-fixture",
       "grok-imagine.preview",
       "grok-voice_preview",
-      `${model.provider === "xai" ? "grok" : "gpt"}-${model.apiKey}`,
+      "deepseek-fixture-live.preview",
+      `${model.modelId}-${model.apiKey}`,
     ]);
     const directory = await call(handler, "models/probeCatalog", probeRequest);
     const { json } = await directory.json();
@@ -6544,6 +6552,7 @@ describe("saved model catalog checks", () => {
   it.each([
     ["openai", "gpt-fixture-signed-choice"],
     ["xai", "grok-fixture-signed-choice"],
+    ["deepseek", "deepseek-fixture-signed-choice"],
   ])(
     "tests a signed %s choice without refreshing the catalog or accepting an unbound ID",
     async (provider, modelId) => {
@@ -6573,6 +6582,7 @@ describe("saved model catalog checks", () => {
   it.each([
     ["openai", "gpt-fixture-dynamic-choice"],
     ["xai", "grok-fixture-dynamic-choice"],
+    ["deepseek", "deepseek-fixture-dynamic-choice"],
   ])(
     "checks a replacement %s key's own catalog before sending inference",
     async (provider, modelId) => {

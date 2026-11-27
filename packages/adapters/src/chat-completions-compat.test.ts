@@ -255,3 +255,33 @@ it("leaves other protocols to their own adapters", () => {
     ),
   ).toBe(options);
 });
+
+it.each([
+  { baseUrl: "https://api.deepseek.com", reasoning: false, expected: "disabled" },
+  { baseUrl: "https://api.deepseek.com", reasoning: true, expected: "enabled" },
+  { baseUrl: "https://gateway.example.test/v1", reasoning: false, expected: "enabled" },
+])(
+  "keeps thinking $expected for a DeepSeek tool follow-up on $baseUrl",
+  async ({ baseUrl, reasoning, expected }) => {
+    const model = {
+      provider: "deepseek",
+      id: "deepseek-fixture-model",
+      api: "openai-completions",
+      baseUrl,
+      reasoning,
+    } as Model<Api>;
+    const patched = { thinking: { type: "enabled" } };
+    const history = [
+      { role: "assistant", content: null, tool_calls: [toolCall] },
+      { role: "tool", tool_call_id: toolCall.id, content: [{ type: "text", text: "Result" }] },
+    ];
+    const payload = { messages: history };
+    const options = withChatCompletionsCompatibility<SimpleStreamOptions>(model, {
+      onPayload: (body) => ({ ...(body as object), ...patched }),
+    });
+    expect(await options.onPayload?.(payload, model)).toEqual({
+      thinking: { type: expected },
+      messages: [history[0], { ...history[1], content: "Result" }],
+    });
+  },
+);

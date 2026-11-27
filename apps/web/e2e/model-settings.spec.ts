@@ -2128,6 +2128,12 @@ for (const { provider, providerName, prefix, screenshot } of [
     prefix: "grok",
     screenshot: "a1-xai-first-directory-model",
   },
+  {
+    provider: "deepseek",
+    providerName: "DeepSeek",
+    prefix: "deepseek",
+    screenshot: "a1-deepseek-first-directory-model",
+  },
 ]) {
   test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
     page,
@@ -2205,7 +2211,9 @@ for (const { provider, providerName, prefix, screenshot } of [
         0,
       );
     } else {
-      await expect(settings.getByText(/Uses your OpenAI API key/)).toBeVisible();
+      await expect(
+        settings.getByText(`Uses your ${providerName} API key`, { exact: false }),
+      ).toBeVisible();
     }
     const connect = settings.getByRole("button", { name: "Connect API key", exact: true });
     for (const observed of [[`${prefix}-fixture-other-directory-choice`], []]) {
