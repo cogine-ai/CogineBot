@@ -3433,6 +3433,16 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429 },
     },
+    {
+      provider: "together",
+      modelId: "openai/gpt-oss-120b",
+      endpoint: "https://api.together.ai/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"openai/gpt-oss-120b","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: [DONE]\n\n',
+      rejection: { code: 403, message: "Requested model is not available for this account" },
+      distinctFailure: "model",
+      transient: { code: 429 },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({

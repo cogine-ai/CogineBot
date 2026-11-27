@@ -12,6 +12,7 @@ import {
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
+  isOfficialTogetherChatModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
@@ -54,6 +55,7 @@ export async function probeModelInference(
     (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
   if (builtIn && isOpenRouterMessagesModel(model))
     return probeOpenRouterMessages(model, apiKey, options);
+  if (builtIn && isOfficialTogetherChatModel(model)) return probeTogether(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
     return probeGemini(model, apiKey, options);
   const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
@@ -267,6 +269,65 @@ async function probeOpenRouterMessages(
   );
 }
 
+async function probeTogether(
+  model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
+  apiKey: string,
+  options: ProbeOptions,
+): Promise<ModelInferenceProbeStatus> {
+  // The SDK can inherit deployment-level headers. Send only the selected key
+  // and request content type to the fixed Together endpoint.
+  return await probeNativeEventStream(
+    `${model.baseUrl}/chat/completions`,
+    { authorization: `Bearer ${apiKey}` },
+    {
+      model: model.id,
+      messages: [
+        { role: "system", content: PROBE_SYSTEM_PROMPT },
+        { role: "user", content: PROBE_USER_PROMPT },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: PROBE_TOOL_NAME,
+            description: PROBE_TOOL_DESCRIPTION,
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      max_tokens: Math.min(model.maxTokens, OUTPUT_LIMIT),
+      stream: true,
+    },
+    options,
+    togetherFailureStatus,
+    (frame, event) =>
+      chatCompletionChunkOutcome(frame, togetherFailureStatus, event === "error", true, {
+        modelId: model.id,
+        extraFinishReason: "eos",
+      }),
+  );
+}
+
+function togetherFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+  switch (status ?? errorHttpStatus(error)) {
+    case 401:
+      return "auth";
+    case 402:
+      return "credit";
+    case 403:
+    case 404:
+      return "model";
+    case 429:
+      return "rate";
+    case 408:
+    case 504:
+    case 524:
+      return "timeout";
+    default:
+      return "unavailable";
+  }
+}
+
 async function probeNativeEventStream(
   url: string,
   headers: Record<string, string>,
@@ -454,14 +515,22 @@ function chatCompletionChunkOutcome(
   classifyFailure: StreamFailureClassifier,
   isErrorEvent: boolean,
   requireOutput: boolean,
+  responseContract?: { modelId: string; extraFinishReason: string },
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
   const choice = "choices" in event && Array.isArray(event.choices) ? event.choices[0] : undefined;
   const error = ("error" in event ? event.error : undefined) ?? choice?.error;
   if (error || isErrorEvent)
     return classifyFailure(error ?? event, requireOutput ? errorHttpStatus(event) : undefined);
+  if (responseContract && "model" in event && event.model !== responseContract.modelId)
+    return "unavailable";
   const finish = choice?.finish_reason;
-  if (finish != null && !chatSuccessFinishReasons.has(finish)) return "unavailable";
+  if (
+    finish != null &&
+    !chatSuccessFinishReasons.has(finish) &&
+    finish !== responseContract?.extraFinishReason
+  )
+    return "unavailable";
   const delta = choice?.delta;
   if (
     "object" in event &&

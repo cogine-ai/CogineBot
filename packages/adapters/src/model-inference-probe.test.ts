@@ -14,6 +14,11 @@ const openRouterInput = {
 };
 const openRouterMessagesInput = { ...openRouterInput, modelId: "anthropic/claude-sonnet-4.6" };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
+const togetherInput = {
+  provider: "together",
+  modelId: "openai/gpt-oss-120b",
+  apiKey: "fixture-together-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -64,6 +69,130 @@ describe("model inference check", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it("checks a Together model on the pinned endpoint without deployment headers", async () => {
+    vi.stubEnv("TOGETHER_API_KEY", "fixture-deployed-provider-key");
+    vi.stubEnv("OPENAI_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+    const entry = listPiCatalog().find(
+      (model) => model.provider === togetherInput.provider && model.id === togetherInput.modelId,
+    );
+    expect(entry?.inferenceProbe).toBe(true);
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  chatChunk([{ delta: { role: "assistant", content: "" } }], {
+                    model: togetherInput.modelId,
+                  }) +
+                    chatChunk([{ delta: { content: "OK" }, finish_reason: "eos" }], {
+                      model: togetherInput.modelId,
+                    }),
+                ),
+              );
+            },
+            cancel,
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    await expect(probeModelInference(togetherInput, { fetch })).resolves.toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://api.together.ai/v1/chat/completions");
+    expect(request.redirect).toBe("error");
+    expect(Object.fromEntries(request.headers)).toEqual({
+      authorization: `Bearer ${togetherInput.apiKey}`,
+      "content-type": "application/json",
+    });
+    expect(await request.json()).toEqual({
+      model: togetherInput.modelId,
+      messages: [
+        { role: "system", content: "Reply with OK." },
+        { role: "user", content: "OK?" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "noop",
+            description: "Does nothing.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      max_tokens: 1024,
+      stream: true,
+    });
+  });
+
+  it.each([
+    [401, "auth"],
+    [402, "credit"],
+    [403, "model"],
+    [404, "model"],
+    [429, "rate"],
+    [504, "timeout"],
+    [524, "timeout"],
+    [503, "unavailable"],
+    [529, "unavailable"],
+    [400, "unavailable"],
+  ] as const)("classifies Together HTTP %i as %s", async (status, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { message: "Request failed", code: null } }, { status }),
+    );
+    expect(await probeModelInference(togetherInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture/other-model" }), "unavailable"],
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: "fixture/other-model" }) +
+        chatChunk([{ delta: { content: "OK" } }]),
+      "unavailable",
+    ],
+    [chatChunk([{ delta: { content: "OK" } }]), "accepted"],
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: togetherInput.modelId }),
+      "unavailable",
+    ],
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: togetherInput.modelId }) +
+        'event: error\ndata: {"error":{"code":"402","message":"Request failed"}}\n\n',
+      "credit",
+    ],
+    [
+      chatChunk([{ delta: { tool_calls: [{ type: "function", function: { name: "noop" } }] } }], {
+        model: togetherInput.modelId,
+      }),
+      "accepted",
+    ],
+  ] as const)(
+    "checks the Together stream acceptance and refusal boundary (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(togetherInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not test a Together model outside the built-in catalog", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      probeModelInference(
+        { ...togetherInput, modelId: "fixture/unknown-model", providerCatalogModel: true },
+        { fetch },
+      ),
+    ).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("checks the selected Gemini model with the draft key and closes the stream on output", async () => {

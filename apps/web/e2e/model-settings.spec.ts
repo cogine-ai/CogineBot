@@ -2450,6 +2450,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /rejected the API key/,
   },
   {
+    provider: "together",
+    providerName: "Together",
+    modelId: "openai/gpt-oss-120b",
+    rejection: "model",
+    rejectionText: /cannot use the selected model/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",
