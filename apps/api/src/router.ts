@@ -2467,8 +2467,7 @@ export function createRouter(deps: RouterDeps) {
               credentialId: existing?.id ?? input.credentialId,
               expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
               ...(existing ? { expectedCiphertext } : {}),
-              expectNewConnection:
-                firstCatalogConnection || (inferenceStatus !== undefined && !existing),
+              expectNewConnection: !existing,
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
               catalogModelId: confirmNewModel ? discoveredModelId : undefined,

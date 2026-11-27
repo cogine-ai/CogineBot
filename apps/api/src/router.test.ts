@@ -3624,6 +3624,24 @@ describe("model credential persistence", () => {
     expect(deps.secrets.put).toHaveBeenCalledOnce();
   });
 
+  it("does not overwrite a connection created just before a legacy first-key save", async () => {
+    const { handler, inference, tx } = persistDeps();
+    tx.userModelCredential.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: "newer-connection",
+      provider: verifiedConnect.provider,
+      connectionRevision: 1,
+    });
+    const response = await call(handler, "models/connect", {
+      ...verifiedConnect,
+      verifyInference: undefined,
+    });
+    expect(response.status).toBe(409);
+    expect(inference).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.update).not.toHaveBeenCalled();
+    expect(tx.secret.create).not.toHaveBeenCalled();
+  });
+
   it("locks the ChatGPT user/provider slot before finalization reads or creates its first credential", async () => {
     const { begin, tx, handler, claim, assertSaving, recordConnected } = persistDeps();
     begin.mockImplementation(async (input, persist) => {

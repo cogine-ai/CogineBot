@@ -852,6 +852,12 @@ export function ModelSettingsOverlay({
       preflightStillCurrent(revision) &&
       spaceGeneration === currentSpaceSelectionGeneration() &&
       scopeKey === rpcRecoveryScopeKey();
+    const discardStaleResult = () => {
+      if (isCurrent()) return false;
+      if (mountedRef.current && revision === preflightRevisionRef.current)
+        setPreflightTesting(false);
+      return true;
+    };
     setPreflightTarget(kind);
     setPreflightTesting(true);
     setPreflightSuccess(null);
@@ -872,7 +878,7 @@ export function ModelSettingsOverlay({
               : errorText(error, modelInferenceTestMessage("unavailable")),
         }),
       );
-      if (!isCurrent()) return;
+      if (discardStaleResult()) return;
       setPreflightTesting(false);
       if (feedback.accepted) setPreflightSuccess(feedback.message);
       else setPreflightFailure({ outcome: "unknown", message: feedback.message });
@@ -890,7 +896,7 @@ export function ModelSettingsOverlay({
         return directory;
       },
     });
-    if (!isCurrent()) return;
+    if (discardStaleResult()) return;
     if (!connectionId && "apiKey" in request && directory)
       setDraftDirectory({
         ids: directory.draftModelIds ?? [],
@@ -901,7 +907,7 @@ export function ModelSettingsOverlay({
       const applied = await refresh(request.credentialId, { keepForm: true }).catch(
         () => undefined,
       );
-      if (!isCurrent()) return;
+      if (discardStaleResult()) return;
       if (!applied) {
         setPreflightTesting(false);
         setPreflightFailure({ outcome: "unknown", message: t`Could not load model settings` });
