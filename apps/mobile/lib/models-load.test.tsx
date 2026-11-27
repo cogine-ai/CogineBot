@@ -2553,6 +2553,7 @@ it.each([
   { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "rate", dynamic: false },
   { provider: "xai", providerName: "xAI", inferenceStatus: "rate", dynamic: false },
+  { provider: "deepseek", providerName: "DeepSeek", inferenceStatus: "rate", dynamic: false },
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {

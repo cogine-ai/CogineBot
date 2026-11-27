@@ -38,6 +38,7 @@ export function isOfficialChatCompletionProbeModel(
 ) {
   if (model.api !== "openai-completions" || !isChatModelId(model.id)) return false;
   if (model.provider === "openrouter") return model.baseUrl === "https://openrouter.ai/api/v1";
+  if (model.provider === "deepseek") return model.baseUrl === "https://api.deepseek.com";
   return (
     model.provider === "groq" &&
     model.baseUrl === "https://api.groq.com/openai/v1" &&

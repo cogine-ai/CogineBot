@@ -2199,6 +2199,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     rejection: "credit",
     rejectionText: /credit limit/,
   },
+  {
+    provider: "deepseek",
+    providerName: "DeepSeek",
+    modelId: "deepseek-flash",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
 ] as const) {
   test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
     page,
