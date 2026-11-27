@@ -215,6 +215,7 @@ import {
   IDENTITY_CONFIRMATION_REQUIRED,
   IntegrationProviderIdSchema,
   isBotCreationSpawnKey,
+  isModelInferenceRefusal,
   loginSecretFields,
   MAX_ENABLED_MODEL_IDS,
   MAX_MODEL_SETTINGS_PER_CONNECTION,
@@ -2447,12 +2448,7 @@ export function createRouter(deps: RouterDeps) {
                 { signal: context.signal },
               );
               await ensureCurrent();
-              if (
-                inferenceStatus === "auth" ||
-                inferenceStatus === "model" ||
-                inferenceStatus === "credit" ||
-                inferenceStatus === "spending"
-              )
+              if (isModelInferenceRefusal(inferenceStatus))
                 throw modelInferenceRejection(inferenceStatus);
             }
           }

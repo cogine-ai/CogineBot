@@ -1571,6 +1571,10 @@ export const ModelInferenceProbeStatusSchema = z.enum([
 ]);
 export type ModelInferenceProbeStatus = z.infer<typeof ModelInferenceProbeStatusSchema>;
 
+export function isModelInferenceRefusal(status: ModelInferenceProbeStatus) {
+  return status === "auth" || status === "model" || status === "credit" || status === "spending";
+}
+
 export const ModelConnectInferenceRejectionSchema = z.object({
   inferenceStatus: ModelInferenceProbeStatusSchema.exclude(["accepted"]),
 });

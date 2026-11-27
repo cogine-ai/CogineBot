@@ -245,12 +245,16 @@ describe("model inference check", () => {
     [geminiInput, 503, "timeout"],
     [input, 401, "auth"],
     [input, 402, "credit"],
+    [openRouterInput, 402, "timeout"],
     [deepseekInput, 403, "model"],
     [deepseekInput, 429, "timeout"],
+    [geminiInput, 401, "caller abort"],
+    [input, 401, "caller abort"],
   ] as const)(
-    "keeps the HTTP refusal from %j (%i) when its error body stalls",
+    "classifies a stalled error body from %j (%i) as %s",
     async (target, status, outcome) => {
       const deadline = new AbortController();
+      const caller = new AbortController();
       vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
       let startedReading = () => {};
       const reading = new Promise<void>((resolve) => {
@@ -264,10 +268,14 @@ describe("model inference check", () => {
             headers: { "content-type": "application/json" },
           }),
       );
-      const pending = probeModelInference(target, { fetch });
+      const pending = probeModelInference(target, { fetch, signal: caller.signal });
+      const verified =
+        outcome === "caller abort"
+          ? expect(pending).rejects.toMatchObject({ name: "AbortError" })
+          : expect(pending).resolves.toBe(outcome);
       await reading;
-      deadline.abort();
-      await expect(pending).resolves.toBe(outcome);
+      (outcome === "caller abort" ? caller : deadline).abort();
+      await verified;
       expect(fetch).toHaveBeenCalledOnce();
       expect(cancel).toHaveBeenCalledOnce();
     },
@@ -864,6 +872,7 @@ describe("model inference check", () => {
   it.each([
     [401, "Invalid API key", "auth"],
     [402, "Insufficient credits", "credit"],
+    [402, "This request requires more credits, or fewer max_tokens.", "credit"],
     [403, "Key limit exceeded", "spending"],
     [404, "No endpoints found that support tool use", "model"],
     [429, "Rate limit exceeded", "rate"],
@@ -902,7 +911,7 @@ describe("model inference check", () => {
     ...(
       [
         [401, "auth"],
-        [402, "credit"],
+        [402, "unavailable"],
         [403, "model"],
         [404, "model"],
         [429, "rate"],
@@ -912,7 +921,7 @@ describe("model inference check", () => {
       ([code, outcome]) =>
         [chatChunk([], { error: { code, message: "Request failed" } }), outcome] as const,
     ),
-    [chatChunk([{ index: 0, delta: { content: "partial" }, error: { code: 402 } }]), "credit"],
+    [chatChunk([{ index: 0, delta: { content: "partial" }, error: { code: 402 } }]), "unavailable"],
     ['event: error\ndata: {"code":429,"message":"Request failed"}\n\n', "rate"],
   ] as const)(
     "does not accept an OpenRouter stream without a successful model frame",
@@ -944,6 +953,29 @@ describe("model inference check", () => {
       expect(fetch).toHaveBeenCalledOnce();
     },
   );
+
+  it("recognizes a temporary OpenRouter budget limit from its reason", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json(
+        { error: { code: 402, metadata: { reason: "in_flight_budget_exhausted" } } },
+        { status: 402 },
+      ),
+    );
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe("rate");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {},
+    { error: {} },
+    { error: { code: 402 } },
+    { error: "Payment Required" },
+    { error: { code: 402, message: "Quota information is temporarily unavailable." } },
+  ])("keeps OpenRouter HTTP 402 without a diagnostic inconclusive: %j", async (body) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(body, { status: 402 }));
+    expect(await probeModelInference(openRouterInput, { fetch })).toBe("unavailable");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 
   it("stops reading OpenRouter responses at the probe byte limit", async () => {
     const cancel = vi.fn();

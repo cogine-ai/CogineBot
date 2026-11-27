@@ -3365,7 +3365,7 @@ describe("model credential persistence", () => {
       provider: "openrouter",
       modelId: "openai/gpt-oss-120b",
       endpoint: "https://openrouter.ai/api/v1/chat/completions",
-      rejection: { code: 402, message: "Payment Required" },
+      rejection: { code: 402, message: "Insufficient credits" },
       distinctFailure: "credit",
       transient: { code: 402, metadata: { limit_source: "openrouter_in_flight_budget" } },
     },
@@ -3448,6 +3448,50 @@ describe("model credential persistence", () => {
       expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
     },
   );
+
+  it("allows saving an OpenRouter connection when the reason for a 402 is unavailable", async () => {
+    const { deps, tx } = persistDeps();
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
+    let startReading = () => {};
+    const reading = new Promise<void>((resolve) => {
+      startReading = resolve;
+    });
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(new ReadableStream({ pull: startReading, cancel }, { highWaterMark: 0 }), {
+          status: 402,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const input = {
+      provider: "openrouter",
+      modelId: "openai/gpt-oss-120b",
+      apiKey: "fixture-gateway-draft",
+      verifyInference: true,
+    };
+    const pending = call(handler, "models/connect", input).finally(() => timeout.mockRestore());
+    await reading;
+    deadline.abort();
+    const saved = await pending;
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      provider: input.provider,
+      modelId: input.modelId,
+      inferenceStatus: "timeout",
+    });
+    expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
 
   it("checks the native Gemini route and draft key before a first connection", async () => {
     const { deps, tx } = persistDeps();
