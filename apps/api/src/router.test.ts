@@ -3398,8 +3398,10 @@ describe("model credential persistence", () => {
         (entry) => entry.provider === input.provider && entry.id === input.modelId,
       )?.inferenceProbe,
     ).toBe(true);
-    const frame =
+    const started =
       'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-fixture","status":"in_progress","model":"grok-4.7"}}\n\n';
+    const frame = `${started}data: {"type":"response.output_text.delta","delta":"OK"}\n\n`;
+    const streamCredit = `${started}event: error\ndata: {"type":"error","status":402,"error":{"message":"Payment required"}}\n\n`;
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
@@ -3414,6 +3416,9 @@ describe("model credential persistence", () => {
           { status: 403 },
         ),
       )
+      .mockResolvedValueOnce(
+        new Response(streamCredit, { headers: { "content-type": "text/event-stream" } }),
+      )
       .mockResolvedValueOnce(Response.json({ error: "Too many requests" }, { status: 429 }));
     const handler = new RPCHandler(
       createRouter({
@@ -3427,6 +3432,14 @@ describe("model credential persistence", () => {
     const refused = await call(handler, "models/connect", { ...input, verifyInference: true });
     expect(refused.status).toBe(400);
     expect((await refused.json()).json).toMatchObject({ data: { inferenceStatus: "credit" } });
+    const refusedInStream = await call(handler, "models/connect", {
+      ...input,
+      verifyInference: true,
+    });
+    expect(refusedInStream.status).toBe(400);
+    expect((await refusedInStream.json()).json).toMatchObject({
+      data: { inferenceStatus: "credit" },
+    });
     expect(deps.secrets.put).not.toHaveBeenCalled();
     expect(tx.userModelCredential.create).not.toHaveBeenCalled();
     const saved = await call(handler, "models/connect", { ...input, verifyInference: true });
@@ -3438,7 +3451,7 @@ describe("model credential persistence", () => {
     });
     expect(deps.secrets.put).toHaveBeenCalledOnce();
     expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     for (const args of fetch.mock.calls) {
       const request = new Request(...args);
       expect(request.url).toBe("https://api.x.ai/v1/responses");

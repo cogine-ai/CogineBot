@@ -95,7 +95,10 @@ describe("model inference check", () => {
           new Response(
             new ReadableStream({
               start(controller) {
-                controller.enqueue(new TextEncoder().encode(`: warming up\n\n${xaiStarted(id)}`));
+                const delta = 'data: {"type":"response.output_text.delta","delta":"OK"}\n\n';
+                controller.enqueue(
+                  new TextEncoder().encode(`: warming up\n\n${xaiStarted(id)}${delta}`),
+                );
               },
               cancel,
             }),
@@ -155,6 +158,13 @@ describe("model inference check", () => {
 
   it.each([
     [": ping\n\n", "unavailable"],
+    [xaiStarted(xaiInput.modelId), "unavailable"],
+    [`${xaiStarted(xaiInput.modelId)}data: {"type":"response.in_progress"}\n\n`, "unavailable"],
+    [
+      `${xaiStarted(xaiInput.modelId)}data: {"type":"error","code":529,"message":"Overloaded"}\n\n`,
+      "unavailable",
+    ],
+    ['data: {"type":"response.output_text.delta","delta":""}\n\n', "unavailable"],
     [
       'data: {"type":"response.created","response":{"id":"resp-fixture","status":"failed"}}\n\n',
       "unavailable",
@@ -185,6 +195,57 @@ describe("model inference check", () => {
       expect(fetch).toHaveBeenCalledOnce();
     },
   );
+
+  it.each([
+    [{ code: 402, message: "No credit remains" }, "credit"],
+    [{ status: 402, error: { message: "Payment required" } }, "credit"],
+    [{ status: "402", error: { message: "Payment required" } }, "credit"],
+    [{ status: 401, error: { message: "Unauthorized" } }, "auth"],
+    [{ status: 403, error: { message: "Permission denied" } }, "model"],
+    [{ code: "403", message: "Permission denied" }, "model"],
+    [{ code: 404, message: "Not found" }, "model"],
+    [{ status: 429, error: { message: "Please retry later" } }, "rate"],
+    [{ error: { code: 504, message: "Gateway timeout" } }, "timeout"],
+    [{ status: 503, error: { code: 402, message: "Team spending limit exceeded" } }, "unavailable"],
+    [
+      { status: "503", error: { code: "402", message: "Team spending limit exceeded" } },
+      "unavailable",
+    ],
+  ] as const)("preserves Grok stream status in %j", async (error, outcome) => {
+    const body = `${xaiStarted(xaiInput.modelId)}event: error\ndata: ${JSON.stringify({ type: "error", ...error })}\n\n`;
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(xaiInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { type: "response.reasoning_summary_text.delta", delta: "Thinking" },
+    { type: "response.function_call_arguments.delta", delta: "{}" },
+    { type: "response.completed", response: { status: "completed", id: "resp-fixture" } },
+  ])("accepts Grok model progress from $type", async (event) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(`${xaiStarted(xaiInput.modelId)}data: ${JSON.stringify(event)}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(xaiInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("recognizes the provider's SSE event name without requiring it in the JSON payload", async () => {
+    const body = 'event: response.output_text.delta\ndata: {"delta":"OK"}\n\n';
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(await probeModelInference(xaiInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 
   it("does not reinterpret unregistered Grok models or fall back to a gateway", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();

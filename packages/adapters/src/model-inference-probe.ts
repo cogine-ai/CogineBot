@@ -194,7 +194,7 @@ function createdResponse(event: unknown): boolean {
   );
 }
 
-type StreamFailureClassifier = (error: unknown) => ModelInferenceProbeStatus;
+type StreamFailureClassifier = (error: unknown, status?: number) => ModelInferenceProbeStatus;
 
 async function readModelProbeFrames(
   body: ReadableStream<Uint8Array> | null,
@@ -364,12 +364,13 @@ function xaiFrameOutcome(
   event?: string,
 ): ModelInferenceProbeStatus | undefined {
   if (!frame || typeof frame !== "object") return event === "error" ? "unavailable" : undefined;
-  const type = "type" in frame ? frame.type : undefined;
+  const type = "type" in frame ? frame.type : event;
   if (event === "error" || type === "error" || "error" in frame)
-    return classifyFailure("error" in frame ? frame.error : frame);
+    return classifyFailure("error" in frame ? frame.error : frame, xaiErrorStatus(frame));
   const response = "response" in frame ? frame.response : undefined;
   if (response && typeof response === "object") {
-    if ("error" in response && response.error) return classifyFailure(response.error);
+    if ("error" in response && response.error)
+      return classifyFailure(response.error, xaiErrorStatus(frame) ?? xaiErrorStatus(response));
     if (
       "status" in response &&
       (response.status === "failed" ||
@@ -380,7 +381,44 @@ function xaiFrameOutcome(
   }
   if (type === "response.failed" || type === "response.incomplete" || type === "response.cancelled")
     return "unavailable";
-  if ((!event || event === "response.created") && createdResponse(frame)) return "accepted";
+  if (event && event !== type) return;
+  // Grok can open an in-progress response before inference begins.
+  if (
+    type === "response.completed" &&
+    response &&
+    typeof response === "object" &&
+    "status" in response &&
+    response.status === "completed" &&
+    "id" in response &&
+    typeof response.id === "string" &&
+    response.id.trim()
+  )
+    return "accepted";
+  if (
+    (type === "response.output_text.delta" ||
+      type === "response.reasoning_text.delta" ||
+      type === "response.reasoning_summary_text.delta" ||
+      type === "response.function_call_arguments.delta") &&
+    "delta" in frame &&
+    typeof frame.delta === "string" &&
+    frame.delta.length > 0
+  )
+    return "accepted";
+}
+
+function xaiErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  return (
+    ("status" in error ? xaiStatusNumber(error.status) : undefined) ??
+    ("code" in error ? xaiStatusNumber(error.code) : undefined)
+  );
+}
+
+function xaiStatusNumber(value: unknown): number | undefined {
+  if (typeof value === "string" && /^[45]\d{2}$/.test(value)) return Number(value);
+  return typeof value === "number" && Number.isInteger(value) && value >= 400 && value < 600
+    ? value
+    : undefined;
 }
 
 function xaiFailureStatus(
@@ -388,6 +426,7 @@ function xaiFailureStatus(
   apiKey: string,
   status?: number,
 ): ModelInferenceProbeStatus {
+  status ??= xaiErrorStatus(error);
   if (status === 429) return "rate";
   const message =
     typeof error === "string"
