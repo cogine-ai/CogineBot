@@ -3222,6 +3222,11 @@ describe("model credential persistence", () => {
     { ...draftModel, provider: "groq", modelId: "fixture-vendor/chat-new-directory-model" },
     { ...draftModel, provider: "anthropic", modelId: "claude-fixture-new-directory-model" },
     { ...draftModel, provider: "google", modelId: "gemini-fixture-new-directory-model" },
+    {
+      ...draftModel,
+      provider: "openrouter",
+      modelId: "fixture-vendor/chat-new-directory-model:free",
+    },
   ];
 
   it.each(draftModels)("checks a first $provider model draft", async (model) => {

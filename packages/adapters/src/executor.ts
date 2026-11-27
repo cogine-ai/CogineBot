@@ -538,6 +538,7 @@ import {
   withModelCredentialLock,
 } from "./pi-oauth.js";
 import type { ProviderCatalogSelections } from "./pi-provider-catalog.js";
+import { isLegacyConfiguredOpenRouterModel } from "./pi-provider-catalog.js";
 import { canUsePlatformModel, platformModelAuthorization } from "./platform-model-access.js";
 import type { PlotSpec } from "./plot-tool.js";
 import {
@@ -14239,7 +14240,8 @@ async function resolveModelKey(
         if (
           !confirmedCatalogChoice &&
           providerCatalogModel(provider, modelId) &&
-          !isCatalogModelChoice(provider, modelId)
+          !isCatalogModelChoice(provider, modelId) &&
+          !isLegacyConfiguredOpenRouterModel(credential, resolved.secret, modelId)
         )
           throw new UnavailableModelForAuthError(
             "Confirm this model for the current API key or choose another model in Settings.",

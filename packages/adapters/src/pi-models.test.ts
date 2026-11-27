@@ -140,8 +140,13 @@ describe("Pi model catalog", () => {
         let requestedUrl = "";
         const fetchImpl = async (input: RequestInfo | URL) => {
           requestedUrl = input instanceof Request ? input.url : String(input);
-          return new Response(JSON.stringify({ object: "list", data: [{ id: "pinned-model" }] }), {
-            status: 200,
+          return Response.json({
+            data: [
+              {
+                id: "pinned-model",
+                architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+              },
+            ],
           });
         };
         await expect(
@@ -153,6 +158,81 @@ describe("Pi model catalog", () => {
       if (previous === undefined) delete process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC;
       else process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC = previous;
     }
+  });
+
+  it("lists only the selected OpenRouter key's text chat models", async () => {
+    const apiKey = "fixture-openrouter-directory-key";
+    const chat = { input_modalities: ["text", "image"], output_modalities: ["text"] };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe("https://openrouter.ai/api/v1/models/user");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${apiKey}`);
+      expect(request.redirect).toBe("error");
+      return Response.json({
+        data: [
+          {
+            id: "fixture-vendor/chat-latest:free",
+            architecture: chat,
+            endpoints: ["/api/v1/chat/completions"],
+          },
+          { id: "fixture-vendor/chat-without-endpoint-metadata", architecture: chat },
+          {
+            id: "fixture-vendor/completion-only",
+            architecture: chat,
+            endpoints: ["/api/v1/completions"],
+          },
+          { id: "fixture-vendor/visual", architecture: { ...chat, output_modalities: ["image"] } },
+          {
+            id: "fixture-vendor/audio-input",
+            architecture: { ...chat, input_modalities: ["audio"] },
+          },
+        ],
+        total_count: 5,
+        links: { next: null },
+      });
+    });
+    await expect(
+      probeCatalogProviderModels({ provider: "openrouter", apiKey }, fetchImpl),
+    ).resolves.toEqual([
+      "fixture-vendor/chat-latest:free",
+      "fixture-vendor/chat-without-endpoint-metadata",
+    ]);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{ data: [], total_count: 1 }, "incomplete models list"],
+    [{ data: [], links: { next: "/models/user?offset=10" } }, "incomplete models list"],
+    [{ models: [] }, "invalid models list"],
+    [
+      { data: [{ id: "fixture-vendor/chat", architecture: { output_modalities: ["text"] } }] },
+      "invalid models list",
+    ],
+    [{ data: Array.from({ length: 8001 }, () => ({})) }, "invalid models list"],
+  ])("rejects incomplete or invalid OpenRouter directory results", async (payload, error) => {
+    const fetchImpl = vi.fn(async () => Response.json(payload));
+    await expect(
+      probeCatalogProviderModels(
+        { provider: "openrouter", apiKey: "fixture-openrouter-key" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow(error);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the generic endpoint test on /models for custom server connections", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(new Request(input, init).url).toBe("https://openrouter.ai/api/v1/models");
+      return Response.json({ data: [{ id: "fixture-vendor/chat" }] });
+    });
+    await expect(
+      probeOpenAiCompatibleModels(
+        { baseUrl: "https://openrouter.ai/api/v1" },
+        fetchImpl,
+        undefined,
+        { allowPublic: true },
+      ),
+    ).resolves.toEqual(["fixture-vendor/chat"]);
   });
 
   it("reads the official Claude model list with the selected API key", async () => {
@@ -313,7 +393,8 @@ describe("Pi model catalog", () => {
       const suffix = String(index).padStart(4, "0");
       return `vendor/catalog-model-${suffix}-${"x".repeat(120)}`;
     });
-    const payload = JSON.stringify({ object: "list", data: ids.map((id) => ({ id })) });
+    const architecture = { input_modalities: ["text"], output_modalities: ["text"] };
+    const payload = JSON.stringify({ data: ids.map((id) => ({ id, architecture })) });
     expect(Buffer.byteLength(payload)).toBeGreaterThan(64 * 1024);
     expect(ids).toHaveLength(4001);
     expect(Buffer.byteLength(payload)).toBeLessThan(2 * 1024 * 1024);

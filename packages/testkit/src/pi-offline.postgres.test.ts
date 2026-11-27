@@ -7,6 +7,7 @@ import {
   ExpoPushProvider,
   listPiCatalog,
   PiAgentRuntime,
+  probeCatalogProviderModels,
 } from "@rakazo/adapters";
 import type { ModelConnectResult, ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
@@ -97,6 +98,11 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
     },
     {
+      provider: "openrouter",
+      prefix: "fixture-vendor/chat",
+      endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    },
+    {
       provider: "anthropic",
       prefix: "claude",
       endpoint: "https://api.anthropic.com/v1/messages?beta=true",
@@ -114,6 +120,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const deepSeek = provider === "deepseek";
     const anthropic = provider === "anthropic";
     const gemini = provider === "google";
+    const openRouter = provider === "openrouter";
     const authHeader = gemini ? "x-goog-api-key" : anthropic ? "x-api-key" : "authorization";
     const headerValue = (key: string) => (anthropic || gemini ? key : `Bearer ${key}`);
     const apiKey = "fixture-discovered-model-key";
@@ -129,13 +136,30 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const realtime = `${prefix}-fixture-realtime`;
     const bundled = listPiCatalog().filter((entry) => entry.provider === provider);
     const originalModel = bundled[0]!.id;
-    const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => [
-      ...bundled.map(({ id }) => id),
-      ...(key === apiKey || key === qualifiedKey || key === nextKey
-        ? [modelId, ...otherModelIds]
-        : []),
-      realtime,
-    ]);
+    const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => {
+      const ids = [
+        ...bundled.map(({ id }) => id),
+        ...(key === apiKey || key === qualifiedKey || key === nextKey
+          ? [modelId, ...otherModelIds]
+          : []),
+        realtime,
+      ];
+      if (!openRouter) return ids;
+      return probeCatalogProviderModels({ provider, apiKey: key }, async (input, init) => {
+        const directory = new Request(input, init);
+        expect(directory.url).toBe("https://openrouter.ai/api/v1/models/user");
+        expect(directory.headers.get("authorization")).toBe(`Bearer ${key}`);
+        return Response.json({
+          data: ids.map((id) => ({
+            id,
+            architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+            endpoints: ["/api/v1/chat/completions"],
+          })),
+          total_count: ids.length,
+        });
+      });
+    });
+    let expectedWireModel = modelId;
     let expectedWireKey = apiKey;
     const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(endpoint);
@@ -149,7 +173,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         );
         return directoryGeminiMessage(modelId, "Used the selected model.");
       }
-      expect(body).toMatchObject({ model: modelId, stream: true });
+      expect(body).toMatchObject({ model: expectedWireModel, stream: true });
       if (anthropic) {
         expect(headers.has("authorization")).toBe(false);
         expect(body).not.toHaveProperty("fallbacks");
@@ -157,11 +181,11 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       }
       if (chatCompletions) {
         if (deepSeek) expect(body.thinking).toEqual({ type: "disabled" });
-        else {
+        else if (expectedWireModel === modelId) {
           expect(body).not.toHaveProperty("store");
           expect(body).not.toHaveProperty("reasoning_effort");
         }
-        return directoryChatCompletion(modelId, "Used the selected model.");
+        return directoryChatCompletion(expectedWireModel, "Used the selected model.");
       }
       const message = {
         id: "msg_directory_fixture",
@@ -277,11 +301,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       });
       expect(signup.status).toBeLessThan(400);
       const cookie = sessionCookieHeader(signup);
-      const saved = await rpc<ModelCredential>(app, cookie, "models/connect", {
+      let saved = await rpc<ModelCredential>(app, cookie, "models/connect", {
         provider,
         apiKey,
         modelId: originalModel,
         label: "Named connection",
+        ...(openRouter ? { contextWindow: 24_000 } : {}),
       });
       const read = async (includeProviderCatalog: boolean) =>
         (
@@ -289,6 +314,80 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
             includeProviderCatalog,
           })
         ).find((item) => item.id === saved.id);
+      if (openRouter) {
+        const legacyModel = "fixture-vendor/legacy-chat";
+        // A pre-directory connection could save a manual ID and context limit.
+        await handles.prisma.spaceModelPreference.updateMany({
+          where: { credentialId: saved.id },
+          data: { modelId: legacyModel },
+        });
+        expect(await read(true)).toMatchObject({ modelId: legacyModel });
+        expect(await read(true)).not.toHaveProperty("savedModelDirectory");
+        const legacyReplacement = await rpc<ModelCredential>(app, cookie, "models/connect", {
+          provider,
+          modelId: legacyModel,
+          credentialId: saved.id,
+          apiKey: differentKey,
+          expectedRevision: saved.connectionRevision,
+          label: saved.label,
+        });
+        expect(legacyReplacement.modelId).toBe(legacyModel);
+        const legacyBinding = {
+          modelId: legacyModel,
+          modelCredentialId: saved.id,
+          expectedRevision: legacyReplacement.connectionRevision,
+        };
+        await rpc(app, cookie, "models/setDefault", { provider, ...legacyBinding });
+        await rpc(app, cookie, "models/setDefault", {
+          provider,
+          ...legacyBinding,
+          thinkingLevel: "off",
+          updateThinkingLevelOnly: true,
+        });
+        expectedWireModel = legacyModel;
+        expectedWireKey = differentKey;
+        const legacyBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+          name: "Legacy model fixture",
+          title: "",
+          description: "",
+          instructions: "Answer briefly.",
+          notifyOnFinish: false,
+        });
+        await discardBotIntroRun(handles, cookie, legacyBot.id);
+        await rpc(app, cookie, "bots/update", {
+          botId: legacyBot.id,
+          modelProvider: provider,
+          ...legacyBinding,
+        });
+        const legacyRun = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+          botId: legacyBot.id,
+          text: "Use the existing model.",
+        });
+        await expect
+          .poll(() => handles.prisma.run.findUnique({ where: { id: legacyRun.runId } }), {
+            timeout: 15_000,
+            interval: 100,
+          })
+          .toMatchObject({
+            status: "completed",
+            modelProvider: provider,
+            modelId: legacyModel,
+            modelCredentialId: saved.id,
+          });
+        expect(modelFetch).toHaveBeenCalledOnce();
+        expect(inferenceFetch).not.toHaveBeenCalled();
+        modelFetch.mockClear();
+        expectedWireModel = modelId;
+        expectedWireKey = apiKey;
+        saved = await rpc<ModelCredential>(app, cookie, "models/connect", {
+          provider,
+          modelId: originalModel,
+          credentialId: saved.id,
+          apiKey,
+          expectedRevision: legacyReplacement.connectionRevision,
+          label: saved.label,
+        });
+      }
       const select = (id: string, expectedRevision = saved.connectionRevision) =>
         rpc(app, cookie, "models/setDefault", {
           provider,
@@ -497,6 +596,28 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           otherSpace.id,
         );
       const missing = await rotate(differentKey, confirmed?.connectionRevision);
+      if (openRouter) {
+        const row = await handles.prisma.userModelCredential.findUniqueOrThrow({
+          where: { id: saved.id },
+        });
+        expect(row.providerCatalogSelection).toEqual({
+          requiredModelIds: expect.arrayContaining([modelId]),
+        });
+        const unconfirmed = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+          botId: bot.id,
+          text: "Do not run the unconfirmed model.",
+        });
+        await expect
+          .poll(() => handles.prisma.run.findUnique({ where: { id: unconfirmed.runId } }), {
+            timeout: 15_000,
+            interval: 100,
+          })
+          .toMatchObject({
+            status: "failed",
+            error: expect.stringContaining("Confirm this model for the current API key"),
+          });
+        expect(modelFetch).toHaveBeenCalledTimes(2);
+      }
       const readSaved = async () =>
         (
           await rpc<ModelCredential[]>(

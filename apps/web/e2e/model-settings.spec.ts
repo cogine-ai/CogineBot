@@ -2152,6 +2152,12 @@ for (const { provider, providerName, prefix, screenshot } of [
     prefix: "gemini",
     screenshot: "a1-google-first-directory-model",
   },
+  {
+    provider: "openrouter",
+    providerName: "OpenRouter",
+    prefix: "fixture-vendor/chat",
+    screenshot: "a1-openrouter-first-directory-model",
+  },
 ]) {
   test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
     page,

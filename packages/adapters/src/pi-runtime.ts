@@ -1341,6 +1341,11 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   const models = modelsForRequest({ model: modelConfig }, provider, credentials);
   let model = catalogModelWithOpenRouterFallback(models, provider, modelId);
   const listed = model !== undefined;
+  const discovered =
+    !model && modelConfig.providerCatalogModel && modelConfig.apiKey && !modelConfig.oauth
+      ? providerCatalogModel(provider, modelId, models)
+      : undefined;
+  model ??= discovered;
   if (
     !model &&
     provider === "openrouter" &&
@@ -1348,11 +1353,6 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   ) {
     model = configuredOpenRouterModel(modelId, modelConfig.contextWindow);
   }
-  const discovered =
-    !model && modelConfig.providerCatalogModel && modelConfig.apiKey && !modelConfig.oauth
-      ? providerCatalogModel(provider, modelId, models)
-      : undefined;
-  model ??= discovered;
   if (provider === CHATGPT_OAUTH_PROVIDER) {
     model ??= liveModelSibling(models, provider, modelId);
     if (model) model = withLiveImageInput(model, modelConfig.acceptsImages);
