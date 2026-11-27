@@ -3453,6 +3453,26 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429 },
     },
+    {
+      provider: "moonshotai",
+      modelId: "kimi-k3",
+      endpoint: "https://api.moonshot.ai/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"kimi-k3","choices":[{"index":0,"delta":{"reasoning_content":"Consider"},"finish_reason":null}]}\n\n',
+      rejection: { type: "exceeded_current_quota_error" },
+      distinctFailure: "credit",
+      transient: { code: 429, type: "rate_limit_reached_error" },
+    },
+    {
+      provider: "moonshotai-cn",
+      modelId: "kimi-k3",
+      endpoint: "https://api.moonshot.cn/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"kimi-k3","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\n',
+      rejection: { type: "exceeded_current_quota_error" },
+      distinctFailure: "credit",
+      transient: { code: 429, type: "engine_overloaded_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -3538,6 +3558,8 @@ describe("model credential persistence", () => {
     ["together", "openai/gpt-oss-120b", "key replacement"],
     ["cerebras", "qwen-3.8-27b", "first connection"],
     ["cerebras", "qwen-3.8-27b", "key replacement"],
+    ["moonshotai", "kimi-k3", "first connection"],
+    ["moonshotai-cn", "kimi-k3", "key replacement"],
   ] as const)(
     "blocks %s %s %s when the stream names another model",
     async (provider, modelId, mode) => {

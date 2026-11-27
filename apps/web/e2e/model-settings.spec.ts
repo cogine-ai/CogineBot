@@ -2464,6 +2464,20 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /credit limit/,
   },
   {
+    provider: "moonshotai",
+    providerName: "Moonshot AI",
+    modelId: "kimi-k3",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
+  {
+    provider: "moonshotai-cn",
+    providerName: "Moonshot AI CN",
+    modelId: "kimi-k3",
+    rejection: "auth",
+    rejectionText: /rejected the API key/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

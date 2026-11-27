@@ -24,6 +24,11 @@ const cerebrasInput = {
   modelId: "qwen-3.8-27b",
   apiKey: "fixture-cerebras-key",
 };
+const moonshotInput = {
+  provider: "moonshotai",
+  modelId: "kimi-k3",
+  apiKey: "fixture-moonshot-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -349,6 +354,129 @@ describe("model inference check", () => {
           modelId: "fixture-unknown-model",
           providerCatalogModel: true,
         },
+        { fetch },
+      ),
+    ).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["moonshotai", "https://api.moonshot.ai/v1/chat/completions", "kimi-k3"],
+    ["moonshotai-cn", "https://api.moonshot.cn/v1/chat/completions", "kimi-k2.7-code"],
+  ] as const)(
+    "tests %s using only the selected regional key and model",
+    async (provider, endpoint, modelId) => {
+      vi.stubEnv("MOONSHOT_API_KEY", "fixture-deployment-key");
+      vi.stubEnv("OPENAI_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+      const entry = listPiCatalog().find(
+        (model) => model.provider === provider && model.id === modelId,
+      );
+      expect(entry?.inferenceProbe).toBe(true);
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      const cancel = vi.fn();
+      const apiKey = `fixture-${provider}-key`;
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    chatChunk([{ delta: { role: "assistant", content: "" } }], { model: modelId }) +
+                      chatChunk([{ delta: { reasoning_content: "Consider" } }], {
+                        model: modelId,
+                      }) +
+                      'data: {"error":{"type":"exceeded_current_quota_error"}}\n\n',
+                  ),
+                );
+              },
+              cancel,
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      expect(await probeModelInference({ provider, modelId, apiKey }, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.url).toBe(endpoint);
+      expect(request.method).toBe("POST");
+      expect(request.redirect).toBe("error");
+      expect(Object.fromEntries(request.headers)).toEqual({
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      });
+      expect(await request.json()).toEqual({
+        model: modelId,
+        messages: [
+          { role: "system", content: "Reply with OK." },
+          { role: "user", content: "OK?" },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "noop",
+              description: "Does nothing.",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        max_completion_tokens: 1024,
+        stream: true,
+      });
+    },
+  );
+
+  it.each([
+    [401, "incorrect_api_key_error", "auth"],
+    [403, "permission_denied_error", "model"],
+    [404, "resource_not_found_error", "model"],
+    [429, "exceeded_current_quota_error", "credit"],
+    [429, "engine_overloaded_error", "rate"],
+    [429, "rate_limit_reached_error", "rate"],
+    [429, undefined, "rate"],
+    [400, "content_filter", "unavailable"],
+    [503, "exceeded_current_quota_error", "unavailable"],
+    [504, undefined, "timeout"],
+  ] as const)("classifies Moonshot HTTP %i %s as %s", async (status, type, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { type } }, { status }),
+    );
+    expect(await probeModelInference(moonshotInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['data: {"error":{"type":"exceeded_current_quota_error"}}\n\n', "credit"],
+    ['data: {"error":{"type":"engine_overloaded_error"}}\n\n', "rate"],
+    ['data: {"error":{"code":"402"},"status":402}\n\n', "unavailable"],
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: moonshotInput.modelId }),
+      "unavailable",
+    ],
+    [chatChunk([{ delta: { content: "OK" } }]), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture-other-model" }), "model"],
+    [
+      chatChunk([{ delta: { tool_calls: [{ type: "function", function: { name: "noop" } }] } }], {
+        model: moonshotInput.modelId,
+      }),
+      "accepted",
+    ],
+  ] as const)("checks the Moonshot stream boundary (%#)", async (body, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(await probeModelInference(moonshotInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not test a Moonshot model outside the built-in catalog", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      probeModelInference(
+        { ...moonshotInput, modelId: "fixture-extra-model", providerCatalogModel: true },
         { fetch },
       ),
     ).resolves.toBe("unavailable");
