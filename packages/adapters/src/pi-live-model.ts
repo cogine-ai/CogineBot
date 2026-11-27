@@ -56,6 +56,19 @@ export function isOfficialAnthropicProbeModel(
   );
 }
 
+export function isOfficialGeminiProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "google" &&
+    model.api === "google-generative-ai" &&
+    model.baseUrl === "https://generativelanguage.googleapis.com/v1beta" &&
+    model.id.startsWith("gemini-") &&
+    isChatModelId(model.id) &&
+    !/-(?:live|customtools)(?:-|$)/.test(model.id)
+  );
+}
+
 const catalogModels = builtinModels();
 
 /** The supported catalog and runtime must share the official Responses route. */

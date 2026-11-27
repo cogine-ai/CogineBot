@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
@@ -7,6 +7,7 @@ import { createParser } from "eventsource-parser";
 import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
+  isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
 } from "./pi-live-model.js";
@@ -16,16 +17,23 @@ const OUTPUT_LIMIT = 1024;
 const ERROR_BODY_LIMIT = 16 * 1024;
 const STREAM_PREFIX_LIMIT = 64 * 1024;
 const PROBE_TOOL_NAME = "noop";
+const PROBE_TOOL_DESCRIPTION = "Does nothing.";
+const PROBE_SYSTEM_PROMPT = "Reply with OK.";
+const PROBE_USER_PROMPT = "OK?";
 const context: Context = {
-  systemPrompt: "Reply with OK.",
-  messages: [{ role: "user", content: "OK?", timestamp: 0 }],
-  tools: [{ name: PROBE_TOOL_NAME, description: "Does nothing.", parameters: Type.Object({}) }],
+  systemPrompt: PROBE_SYSTEM_PROMPT,
+  messages: [{ role: "user", content: PROBE_USER_PROMPT, timestamp: 0 }],
+  tools: [
+    { name: PROBE_TOOL_NAME, description: PROBE_TOOL_DESCRIPTION, parameters: Type.Object({}) },
+  ],
 };
+
+type ProbeOptions = { fetch?: typeof fetch; signal?: AbortSignal };
 
 /** Test one agent request on an eligible provider route and stop on acceptance. */
 export async function probeModelInference(
   input: { provider: string; modelId: string; apiKey: string; providerCatalogModel?: true },
-  options: { fetch?: typeof fetch; signal?: AbortSignal } = {},
+  options: ProbeOptions = {},
 ): Promise<ModelInferenceProbeStatus> {
   options.signal?.throwIfAborted();
   const { models, model, apiKey } = resolveRuntimeModel({
@@ -36,6 +44,7 @@ export async function probeModelInference(
   });
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
+  if (builtIn && isOfficialGeminiProbeModel(model)) return probeGemini(model, apiKey, options);
   const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
@@ -112,25 +121,14 @@ export async function probeModelInference(
             throw new Error("Model test transport failed");
           }
           if (!response.ok) {
-            const body = await readBoundedJsonResponse<unknown>(
-              response,
-              ERROR_BODY_LIMIT,
-              signal,
-            ).catch(() => undefined);
-            signal.throwIfAborted();
-            const error = body && typeof body === "object" && "error" in body ? body.error : body;
+            const { body, error } = await readProbeError(response, signal);
             rejected = readFrames
               ? classifyFailure(error, response.status)
               : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
             // The SDK's debug logger runs before the application can redact its errors.
             return new Response(null, { status: response.status });
           }
-          const contentType = response.headers
-            .get("content-type")
-            ?.split(";", 1)[0]
-            ?.trim()
-            .toLowerCase();
-          if (contentType !== "text/event-stream") {
+          if (!isEventStream(response)) {
             cancelResponseBody(response);
             throw new Error("Model server did not return an event stream");
           }
@@ -181,6 +179,160 @@ export async function probeModelInference(
   if (accepted) return "accepted";
   if (deadline.aborted) return "timeout";
   return rejected ?? failureStatus(errorDetail, apiKey);
+}
+
+function isEventStream(response: Response): boolean {
+  return (
+    response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ===
+    "text/event-stream"
+  );
+}
+
+async function readProbeError(response: Response, signal: AbortSignal) {
+  const body = await readBoundedJsonResponse<unknown>(response, ERROR_BODY_LIMIT, signal).catch(
+    () => undefined,
+  );
+  signal.throwIfAborted();
+  return { body, error: body && typeof body === "object" && "error" in body ? body.error : body };
+}
+
+/** The Google SDK does not expose the fetch boundary needed by connection tests. */
+async function probeGemini(
+  model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
+  apiKey: string,
+  options: ProbeOptions,
+): Promise<ModelInferenceProbeStatus> {
+  const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  const transport = options.fetch ?? globalThis.fetch;
+  try {
+    const response = await transport(
+      `${model.baseUrl}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: PROBE_SYSTEM_PROMPT }] },
+          contents: [{ role: "user", parts: [{ text: PROBE_USER_PROMPT }] }],
+          tools: [
+            {
+              functionDeclarations: [
+                { name: PROBE_TOOL_NAME, description: PROBE_TOOL_DESCRIPTION },
+              ],
+            },
+          ],
+          generationConfig: { maxOutputTokens: Math.min(model.maxTokens, OUTPUT_LIMIT) },
+        }),
+        redirect: "error",
+        signal,
+      },
+    );
+    if (!response.ok) {
+      const { error } = await readProbeError(response, signal);
+      return geminiFailureStatus(error, apiKey, response.status);
+    }
+    if (!isEventStream(response)) {
+      cancelResponseBody(response);
+      signal.throwIfAborted();
+      return "unavailable";
+    }
+    return await readModelProbeFrames(response.body, signal, (frame, event) =>
+      geminiFrameOutcome(frame, apiKey, event),
+    );
+  } catch {
+    options.signal?.throwIfAborted();
+    return deadline.aborted ? "timeout" : "unavailable";
+  }
+}
+
+function probeRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function geminiFrameOutcome(
+  frame: unknown,
+  apiKey: string,
+  event?: string,
+): ModelInferenceProbeStatus | undefined {
+  const record = probeRecord(frame);
+  if (record?.error !== undefined || event === "error")
+    return geminiFailureStatus(record?.error ?? frame, apiKey, errorHttpStatus(frame));
+  const block = probeRecord(record?.promptFeedback)?.blockReason;
+  if (typeof block === "string" && block && block !== "BLOCK_REASON_UNSPECIFIED")
+    return "unavailable";
+  const candidate = Array.isArray(record?.candidates)
+    ? probeRecord(record.candidates[0])
+    : undefined;
+  const finish = candidate?.finishReason;
+  if (
+    finish &&
+    finish !== "FINISH_REASON_UNSPECIFIED" &&
+    finish !== "STOP" &&
+    finish !== "MAX_TOKENS"
+  )
+    return "unavailable";
+  const content = probeRecord(candidate?.content);
+  const parts = content?.parts;
+  const role = content?.role;
+  if (Array.isArray(parts) && (role === undefined || role === "model")) {
+    for (const value of parts) {
+      const part = probeRecord(value);
+      if (
+        (typeof part?.text === "string" && part.text.trim()) ||
+        probeRecord(part?.functionCall)?.name === PROBE_TOOL_NAME
+      )
+        return "accepted";
+    }
+  }
+  if (finish === "STOP" || finish === "MAX_TOKENS") return "unavailable";
+}
+
+function geminiFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  status ??= errorHttpStatus(error);
+  if (status === 408 || status === 504) return "timeout";
+  if (status !== undefined && status >= 500) return "unavailable";
+  if (status === 401) return "auth";
+  if (status === 402) return "credit";
+  const record = probeRecord(error);
+  const message = typeof record?.message === "string" ? record.message.replaceAll(apiKey, "") : "";
+  if (
+    (status === 403 || status === undefined) &&
+    /^Your API key was reported as (?:leaked|blocked)\b/i.test(message)
+  )
+    return "auth";
+  const details = record?.details;
+  if ((status === 400 || status === 403 || status === undefined) && Array.isArray(details)) {
+    if (
+      details.some((value: unknown) => {
+        const info = probeRecord(value);
+        return (
+          info?.["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
+          typeof info.reason === "string" &&
+          /^API_KEY_[A-Z_]+$/.test(info.reason)
+        );
+      })
+    )
+      return "auth";
+  }
+  if (
+    (status === 400 || status === 403 || status === 429 || status === undefined) &&
+    /\b(?:spend(?:ing)? (?:cap|limit) (?:was |has been )?(?:reached|exceeded)|(?:reached|exceeded) (?:(?:your|the|its) )?(?:monthly )?spend(?:ing)? (?:cap|limit))\b/i.test(
+      message,
+    )
+  )
+    return "spending";
+  if (status === 429) return "rate";
+  if (status === 403 || status === 404) return "model";
+  return "unavailable";
 }
 
 function createdResponse(event: unknown): boolean {

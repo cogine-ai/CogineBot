@@ -2406,6 +2406,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     rejection: "credit",
     rejectionText: /credit limit/,
   },
+  {
+    provider: "google",
+    providerName: "Google",
+    modelId: "gemini-3.8-flash",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
 ] as const) {
   test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
     page,
@@ -2462,7 +2469,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
       .getByRole("button")
       .filter({ has: page.getByText(providerName, { exact: true }) })
       .click();
-    if (provider === "anthropic") {
+    if (provider === "anthropic" || provider === "google") {
       await expect(settings.getByRole("button", { name: "Check models", exact: true })).toHaveCount(
         0,
       );
