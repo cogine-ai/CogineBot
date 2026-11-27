@@ -1543,6 +1543,12 @@ const savedModelProbe = z.strictObject({
 });
 export const ModelCatalogProbeInputSchema = z.union([draftModelProbe, savedModelProbe]);
 export type ModelCatalogProbeInput = z.infer<typeof ModelCatalogProbeInputSchema>;
+export const ModelCatalogProbeResultSchema = z.object({
+  models: z.array(z.string()),
+  catalogUpdated: z.literal(true).optional(),
+  draftModelIds: z.array(z.string()).optional(),
+});
+export type ModelCatalogProbeResult = z.infer<typeof ModelCatalogProbeResultSchema>;
 
 const inferenceModelId = z.string().trim().min(1).max(512);
 export const MODEL_DIRECTORY_PROBE_TIMEOUT_MS = 5_000;

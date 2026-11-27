@@ -1,5 +1,5 @@
 import { Plural, Trans, useLingui } from "@lingui/react/macro";
-import type { ModelConnectResult } from "@rakazo/contracts";
+import type { ModelCatalogProbeResult, ModelConnectResult } from "@rakazo/contracts";
 import {
   CLOUDFLARE_AI_GATEWAY_PROVIDER_ID,
   cloudflareGatewayRouting,
@@ -24,6 +24,7 @@ import {
   modelConnectChecksInference,
   modelConnectInferenceRejection,
   pickCatalogModelId,
+  withDraftCatalogModels,
 } from "@rakazo/core";
 import {
   Button,
@@ -55,7 +56,7 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { currentSpaceSelectionGeneration, rpc } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc, rpcRecoveryScopeKey } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 
@@ -139,6 +140,12 @@ export function OnboardingPage() {
   const modelIdRef = useRef(modelId);
   modelIdRef.current = modelId;
   const [apiKey, setApiKey] = useState("");
+  const [draftDirectory, setDraftDirectory] = useState<{
+    ids: string[];
+    retainedId?: string;
+    scopeKey: string;
+  }>();
+  const directoryScope = rpcRecoveryScopeKey();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -246,12 +253,19 @@ export function OnboardingPage() {
     return [...seen.values()];
   }, [catalog]);
 
-  const modelsForProvider = useMemo(
-    () => catalog.filter((entry) => entry.provider === provider),
-    [catalog, provider],
-  );
+  const modelsForProvider = useMemo(() => {
+    const directory =
+      apiKey.trim() && draftDirectory?.scopeKey === directoryScope ? draftDirectory : undefined;
+    return withDraftCatalogModels(
+      catalog,
+      provider,
+      directory?.ids ?? [],
+      directory?.retainedId === modelId ? modelId : undefined,
+    ).filter((entry) => entry.provider === provider);
+  }, [apiKey, catalog, directoryScope, draftDirectory, modelId, provider]);
 
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
+  const unconfirmedDraft = selected?.draftCatalogModel === "unconfirmed";
   const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
   const isCloudflareGateway = provider === CLOUDFLARE_AI_GATEWAY_PROVIDER_ID;
   const cloudflareRoutingReady =
@@ -273,9 +287,12 @@ export function OnboardingPage() {
   const canSaveModel = Boolean(
     selected &&
       modelId.trim() &&
+      !unconfirmedDraft &&
       !oauthPending &&
       cloudflareRoutingReady &&
-      (isOpenAiCompatible ? openAiCompatibleReady : acceptsKey && apiKey.trim()),
+      (isOpenAiCompatible
+        ? openAiCompatibleReady
+        : selected.id === modelId && acceptsKey && apiKey.trim()),
   );
   const otherModelLabel = t`Other model…`;
   // Base UI Select.Value only resolves labels when Root gets `items`.
@@ -324,6 +341,11 @@ export function OnboardingPage() {
   }
 
   function updateApiKey(nextApiKey: string) {
+    if (nextApiKey.trim() !== apiKey.trim()) {
+      setDraftDirectory(undefined);
+      if (selected?.draftCatalogModel)
+        setModelId(pickCatalogModelId(catalog, provider, deploymentDefaultModelRef.current));
+    }
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -334,6 +356,7 @@ export function OnboardingPage() {
     cancelOAuthAttempt();
     setProvider(nextProvider);
     setApiKey("");
+    setDraftDirectory(undefined);
     setAccountId("");
     setGatewayId("");
     setModelId(
@@ -401,24 +424,40 @@ export function OnboardingPage() {
   }
 
   async function testApiKeyConnection() {
-    if (!selected?.catalogProbe) return;
+    if (!selected?.catalogProbe || directoryScope !== rpcRecoveryScopeKey()) return;
     const revision = preflightRevisionRef.current;
+    const scopeKey = directoryScope;
     setPreflightTarget("api-key");
     setPreflightTesting(true);
     setPreflightSuccess(null);
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
+    let directory: ModelCatalogProbeResult | undefined;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
       apiKey,
       modelId: selected.id,
       catalogProbe: true,
-      probeCatalog: rpc.models.probeCatalog,
+      probeCatalog: async (input) => {
+        directory = await rpc.models.probeCatalog(input, {
+          context: {
+            isCurrent: () => preflightStillCurrent(revision) && scopeKey === rpcRecoveryScopeKey(),
+          },
+        });
+        return directory;
+      },
     });
     if (!preflightStillCurrent(revision)) return;
     setPreflightTesting(false);
+    if (scopeKey !== rpcRecoveryScopeKey()) return;
+    if (directory)
+      setDraftDirectory({
+        ids: directory.draftModelIds ?? [],
+        retainedId: selected.draftCatalogModel ? selected.id : undefined,
+        scopeKey,
+      });
     if (result.ok) {
       setPreflightSuccess(modelPreflightSuccessMessage(result.discoveredModels.length));
       return;
@@ -464,10 +503,13 @@ export function OnboardingPage() {
 
   async function saveModel() {
     if (!canSaveModel || probing || preflightTesting || connectAttempt.current) return;
+    if (directoryScope !== rpcRecoveryScopeKey()) return;
     const controller = new AbortController();
     const spaceGeneration = currentSpaceSelectionGeneration();
     const current = () =>
-      !controller.signal.aborted && spaceGeneration === currentSpaceSelectionGeneration();
+      !controller.signal.aborted &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      directoryScope === rpcRecoveryScopeKey();
     connectAttempt.current = controller;
     setConnecting(true);
     setError(null);
@@ -513,7 +555,7 @@ export function OnboardingPage() {
             apiKey: apiKey.trim() || undefined,
             label: selected?.providerName ?? provider,
           },
-          { signal: controller.signal },
+          { signal: controller.signal, context: { isCurrent: current } },
         );
       } else if (apiKey) {
         connection = await rpc.models.connect(
@@ -528,7 +570,7 @@ export function OnboardingPage() {
             thinkingLevel: stagedThinkingLevel(),
             label: selected?.providerName ?? provider,
           },
-          { signal: controller.signal },
+          { signal: controller.signal, context: { isCurrent: current } },
         );
       }
       if (!current()) return;
@@ -550,7 +592,7 @@ export function OnboardingPage() {
             expectedRevision: connection.connectionRevision,
             thinkingLevel: level,
           },
-          { signal: controller.signal },
+          { signal: controller.signal, context: { isCurrent: current } },
         );
       }
       if (!current()) return;
@@ -803,7 +845,7 @@ export function OnboardingPage() {
                     <Trans>Model</Trans>
                   </span>
                   <Select
-                    value={selected?.id ?? modelId}
+                    value={modelsForProvider.some((entry) => entry.id === modelId) ? modelId : ""}
                     onValueChange={(value) => {
                       if (typeof value !== "string" || !value) return;
                       if (value === modelId) return;
@@ -826,6 +868,11 @@ export function OnboardingPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {unconfirmedDraft ? (
+                    <p className="mt-2 text-sm text-muted-foreground" role="status">
+                      <Trans>Confirm this model for the current API key, or choose another.</Trans>
+                    </p>
+                  ) : null}
                   {catalogThinkingLevels.length ? (
                     <div className="mt-4 block">
                       <span className="font-medium">

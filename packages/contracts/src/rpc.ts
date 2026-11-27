@@ -120,6 +120,7 @@ import {
   ModelBackupListSchema,
   ModelCatalogEntrySchema,
   ModelCatalogProbeInputSchema,
+  ModelCatalogProbeResultSchema,
   ModelConnectInferenceRejectionSchema,
   ModelConnectInputSchema,
   ModelConnectResultSchema,
@@ -465,11 +466,7 @@ export const appContract = {
         }),
       )
       .output(z.object({ models: z.array(z.string()) })),
-    probeCatalog: oc
-      .input(ModelCatalogProbeInputSchema)
-      .output(
-        z.object({ models: z.array(z.string()), catalogUpdated: z.literal(true).optional() }),
-      ),
+    probeCatalog: oc.input(ModelCatalogProbeInputSchema).output(ModelCatalogProbeResultSchema),
     probeInference: oc
       .input(ModelInferenceProbeInputSchema)
       .output(z.object({ status: ModelInferenceProbeStatusSchema })),

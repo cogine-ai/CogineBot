@@ -3,6 +3,7 @@ import { Plural, Trans, useLingui } from "@lingui/react/macro";
 import type {
   Me,
   ModelApiProtocol,
+  ModelCatalogProbeResult,
   ModelCredentialReference,
   ModelHeaderRow,
   ThinkingDefaults,
@@ -50,6 +51,7 @@ import {
   selectedModelDirectoryStatus,
   toggleEnabledModelId,
   withConnectionCatalogModels,
+  withDraftCatalogModels,
 } from "@rakazo/core";
 import {
   AlertDialog,
@@ -95,7 +97,7 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpcRecoveryScopeKey, selectedSpaceId } from "../lib/rpc";
 import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorCode, errorText } from "../lib/user-error";
@@ -145,6 +147,11 @@ export function ModelSettingsOverlay({
   modelIdRef.current = modelId;
   const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
+  const [draftDirectory, setDraftDirectory] = useState<{
+    ids: string[];
+    retainedId?: string;
+    scopeKey: string;
+  }>();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -365,6 +372,7 @@ export function ModelSettingsOverlay({
       }
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
+      setDraftDirectory(undefined);
       setProvider(nextProvider);
       setConnectionId(nextCredential?.id ?? null);
       setConnectionRevision(nextCredential?.connectionRevision);
@@ -474,12 +482,15 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
-  const connectionCatalog = withConnectionCatalogModels(
-    catalog,
-    credential,
-    connectionRevision,
-    apiKey,
-  );
+  const connectionCatalog =
+    !connectionId && apiKey.trim() && draftDirectory?.scopeKey === rpcRecoveryScopeKey()
+      ? withDraftCatalogModels(
+          catalog,
+          provider,
+          draftDirectory.ids,
+          draftDirectory.retainedId === modelId ? modelId : undefined,
+        )
+      : withConnectionCatalogModels(catalog, credential, connectionRevision, apiKey);
   const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -559,11 +570,13 @@ export function ModelSettingsOverlay({
     displayedEffort && activeLevels.some((level) => level !== "off")
       ? thinkingLevelLabel(displayedEffort)
       : null;
+  const unconfirmedDraft = selected?.draftCatalogModel === "unconfirmed";
   const directoryStatus = selectedModelDirectoryStatus(
     credential,
     connectionRevision,
     selected?.id,
     apiKey,
+    unconfirmedDraft,
   );
   const needsModelConfirmation = directoryStatus?.confirmationRequired === true;
   const cannotConfirmModel =
@@ -684,6 +697,10 @@ export function ModelSettingsOverlay({
 
   function updateApiKey(nextApiKey: string) {
     selectionRevisionRef.current += 1;
+    if (nextApiKey.trim() !== apiKey.trim()) {
+      setDraftDirectory(undefined);
+      if (selected?.draftCatalogModel) setModelId("");
+    }
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -743,6 +760,7 @@ export function ModelSettingsOverlay({
     setCompatibleQuery("");
     detailScrollRef.current?.scrollTo({ top: 0 });
     setApiKey("");
+    setDraftDirectory(undefined);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
     setError(null);
@@ -829,8 +847,17 @@ export function ModelSettingsOverlay({
         : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
+    const scopeKey = rpcRecoveryScopeKey();
     const isCurrent = () =>
-      preflightStillCurrent(revision) && spaceGeneration === currentSpaceSelectionGeneration();
+      preflightStillCurrent(revision) &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      scopeKey === rpcRecoveryScopeKey();
+    const discardStaleResult = () => {
+      if (isCurrent()) return false;
+      if (mountedRef.current && revision === preflightRevisionRef.current)
+        setPreflightTesting(false);
+      return true;
+    };
     setPreflightTarget(kind);
     setPreflightTesting(true);
     setPreflightSuccess(null);
@@ -851,13 +878,13 @@ export function ModelSettingsOverlay({
               : errorText(error, modelInferenceTestMessage("unavailable")),
         }),
       );
-      if (!isCurrent()) return;
+      if (discardStaleResult()) return;
       setPreflightTesting(false);
       if (feedback.accepted) setPreflightSuccess(feedback.message);
       else setPreflightFailure({ outcome: "unknown", message: feedback.message });
       return;
     }
-    let catalogUpdated = false;
+    let directory: ModelCatalogProbeResult | undefined;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
@@ -865,17 +892,22 @@ export function ModelSettingsOverlay({
       catalogProbe: true,
       catalogRequest: request,
       probeCatalog: async (input) => {
-        const response = await rpc.models.probeCatalog(input);
-        catalogUpdated = response.catalogUpdated === true;
-        return response;
+        directory = await rpc.models.probeCatalog(input);
+        return directory;
       },
     });
-    if (!isCurrent()) return;
-    if (catalogUpdated && "credentialId" in request) {
+    if (discardStaleResult()) return;
+    if (!connectionId && "apiKey" in request && directory)
+      setDraftDirectory({
+        ids: directory.draftModelIds ?? [],
+        retainedId: selected.draftCatalogModel ? selected.id : undefined,
+        scopeKey,
+      });
+    if (directory?.catalogUpdated && "credentialId" in request) {
       const applied = await refresh(request.credentialId, { keepForm: true }).catch(
         () => undefined,
       );
-      if (!isCurrent()) return;
+      if (discardStaleResult()) return;
       if (!applied) {
         setPreflightTesting(false);
         setPreflightFailure({ outcome: "unknown", message: t`Could not load model settings` });
@@ -1670,6 +1702,7 @@ export function ModelSettingsOverlay({
             disabled={
               busy ||
               preflightTesting ||
+              unconfirmedDraft ||
               !cloudflareRoutingReady ||
               (!builtinLimitSave && apiKey.trim().length < 8)
             }

@@ -27,6 +27,7 @@ const models = vi.hoisted(() => ({
   setDefault: vi.fn(),
   saveModelSettings: vi.fn(),
   probeCatalog: vi.fn(),
+  probeInference: vi.fn(),
   probeOpenAiCompatible: vi.fn(),
   beginOAuth: vi.fn(),
   chatgptProfiles: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("../lib/rpc", () => {
   const client = { models, me: vi.fn() };
   return {
     currentSpaceSelectionGeneration: () => scope.generation,
+    rpcRecoveryScopeKey: () => JSON.stringify([scope.generation, scope.spaceId]),
     selectedSpaceId: () => scope.spaceId,
     rpc: client,
     createSpaceRpc: () => client,
@@ -1564,6 +1566,47 @@ it.each(["before readback", "during readback"] as const)(
         expectedRevision: 8,
       });
       expect(view.container.textContent).toContain("No models listed.");
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+
+it.each(["catalog", "inference"] as const)(
+  "clears a stale %s check without applying its result after a Space switch",
+  async (kind) => {
+    models.list.mockResolvedValue([
+      { ...deepseekEntry, catalogProbe: true, savedCatalogProbe: true, inferenceProbe: true },
+    ]);
+    models.credentials.mockResolvedValue([
+      {
+        id: "saved-key",
+        provider: "deepseek",
+        label: "DeepSeek key",
+        hasKey: true,
+        isDefault: true,
+        authKind: "api_key",
+        modelId: "deepseek-chat",
+        connectionRevision: 7,
+      } satisfies ModelCredential,
+    ]);
+    const pending = deferred<{ models: string[] } | { status: "accepted" }>();
+    const probe = kind === "catalog" ? models.probeCatalog : models.probeInference;
+    probe.mockReturnValueOnce(pending.promise);
+    const view = await renderSettings();
+    const check = () =>
+      buttons(view.container, kind === "catalog" ? "Check models" : "Test model")[0]!;
+    try {
+      await act(async () => check().click());
+      expect(probe).toHaveBeenCalledOnce();
+      expect(buttons(view.container, "Testing…")[0]?.disabled).toBe(true);
+      scope.generation += 2;
+      await act(async () =>
+        pending.resolve(kind === "catalog" ? { models: [] } : { status: "accepted" }),
+      );
+      expect(check().disabled).toBe(false);
+      expect(view.container.textContent).not.toContain("No models listed.");
+      expect(view.container.textContent).not.toContain("accepted the test request");
     } finally {
       await view.unmount();
     }

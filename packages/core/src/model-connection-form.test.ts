@@ -11,6 +11,7 @@ import {
   prioritizeProviderListedModels,
   selectedModelDirectoryStatus,
   withConnectionCatalogModels,
+  withDraftCatalogModels,
 } from "./model-connection-form.js";
 
 const catalog = [
@@ -23,6 +24,36 @@ const catalog = [
   { provider: "openrouter", id: "jev" },
 ];
 const COMPATIBLE = "openai-compatible";
+
+it("tests a draft directory model only with that unsaved API key", () => {
+  const base = {
+    id: "gpt-base",
+    provider: "openai",
+    label: "Base",
+    billing: "API",
+    inferenceProbe: true as const,
+  };
+  const modelId = "gpt-fixture-first-choice";
+  const choices = withDraftCatalogModels([base], base.provider, [base.id, modelId]);
+  expect(choices.map(({ id }) => id)).toEqual([base.id, modelId]);
+  const draft = choices[1];
+  expect(draft).toMatchObject({ images: false, reasoning: false, thinkingLevels: ["off"] });
+  expect(modelInferenceProbeInput(draft, "fixture-draft-key", undefined, undefined)).toEqual({
+    provider: base.provider,
+    modelId,
+    apiKey: "fixture-draft-key",
+  });
+  expect(modelInferenceProbeInput(draft, "", undefined, undefined)).toBeUndefined();
+  const [, retained] = withDraftCatalogModels([base], base.provider, [], modelId);
+  expect(retained).toMatchObject({ id: modelId, draftCatalogModel: "unconfirmed" });
+  expect(
+    modelInferenceProbeInput(retained, "fixture-draft-key", undefined, undefined),
+  ).toBeUndefined();
+  expect(
+    withDraftCatalogModels([{ ...base, inferenceProbe: undefined }], base.provider, [modelId])[1]
+      ?.inferenceProbe,
+  ).toBeUndefined();
+});
 
 function credential(overrides: Partial<ModelCredential> = {}): ModelCredential {
   return {
