@@ -83,6 +83,14 @@ export function isOfficialAnthropicProbeModel(
   );
 }
 
+export function isOpenRouterMessagesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
+  return (
+    model.provider === "openrouter" &&
+    model.api === "anthropic-messages" &&
+    model.baseUrl === "https://openrouter.ai/api"
+  );
+}
+
 /** Claude 4.5 aliases address the same model family as their dated snapshots. */
 export function anthropicModelAlias(id: string): string | undefined {
   return /^(claude-(?:haiku|sonnet|opus)-4-5)-\d{8}$/.exec(id)?.[1];
@@ -206,14 +214,7 @@ function providerCatalogRoute(provider: string, models: Models): CatalogRoute | 
   // registration and require the remaining siblings to use the official Chat route.
   const siblings =
     provider === "openrouter"
-      ? registered?.filter(
-          (model) =>
-            !(
-              model.provider === provider &&
-              model.api === "anthropic-messages" &&
-              model.baseUrl === "https://openrouter.ai/api"
-            ),
-        )
+      ? registered?.filter((model) => !isOpenRouterMessagesModel(model))
       : registered;
   if (
     !siblings?.length ||

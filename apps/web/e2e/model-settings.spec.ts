@@ -2426,13 +2426,21 @@ test("tests model access with the selected saved or draft API key", async ({ pag
   ).toBeInViewport({ ratio: 1 });
 });
 
-for (const { provider, providerName, modelId, rejection, rejectionText } of [
+for (const { provider, providerName, modelId, rejection, rejectionText, protocol } of [
   {
     provider: "openrouter",
     providerName: "OpenRouter",
     modelId: "openai/gpt-oss-120b",
     rejection: "credit",
     rejectionText: /credit limit/,
+  },
+  {
+    provider: "openrouter",
+    providerName: "OpenRouter",
+    modelId: "anthropic/claude-sonnet-4.6",
+    rejection: "spending",
+    rejectionText: /spending limit/,
+    protocol: "Messages",
   },
   {
     provider: "groq",
@@ -2470,7 +2478,8 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     rejectionText: /credit limit/,
   },
 ] as const) {
-  test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
+  const testLabel = protocol ? `${providerName} ${protocol}` : providerName;
+  test(`offers the ${testLabel} model test and checks the replacement key before saving`, async ({
     page,
   }, testInfo) => {
     await signup(
@@ -2541,7 +2550,8 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     await expect(
       settings.getByRole("status").filter({ hasText: "accepted the test request" }),
     ).toBeInViewport({ ratio: 0.98 });
-    await captureScreenshot(page, testInfo, `a1-${provider}-model-test-accepted`);
+    const screenshotPrefix = protocol ? `${provider}-${protocol.toLowerCase()}` : provider;
+    await captureScreenshot(page, testInfo, `a1-${screenshotPrefix}-model-test-accepted`);
 
     const draft = settings.getByLabel("Replace API key", { exact: true });
     const newKey = "fixture-gateway-replacement-key";

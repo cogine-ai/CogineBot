@@ -3407,6 +3407,17 @@ describe("model credential persistence", () => {
       transient: { code: 402, metadata: { limit_source: "openrouter_in_flight_budget" } },
     },
     {
+      provider: "openrouter",
+      modelId: "anthropic/claude-sonnet-4.6",
+      endpoint: "https://openrouter.ai/api/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"type":"message","id":"msg-fixture","role":"assistant","model":"anthropic/claude-sonnet-4.6"}}\n\n',
+      rejection: { code: 403, metadata: { limit_source: "openrouter_key_limit" } },
+      distinctFailure: "spending",
+      transient: { code: 402, metadata: { limit_source: "openrouter_in_flight_budget" } },
+    },
+    {
       provider: "groq",
       modelId: "openai/gpt-oss-120b",
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
@@ -3423,8 +3434,17 @@ describe("model credential persistence", () => {
       transient: { code: 429 },
     },
   ])(
-    "tests and connects a $provider model using exactly the draft credential",
-    async ({ provider, modelId, endpoint, rejection, distinctFailure, transient }) => {
+    "tests and connects a $provider $modelId model using exactly the draft credential",
+    async ({
+      provider,
+      modelId,
+      endpoint,
+      acceptedFrame,
+      keyHeader,
+      rejection,
+      distinctFailure,
+      transient,
+    }) => {
       const { deps, tx } = persistDeps();
       const model = listPiCatalog().find(
         (entry) => entry.provider === provider && entry.id === modelId,
@@ -3439,7 +3459,8 @@ describe("model credential persistence", () => {
         .fn<typeof globalThis.fetch>()
         .mockResolvedValueOnce(
           new Response(
-            'data: {"id":"gen-fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: [DONE]\n\n',
+            acceptedFrame ??
+              'data: {"id":"gen-fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: [DONE]\n\n',
             { headers: { "content-type": "text/event-stream" } },
           ),
         )
@@ -3478,7 +3499,12 @@ describe("model credential persistence", () => {
       for (const [url, init] of fetch.mock.calls) {
         const request = new Request(url, init);
         expect(request.url).toBe(endpoint);
-        expect(request.headers.get("authorization")).toBe(`Bearer ${input.apiKey}`);
+        if (keyHeader) {
+          expect(request.headers.get(keyHeader)).toBe(input.apiKey);
+          expect(request.headers.has("authorization")).toBe(false);
+        } else {
+          expect(request.headers.get("authorization")).toBe(`Bearer ${input.apiKey}`);
+        }
         expect(await request.json()).toMatchObject({ model: model.id });
       }
       expect(deps.secrets.put).toHaveBeenCalledOnce();

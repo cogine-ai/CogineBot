@@ -11,6 +11,7 @@ import {
   isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
+  isOpenRouterMessagesModel,
 } from "./pi-live-model.js";
 import { LOCAL_PROVIDER_ID, registerLocalProvider } from "./pi-local-provider.js";
 import { loadProviderOAuth, SUBSCRIPTION_SIGN_IN_PROVIDERS } from "./pi-oauth.js";
@@ -181,6 +182,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
           isOfficialGeminiProbeModel(model) ||
+          isOpenRouterMessagesModel(model) ||
           (probeBaseUrl &&
             (isOfficialResponsesModel(model) ||
               isOfficialXaiResponsesProbeModel(model) ||

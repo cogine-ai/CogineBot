@@ -12,6 +12,7 @@ const openRouterInput = {
   modelId: openRouterModel.id,
   apiKey: "fixture-gateway-key",
 };
+const openRouterMessagesInput = { ...openRouterInput, modelId: "anthropic/claude-sonnet-4.6" };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
 const groqDirectoryInput = {
   ...groqInput,
@@ -977,6 +978,142 @@ describe("model inference check", () => {
     expect(await probeModelInference(groqInput, { fetch })).toBe("model");
     expect(fetch).toHaveBeenCalledOnce();
   });
+
+  it("tests a registered OpenRouter Claude model on its Messages route with the selected key", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
+    vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
+    vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+    vi.stubEnv("ANTHROPIC_LOG", "debug");
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const selected = listPiCatalog().find(
+      (entry) => entry.provider === "openrouter" && entry.id === openRouterMessagesInput.modelId,
+    );
+    expect(selected?.inferenceProbe).toBe(true);
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            `: processing\n\n${anthropicStart.replace(anthropicInput.modelId, openRouterMessagesInput.modelId)}`,
+          ),
+        );
+      },
+      cancel,
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://openrouter.ai/api/v1/messages");
+    expect(request.redirect).toBe("error");
+    expect(Object.fromEntries(request.headers)).toEqual({
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "x-api-key": openRouterMessagesInput.apiKey,
+    });
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("fixture-ambient-header");
+    expect(await request.json()).toEqual({
+      model: selected?.id,
+      system: "Reply with OK.",
+      messages: [{ role: "user", content: "OK?" }],
+      stream: true,
+      max_tokens: 1024,
+      tools: [
+        {
+          name: "noop",
+          description: "Does nothing.",
+          input_schema: { type: "object", properties: {} },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    [": processing\n\n", "unavailable"],
+    [anthropicStart, "unavailable"],
+    ['event: error\ndata: {"type":"error","error":{"type":"permission_error"}}\n\n', "model"],
+    ['event: error\ndata: {"type":"error","error":{"type":"authentication_error"}}\n\n', "auth"],
+    ['event: error\ndata: {"type":"error","error":{"type":"rate_limit_error"}}\n\n', "rate"],
+    ['event: error\ndata: {"type":"error","error":{"type":"billing_error"}}\n\n', "unavailable"],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"billing_error","error_type":"payment_required","message":"Payment required"}}\n\n',
+      "credit",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"billing_error","error_type":"payment_required","metadata":{"limit_source":"openrouter_in_flight_budget"}}}\n\n',
+      "rate",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","error_type":"timeout","message":"Provider did not finish"}}\n\n',
+      "timeout",
+    ],
+  ] as const)(
+    "handles an OpenRouter Messages stream before a matching acceptance: %s",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("recognizes a native OpenRouter Messages credit refusal before streaming", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json(
+        { type: "error", error: { type: "billing_error", error_type: "payment_required" } },
+        { status: 402 },
+      ),
+    );
+    expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("credit");
+  });
+
+  it.each([
+    ["permission_denied", "permission_error"],
+    ["refusal", "invalid_request_error"],
+    ["content_policy_violation", "invalid_request_error"],
+  ])(
+    "treats a native OpenRouter Messages %s as a model refusal on HTTP and SSE",
+    async (errorType, nativeType) => {
+      const envelope = {
+        type: "error",
+        error: { type: nativeType, error_type: errorType, message: "Invalid prompt" },
+      };
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(Response.json(envelope, { status: 403 }))
+        .mockResolvedValueOnce(
+          new Response(`event: error\ndata: ${JSON.stringify(envelope)}\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(envelope, { status: 429 }));
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("model");
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("model");
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("rate");
+      expect(fetch).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each([
+    [402, "openrouter_in_flight_budget", "rate"],
+    [402, "openrouter_credits", "credit"],
+    [403, "openrouter_guardrail_budget", "spending"],
+    [402, undefined, "unavailable"],
+    [504, undefined, "timeout"],
+  ] as const)(
+    "classifies OpenRouter Messages HTTP %i with limit source %s",
+    async (status, source, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error: { code: status, metadata: { limit_source: source } } }, { status }),
+      );
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [401, "Invalid API key", "auth"],
