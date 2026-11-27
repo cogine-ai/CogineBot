@@ -2457,6 +2457,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /cannot use the selected model/,
   },
   {
+    provider: "cerebras",
+    providerName: "Cerebras",
+    modelId: "qwen-3.8-27b",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

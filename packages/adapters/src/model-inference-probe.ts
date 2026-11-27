@@ -11,8 +11,8 @@ import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiProbeModel,
+  isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
-  isOfficialTogetherChatModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
@@ -55,7 +55,8 @@ export async function probeModelInference(
     (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
   if (builtIn && isOpenRouterMessagesModel(model))
     return probeOpenRouterMessages(model, apiKey, options);
-  if (builtIn && isOfficialTogetherChatModel(model)) return probeTogether(model, apiKey, options);
+  if (builtIn && isOfficialNativeChatProbeModel(model))
+    return probeNativeChatCompletions(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
     return probeGemini(model, apiKey, options);
   const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
@@ -269,13 +270,18 @@ async function probeOpenRouterMessages(
   );
 }
 
-async function probeTogether(
-  model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
+async function probeNativeChatCompletions(
+  model: Pick<Model<Api>, "provider" | "id" | "baseUrl" | "maxTokens">,
   apiKey: string,
   options: ProbeOptions,
 ): Promise<ModelInferenceProbeStatus> {
+  const cerebras = model.provider === "cerebras";
+  const maxTokens = Math.min(model.maxTokens, OUTPUT_LIMIT);
+  const streamFailure: StreamFailureClassifier = cerebras
+    ? () => "unavailable"
+    : nativeChatFailureStatus;
   // The SDK can inherit deployment-level headers. Send only the selected key
-  // and request content type to the fixed Together endpoint.
+  // and request content type to the fixed provider endpoint.
   return await probeNativeEventStream(
     `${model.baseUrl}/chat/completions`,
     { authorization: `Bearer ${apiKey}` },
@@ -295,20 +301,29 @@ async function probeTogether(
           },
         },
       ],
-      max_tokens: Math.min(model.maxTokens, OUTPUT_LIMIT),
+      ...(cerebras ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
       stream: true,
     },
     options,
-    togetherFailureStatus,
-    (frame, event) =>
-      chatCompletionChunkOutcome(frame, togetherFailureStatus, event === "error", true, {
+    nativeChatFailureStatus,
+    (frame, event) => {
+      if (cerebras) {
+        const record = probeRecord(frame);
+        // The SDK's stream-error envelope carries a numeric HTTP-equivalent
+        // status. Its nested error code is not a status.
+        const status = record?.status_code;
+        if (typeof status === "number" && probeRecord(record?.error))
+          return nativeChatFailureStatus(undefined, httpErrorStatusNumber(status));
+      }
+      return chatCompletionChunkOutcome(frame, streamFailure, event === "error", true, {
         modelId: model.id,
-        extraFinishReason: "eos",
-      }),
+        ...(cerebras ? { requireModelId: true } : { extraFinishReason: "eos" }),
+      });
+    },
   );
 }
 
-function togetherFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+function nativeChatFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
   switch (status ?? errorHttpStatus(error)) {
     case 401:
       return "auth";
@@ -515,7 +530,7 @@ function chatCompletionChunkOutcome(
   classifyFailure: StreamFailureClassifier,
   isErrorEvent: boolean,
   requireOutput: boolean,
-  responseContract?: { modelId: string; extraFinishReason: string },
+  responseContract?: { modelId: string; extraFinishReason?: string; requireModelId?: true },
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
   const choices = "choices" in event && Array.isArray(event.choices) ? event.choices : undefined;
@@ -530,13 +545,10 @@ function chatCompletionChunkOutcome(
     "id" in event &&
     typeof event.id === "string" &&
     Boolean(event.id.trim());
-  if (
-    responseContract &&
-    isCompletionChunk &&
-    "model" in event &&
-    event.model !== responseContract.modelId
-  )
-    return typeof event.model === "string" && event.model.trim() ? "model" : "unavailable";
+  if (responseContract && isCompletionChunk && "model" in event) {
+    if (event.model !== responseContract.modelId)
+      return typeof event.model === "string" && event.model.trim() ? "model" : "unavailable";
+  }
   const finish = choice?.finish_reason;
   if (
     finish != null &&
@@ -547,6 +559,7 @@ function chatCompletionChunkOutcome(
   const delta = choice?.delta;
   if (
     isCompletionChunk &&
+    (!responseContract?.requireModelId || "model" in event) &&
     delta &&
     typeof delta === "object" &&
     ((!requireOutput && delta.role === "assistant") ||
