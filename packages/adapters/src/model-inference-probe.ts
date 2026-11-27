@@ -734,6 +734,13 @@ function openRouterMessagesFailureStatus(
     if (status === 402) return "unavailable";
   }
   if ((status === undefined || status >= 500) && record?.error_type === "timeout") return "timeout";
+  if (
+    (status === undefined || status === 403) &&
+    (record?.error_type === "permission_denied" ||
+      record?.error_type === "refusal" ||
+      record?.error_type === "content_policy_violation")
+  )
+    return "model";
   if (status === undefined && record?.type !== "billing_error") {
     const outcome = anthropicFailureStatus(error);
     if (outcome !== "unavailable") return outcome;

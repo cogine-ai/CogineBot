@@ -1072,6 +1072,33 @@ describe("model inference check", () => {
   });
 
   it.each([
+    ["permission_denied", "permission_error"],
+    ["refusal", "invalid_request_error"],
+    ["content_policy_violation", "invalid_request_error"],
+  ])(
+    "treats a native OpenRouter Messages %s as a model refusal on HTTP and SSE",
+    async (errorType, nativeType) => {
+      const envelope = {
+        type: "error",
+        error: { type: nativeType, error_type: errorType, message: "Invalid prompt" },
+      };
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(Response.json(envelope, { status: 403 }))
+        .mockResolvedValueOnce(
+          new Response(`event: error\ndata: ${JSON.stringify(envelope)}\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(envelope, { status: 429 }));
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("model");
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("model");
+      expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("rate");
+      expect(fetch).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each([
     [402, "openrouter_in_flight_budget", "rate"],
     [402, "openrouter_credits", "credit"],
     [403, "openrouter_guardrail_budget", "spending"],
