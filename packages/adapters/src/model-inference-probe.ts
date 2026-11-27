@@ -276,10 +276,15 @@ async function probeNativeChatCompletions(
   options: ProbeOptions,
 ): Promise<ModelInferenceProbeStatus> {
   const cerebras = model.provider === "cerebras";
+  const moonshot = model.provider === "moonshotai" || model.provider === "moonshotai-cn";
+  const classifyFailure = moonshot ? moonshotFailureStatus : nativeChatFailureStatus;
   const maxTokens = Math.min(model.maxTokens, OUTPUT_LIMIT);
+  // For Moonshot, only the HTTP response supplies a trustworthy numeric status.
   const streamFailure: StreamFailureClassifier = cerebras
     ? () => "unavailable"
-    : nativeChatFailureStatus;
+    : moonshot
+      ? (error) => moonshotFailureStatus(error)
+      : nativeChatFailureStatus;
   // The SDK can inherit deployment-level headers. Send only the selected key
   // and request content type to the fixed provider endpoint.
   return await probeNativeEventStream(
@@ -301,11 +306,11 @@ async function probeNativeChatCompletions(
           },
         },
       ],
-      ...(cerebras ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
+      ...(cerebras || moonshot ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }),
       stream: true,
     },
     options,
-    nativeChatFailureStatus,
+    classifyFailure,
     (frame, event) => {
       if (cerebras) {
         const record = probeRecord(frame);
@@ -317,7 +322,7 @@ async function probeNativeChatCompletions(
       }
       return chatCompletionChunkOutcome(frame, streamFailure, event === "error", true, {
         modelId: model.id,
-        ...(cerebras ? { requireModelId: true } : { extraFinishReason: "eos" }),
+        ...(cerebras || moonshot ? { requireModelId: true } : { extraFinishReason: "eos" }),
       });
     },
   );
@@ -338,6 +343,27 @@ function nativeChatFailureStatus(error: unknown, status?: number): ModelInferenc
     case 504:
     case 524:
       return "timeout";
+    default:
+      return "unavailable";
+  }
+}
+
+function moonshotFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+  const type = probeRecord(error)?.type;
+  // The provider uses 429 for both temporary throttling and exhausted quota.
+  if ((status === undefined || status === 429) && type === "exceeded_current_quota_error")
+    return "credit";
+  if (status !== undefined) return nativeChatFailureStatus(undefined, status);
+  switch (type) {
+    case "incorrect_api_key_error":
+    case "invalid_authentication_error":
+      return "auth";
+    case "permission_denied_error":
+    case "resource_not_found_error":
+      return "model";
+    case "engine_overloaded_error":
+    case "rate_limit_reached_error":
+      return "rate";
     default:
       return "unavailable";
   }

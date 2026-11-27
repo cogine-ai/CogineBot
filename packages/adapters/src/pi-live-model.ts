@@ -18,8 +18,12 @@ const openAiResponsesBaseUrl = "https://api.openai.com/v1";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
-const togetherCompletionsBaseUrl = "https://api.together.ai/v1";
-const cerebrasCompletionsBaseUrl = "https://api.cerebras.ai/v1";
+const nativeChatProbeBaseUrls = new Map([
+  ["together", "https://api.together.ai/v1"],
+  ["cerebras", "https://api.cerebras.ai/v1"],
+  ["moonshotai", "https://api.moonshot.ai/v1"],
+  ["moonshotai-cn", "https://api.moonshot.cn/v1"],
+]);
 const anthropicMessagesBaseUrl = "https://api.anthropic.com";
 const nonChatVariant =
   /(?:^|[/._:-])(?:guard|safeguard|compound|imagine|orpheus|voice|live)(?:[/._:-]|$)/i;
@@ -81,8 +85,7 @@ export function isOfficialNativeChatProbeModel(
   return (
     model.api === "openai-completions" &&
     isChatModelId(model.id) &&
-    ((model.provider === "together" && model.baseUrl === togetherCompletionsBaseUrl) ||
-      (model.provider === "cerebras" && model.baseUrl === cerebrasCompletionsBaseUrl))
+    model.baseUrl === nativeChatProbeBaseUrls.get(model.provider)
   );
 }
 
