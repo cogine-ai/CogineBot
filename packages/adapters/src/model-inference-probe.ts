@@ -11,6 +11,7 @@ import {
   isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
+  supportsProviderCatalogModels,
 } from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
@@ -47,7 +48,8 @@ export async function probeModelInference(
   const builtIn = Boolean(models.getModel(model.provider, model.id));
   if (builtIn && isOfficialGeminiProbeModel(model)) return probeGemini(model, apiKey, options);
   const chatCompletions =
-    (builtIn || (model.provider === "deepseek" && input.providerCatalogModel === true)) &&
+    (builtIn ||
+      (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider))) &&
     isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);

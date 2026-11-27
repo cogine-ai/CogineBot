@@ -13,6 +13,11 @@ const openRouterInput = {
   apiKey: "fixture-gateway-key",
 };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
+const groqDirectoryInput = {
+  ...groqInput,
+  modelId: "fixture-vendor/chat-new",
+  providerCatalogModel: true,
+} as const;
 const deepseekInput = {
   provider: "deepseek",
   modelId: "deepseek-flash",
@@ -671,6 +676,7 @@ describe("model inference check", () => {
   it.each([
     [openRouterInput, "https://openrouter.ai/api/v1/chat/completions"],
     [groqInput, "https://api.groq.com/openai/v1/chat/completions"],
+    [groqDirectoryInput, "https://api.groq.com/openai/v1/chat/completions"],
   ] as const)(
     "waits for a model chunk on $0.provider and aborts a single bounded tool request",
     async (input, endpoint) => {
@@ -709,6 +715,11 @@ describe("model inference check", () => {
       const limit = payload.max_completion_tokens ?? payload.max_tokens;
       expect(limit).toBeGreaterThan(0);
       expect(limit).toBeLessThanOrEqual(1024);
+      if (input === groqDirectoryInput) {
+        expect(payload.max_completion_tokens).toBe(1024);
+        expect(payload).not.toHaveProperty("store");
+        expect(payload).not.toHaveProperty("reasoning_effort");
+      }
     },
   );
 
@@ -1221,6 +1232,18 @@ describe("model inference check", () => {
     expect(
       await probeModelInference({ ...groqInput, modelId: "fixture/unknown-model" }, { fetch }),
     ).toBe("unavailable");
+    for (const modelId of [
+      safeguard,
+      "fixture-vendor/prompt-guard-2",
+      "groq/compound-mini",
+      "canopylabs/orpheus-arabic-saudi",
+      "canopylabs/orpheus-v1-english",
+      "whisper-large-v3-turbo",
+    ]) {
+      expect(await probeModelInference({ ...groqDirectoryInput, modelId }, { fetch })).toBe(
+        "unavailable",
+      );
+    }
     expect(await probeModelInference({ ...input, provider: "openrouter" }, { fetch })).toBe(
       "unavailable",
     );
