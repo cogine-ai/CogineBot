@@ -237,6 +237,42 @@ describe("model inference check", () => {
     },
   );
 
+  it.each([
+    [geminiInput, 401, "auth"],
+    [geminiInput, 402, "credit"],
+    [geminiInput, 404, "model"],
+    [geminiInput, 429, "timeout"],
+    [geminiInput, 503, "timeout"],
+    [input, 401, "auth"],
+    [input, 402, "credit"],
+    [deepseekInput, 403, "model"],
+    [deepseekInput, 429, "timeout"],
+  ] as const)(
+    "keeps the HTTP refusal from %j (%i) when its error body stalls",
+    async (target, status, outcome) => {
+      const deadline = new AbortController();
+      vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
+      let startedReading = () => {};
+      const reading = new Promise<void>((resolve) => {
+        startedReading = resolve;
+      });
+      const cancel = vi.fn();
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(new ReadableStream({ pull: startedReading, cancel }, { highWaterMark: 0 }), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      const pending = probeModelInference(target, { fetch });
+      await reading;
+      deadline.abort();
+      await expect(pending).resolves.toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(["deepseek-flash", "deepseek-v4-pro"])(
     "probes the registered DeepSeek model %s",
     async (modelId) => {

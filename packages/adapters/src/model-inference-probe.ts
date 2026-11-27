@@ -121,6 +121,9 @@ export async function probeModelInference(
             throw new Error("Model test transport failed");
           }
           if (!response.ok) {
+            rejected = readFrames
+              ? classifyFailure(undefined, response.status)
+              : failureStatus("", apiKey, response.status);
             const { body, error } = await readProbeError(response, signal);
             rejected = readFrames
               ? classifyFailure(error, response.status)
@@ -177,8 +180,21 @@ export async function probeModelInference(
   }
   options.signal?.throwIfAborted();
   if (accepted) return "accepted";
+  if (rejected) return failureAtDeadline(rejected, deadline);
   if (deadline.aborted) return "timeout";
-  return rejected ?? failureStatus(errorDetail, apiKey);
+  return failureStatus(errorDetail, apiKey);
+}
+
+function failureAtDeadline(status: ModelInferenceProbeStatus, deadline: AbortSignal) {
+  if (
+    deadline.aborted &&
+    status !== "auth" &&
+    status !== "model" &&
+    status !== "credit" &&
+    status !== "spending"
+  )
+    return "timeout";
+  return status;
 }
 
 function isEventStream(response: Response): boolean {
@@ -205,6 +221,7 @@ async function probeGemini(
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const transport = options.fetch ?? globalThis.fetch;
+  let rejected: ModelInferenceProbeStatus = "unavailable";
   try {
     const response = await transport(
       `${model.baseUrl}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`,
@@ -231,6 +248,7 @@ async function probeGemini(
       },
     );
     if (!response.ok) {
+      rejected = geminiFailureStatus(undefined, apiKey, response.status);
       const { error } = await readProbeError(response, signal);
       return geminiFailureStatus(error, apiKey, response.status);
     }
@@ -244,7 +262,7 @@ async function probeGemini(
     );
   } catch {
     options.signal?.throwIfAborted();
-    return deadline.aborted ? "timeout" : "unavailable";
+    return failureAtDeadline(rejected, deadline);
   }
 }
 
