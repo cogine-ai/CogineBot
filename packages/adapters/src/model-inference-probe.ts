@@ -630,18 +630,13 @@ function chatCompletionFailureStatus(
   apiKey: string,
   status?: number,
 ): ModelInferenceProbeStatus {
-  const record = error && typeof error === "object" ? error : undefined;
-  const code = record && "code" in record ? record.code : undefined;
+  const record = probeRecord(error);
+  const code = record?.code;
+  const message = typeof error === "string" ? error : record?.message;
   if (provider === "deepseek") {
     status ??= errorHttpStatus(error);
     if (status === 402) return "credit";
     if (status === 429) return "rate";
-    const message =
-      typeof error === "string"
-        ? error
-        : record && "message" in record
-          ? record.message
-          : undefined;
     if (
       status === undefined &&
       (code === "insufficient_balance" ||
@@ -666,9 +661,7 @@ function chatCompletionFailureStatus(
     }
     if (
       status === 400 &&
-      record &&
-      "message" in record &&
-      typeof record.message === "string" &&
+      typeof record?.message === "string" &&
       /^(?:unsupported|unknown|unrecognized)[ _-]model\b(?![ :]+(?:parameters?|fields?|options?|settings?)\b)/i.test(
         record.message.trim(),
       )
@@ -676,8 +669,7 @@ function chatCompletionFailureStatus(
       return "model";
   }
   if (provider === "openrouter") {
-    const diagnostic = probeRecord(error);
-    const metadata = probeRecord(diagnostic?.metadata);
+    const metadata = probeRecord(record?.metadata);
     const source = metadata?.limit_source;
     if (
       status === 402 &&
@@ -695,13 +687,18 @@ function chatCompletionFailureStatus(
     if (status === 402) {
       if (source === "openrouter_credits") return "credit";
       // A 402 alone cannot distinguish exhausted credits from an in-flight budget limit.
-      const message = typeof error === "string" ? error : diagnostic?.message;
-      return typeof message === "string" &&
-        /^(?:insufficient credits|this request requires more credits)\b/i.test(
-          message.replaceAll(apiKey, "").trim(),
-        )
-        ? "credit"
-        : "unavailable";
+      if (typeof message !== "string") return "unavailable";
+      const detail = message.replaceAll(apiKey, "").trim();
+      if (/^(?:insufficient credits|this request requires more credits)\b/i.test(detail))
+        return "credit";
+      if (
+        /^(?:your )?(?:(?:(?:team|workspace|account|organi[sz]ation|(?:api )?key) )?(?:(?:daily|weekly|monthly) )?spending limit|(?:api )?key limit) (?:has been )?(?:reached|exceeded)\b/i.test(
+          detail,
+        ) ||
+        /^workspace (?:daily|weekly|monthly) budget of \$[\d,.]+ exceeded\b/i.test(detail)
+      )
+        return "spending";
+      return "unavailable";
     }
   }
   return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
