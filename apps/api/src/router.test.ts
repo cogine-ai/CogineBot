@@ -3522,6 +3522,63 @@ describe("model credential persistence", () => {
     },
   );
 
+  it.each(["first connection", "key replacement"] as const)(
+    "blocks Together %s when the stream names another model",
+    async (mode) => {
+      const { deps, tx } = persistDeps();
+      const provider = "together";
+      const apiKey = "fixture-together-draft";
+      const modelId = "openai/gpt-oss-120b";
+      const existing = { id: "fixture-connection", connectionRevision: 7, secretId: "fixture-key" };
+      const previousSecret = { id: existing.secretId, ciphertext: "fixture-ciphertext" };
+      const load = vi
+        .fn()
+        .mockResolvedValue(
+          serializeModelSecret({ kind: "api_key", key: "fixture-together-old-key" }),
+        );
+      if (mode === "key replacement") tx.userModelCredential.findFirst.mockResolvedValue(existing);
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"fixture/other-model","choices":[{"delta":{"role":"assistant"}}]}\n\n',
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      const handler = new RPCHandler(
+        createRouter({
+          ...deps,
+          prisma: {
+            ...deps.prisma,
+            secret: { ...deps.prisma.secret, findFirst: vi.fn().mockResolvedValue(previousSecret) },
+          },
+          secrets: { ...deps.secrets, load },
+          modelInferenceProbe: (model, options) =>
+            probeModelInference(model, { ...options, fetch }),
+        }),
+      );
+      const profile =
+        mode === "key replacement"
+          ? { credentialId: existing.id, expectedRevision: existing.connectionRevision }
+          : {};
+      const response = await call(handler, "models/connect", {
+        ...profile,
+        provider,
+        modelId,
+        apiKey,
+        verifyInference: true,
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).json).toMatchObject({ data: { inferenceStatus: "model" } });
+      expect(fetch).toHaveBeenCalledOnce();
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.headers.get("authorization")).toBe(`Bearer ${apiKey}`);
+      expect(await request.json()).toMatchObject({ model: modelId });
+      expect(deps.secrets.put).not.toHaveBeenCalled();
+      expect(tx.userModelCredential.update).not.toHaveBeenCalled();
+      expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    },
+  );
+
   it("blocks saving an OpenRouter connection on a readable spending refusal", async () => {
     const { deps, tx } = persistDeps();
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>

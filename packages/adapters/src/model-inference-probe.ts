@@ -518,12 +518,25 @@ function chatCompletionChunkOutcome(
   responseContract?: { modelId: string; extraFinishReason: string },
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
-  const choice = "choices" in event && Array.isArray(event.choices) ? event.choices[0] : undefined;
+  const choices = "choices" in event && Array.isArray(event.choices) ? event.choices : undefined;
+  const choice = choices?.[0];
   const error = ("error" in event ? event.error : undefined) ?? choice?.error;
   if (error || isErrorEvent)
     return classifyFailure(error ?? event, requireOutput ? errorHttpStatus(event) : undefined);
-  if (responseContract && "model" in event && event.model !== responseContract.modelId)
-    return "unavailable";
+  const isCompletionChunk =
+    choices !== undefined &&
+    "object" in event &&
+    event.object === "chat.completion.chunk" &&
+    "id" in event &&
+    typeof event.id === "string" &&
+    Boolean(event.id.trim());
+  if (
+    responseContract &&
+    isCompletionChunk &&
+    "model" in event &&
+    event.model !== responseContract.modelId
+  )
+    return typeof event.model === "string" && event.model.trim() ? "model" : "unavailable";
   const finish = choice?.finish_reason;
   if (
     finish != null &&
@@ -533,11 +546,7 @@ function chatCompletionChunkOutcome(
     return "unavailable";
   const delta = choice?.delta;
   if (
-    "object" in event &&
-    event.object === "chat.completion.chunk" &&
-    "id" in event &&
-    typeof event.id === "string" &&
-    event.id.trim() &&
+    isCompletionChunk &&
     delta &&
     typeof delta === "object" &&
     ((!requireOutput && delta.role === "assistant") ||

@@ -151,13 +151,19 @@ describe("model inference check", () => {
   });
 
   it.each([
-    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture/other-model" }), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture/other-model" }), "model"],
     [
       chatChunk([{ delta: { role: "assistant" } }], { model: "fixture/other-model" }) +
         chatChunk([{ delta: { content: "OK" } }]),
-      "unavailable",
+      "model",
     ],
     [chatChunk([{ delta: { content: "OK" } }]), "accepted"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: null }), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "" }), "unavailable"],
+    ['data: {"model":"fixture/other-model"}\n\n', "unavailable"],
+    [chatChunk([], { model: "fixture/other-model", choices: undefined }), "unavailable"],
+    [chatChunk([], { model: "fixture/other-model", choices: "malformed" }), "unavailable"],
+    [chatChunk([], { model: "fixture/other-model" }), "model"],
     [
       chatChunk([{ delta: { role: "assistant" } }], { model: togetherInput.modelId }),
       "unavailable",
