@@ -2478,6 +2478,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /rejected the API key/,
   },
   {
+    provider: "kimi-coding",
+    providerName: "Kimi For Coding",
+    modelId: "k3-256k",
+    rejection: "spending",
+    rejectionText: /spending limit/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

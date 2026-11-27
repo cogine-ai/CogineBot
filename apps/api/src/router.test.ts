@@ -3473,6 +3473,19 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429, type: "engine_overloaded_error" },
     },
+    {
+      provider: "kimi-coding",
+      modelId: "k3-256k",
+      endpoint: "https://api.kimi.com/coding/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"k3-256k","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\n',
+      rejection: {
+        message: "You've reached the Extra Usage limit set for your account by your organization.",
+      },
+      rejectionHttpStatus: 429,
+      distinctFailure: "spending",
+      transient: { code: 429, message: "You've reached your concurrent request limit." },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -3483,6 +3496,7 @@ describe("model credential persistence", () => {
       keyHeader,
       rejection,
       rejectionFrame,
+      rejectionHttpStatus,
       distinctFailure,
       transient,
     }) => {
@@ -3506,9 +3520,11 @@ describe("model credential persistence", () => {
           ),
         )
         .mockResolvedValueOnce(
-          new Response(`data: ${JSON.stringify(rejectionFrame ?? { error: rejection })}\n\n`, {
-            headers: { "content-type": "text/event-stream" },
-          }),
+          rejectionHttpStatus === undefined
+            ? new Response(`data: ${JSON.stringify(rejectionFrame ?? { error: rejection })}\n\n`, {
+                headers: { "content-type": "text/event-stream" },
+              })
+            : Response.json({ error: rejection }, { status: rejectionHttpStatus }),
         )
         .mockResolvedValueOnce(Response.json({ error: transient }, { status: transient.code }));
       const handler = new RPCHandler(
@@ -3560,6 +3576,7 @@ describe("model credential persistence", () => {
     ["cerebras", "qwen-3.8-27b", "key replacement"],
     ["moonshotai", "kimi-k3", "first connection"],
     ["moonshotai-cn", "kimi-k3", "key replacement"],
+    ["kimi-coding", "k3-256k", "key replacement"],
   ] as const)(
     "blocks %s %s %s when the stream names another model",
     async (provider, modelId, mode) => {
@@ -6666,9 +6683,12 @@ describe("saved model catalog checks", () => {
     expect(inference).not.toHaveBeenCalled();
   });
 
-  it("only probes the saved Grok connection when it owns an API key", async () => {
-    const { infer, inference, probe, state } = fixture(false, "xai");
-    const request = { ...savedInput, provider: "xai", modelId: "grok-4.7" };
+  it.each([
+    ["xai", "grok-4.7"],
+    ["kimi-coding", "k3-256k"],
+  ])("only probes the saved %s connection when it owns an API key", async (provider, modelId) => {
+    const { infer, inference, probe, state } = fixture(false, provider);
+    const request = { ...savedInput, provider, modelId };
     state.plaintext = serializeModelSecret({
       kind: "oauth",
       credential: {

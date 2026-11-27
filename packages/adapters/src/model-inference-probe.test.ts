@@ -29,6 +29,11 @@ const moonshotInput = {
   modelId: "kimi-k3",
   apiKey: "fixture-moonshot-key",
 };
+const kimiCodeInput = {
+  provider: "kimi-coding",
+  modelId: "k3-256k",
+  apiKey: "fixture-kimi-code-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -477,6 +482,122 @@ describe("model inference check", () => {
     await expect(
       probeModelInference(
         { ...moonshotInput, modelId: "fixture-extra-model", providerCatalogModel: true },
+        { fetch },
+      ),
+    ).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("checks a Kimi Code model on the registered endpoint with the selected key", async () => {
+    vi.stubEnv("KIMI_API_KEY", "fixture-deployment-key");
+    vi.stubEnv("OPENAI_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const cancel = vi.fn();
+    const body =
+      chatChunk([{ delta: { role: "assistant" } }], { model: kimiCodeInput.modelId }) +
+      chatChunk([{ delta: { reasoning_content: "Consider" } }], { model: kimiCodeInput.modelId }) +
+      chatChunk([{ delta: { content: "OK" } }], { model: "k3" });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(body));
+            },
+            cancel,
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    expect(await probeModelInference(kimiCodeInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(timeout).toHaveBeenCalledWith(15_000);
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://api.kimi.com/coding/v1/chat/completions");
+    expect(request.method).toBe("POST");
+    expect(request.redirect).toBe("error");
+    expect(Object.fromEntries(request.headers)).toEqual({
+      authorization: `Bearer ${kimiCodeInput.apiKey}`,
+      "content-type": "application/json",
+      "user-agent": "CogineBot",
+    });
+    expect(await request.json()).toEqual({
+      model: kimiCodeInput.modelId,
+      messages: [
+        { role: "system", content: "Reply with OK." },
+        { role: "user", content: "OK?" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "noop",
+            description: "Does nothing.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      max_tokens: 1024,
+      stream: true,
+    });
+  });
+
+  it.each([
+    [400, "Your model id does not exist, recognized as k3-256k.", "model"],
+    [400, "Invalid request: missing parameter.", "unavailable"],
+    [401, "Invalid Authentication", "auth"],
+    [403, "Your current subscription does not have access to k3-256k.", "model"],
+    [403, "We're unable to verify your membership benefits at this time.", "unavailable"],
+    [403, "Forbidden", "unavailable"],
+    [404, "Not found the model k3-256k or Permission denied", "model"],
+    [404, "method not found", "unavailable"],
+    [429, "You've reached your 5-hour usage limit.", "credit"],
+    [429, "You've reached your weekly (7-day) usage limit.", "credit"],
+    [429, "You've reached your monthly usage limit for this billing cycle.", "credit"],
+    [429, "Your credit balance is insufficient.", "credit"],
+    [429, "Your organization's Extra Usage balance has run out.", "credit"],
+    [
+      429,
+      "You've reached the Extra Usage limit set for your account by your organization.",
+      "spending",
+    ],
+    [429, "You've reached your concurrent request limit.", "rate"],
+    [429, "The inference engine is overloaded.", "rate"],
+    [503, "Your credit balance is insufficient.", "unavailable"],
+    [504, "Gateway Time-out", "timeout"],
+  ] as const)("classifies Kimi Code HTTP %i %s as %s", async (status, message, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { message } }, { status }),
+    );
+    expect(await probeModelInference(kimiCodeInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: kimiCodeInput.modelId }),
+      "unavailable",
+    ],
+    [chatChunk([{ delta: { content: "OK" } }]), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "k3" }), "model"],
+    [
+      'data: {"error":{"message":"Your credit balance is insufficient.","code":429},"status":429}\n\n',
+      "unavailable",
+    ],
+  ] as const)("checks the Kimi Code stream boundary (%#)", async (body, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(await probeModelInference(kimiCodeInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not send a Kimi Code key for a model outside the built-in catalog", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      probeModelInference(
+        { ...kimiCodeInput, modelId: "fixture-extra-model", providerCatalogModel: true },
         { fetch },
       ),
     ).resolves.toBe("unavailable");

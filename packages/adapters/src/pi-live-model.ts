@@ -23,6 +23,7 @@ const nativeChatProbeBaseUrls = new Map([
   ["cerebras", "https://api.cerebras.ai/v1"],
   ["moonshotai", "https://api.moonshot.ai/v1"],
   ["moonshotai-cn", "https://api.moonshot.cn/v1"],
+  ["kimi-coding", "https://api.kimi.com/coding/v1"],
 ]);
 const anthropicMessagesBaseUrl = "https://api.anthropic.com";
 const nonChatVariant =

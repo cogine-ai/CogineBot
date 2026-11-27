@@ -277,19 +277,25 @@ async function probeNativeChatCompletions(
 ): Promise<ModelInferenceProbeStatus> {
   const cerebras = model.provider === "cerebras";
   const moonshot = model.provider === "moonshotai" || model.provider === "moonshotai-cn";
-  const classifyFailure = moonshot ? moonshotFailureStatus : nativeChatFailureStatus;
+  const kimiCode = model.provider === "kimi-coding";
+  const classifyFailure = moonshot
+    ? moonshotFailureStatus
+    : kimiCode
+      ? kimiCodeFailureStatus
+      : nativeChatFailureStatus;
   const maxTokens = Math.min(model.maxTokens, OUTPUT_LIMIT);
   // For Moonshot, only the HTTP response supplies a trustworthy numeric status.
-  const streamFailure: StreamFailureClassifier = cerebras
-    ? () => "unavailable"
-    : moonshot
-      ? (error) => moonshotFailureStatus(error)
-      : nativeChatFailureStatus;
-  // The SDK can inherit deployment-level headers. Send only the selected key
-  // and request content type to the fixed provider endpoint.
+  const streamFailure: StreamFailureClassifier =
+    cerebras || kimiCode
+      ? () => "unavailable"
+      : moonshot
+        ? (error) => moonshotFailureStatus(error)
+        : nativeChatFailureStatus;
+  // The SDK can inherit deployment-level headers. Send the selected key and
+  // only the headers needed on the fixed provider endpoint.
   return await probeNativeEventStream(
     `${model.baseUrl}/chat/completions`,
-    { authorization: `Bearer ${apiKey}` },
+    { authorization: `Bearer ${apiKey}`, ...(kimiCode ? { "user-agent": "CogineBot" } : {}) },
     {
       model: model.id,
       messages: [
@@ -322,7 +328,9 @@ async function probeNativeChatCompletions(
       }
       return chatCompletionChunkOutcome(frame, streamFailure, event === "error", true, {
         modelId: model.id,
-        ...(cerebras || moonshot ? { requireModelId: true } : { extraFinishReason: "eos" }),
+        ...(model.provider === "together"
+          ? { extraFinishReason: "eos" }
+          : { requireModelId: true }),
       });
     },
   );
@@ -366,6 +374,40 @@ function moonshotFailureStatus(error: unknown, status?: number): ModelInferenceP
       return "rate";
     default:
       return "unavailable";
+  }
+}
+
+function kimiCodeFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+  const detail = typeof error === "string" ? error : probeRecord(error)?.message;
+  const message = typeof detail === "string" ? detail.trim() : "";
+  switch (status) {
+    case 400:
+      return /^Your model id does not exist\b/i.test(message) ? "model" : "unavailable";
+    case 403:
+      // A membership verification failure also returns 403 and can be temporary.
+      return /^Your current (?:subscription does not have access to|plan supports only) \S+/i.test(
+        message,
+      )
+        ? "model"
+        : "unavailable";
+    case 404:
+      return /^Not found the model \S+/i.test(message) ? "model" : "unavailable";
+    case 429:
+      if (
+        /^You've reached the Extra Usage limit set for your account by your organization\b/i.test(
+          message,
+        )
+      )
+        return "spending";
+      if (
+        /^(?:You've reached your (?:5-hour|weekly \(7-day\)|monthly) usage limit\b|Your credit balance is insufficient\b|Your organization's Extra Usage balance has run out\b)/i.test(
+          message,
+        )
+      )
+        return "credit";
+      return "rate";
+    default:
+      return nativeChatFailureStatus(undefined, status);
   }
 }
 
