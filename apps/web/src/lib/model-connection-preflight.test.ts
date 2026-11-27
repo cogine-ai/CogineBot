@@ -31,6 +31,14 @@ describe("classifyModelConnectionFailure", () => {
     );
   });
 
+  it("provides key recovery guidance for a Gemini directory authentication failure", () => {
+    expect(classifyModelConnectionFailure(new Error("API key authentication failed."))).toEqual({
+      outcome: "unauthorized",
+      message: "API key authentication failed.",
+      nextAction: "Check the API key or sign-in, then test again.",
+    });
+  });
+
   it("keeps manual model entry for custom servers and catalog picks for catalog providers", () => {
     expect(unavailableSelectedModel("gpt-missing", ["gpt-test"])?.nextAction).toMatch(
       /enter a model id/,

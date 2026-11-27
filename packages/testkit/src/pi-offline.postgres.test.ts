@@ -69,6 +69,19 @@ function directoryAnthropicMessage(model: string, content: string): Response {
   );
 }
 
+function directoryGeminiMessage(model: string, content: string): Response {
+  const frame = {
+    modelVersion: model,
+    candidates: [
+      { index: 0, content: { role: "model", parts: [{ text: content }] }, finishReason: "STOP" },
+    ],
+    usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 1, totalTokenCount: 3 },
+  };
+  return new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   const directoryRoutes = [
     { provider: "openai", prefix: "gpt", endpoint: "https://api.openai.com/v1/responses" },
@@ -88,14 +101,21 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       prefix: "claude",
       endpoint: "https://api.anthropic.com/v1/messages?beta=true",
     },
+    {
+      provider: "google",
+      prefix: "gemini",
+      endpoint:
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-fixture-discovered-model:streamGenerateContent?alt=sse",
+    },
   ];
   it.each(directoryRoutes)("runs a confirmed $provider model", async (route) => {
     const { provider, prefix, endpoint } = route;
     const chatCompletions = endpoint.endsWith("/chat/completions");
     const deepSeek = provider === "deepseek";
     const anthropic = provider === "anthropic";
-    const authHeader = anthropic ? "x-api-key" : "authorization";
-    const headerValue = (key: string) => (anthropic ? key : `Bearer ${key}`);
+    const gemini = provider === "google";
+    const authHeader = gemini ? "x-goog-api-key" : anthropic ? "x-api-key" : "authorization";
+    const headerValue = (key: string) => (anthropic || gemini ? key : `Bearer ${key}`);
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
@@ -122,6 +142,13 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const headers = new Headers(init?.headers);
       expect(headers.get(authHeader)).toBe(headerValue(expectedWireKey));
       const body = JSON.parse(String(init?.body));
+      if (gemini) {
+        expect(headers.has("authorization")).toBe(false);
+        expect(body.contents).toEqual(
+          expect.arrayContaining([expect.objectContaining({ role: "user" })]),
+        );
+        return directoryGeminiMessage(modelId, "Used the selected model.");
+      }
       expect(body).toMatchObject({ model: modelId, stream: true });
       if (anthropic) {
         expect(headers.has("authorization")).toBe(false);
@@ -166,21 +193,28 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const request = new Request(input, init);
       expect(request.url).toBe(endpoint);
       expect(request.headers.get(authHeader)).toBe(headerValue(probeKey));
-      expect(await request.json()).toMatchObject({
-        model: modelId,
-        ...(chatCompletions
-          ? {
-              [deepSeek ? "max_tokens" : "max_completion_tokens"]: 1024,
-              ...(deepSeek ? { thinking: { type: "disabled" } } : {}),
-              tools: [
-                expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) }),
-              ],
-            }
-          : {
-              [anthropic ? "max_tokens" : "max_output_tokens"]: 1024,
-              tools: [expect.objectContaining({ name: "noop" })],
-            }),
-      });
+      const body = await request.json();
+      if (gemini) {
+        expect(body).toMatchObject({
+          generationConfig: { maxOutputTokens: 1024 },
+          tools: [{ functionDeclarations: [expect.objectContaining({ name: "noop" })] }],
+        });
+      } else
+        expect(body).toMatchObject({
+          model: modelId,
+          ...(chatCompletions
+            ? {
+                [deepSeek ? "max_tokens" : "max_completion_tokens"]: 1024,
+                ...(deepSeek ? { thinking: { type: "disabled" } } : {}),
+                tools: [
+                  expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) }),
+                ],
+              }
+            : {
+                [anthropic ? "max_tokens" : "max_output_tokens"]: 1024,
+                tools: [expect.objectContaining({ name: "noop" })],
+              }),
+        });
       if (probeResponse !== "accepted")
         return Response.json(
           {
@@ -190,6 +224,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         );
       if (chatCompletions) return directoryChatCompletion(modelId, "OK");
       if (anthropic) return directoryAnthropicMessage(modelId, "OK");
+      if (gemini) return directoryGeminiMessage(modelId, "OK");
       return new Response(
         'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\ndata: {"type":"response.output_text.delta","delta":"OK"}\n\n',
         {
@@ -201,7 +236,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "offline-model-directory-"));
     const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
-      if (url.href === endpoint) return inferenceFetch(input, init);
+      if (url.href === endpoint) {
+        // The native Gemini SDK calls global fetch. The check uses a distinct fixed prompt.
+        if (gemini && JSON.parse(String(init?.body)).contents?.[0]?.parts?.[0]?.text !== "OK?")
+          return modelFetch(input, init);
+        return inferenceFetch(input, init);
+      }
       if (url.origin === fixtureOrigin) return fetch(input, init);
       throw new Error("Unexpected network request in the model directory test");
     });
@@ -216,7 +256,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         dataDir,
         sandboxProvider: "fake",
         agentRuntime: "pi",
-        runtime: new PiAgentRuntime({ modelFetch }),
+        runtime: new PiAgentRuntime(gemini ? {} : { modelFetch }),
         wakeupDriver: "memory",
         signupsEnabled: "true",
         composio: new ComposioEmulator(),

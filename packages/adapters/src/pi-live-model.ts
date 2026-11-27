@@ -1,6 +1,7 @@
 import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_MODEL_CONTEXT_WINDOW, DISCOVERED_MODEL_LIMITS } from "@rakazo/contracts";
+import { GEMINI_API_BASE_URL } from "./gemini-model-api.js";
 
 /** Models endpoints often mix chat models with tools and media endpoints. */
 export function isChatModelId(id: string): boolean {
@@ -95,23 +96,28 @@ export function withCatalogModelAliases(provider: string, ids: string[]): string
   return [...choices];
 }
 
-export function isOfficialGeminiProbeModel(
-  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
-) {
+export function isOfficialGeminiModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "google" &&
     model.api === "google-generative-ai" &&
-    model.baseUrl === "https://generativelanguage.googleapis.com/v1beta" &&
-    model.id.startsWith("gemini-") &&
-    isChatModelId(model.id) &&
-    !/-(?:live|customtools)(?:-|$)/.test(model.id)
+    model.baseUrl === GEMINI_API_BASE_URL
   );
+}
+
+function acceptsGeminiModelId(id: string): boolean {
+  return /^gemini-[a-z0-9][a-z0-9._-]{0,504}$/.test(id) && !/-(?:live|customtools)(?:-|$)/.test(id);
+}
+
+export function isOfficialGeminiProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return isOfficialGeminiModel(model) && acceptsGeminiModelId(model.id) && isChatModelId(model.id);
 }
 
 const catalogModels = builtinModels();
 
 type CatalogRoute = {
-  api: "openai-responses" | "openai-completions" | "anthropic-messages";
+  api: "openai-responses" | "openai-completions" | "anthropic-messages" | "google-generative-ai";
   baseUrl: string;
   acceptsId: (id: string) => boolean;
   compat?: Model<"openai-completions">["compat"];
@@ -163,6 +169,14 @@ const catalogRoutes = new Map<string, CatalogRoute>([
       api: "anthropic-messages",
       baseUrl: anthropicMessagesBaseUrl,
       acceptsId: (id) => /^claude-[a-z0-9][a-z0-9-]{0,504}$/i.test(id),
+    },
+  ],
+  [
+    "google",
+    {
+      api: "google-generative-ai",
+      baseUrl: GEMINI_API_BASE_URL,
+      acceptsId: acceptsGeminiModelId,
     },
   ],
 ]);

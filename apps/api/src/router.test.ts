@@ -3221,6 +3221,7 @@ describe("model credential persistence", () => {
     deepSeekDraftModel,
     { ...draftModel, provider: "groq", modelId: "fixture-vendor/chat-new-directory-model" },
     { ...draftModel, provider: "anthropic", modelId: "claude-fixture-new-directory-model" },
+    { ...draftModel, provider: "google", modelId: "gemini-fixture-new-directory-model" },
   ];
 
   it.each(draftModels)("checks a first $provider model draft", async (model) => {

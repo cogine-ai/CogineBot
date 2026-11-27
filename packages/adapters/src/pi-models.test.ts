@@ -175,6 +175,87 @@ describe("Pi model catalog", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("reads the official Gemini generation models with the selected API key", async () => {
+    const apiKey = "fixture-gemini-directory-key";
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const req = new Request(input, init);
+      expect(req.url).toBe("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000");
+      expect(req.headers.get("x-goog-api-key")).toBe(apiKey);
+      expect(req.headers.has("authorization")).toBe(false);
+      expect(req.redirect).toBe("error");
+      return Response.json({
+        models: [
+          {
+            name: "models/gemini-fixture-directory",
+            supportedGenerationMethods: ["generateContent"],
+          },
+          { name: "models/fixture-embedding", supportedGenerationMethods: ["embedContent"] },
+          {
+            name: "models/gemini-fixture-live",
+            supportedGenerationMethods: ["bidiGenerateContent"],
+          },
+        ],
+      });
+    });
+    await expect(
+      probeCatalogProviderModels({ provider: "google", apiKey }, fetchImpl),
+    ).resolves.toEqual(["gemini-fixture-directory"]);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{ models: [], nextPageToken: "fixture-page" }, "incomplete models list"],
+    [{ data: [{ id: "gemini-fixture-directory" }] }, "invalid models list"],
+    [{ models: [{ name: "models/gemini-fixture-directory" }] }, "invalid models list"],
+    [
+      { models: [{ name: "models/gemini-fixture/chat", supportedGenerationMethods: [] }] },
+      "invalid models list",
+    ],
+  ])("withholds an incomplete or malformed Gemini directory", async (page, problem) => {
+    const fetchImpl = vi.fn(async () => Response.json(page));
+    await expect(
+      probeCatalogProviderModels({ provider: "google", apiKey: "fixture-gemini-key" }, fetchImpl),
+    ).rejects.toThrow(problem);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a Gemini page larger than the requested maximum", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({
+        models: Array.from({ length: 1001 }, (_, index) => ({
+          name: `models/gemini-fixture-${index}`,
+          supportedGenerationMethods: ["generateContent"],
+        })),
+      }),
+    );
+    await expect(
+      probeCatalogProviderModels({ provider: "google", apiKey: "fixture-gemini-key" }, fetchImpl),
+    ).rejects.toThrow("invalid models list");
+  });
+
+  it("recognizes a structured Gemini directory key rejection without leaking its body", async () => {
+    const apiKey = "fixture-gemini-key";
+    const fetchImpl = vi.fn(async () =>
+      Response.json(
+        {
+          error: {
+            message: `Invalid key: ${apiKey}`,
+            details: [
+              { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "API_KEY_INVALID" },
+            ],
+          },
+        },
+        { status: 400 },
+      ),
+    );
+    await expect(
+      probeCatalogProviderModels({ provider: "google", apiKey }, fetchImpl),
+    ).rejects.toMatchObject({
+      failure: "auth",
+      message: "API key authentication failed.",
+    });
+  });
+
   it("does not use a partial Claude directory", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({ data: [{ type: "model", id: "claude-fixture-directory" }], has_more: true }),

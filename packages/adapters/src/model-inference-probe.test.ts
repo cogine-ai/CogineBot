@@ -71,7 +71,7 @@ describe("model inference check", () => {
       (entry) => entry.provider === geminiInput.provider && entry.id === geminiInput.modelId,
     );
     expect(selected?.inferenceProbe).toBe(true);
-    expect(selected?.catalogProbe).toBeUndefined();
+    expect(selected?.catalogProbe).toBe(true);
     const cancel = vi.fn();
     const fetch = vi.fn<typeof globalThis.fetch>(async () => {
       const frames = [
@@ -103,6 +103,25 @@ describe("model inference check", () => {
       tools: [{ functionDeclarations: [{ name: "noop", description: "Does nothing." }] }],
       generationConfig: { maxOutputTokens: 1024 },
     });
+  });
+
+  it("only tests a dynamic Gemini model with a confirmed directory route", async () => {
+    const target = { ...geminiInput, modelId: "gemini-fixture-directory-model" };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      geminiSse(geminiCandidate({ role: "model", parts: [{ text: "OK" }] }, "STOP")),
+    );
+    await expect(probeModelInference(target, { fetch })).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(
+      probeModelInference({ ...target, providerCatalogModel: true }, { fetch }),
+    ).resolves.toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-fixture-directory-model:streamGenerateContent?alt=sse",
+    );
+    expect(request.headers.get("x-goog-api-key")).toBe(target.apiKey);
+    expect(await request.json()).toMatchObject({ generationConfig: { maxOutputTokens: 1024 } });
   });
 
   it.each([

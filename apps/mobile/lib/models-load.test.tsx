@@ -2553,13 +2553,15 @@ it.each([
   { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "accepted", dynamic: true },
+  { provider: "google", providerName: "Google", inferenceStatus: "accepted", dynamic: true },
   { provider: "xai", providerName: "xAI", inferenceStatus: "rate", dynamic: false },
   { provider: "deepseek", providerName: "DeepSeek", inferenceStatus: "rate", dynamic: false },
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {
-    const directoryModelId =
-      provider === "anthropic" ? "claude-fixture-directory-model" : "gpt-fixture-directory-model";
+    const directoryPrefix =
+      provider === "anthropic" ? "claude" : provider === "google" ? "gemini" : "gpt";
+    const directoryModelId = `${directoryPrefix}-fixture-directory-model`;
     const saved = {
       id: "fixture-model-connection",
       provider,
