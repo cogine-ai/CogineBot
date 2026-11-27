@@ -1,3 +1,4 @@
+import type { Models } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
@@ -7,6 +8,7 @@ import {
 } from "./chatgpt-plan-provider.js";
 import { buildModelConnectPlaintext, modelCredentialDto } from "./model-connect.js";
 import { modelAcceptsImageInput } from "./model-vision.js";
+import { providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog } from "./pi-models.js";
 import { resolveModelAuth } from "./pi-oauth.js";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "./pi-openai-compatible-provider.js";
@@ -128,9 +130,11 @@ describe("request model catalogs", () => {
     }
   });
 
-  it("resolves an approved model on the same API-key Responses route with conservative limits", () => {
-    const id = "gpt-fixture-model";
-    const choice = { provider: "openai", id, apiKey: "fixture-connection-key" };
+  it.each([
+    ["openai", "gpt-fixture-model", "https://api.openai.com/v1"],
+    ["xai", "grok-fixture-model", "https://api.x.ai/v1"],
+  ])("resolves a confirmed %s model on its API-key Responses route", (provider, id, baseUrl) => {
+    const choice = { provider, id, apiKey: "fixture-connection-key" };
     expect(resolveRuntimeModel(choice).model).toBeUndefined();
     expect(
       resolveRuntimeModel({
@@ -141,9 +145,9 @@ describe("request model catalogs", () => {
       }).model,
     ).toMatchObject({
       id,
-      provider: "openai",
+      provider,
       api: "openai-responses",
-      baseUrl: "https://api.openai.com/v1",
+      baseUrl,
       reasoning: false,
       input: ["text"],
       contextWindow: 32_768,
@@ -157,6 +161,8 @@ describe("request model catalogs", () => {
       { provider: "openai-compatible" },
       { id: "gpt-fixture-embedding" },
       { id: "gpt-live-1" },
+      { id: "grok-imagine-fixture" },
+      { id: "grok-fixture-voice" },
       { apiKey: undefined },
     ]) {
       expect(
@@ -164,6 +170,17 @@ describe("request model catalogs", () => {
       ).toBeUndefined();
     }
   });
+
+  it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-completions" }])(
+    "rejects a mixed Grok catalog route with $baseUrl$api",
+    (differentRoute) => {
+      const known = { provider: "xai", api: "openai-responses", baseUrl: "https://api.x.ai/v1" };
+      const registry = {
+        getProvider: () => ({ getModels: () => [known, { ...known, ...differentRoute }] }),
+      } as unknown as Models;
+      expect(providerCatalogModel("xai", "grok-fixture-dynamic", registry)).toBeUndefined();
+    },
+  );
 
   it("isolates concurrent OpenAI-compatible endpoint registrations", () => {
     const first = modelsForRequest(

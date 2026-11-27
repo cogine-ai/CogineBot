@@ -166,6 +166,7 @@ import {
   stopCancelledGroupComputer,
   stoppedComputerControl,
   storeBotSecret,
+  supportsProviderCatalogModels,
   syncRoutineWakeup,
   takeoverLeaseMs,
   toComputerRef,
@@ -2107,7 +2108,7 @@ export function createRouter(deps: RouterDeps) {
               if (
                 inferenceProbesEnabled &&
                 deps.providerCatalogSelections &&
-                row.provider === "openai" &&
+                supportsProviderCatalogModels(row.provider) &&
                 credential.authKind === "api_key" &&
                 (apiKeyCatalog || saved?.length)
               )

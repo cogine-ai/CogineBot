@@ -20,15 +20,23 @@ const databaseAvailable = process.env.VERIFY_DATABASE === "1" && Boolean(process
 const fixtureOrigin = "http://127.0.0.1:5173";
 
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
-  it("runs a newly discovered model with the key and model ID saved from the same connection", async () => {
-    const provider = "openai";
+  const directoryRoutes = [
+    { provider: "openai", prefix: "gpt", endpoint: "https://api.openai.com/v1/responses" },
+    { provider: "xai", prefix: "grok", endpoint: "https://api.x.ai/v1/responses" },
+  ];
+  it.each(directoryRoutes)("runs a confirmed $provider model", async (route) => {
+    const { provider, prefix, endpoint } = route;
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
     const nextKey = "fixture-next-qualified-key";
-    const modelId = "gpt-fixture-discovered-model";
-    const rejectedId = "gpt-fixture-not-in-directory";
-    const otherModelIds = ["gpt-fixture-discovered-second", "gpt-fixture-discovered-third"];
+    const modelId = `${prefix}-fixture-discovered-model`;
+    const rejectedId = `${prefix}-fixture-not-in-directory`;
+    const otherModelIds = [
+      `${prefix}-fixture-discovered-second`,
+      `${prefix}-fixture-discovered-third`,
+    ];
+    const realtime = `${prefix}-fixture-realtime`;
     const bundled = listPiCatalog().filter((entry) => entry.provider === provider);
     const originalModel = bundled[0]!.id;
     const probe = vi.fn(async ({ apiKey: key }: { apiKey: string }) => [
@@ -36,11 +44,11 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       ...(key === apiKey || key === qualifiedKey || key === nextKey
         ? [modelId, ...otherModelIds]
         : []),
-      "gpt-fixture-realtime",
+      realtime,
     ]);
     let expectedWireKey = apiKey;
     const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe("https://api.openai.com/v1/responses");
+      expect(String(input)).toBe(endpoint);
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${expectedWireKey}`);
       expect(JSON.parse(String(init?.body))).toMatchObject({ model: modelId, stream: true });
       const message = {
@@ -71,7 +79,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     let probeResponse = "accepted";
     const inferenceFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init);
-      expect(request.url).toBe("https://api.openai.com/v1/responses");
+      expect(request.url).toBe(endpoint);
       expect(request.headers.get("authorization")).toBe(`Bearer ${probeKey}`);
       expect(await request.json()).toMatchObject({
         model: modelId,
@@ -80,11 +88,13 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       });
       if (probeResponse !== "accepted")
         return Response.json(
-          { error: { code: probeResponse === "auth" ? "invalid_api_key" : "rate_limit_exceeded" } },
+          {
+            error: { code: probeResponse === "auth" ? "invalid_api_key" : "rate_limit_exceeded" },
+          },
           { status: probeResponse === "auth" ? 401 : 429 },
         );
       return new Response(
-        'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\n',
+        'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\ndata: {"type":"response.output_text.delta","delta":"OK"}\n\n',
         {
           headers: { "content-type": "text/event-stream" },
         },
@@ -92,13 +102,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     });
     const fetch = globalThis.fetch;
     const dataDir = await mkdtemp(path.join(tmpdir(), "offline-model-directory-"));
-    const transport = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation((input, init) =>
-        String(input) === "https://api.openai.com/v1/responses"
-          ? inferenceFetch(input, init)
-          : fetch(input, init),
-      );
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.href === endpoint) return inferenceFetch(input, init);
+      if (url.origin === fixtureOrigin) return fetch(input, init);
+      throw new Error("Unexpected network request in the model directory test");
+    });
     let stop: (() => Promise<void>) | undefined;
     try {
       const { createApp } = await import("../../../apps/api/src/app.ts");
@@ -153,7 +162,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const listed = await read(true);
       expect(listed?.providerCatalogInferenceProbe).toBe("replacement");
       expect(listed?.providerListedModelIds).toContain(modelId);
-      expect(listed?.providerListedModelIds).not.toContain("gpt-fixture-realtime");
+      expect(listed?.providerListedModelIds).not.toContain(realtime);
       const testModel = (expectedRevision: number | undefined, apiKey?: string) =>
         rpc(app, cookie, "models/probeInference", {
           provider,
@@ -270,7 +279,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           () =>
             handles.prisma.run.findUnique({
               where: { id: sent.runId },
-              select: { status: true, modelProvider: true, modelId: true, modelCredentialId: true },
+              select: {
+                status: true,
+                modelProvider: true,
+                modelId: true,
+                modelCredentialId: true,
+              },
             }),
           { timeout: 15_000, interval: 100 },
         )
@@ -299,7 +313,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           () =>
             handles.prisma.run.findUnique({
               where: { id: pinned.runId },
-              select: { status: true, modelProvider: true, modelId: true, modelCredentialId: true },
+              select: {
+                status: true,
+                modelProvider: true,
+                modelId: true,
+                modelCredentialId: true,
+              },
             }),
           { timeout: 15_000, interval: 100 },
         )

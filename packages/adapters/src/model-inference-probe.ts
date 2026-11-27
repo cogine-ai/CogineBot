@@ -48,7 +48,8 @@ export async function probeModelInference(
   const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
-  const xai = builtIn && isOfficialXaiResponsesProbeModel(model);
+  const xai =
+    (builtIn || input.providerCatalogModel === true) && isOfficialXaiResponsesProbeModel(model);
   const readFrames = chatCompletions || anthropic || xai;
   if (!readFrames && !isOfficialResponsesModel(model)) return "unavailable";
   // A probe confirms one selected model. Some registered Claude models request a

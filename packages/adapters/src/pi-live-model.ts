@@ -12,13 +12,14 @@ export function isChatModelId(id: string): boolean {
   );
 }
 
-const providerCatalogBaseUrl = "https://api.openai.com/v1";
+const openAiResponsesBaseUrl = "https://api.openai.com/v1";
+const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 
 export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "openai" &&
     model.api === "openai-responses" &&
-    model.baseUrl === providerCatalogBaseUrl
+    model.baseUrl === openAiResponsesBaseUrl
   );
 }
 
@@ -28,7 +29,7 @@ export function isOfficialXaiResponsesProbeModel(
   return (
     model.provider === "xai" &&
     model.api === "openai-responses" &&
-    model.baseUrl === "https://api.x.ai/v1" &&
+    model.baseUrl === xaiResponsesBaseUrl &&
     isChatModelId(model.id)
   );
 }
@@ -71,22 +72,52 @@ export function isOfficialGeminiProbeModel(
 
 const catalogModels = builtinModels();
 
+function providerCatalogResponsesUrl(provider: string, models: Models): string | undefined {
+  const baseUrl =
+    provider === "openai"
+      ? openAiResponsesBaseUrl
+      : provider === "xai"
+        ? xaiResponsesBaseUrl
+        : undefined;
+  if (!baseUrl) return undefined;
+  const siblings = models.getProvider(provider)?.getModels();
+  if (
+    !siblings?.length ||
+    siblings.some(
+      (model) =>
+        model.provider !== provider ||
+        model.api !== "openai-responses" ||
+        model.baseUrl !== baseUrl,
+    )
+  )
+    return undefined;
+  return baseUrl;
+}
+
+export function supportsProviderCatalogModels(provider: string): boolean {
+  return providerCatalogResponsesUrl(provider, catalogModels) !== undefined;
+}
+
 /** The supported catalog and runtime must share the official Responses route. */
 export function providerCatalogModel(
   provider: string,
   id: string,
   models: Models = catalogModels,
 ): Model<"openai-responses"> | undefined {
+  if (!isChatModelId(id)) return undefined;
   if (
-    provider !== "openai" ||
-    !/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) ||
-    /^gpt-live(?:-|$)/i.test(id) ||
-    !isChatModelId(id)
+    provider === "openai" &&
+    (!/^gpt-[a-z0-9][a-z0-9._-]{0,507}$/i.test(id) || /^gpt-live(?:-|$)/i.test(id))
   )
     return undefined;
-  const siblings = models.getProvider(provider)?.getModels();
-  if (!siblings?.length || siblings.some((model) => !isOfficialResponsesModel(model)))
+  if (
+    provider === "xai" &&
+    (!/^grok-[a-z0-9][a-z0-9._-]{0,506}$/i.test(id) ||
+      /[-._](?:imagine|voice|live)(?:[-._]|$)/i.test(id))
+  )
     return undefined;
+  const baseUrl = providerCatalogResponsesUrl(provider, models);
+  if (!baseUrl) return undefined;
   // The list endpoint only establishes availability for this key. It provides
   // no evidence about context, modalities, reasoning, or pricing.
   return {
@@ -94,7 +125,7 @@ export function providerCatalogModel(
     name: id,
     provider,
     api: "openai-responses",
-    baseUrl: providerCatalogBaseUrl,
+    baseUrl,
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

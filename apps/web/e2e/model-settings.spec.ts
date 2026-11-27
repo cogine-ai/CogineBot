@@ -2115,127 +2115,151 @@ test("keeps the compatible model draft fixed while onboarding saves it", async (
   expect(connects).toBe(1);
 });
 
-test("selects and tests a directory model before the first API key save", async ({
-  page,
-}, testInfo) => {
-  await signup(page, `first-model-${Date.now()}@example.test`, "password12", "Model fixture");
-  await completeOnboarding(page);
-  const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
-  const base = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
-  const modelId = "gpt-fixture-directory-choice";
-  const draftKey = "fixture-first-openai-key";
-  let draftModelIds = [modelId];
-  await page.route("**/rpc/models/list", async (route) => {
-    const response = await route.fetch();
-    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
-    await route.fulfill({
-      response,
-      json: {
-        json: json.map((entry) =>
-          entry.id === base.id && entry.provider === base.provider
-            ? { ...entry, inferenceProbe: true }
-            : entry,
-        ),
-      },
-    });
-  });
-  await page.route("**/rpc/models/probeCatalog", (route) => {
-    const { apiKey } = route.request().postDataJSON().json;
-    return route.fulfill({
-      json: {
-        json:
-          apiKey === draftKey
-            ? {
-                models: [base.id, ...draftModelIds],
-                ...(draftModelIds.length ? { draftModelIds } : {}),
-              }
-            : { models: [base.id] },
-      },
-    });
-  });
-  await page.route("**/rpc/models/probeInference", (route) =>
-    route.fulfill({ json: { json: { status: "accepted" } } }),
-  );
-  await page.route("**/rpc/models/connect", (route) =>
-    route.fulfill({
-      status: 400,
-      json: {
+for (const { provider, providerName, prefix, screenshot } of [
+  {
+    provider: "openai",
+    providerName: "OpenAI",
+    prefix: "gpt",
+    screenshot: "a1-first-directory-model",
+  },
+  {
+    provider: "xai",
+    providerName: "xAI",
+    prefix: "grok",
+    screenshot: "a1-xai-first-directory-model",
+  },
+]) {
+  test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
+    page,
+  }, testInfo) => {
+    await signup(page, `first-model-${Date.now()}@example.test`, "password12", "Model fixture");
+    await completeOnboarding(page);
+    const catalog = await rpc<ModelCatalogEntry[]>(page, "models/list", {});
+    const base = catalog.find((entry) => entry.provider === provider && entry.catalogProbe)!;
+    const modelId = `${prefix}-fixture-directory-choice`;
+    const draftKey = `fixture-first-${provider}-key`;
+    let draftModelIds = [modelId];
+    await page.route("**/rpc/models/list", async (route) => {
+      const response = await route.fetch();
+      const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+      await route.fulfill({
+        response,
         json: {
-          defined: true,
-          code: "BAD_REQUEST",
-          status: 400,
-          message: "Could not check the model.",
-          data: { inferenceStatus: "model" },
+          json: json.map((entry) =>
+            entry.id === base.id && entry.provider === base.provider
+              ? { ...entry, inferenceProbe: true }
+              : entry,
+          ),
         },
-      },
-    }),
-  );
-  const settings = await openUserSettings(page, "models");
-  await settings.getByPlaceholder("Search providers").fill("openai");
-  await settings
-    .getByRole("button")
-    .filter({ has: page.getByText("OpenAI", { exact: true }) })
-    .click();
-  const key = settings.getByLabel("API key", { exact: true });
-  const picker = settings.getByRole("combobox", { name: "Model", exact: true });
-  const option = settings.getByRole("option", { name: modelId, exact: true });
-  const testKey = settings.getByRole("button", { name: "Test API key", exact: true });
-  await key.fill(draftKey);
-  await testKey.click();
-  await expect(testKey).toBeEnabled();
-  await picker.click();
-  await option.click();
-  await expect(picker).toHaveText(modelId);
-  const connect = settings.getByRole("button", { name: "Connect API key", exact: true });
-  for (const observed of [["gpt-fixture-other-directory-choice"], []]) {
-    draftModelIds = observed;
+      });
+    });
+    await page.route("**/rpc/models/probeCatalog", (route) => {
+      const { apiKey } = route.request().postDataJSON().json;
+      return route.fulfill({
+        json: {
+          json:
+            apiKey === draftKey
+              ? {
+                  models: [base.id, ...draftModelIds],
+                  ...(draftModelIds.length ? { draftModelIds } : {}),
+                }
+              : { models: [base.id] },
+        },
+      });
+    });
+    await page.route("**/rpc/models/probeInference", (route) =>
+      route.fulfill({ json: { json: { status: "accepted" } } }),
+    );
+    await page.route("**/rpc/models/connect", (route) =>
+      route.fulfill({
+        status: 400,
+        json: {
+          json: {
+            defined: true,
+            code: "BAD_REQUEST",
+            status: 400,
+            message: "Could not check the model.",
+            data: { inferenceStatus: "model" },
+          },
+        },
+      }),
+    );
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill(providerName);
+    await settings
+      .getByRole("button")
+      .filter({ has: page.getByText(providerName, { exact: true }) })
+      .click();
+    const key = settings.getByLabel(/^(?:Or connect an )?API key$/);
+    const picker = settings.getByRole("combobox", { name: "Model", exact: true });
+    const option = settings.getByRole("option", { name: modelId, exact: true });
+    const testKey = settings.getByRole("button", { name: "Test API key", exact: true });
+    await key.fill(draftKey);
     await testKey.click();
     await expect(testKey).toBeEnabled();
+    await picker.click();
+    await option.click();
     await expect(picker).toHaveText(modelId);
-    await expect(connect).toBeDisabled();
-    await expect(
-      settings.getByText("Confirm this model for the current API key, or choose another."),
-    ).toBeVisible();
-  }
-  draftModelIds = [modelId];
+    if (provider === "xai") {
+      await expect(settings.getByText(/Sign in with SuperGrok or X Premium, or paste/)).toHaveCount(
+        0,
+      );
+    } else {
+      await expect(settings.getByText(/Uses your OpenAI API key/)).toBeVisible();
+    }
+    const connect = settings.getByRole("button", { name: "Connect API key", exact: true });
+    for (const observed of [[`${prefix}-fixture-other-directory-choice`], []]) {
+      draftModelIds = observed;
+      await testKey.click();
+      await expect(testKey).toBeEnabled();
+      await expect(picker).toHaveText(modelId);
+      await expect(connect).toBeDisabled();
+      await expect(
+        settings.getByText("Confirm this model for the current API key, or choose another."),
+      ).toBeVisible();
+    }
+    draftModelIds = [modelId];
 
-  await key.fill("fixture-different-openai-key");
-  await picker.click();
-  await expect(option).toHaveCount(0);
-  await picker.click();
-  await key.fill(draftKey);
-  await testKey.click();
-  await expect(testKey).toBeEnabled();
-  await picker.click();
-  await option.click();
-  const tested = page.waitForRequest("**/rpc/models/probeInference");
-  await settings.getByRole("button", { name: "Test model", exact: true }).click();
-  expect((await tested).postDataJSON().json).toEqual({
-    provider: base.provider,
-    apiKey: draftKey,
-    modelId,
+    await key.fill(`fixture-different-${provider}-key`);
+    await picker.click();
+    await expect(option).toHaveCount(0);
+    await picker.click();
+    await key.fill(draftKey);
+    await testKey.click();
+    await expect(testKey).toBeEnabled();
+    await picker.click();
+    await option.click();
+    const tested = page.waitForRequest("**/rpc/models/probeInference");
+    await settings.getByRole("button", { name: "Test model", exact: true }).click();
+    expect((await tested).postDataJSON().json).toEqual({
+      provider: base.provider,
+      apiKey: draftKey,
+      modelId,
+    });
+    await expect(
+      settings.getByRole("status").filter({ hasText: "accepted the test request" }),
+    ).toBeVisible();
+    await connect.evaluate((button) => button.scrollIntoView({ block: "center" }));
+    const fee = settings.getByText(
+      "Connecting sends one test request that may incur usage charges.",
+    );
+    await expect(fee).toBeInViewport({ ratio: 0.98 });
+    await captureScreenshot(page, testInfo, screenshot);
+    const saving = page.waitForRequest("**/rpc/models/connect");
+    await connect.click();
+    expect((await saving).postDataJSON().json).toMatchObject({
+      provider: base.provider,
+      apiKey: draftKey,
+      modelId,
+      verifyInference: true,
+    });
+    await expect(
+      settings.getByRole("alert").filter({ hasText: "cannot use the selected model" }),
+    ).toBeVisible();
+    await expect(key).toHaveValue(draftKey);
+    await expect(picker).toHaveText(modelId);
   });
-  await expect(
-    settings.getByRole("status").filter({ hasText: "accepted the test request" }),
-  ).toBeVisible();
-  await connect.evaluate((button) => button.scrollIntoView({ block: "center" }));
-  const fee = settings.getByText("Connecting sends one test request that may incur usage charges.");
-  await expect(fee).toBeInViewport({ ratio: 0.98 });
-  await captureScreenshot(page, testInfo, "a1-first-directory-model");
-  const saving = page.waitForRequest("**/rpc/models/connect");
-  await connect.click();
-  expect((await saving).postDataJSON().json).toMatchObject({
-    provider: base.provider,
-    apiKey: draftKey,
-    modelId,
-    verifyInference: true,
-  });
-  await expect(
-    settings.getByRole("alert").filter({ hasText: "cannot use the selected model" }),
-  ).toBeVisible();
-  await expect(key).toHaveValue(draftKey);
-  await expect(picker).toHaveText(modelId);
-});
+}
 
 test("tests model access with the selected saved or draft API key", async ({ page }, testInfo) => {
   await signup(page, `model-access-${Date.now()}@example.test`, "password12", "Model fixture");

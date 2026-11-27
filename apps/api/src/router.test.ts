@@ -3183,13 +3183,21 @@ describe("model credential persistence", () => {
   };
 
   const draftModel = { ...verifiedConnect, modelId: "gpt-fixture-new-directory-model" };
+  const grokDraftModel = {
+    ...draftModel,
+    provider: "xai",
+    modelId: "grok-fixture-new-directory-model",
+  };
   const draftCatalog = listPiCatalog()
     .filter(({ provider }) => provider === draftModel.provider)
     .map(({ id }) => id);
 
-  function draftCatalogFixture(modelLiveCatalogEnabled = true) {
+  function draftCatalogFixture(modelLiveCatalogEnabled = true, model = draftModel) {
     const fixture = persistDeps();
-    const catalogProbe = vi.fn().mockResolvedValue([...draftCatalog, draftModel.modelId]);
+    const bundled = listPiCatalog()
+      .filter(({ provider }) => provider === model.provider)
+      .map(({ id }) => id);
+    const catalogProbe = vi.fn().mockResolvedValue([...bundled, model.modelId]);
     const selections = new ProviderCatalogSelections("fixture-directory-signer");
     const handler = new RPCHandler(
       createRouter({
@@ -3199,24 +3207,30 @@ describe("model credential persistence", () => {
         catalogProbe,
       }),
     );
-    return { ...fixture, handler, catalogProbe, selections };
+    return { ...fixture, handler, catalogProbe, selections, bundled };
   }
 
-  it("discovers, tests, and binds a first connection's dynamic model to the exact stored key", async () => {
-    const { handler, catalogProbe, inference, tx, selections } = draftCatalogFixture();
-    const probeRequest = { provider: draftModel.provider, apiKey: draftModel.apiKey };
+  it.each([draftModel, grokDraftModel])("checks a first $provider model draft", async (model) => {
+    const { handler, catalogProbe, inference, tx, selections, bundled } = draftCatalogFixture(
+      true,
+      model,
+    );
+    const probeRequest = { provider: model.provider, apiKey: model.apiKey };
     catalogProbe.mockResolvedValueOnce([
-      ...draftCatalog,
-      draftModel.modelId,
+      ...bundled,
+      model.modelId,
       "fixture-embedding",
-      `gpt-${draftModel.apiKey}`,
+      "grok-imagine-fixture",
+      "grok-imagine.preview",
+      "grok-voice_preview",
+      `${model.provider === "xai" ? "grok" : "gpt"}-${model.apiKey}`,
     ]);
     const directory = await call(handler, "models/probeCatalog", probeRequest);
     const { json } = await directory.json();
-    expect(json.draftModelIds).toEqual([draftModel.modelId]);
-    expect(JSON.stringify(json)).not.toContain(draftModel.apiKey);
+    expect(json.draftModelIds).toEqual([model.modelId]);
+    expect(JSON.stringify(json)).not.toContain(model.apiKey);
     expect(inference).not.toHaveBeenCalled();
-    const { verifyInference, ...input } = draftModel;
+    const { verifyInference, ...input } = model;
     const tested = await call(handler, "models/probeInference", input);
     expect((await tested.json()).json).toEqual({ status: "accepted" });
     expect(tx.userModelCredential.create).not.toHaveBeenCalled();
@@ -6527,50 +6541,67 @@ describe("saved model catalog checks", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("tests a signed choice without refreshing the catalog or accepting an unbound dynamic ID", async () => {
-    const { confirm, credentials, infer, inference, probe } = fixture();
-    const modelId = "gpt-fixture-signed-choice";
-    const draft = { provider: "openai", modelId, apiKey: storedKey };
-    expect((await infer(draft)).body.json).toEqual({ status: "unavailable" });
-    expect(await infer({ ...savedInput, modelId })).toEqual({
-      status: 200,
-      body: { json: { status: "unavailable" } },
-    });
-    expect(inference).not.toHaveBeenCalled();
-    confirm(modelId);
-    expect((await credentials(actor, false))[0]).toMatchObject({
-      providerCatalogInferenceProbe: "saved",
-      savedProviderCatalogModelIds: [modelId],
-    });
-    expect((await infer({ ...savedInput, modelId })).body.json).toEqual({ status: "accepted" });
-    expect(inference).toHaveBeenCalledExactlyOnceWith(
-      { ...draft, providerCatalogModel: true },
-      expect.any(Object),
-    );
-    expect(probe).not.toHaveBeenCalled();
-  });
+  it.each([
+    ["openai", "gpt-fixture-signed-choice"],
+    ["xai", "grok-fixture-signed-choice"],
+  ])(
+    "tests a signed %s choice without refreshing the catalog or accepting an unbound ID",
+    async (provider, modelId) => {
+      const { confirm, credentials, infer, inference, probe } = fixture(false, provider);
+      const draft = { provider, modelId, apiKey: storedKey };
+      const target = { ...savedInput, provider, modelId };
+      expect((await infer(draft)).body.json).toEqual({ status: "unavailable" });
+      expect(await infer(target)).toEqual({
+        status: 200,
+        body: { json: { status: "unavailable" } },
+      });
+      expect(inference).not.toHaveBeenCalled();
+      confirm(modelId);
+      expect((await credentials(actor, false))[0]).toMatchObject({
+        providerCatalogInferenceProbe: "saved",
+        savedProviderCatalogModelIds: [modelId],
+      });
+      expect((await infer(target)).body.json).toEqual({ status: "accepted" });
+      expect(inference).toHaveBeenCalledExactlyOnceWith(
+        { ...draft, providerCatalogModel: true },
+        expect.any(Object),
+      );
+      expect(probe).not.toHaveBeenCalled();
+    },
+  );
 
-  it("checks the replacement key's own catalog before sending inference", async () => {
-    const { confirm, infer, inference, probe } = fixture(true);
-    const modelId = "gpt-fixture-dynamic-choice";
-    const apiKey = "fixture-new-key";
-    const input = { ...savedInput, modelId, apiKey };
-    confirm(modelId);
-    probe.mockResolvedValueOnce(bundled);
-    expect(await infer(input)).toEqual({ status: 200, body: { json: { status: "model" } } });
-    expect(probe.mock.calls[0]?.[0]).toMatchObject({ apiKey });
-    expect(inference).not.toHaveBeenCalled();
+  it.each([
+    ["openai", "gpt-fixture-dynamic-choice"],
+    ["xai", "grok-fixture-dynamic-choice"],
+  ])(
+    "checks a replacement %s key's own catalog before sending inference",
+    async (provider, modelId) => {
+      const { confirm, infer, inference, probe, credentials } = fixture(true, provider);
+      const providerModels = listPiCatalog()
+        .filter((entry) => entry.provider === provider)
+        .map(({ id }) => id);
+      const apiKey = "fixture-new-key";
+      const input = { ...savedInput, provider, modelId, apiKey };
+      confirm(modelId);
+      expect((await credentials(actor, false))[0]).toMatchObject({
+        providerCatalogInferenceProbe: "replacement",
+      });
+      probe.mockResolvedValueOnce(providerModels);
+      expect(await infer(input)).toEqual({ status: 200, body: { json: { status: "model" } } });
+      expect(probe.mock.calls[0]?.[0]).toMatchObject({ apiKey });
+      expect(inference).not.toHaveBeenCalled();
 
-    const qualified = "fixture-qualified-key";
-    probe.mockResolvedValueOnce([...bundled, modelId]);
-    expect((await infer({ ...input, apiKey: qualified })).body.json).toEqual({
-      status: "accepted",
-    });
-    expect(inference).toHaveBeenCalledExactlyOnceWith(
-      { provider: input.provider, modelId, apiKey: qualified, providerCatalogModel: true },
-      expect.any(Object),
-    );
-  });
+      const qualified = "fixture-qualified-key";
+      probe.mockResolvedValueOnce([...providerModels, modelId]);
+      expect((await infer({ ...input, apiKey: qualified })).body.json).toEqual({
+        status: "accepted",
+      });
+      expect(inference).toHaveBeenCalledExactlyOnceWith(
+        { provider: input.provider, modelId, apiKey: qualified, providerCatalogModel: true },
+        expect.any(Object),
+      );
+    },
+  );
 
   it("refuses the old target when a dynamic connection's key changes in place during a replacement test", async () => {
     const { connect, inference, probe, state } = fixture(true);
