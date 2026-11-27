@@ -7,6 +7,7 @@ import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialResponsesModel,
+  isOfficialXaiResponsesProbeModel,
 } from "./pi-live-model.js";
 import { LOCAL_PROVIDER_ID, registerLocalProvider } from "./pi-local-provider.js";
 import { loadProviderOAuth, SUBSCRIPTION_SIGN_IN_PROVIDERS } from "./pi-oauth.js";
@@ -165,7 +166,9 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
           (probeBaseUrl &&
-            (isOfficialResponsesModel(model) || isOfficialChatCompletionProbeModel(model))))
+            (isOfficialResponsesModel(model) ||
+              isOfficialXaiResponsesProbeModel(model) ||
+              isOfficialChatCompletionProbeModel(model))))
           ? { inferenceProbe: true }
           : {}),
       });

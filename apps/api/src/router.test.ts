@@ -3390,6 +3390,76 @@ describe("model credential persistence", () => {
     }
   });
 
+  it("checks Grok before saving an API key and distinguishes credit rejection from rate limiting", async () => {
+    const { deps, tx } = persistDeps();
+    const input = { provider: "xai", modelId: "grok-4.7", apiKey: "fixture-xai-draft" };
+    expect(
+      listPiCatalog().find(
+        (entry) => entry.provider === input.provider && entry.id === input.modelId,
+      )?.inferenceProbe,
+    ).toBe(true);
+    const started =
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-fixture","status":"in_progress","model":"grok-4.7"}}\n\n';
+    const frame = `${started}data: {"type":"response.output_text.delta","delta":"OK"}\n\n`;
+    const streamCredit = `${started}event: error\ndata: {"type":"error","status":402,"error":{"message":"Payment required"}}\n\n`;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(frame, { headers: { "content-type": "text/event-stream" } }),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            code: "Forbidden",
+            error: "Your newly created team doesn't have any credits or licenses yet.",
+          },
+          { status: 403 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(streamCredit, { headers: { "content-type": "text/event-stream" } }),
+      )
+      .mockResolvedValueOnce(Response.json({ error: "Too many requests" }, { status: 429 }));
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const tested = await call(handler, "models/probeInference", input);
+    expect(tested.status).toBe(200);
+    expect((await tested.json()).json).toEqual({ status: "accepted" });
+    const refused = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).json).toMatchObject({ data: { inferenceStatus: "credit" } });
+    const refusedInStream = await call(handler, "models/connect", {
+      ...input,
+      verifyInference: true,
+    });
+    expect(refusedInStream.status).toBe(400);
+    expect((await refusedInStream.json()).json).toMatchObject({
+      data: { inferenceStatus: "credit" },
+    });
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    const saved = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      provider: input.provider,
+      modelId: input.modelId,
+      inferenceStatus: "rate",
+    });
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+    expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    for (const args of fetch.mock.calls) {
+      const request = new Request(...args);
+      expect(request.url).toBe("https://api.x.ai/v1/responses");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${input.apiKey}`);
+      expect(await request.json()).toMatchObject({ model: input.modelId, store: false });
+    }
+  });
+
   it("checks authorization on both sides of the provider wait", async () => {
     const { deps, handler, inference } = persistDeps();
     let authorized = false;
@@ -5984,11 +6054,11 @@ describe("saved model catalog checks", () => {
     (entry) => entry.provider === "openai" && entry.inferenceProbe,
   )!.id;
 
-  function fixture(modelLiveCatalogEnabled = false) {
+  function fixture(modelLiveCatalogEnabled = false, provider = savedInput.provider) {
     const selections = new ProviderCatalogSelections("fixture-deployment-key");
     const owner = {
       id: savedInput.credentialId,
-      provider: savedInput.provider,
+      provider,
       userId: actor.userId,
     };
     const state = {
@@ -6006,7 +6076,7 @@ describe("saved model catalog checks", () => {
     const findCredential = vi.fn(async ({ where }) =>
       where.id === savedInput.credentialId &&
       where.userId === actor.userId &&
-      where.provider === "openai" &&
+      where.provider === provider &&
       (where.connectionRevision === undefined || where.connectionRevision === state.revision) &&
       (where.secretId === undefined || where.secretId === state.secretId)
         ? {
@@ -6031,7 +6101,7 @@ describe("saved model catalog checks", () => {
         ? [
             {
               id: savedInput.credentialId,
-              provider: savedInput.provider,
+              provider,
               label: "Fixture connection",
               preferences: [{ modelId: state.modelId, isDefault: true }],
               providerCatalogSelection: state.proof,
@@ -6151,6 +6221,33 @@ describe("saved model catalog checks", () => {
       status: "unavailable",
     });
     expect(inference).not.toHaveBeenCalled();
+  });
+
+  it("only probes the saved Grok connection when it owns an API key", async () => {
+    const { infer, inference, probe, state } = fixture(false, "xai");
+    const request = { ...savedInput, provider: "xai", modelId: "grok-4.7" };
+    state.plaintext = serializeModelSecret({
+      kind: "oauth",
+      credential: {
+        type: "oauth",
+        access: "fixture-oauth",
+        refresh: "fixture-refresh",
+        expires: 0,
+      },
+    });
+    expect((await infer(request)).status).toBe(400);
+    expect(inference).not.toHaveBeenCalled();
+    state.plaintext = storedKey;
+    expect(await infer(request)).toEqual({ status: 200, body: { json: { status: "accepted" } } });
+    expect(inference).toHaveBeenCalledExactlyOnceWith(
+      {
+        provider: request.provider,
+        modelId: request.modelId,
+        apiKey: storedKey,
+      },
+      expect.anything(),
+    );
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it("tests a signed choice without refreshing the catalog or accepting an unbound dynamic ID", async () => {
