@@ -134,6 +134,7 @@ describe("request model catalogs", () => {
     ["openai", "gpt-fixture-model", "https://api.openai.com/v1", "openai-responses"],
     ["xai", "grok-fixture-model", "https://api.x.ai/v1", "openai-responses"],
     ["deepseek", "deepseek-fixture-model", "https://api.deepseek.com", "openai-completions"],
+    ["groq", "fixture-vendor/chat-new", "https://api.groq.com/openai/v1", "openai-completions"],
   ])("resolves a confirmed %s model on its API-key route", (provider, id, baseUrl, api) => {
     const choice = { provider, id, apiKey: "fixture-connection-key" };
     expect(resolveRuntimeModel(choice).model).toBeUndefined();
@@ -165,6 +166,9 @@ describe("request model catalogs", () => {
       { id: "grok-imagine-fixture" },
       { id: "grok-fixture-voice" },
       { id: "deepseek-fixture-live.preview" },
+      { id: "fixture-vendor/safety.model-guard" },
+      { id: "groq/compound-mini" },
+      { id: "fixture-vendor/organization/chat" },
       { apiKey: undefined },
     ]) {
       expect(
@@ -184,20 +188,22 @@ describe("request model catalogs", () => {
     },
   );
 
-  it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-responses" }])(
-    "rejects a mixed DeepSeek catalog route with $baseUrl$api",
-    (differentRoute) => {
-      const known = {
-        provider: "deepseek",
-        api: "openai-completions",
-        baseUrl: "https://api.deepseek.com",
-      };
+  it.each([
+    ["deepseek", "https://api.deepseek.com", "deepseek-fixture-model"],
+    ["groq", "https://api.groq.com/openai/v1", "fixture-vendor/chat-new"],
+  ])("rejects mixed %s catalog routes", (provider, baseUrl, modelId) => {
+    const known = { provider, api: "openai-completions", baseUrl };
+    for (const differentRoute of [
+      { baseUrl: "https://gateway.example.test/v1" },
+      { api: "openai-responses" },
+      { provider: "openrouter" },
+    ]) {
       const registry = {
         getProvider: () => ({ getModels: () => [known, { ...known, ...differentRoute }] }),
       } as unknown as Models;
-      expect(providerCatalogModel("deepseek", "deepseek-fixture-model", registry)).toBeUndefined();
-    },
-  );
+      expect(providerCatalogModel(provider, modelId, registry)).toBeUndefined();
+    }
+  });
 
   it("isolates concurrent OpenAI-compatible endpoint registrations", () => {
     const first = modelsForRequest(

@@ -3215,7 +3215,12 @@ describe("model credential persistence", () => {
     return { ...fixture, handler, catalogProbe, selections, bundled };
   }
 
-  const draftModels = [draftModel, grokDraftModel, deepSeekDraftModel];
+  const draftModels = [
+    draftModel,
+    grokDraftModel,
+    deepSeekDraftModel,
+    { ...draftModel, provider: "groq", modelId: "fixture-vendor/chat-new-directory-model" },
+  ];
 
   it.each(draftModels)("checks a first $provider model draft", async (model) => {
     const { handler, catalogProbe, inference, tx, selections, bundled } = draftCatalogFixture(
@@ -3231,6 +3236,9 @@ describe("model credential persistence", () => {
       "grok-imagine.preview",
       "grok-voice_preview",
       "deepseek-fixture-live.preview",
+      "fixture-vendor/prompt-guard-2-fixture",
+      "groq/compound-mini",
+      "canopylabs/orpheus-v1-english",
       `${model.modelId}-${model.apiKey}`,
     ]);
     const directory = await call(handler, "models/probeCatalog", probeRequest);
@@ -6553,6 +6561,7 @@ describe("saved model catalog checks", () => {
     ["openai", "gpt-fixture-signed-choice"],
     ["xai", "grok-fixture-signed-choice"],
     ["deepseek", "deepseek-fixture-signed-choice"],
+    ["groq", "fixture-vendor/chat-signed-choice"],
   ])(
     "tests a signed %s choice without refreshing the catalog or accepting an unbound ID",
     async (provider, modelId) => {
@@ -6583,6 +6592,7 @@ describe("saved model catalog checks", () => {
     ["openai", "gpt-fixture-dynamic-choice"],
     ["xai", "grok-fixture-dynamic-choice"],
     ["deepseek", "deepseek-fixture-dynamic-choice"],
+    ["groq", "fixture-vendor/chat-dynamic-choice"],
   ])(
     "checks a replacement %s key's own catalog before sending inference",
     async (provider, modelId) => {

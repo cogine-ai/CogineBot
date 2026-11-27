@@ -15,6 +15,15 @@ export function isChatModelId(id: string): boolean {
 const openAiResponsesBaseUrl = "https://api.openai.com/v1";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
+const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
+
+function acceptsGroqModelId(id: string): boolean {
+  return (
+    id.length <= 512 &&
+    /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?$/i.test(id) &&
+    !/(?:^|[/._-])(?:guard|safeguard|compound|imagine|orpheus|voice|live)(?:[/._-]|$)/i.test(id)
+  );
+}
 
 export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
@@ -54,8 +63,8 @@ export function isOfficialChatCompletionProbeModel(
   if (model.provider === "openrouter") return model.baseUrl === "https://openrouter.ai/api/v1";
   return (
     model.provider === "groq" &&
-    model.baseUrl === "https://api.groq.com/openai/v1" &&
-    model.id !== "openai/gpt-oss-safeguard-20b"
+    model.baseUrl === groqCompletionsBaseUrl &&
+    acceptsGroqModelId(model.id)
   );
 }
 
@@ -88,6 +97,7 @@ type CatalogRoute = {
   api: "openai-responses" | "openai-completions";
   baseUrl: string;
   acceptsId: (id: string) => boolean;
+  compat?: Model<"openai-completions">["compat"];
 };
 
 const catalogRoutes = new Map<string, CatalogRoute>([
@@ -118,6 +128,16 @@ const catalogRoutes = new Map<string, CatalogRoute>([
       acceptsId: (id) =>
         /^deepseek-[a-z0-9][a-z0-9._-]{0,502}$/i.test(id) &&
         !/[-._](?:voice|live)(?:[-._]|$)/i.test(id),
+    },
+  ],
+  [
+    "groq",
+    {
+      api: "openai-completions",
+      baseUrl: groqCompletionsBaseUrl,
+      acceptsId: acceptsGroqModelId,
+      // The Chat Completions endpoint does not support the OpenAI store option.
+      compat: { supportsStore: false },
     },
   ],
 ]);
@@ -161,6 +181,7 @@ export function providerCatalogModel(
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...(route.compat ? { compat: route.compat } : {}),
     ...DISCOVERED_MODEL_LIMITS,
   };
 }

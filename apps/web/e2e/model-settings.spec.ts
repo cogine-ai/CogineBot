@@ -2134,6 +2134,12 @@ for (const { provider, providerName, prefix, screenshot } of [
     prefix: "deepseek",
     screenshot: "a1-deepseek-first-directory-model",
   },
+  {
+    provider: "groq",
+    providerName: "Groq",
+    prefix: "fixture-vendor/chat",
+    screenshot: "a1-groq-first-directory-model",
+  },
 ]) {
   test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
     page,

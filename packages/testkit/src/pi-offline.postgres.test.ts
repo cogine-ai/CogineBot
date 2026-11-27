@@ -49,10 +49,16 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       prefix: "deepseek",
       endpoint: "https://api.deepseek.com/chat/completions",
     },
+    {
+      provider: "groq",
+      prefix: "fixture-vendor/chat",
+      endpoint: "https://api.groq.com/openai/v1/chat/completions",
+    },
   ];
   it.each(directoryRoutes)("runs a confirmed $provider model", async (route) => {
     const { provider, prefix, endpoint } = route;
-    const chatCompletions = provider === "deepseek";
+    const chatCompletions = endpoint.endsWith("/chat/completions");
+    const deepSeek = provider === "deepseek";
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
@@ -80,7 +86,11 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({ model: modelId, stream: true });
       if (chatCompletions) {
-        expect(body.thinking).toEqual({ type: "disabled" });
+        if (deepSeek) expect(body.thinking).toEqual({ type: "disabled" });
+        else {
+          expect(body).not.toHaveProperty("store");
+          expect(body).not.toHaveProperty("reasoning_effort");
+        }
         return directoryChatCompletion(modelId, "Used the selected model.");
       }
       const message = {
@@ -117,8 +127,8 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         model: modelId,
         ...(chatCompletions
           ? {
-              max_tokens: 1024,
-              thinking: { type: "disabled" },
+              [deepSeek ? "max_tokens" : "max_completion_tokens"]: 1024,
+              ...(deepSeek ? { thinking: { type: "disabled" } } : {}),
               tools: [
                 expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) }),
               ],
