@@ -1,7 +1,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { canonicalPiProviderId, MODEL_DIRECTORY_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { LiveCatalogCache } from "./pi-live-cache.js";
-import { isChatModelId, providerCatalogModel } from "./pi-live-model.js";
+import {
+  isChatModelId,
+  providerCatalogModel,
+  supportsProviderCatalogModels,
+} from "./pi-live-model.js";
 import {
   catalogProviderProbeBaseUrl,
   listPiCatalog,
@@ -139,8 +143,7 @@ export class ApiKeyModelCatalog {
 
   /** Drafts have no stored credential or revision, so their observations are never cached. */
   draftModels(provider: string, apiKey: string, listed: readonly string[]) {
-    // Discovered models currently have a runtime route only on the official OpenAI endpoint.
-    if (provider !== "openai") return undefined;
+    if (!supportsProviderCatalogModels(provider)) return undefined;
     const endpoint = catalogProviderProbeBaseUrl(provider);
     return endpoint ? trustedModels({ provider, endpoint }, apiKey, listed) : undefined;
   }

@@ -67,6 +67,43 @@ function credential(overrides: Partial<ModelCredential> = {}): ModelCredential {
   };
 }
 
+it("keeps subscription billing copy off API-key-only directory choices", () => {
+  const modelId = "grok-fixture-directory-choice";
+  const base = {
+    id: "grok-fixture-base",
+    provider: "xai",
+    label: "Fixture",
+    billing: "Sign in with a subscription or paste an API key.",
+    auth: "both" as const,
+    subscription: true,
+    signIn: "device-code" as const,
+    inferenceProbe: true as const,
+  };
+  const [, draft] = withDraftCatalogModels([base], base.provider, [modelId]);
+  const [, saved] = withConnectionCatalogModels(
+    [base],
+    credential({ provider: base.provider, savedProviderCatalogModelIds: [modelId] }),
+    7,
+  );
+  for (const choice of [draft, saved]) {
+    expect(choice).toMatchObject({
+      id: modelId,
+      auth: "api-key",
+      subscription: false,
+      billing: "",
+    });
+  }
+  const apiKeyAnchor = {
+    ...base,
+    id: "gpt-fixture-base",
+    provider: "openai",
+    billing: "Uses your API key.",
+    signIn: undefined,
+  };
+  const [, apiKeyChoice] = withDraftCatalogModels([apiKeyAnchor], "openai", ["gpt-fixture-choice"]);
+  expect(apiKeyChoice?.billing).toBe(apiKeyAnchor.billing);
+});
+
 it("ranks listed choices for the displayed revision while leaving the base order and draft key alone", () => {
   const models = [1, 2, 3, 4].map((number) => ({
     id: `fixture-${number}`,

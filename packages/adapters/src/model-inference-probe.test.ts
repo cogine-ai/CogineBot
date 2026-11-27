@@ -440,9 +440,13 @@ describe("model inference check", () => {
     expect(xaiApiModels.every((entry) => entry.inferenceProbe && entry.catalogProbe)).toBe(true);
   });
 
-  it.each(xaiApiModels)(
+  const xaiProbeTargets = [
+    ...xaiApiModels.map(({ id }) => ({ id, confirmed: false })),
+    { id: "grok-fixture-catalog-model", confirmed: true },
+  ];
+  it.each(xaiProbeTargets)(
     "sends one bounded Responses request with the selected $id key",
-    async ({ id }) => {
+    async ({ id, confirmed }) => {
       vi.stubEnv("XAI_API_KEY", "fixture-deployment-key");
       vi.stubEnv("OPENAI_ORG_ID", "fixture-openai-organization");
       vi.stubEnv("OPENAI_PROJECT_ID", "fixture-openai-project");
@@ -462,7 +466,12 @@ describe("model inference check", () => {
             { headers: { "content-type": "text/event-stream" } },
           ),
       );
-      expect(await probeModelInference({ ...xaiInput, modelId: id }, { fetch })).toBe("accepted");
+      expect(
+        await probeModelInference(
+          { ...xaiInput, modelId: id, ...(confirmed && { providerCatalogModel: true }) },
+          { fetch },
+        ),
+      ).toBe("accepted");
       expect(fetch).toHaveBeenCalledOnce();
       const request = new Request(...fetch.mock.calls[0]!);
       expect(request.url).toBe("https://api.x.ai/v1/responses");
@@ -604,9 +613,20 @@ describe("model inference check", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("does not reinterpret unregistered Grok models or fall back to a gateway", async () => {
+  it("only checks an eligible Grok catalog ID with confirmation and never falls back to a gateway", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    for (const modelId of ["grok-fixture-unknown", openRouterInput.modelId]) {
+    expect(
+      await probeModelInference({ ...xaiInput, modelId: "grok-fixture-unknown" }, { fetch }),
+    ).toBe("unavailable");
+    for (const modelId of [
+      "grok-imagine-fixture",
+      "grok-imagine.preview",
+      "grok-fixture-live",
+      "grok-fixture_live",
+      "grok-fixture-voice",
+      "grok-voice_preview",
+      openRouterInput.modelId,
+    ]) {
       expect(
         await probeModelInference({ ...xaiInput, modelId, providerCatalogModel: true }, { fetch }),
       ).toBe("unavailable");

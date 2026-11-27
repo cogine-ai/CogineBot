@@ -245,7 +245,7 @@ function providerCatalogEntry(anchor: ModelCatalogEntry, id: string): Connection
     providerName: anchor.providerName,
     id,
     label: id,
-    billing: anchor.billing,
+    billing: anchor.signIn ? "" : anchor.billing,
     auth: "api-key",
     subscription: false,
     ...DISCOVERED_MODEL_LIMITS,
