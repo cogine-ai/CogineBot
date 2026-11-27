@@ -2146,6 +2146,12 @@ for (const { provider, providerName, prefix, screenshot } of [
     prefix: "claude",
     screenshot: "a1-anthropic-first-directory-model",
   },
+  {
+    provider: "google",
+    providerName: "Google",
+    prefix: "gemini",
+    screenshot: "a1-google-first-directory-model",
+  },
 ]) {
   test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
     page,
@@ -2513,11 +2519,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
       .getByRole("button")
       .filter({ has: page.getByText(providerName, { exact: true }) })
       .click();
-    if (provider === "google") {
-      await expect(settings.getByRole("button", { name: "Check models", exact: true })).toHaveCount(
-        0,
-      );
-    } else if (provider === "anthropic") {
+    if (provider === "google" || provider === "anthropic") {
       await expect(
         settings.getByRole("button", { name: "Check models", exact: true }),
       ).toBeVisible();

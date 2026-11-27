@@ -7,6 +7,7 @@ import { supplementPiModels } from "./pi-current-models.js";
 import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
+  isOfficialGeminiModel,
   isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
@@ -67,7 +68,9 @@ export async function probeCatalogProviderModels(
   const route =
     input.provider === "anthropic"
       ? { baseUrl: `${baseUrl}/v1`, apiProtocol: "anthropic-messages" as const }
-      : { baseUrl };
+      : input.provider === "google"
+        ? { baseUrl, apiProtocol: "google-generative-ai" as const }
+        : { baseUrl };
   return probeOpenAiCompatibleModels({ ...route, apiKey: input.apiKey }, fetchImpl, signal, {
     allowPublic: true,
     catalogProbe: true,
@@ -90,6 +93,9 @@ function pinnedCatalogProbeBaseUrl(
   }
   if (providerId === "anthropic") {
     return models.every(isOfficialAnthropicProbeModel) ? (models[0]?.baseUrl ?? null) : null;
+  }
+  if (providerId === "google") {
+    return models.every(isOfficialGeminiModel) ? (models[0]?.baseUrl ?? null) : null;
   }
   const urls = new Set<string>();
   for (const model of models) {

@@ -5,6 +5,7 @@ import { isModelInferenceRefusal, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@raka
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
 import { createParser } from "eventsource-parser";
 import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
+import { isGeminiApiKeyError } from "./gemini-model-api.js";
 import {
   anthropicModelAlias,
   isOfficialAnthropicProbeModel,
@@ -47,10 +48,11 @@ export async function probeModelInference(
   });
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
-  if (builtIn && isOfficialGeminiProbeModel(model)) return probeGemini(model, apiKey, options);
   const canProbeCatalogRoute =
     builtIn ||
     (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
+  if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
+    return probeGemini(model, apiKey, options);
   const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = canProbeCatalogRoute && isOfficialAnthropicProbeModel(model);
@@ -321,20 +323,11 @@ function geminiFailureStatus(
     /^Your API key was reported as (?:leaked|blocked)\b/i.test(message)
   )
     return "auth";
-  const details = record?.details;
-  if ((status === 400 || status === 403 || status === undefined) && Array.isArray(details)) {
-    if (
-      details.some((value: unknown) => {
-        const info = probeRecord(value);
-        return (
-          info?.["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
-          typeof info.reason === "string" &&
-          /^API_KEY_[A-Z_]+$/.test(info.reason)
-        );
-      })
-    )
-      return "auth";
-  }
+  if (
+    (status === 400 || status === 403 || status === undefined) &&
+    isGeminiApiKeyError(record?.details)
+  )
+    return "auth";
   if (
     (status === 400 || status === 403 || status === 429 || status === undefined) &&
     /\b(?:spend(?:ing)? (?:cap|limit) (?:was |has been )?(?:reached|exceeded)|(?:reached|exceeded) (?:(?:your|the|its) )?(?:monthly )?spend(?:ing)? (?:cap|limit))\b/i.test(

@@ -21,6 +21,12 @@ import {
 } from "@rakazo/core";
 import { Agent } from "undici";
 import {
+  GEMINI_API_BASE_URL,
+  GEMINI_MODEL_PAGE_SIZE,
+  geminiDirectoryModelIds,
+  isGeminiApiKeyError,
+} from "./gemini-model-api.js";
+import {
   modelConnectionErrorMessage,
   registerModelConnectionHeaders,
 } from "./model-connection-errors.js";
@@ -462,11 +468,11 @@ function probeModelIds(
   return ids;
 }
 
-async function readBoundedJson(
+async function readBoundedJson<T>(
   response: Response,
   signal: AbortSignal,
   opts?: { catalogProbe?: boolean },
-): Promise<OpenAiCompatibleModelsResponse> {
+): Promise<T> {
   const { maxBytes } = modelsProbeLimits(opts?.catalogProbe);
   try {
     return await readBoundedJsonResponse(response, maxBytes, signal);
@@ -496,16 +502,21 @@ export async function probeOpenAiCompatibleModels(
   input: {
     baseUrl: string;
     apiKey?: string;
-    apiProtocol?: ModelApiProtocol;
+    apiProtocol?: ModelApiProtocol | "google-generative-ai";
     headers?: Record<string, string>;
   },
   fetchImpl?: typeof fetch,
   signal?: AbortSignal,
   opts?: { allowPublic?: boolean; catalogProbe?: boolean },
 ): Promise<string[]> {
-  const baseUrl = assertAllowedOpenAiCompatibleUrl(input.baseUrl, {
-    allowPublic: opts?.allowPublic,
-  });
+  const geminiCatalog = opts?.catalogProbe && input.apiProtocol === "google-generative-ai";
+  if (geminiCatalog && input.baseUrl !== GEMINI_API_BASE_URL) {
+    throw new Error("This provider cannot be tested without saving.");
+  }
+  const urlPolicy = { allowPublic: opts?.allowPublic };
+  const baseUrl = geminiCatalog
+    ? assertAllowedOpenAiCompatibleRequestUrl(input.baseUrl, urlPolicy)
+    : assertAllowedOpenAiCompatibleUrl(input.baseUrl, urlPolicy);
   const customHeaders = input.headers === undefined ? undefined : parseModelHeaders(input.headers);
   assertHttpsForKeyedOpenAiCompatibleUrl(
     baseUrl,
@@ -519,6 +530,8 @@ export async function probeOpenAiCompatibleModels(
     if (input.apiProtocol === "anthropic-messages") {
       headers["anthropic-version"] = ANTHROPIC_MESSAGES_VERSION;
       if (input.apiKey?.trim()) headers["x-api-key"] = input.apiKey.trim();
+    } else if (geminiCatalog) {
+      if (input.apiKey?.trim()) headers["x-goog-api-key"] = input.apiKey.trim();
     } else if (input.apiKey?.trim()) headers.Authorization = `Bearer ${input.apiKey.trim()}`;
     const safeFetch = createOpenAiCompatibleFetch(fetchImpl, undefined, {
       ...opts,
@@ -527,6 +540,7 @@ export async function probeOpenAiCompatibleModels(
     const directoryUrl = new URL("models", `${baseUrl.href}/`);
     const anthropicCatalog = opts?.catalogProbe && input.apiProtocol === "anthropic-messages";
     if (anthropicCatalog) directoryUrl.searchParams.set("limit", "1000");
+    if (geminiCatalog) directoryUrl.searchParams.set("pageSize", String(GEMINI_MODEL_PAGE_SIZE));
     const response = await safeFetch(directoryUrl.href, {
       headers,
       redirect: "error",
@@ -539,14 +553,25 @@ export async function probeOpenAiCompatibleModels(
       );
     }
     if (!response.ok) {
-      cancelResponseBody(response);
       const message = `Model server returned ${response.status}. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`;
+      if (geminiCatalog && response.status === 400) {
+        const body = await readBoundedJsonResponse<{ error?: { details?: unknown } }>(
+          response,
+          16 * 1024,
+          merged,
+        ).catch(() => undefined);
+        merged.throwIfAborted();
+        if (isGeminiApiKeyError(body?.error?.details))
+          throw new ModelDirectoryError("API key authentication failed.", "auth");
+      } else cancelResponseBody(response);
       if (response.status === 401 || response.status === 403)
         throw new ModelDirectoryError(message, "auth");
       if (response.status === 429) throw new ModelDirectoryError(message, "rate");
       throw new Error(message);
     }
-    const body = await readBoundedJson(response, merged, opts);
+    if (geminiCatalog)
+      return geminiDirectoryModelIds(await readBoundedJson(response, merged, opts));
+    const body = await readBoundedJson<OpenAiCompatibleModelsResponse>(response, merged, opts);
     if (anthropicCatalog) {
       // An incomplete or malformed list cannot prove a saved model is missing.
       if (body?.has_more !== false)

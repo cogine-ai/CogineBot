@@ -136,6 +136,12 @@ describe("request model catalogs", () => {
     ["deepseek", "deepseek-fixture-model", "https://api.deepseek.com", "openai-completions"],
     ["groq", "fixture-vendor/chat-new", "https://api.groq.com/openai/v1", "openai-completions"],
     ["anthropic", "claude-fixture-chat", "https://api.anthropic.com", "anthropic-messages"],
+    [
+      "google",
+      "gemini-fixture-chat",
+      "https://generativelanguage.googleapis.com/v1beta",
+      "google-generative-ai",
+    ],
   ])("resolves a confirmed %s model on its API-key route", (provider, id, baseUrl, api) => {
     const choice = { provider, id, apiKey: "fixture-connection-key" };
     expect(resolveRuntimeModel(choice).model).toBeUndefined();
@@ -177,6 +183,15 @@ describe("request model catalogs", () => {
         resolveRuntimeModel({ ...choice, ...unsafe, providerCatalogModel: true }).model,
       ).toBeUndefined();
     }
+  });
+
+  it.each([
+    "gemini-fixture-customtools",
+    "gemini-fixture-live-preview",
+    "gemini-fixture-image",
+    "gemini-fixture/chat",
+  ])("rejects %s as a dynamic Gemini chat model", (id) => {
+    expect(providerCatalogModel("google", id)).toBeUndefined();
   });
 
   it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-completions" }])(
