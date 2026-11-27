@@ -232,14 +232,16 @@ async function probeGemini(
     );
     if (!response.ok) {
       const { error } = await readProbeError(response, signal);
-      return geminiFailureStatus(error, response.status);
+      return geminiFailureStatus(error, apiKey, response.status);
     }
     if (!isEventStream(response)) {
       cancelResponseBody(response);
       signal.throwIfAborted();
       return "unavailable";
     }
-    return await readModelProbeFrames(response.body, signal, geminiFrameOutcome);
+    return await readModelProbeFrames(response.body, signal, (frame, event) =>
+      geminiFrameOutcome(frame, apiKey, event),
+    );
   } catch {
     options.signal?.throwIfAborted();
     return deadline.aborted ? "timeout" : "unavailable";
@@ -252,10 +254,14 @@ function probeRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function geminiFrameOutcome(frame: unknown, event?: string): ModelInferenceProbeStatus | undefined {
+function geminiFrameOutcome(
+  frame: unknown,
+  apiKey: string,
+  event?: string,
+): ModelInferenceProbeStatus | undefined {
   const record = probeRecord(frame);
   if (record?.error !== undefined || event === "error")
-    return geminiFailureStatus(record?.error ?? frame, errorHttpStatus(frame));
+    return geminiFailureStatus(record?.error ?? frame, apiKey, errorHttpStatus(frame));
   const block = probeRecord(record?.promptFeedback)?.blockReason;
   if (typeof block === "string" && block && block !== "BLOCK_REASON_UNSPECIFIED")
     return "unavailable";
@@ -286,13 +292,23 @@ function geminiFrameOutcome(frame: unknown, event?: string): ModelInferenceProbe
   if (finish === "STOP" || finish === "MAX_TOKENS") return "unavailable";
 }
 
-function geminiFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+function geminiFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
   status ??= errorHttpStatus(error);
   if (status === 408 || status === 504) return "timeout";
   if (status !== undefined && status >= 500) return "unavailable";
   if (status === 401) return "auth";
   if (status === 402) return "credit";
   const record = probeRecord(error);
+  const message = typeof record?.message === "string" ? record.message.replaceAll(apiKey, "") : "";
+  if (
+    (status === 403 || status === undefined) &&
+    /^Your API key was reported as (?:leaked|blocked)\b/i.test(message)
+  )
+    return "auth";
   const details = record?.details;
   if ((status === 400 || status === 403 || status === undefined) && Array.isArray(details)) {
     if (
@@ -309,9 +325,8 @@ function geminiFailureStatus(error: unknown, status?: number): ModelInferencePro
   }
   if (
     (status === 400 || status === 403 || status === 429 || status === undefined) &&
-    typeof record?.message === "string" &&
-    /\b(?:spend(?:ing)? (?:cap|limit) (?:was |has been )?(?:reached|exceeded)|(?:reached|exceeded) (?:your |the )?(?:monthly )?spend(?:ing)? (?:cap|limit))\b/i.test(
-      record.message,
+    /\b(?:spend(?:ing)? (?:cap|limit) (?:was |has been )?(?:reached|exceeded)|(?:reached|exceeded) (?:(?:your|the|its) )?(?:monthly )?spend(?:ing)? (?:cap|limit))\b/i.test(
+      message,
     )
   )
     return "spending";

@@ -136,6 +136,14 @@ describe("model inference check", () => {
       },
       "auth",
     ],
+    [
+      403,
+      {
+        status: "PERMISSION_DENIED",
+        message: "Your API key was reported as leaked. Please use another API key.",
+      },
+      "auth",
+    ],
     [403, { message: "Permission denied for this model" }, "model"],
     [404, { message: "Model not found" }, "model"],
     [402, { status: "RESOURCE_EXHAUSTED" }, "credit"],
@@ -150,6 +158,14 @@ describe("model inference check", () => {
     [
       429,
       { status: "RESOURCE_EXHAUSTED", message: "You have exceeded your monthly spend cap." },
+      "spending",
+    ],
+    [
+      429,
+      {
+        status: "RESOURCE_EXHAUSTED",
+        message: "Your billing account has exceeded its monthly spending cap.",
+      },
       "spending",
     ],
     [503, { code: 402, message: "Credits depleted" }, "unavailable"],
