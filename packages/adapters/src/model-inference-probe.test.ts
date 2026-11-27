@@ -873,6 +873,10 @@ describe("model inference check", () => {
     [401, "Invalid API key", "auth"],
     [402, "Insufficient credits", "credit"],
     [402, "This request requires more credits, or fewer max_tokens.", "credit"],
+    [402, "Spending limit exceeded", "spending"],
+    [402, "Team spending limit exceeded", "spending"],
+    [402, "API key limit reached", "spending"],
+    [402, "Workspace monthly budget of $25.00 exceeded.", "spending"],
     [403, "Key limit exceeded", "spending"],
     [404, "No endpoints found that support tool use", "model"],
     [429, "Rate limit exceeded", "rate"],
@@ -947,7 +951,12 @@ describe("model inference check", () => {
     "preserves the meaning of the OpenRouter %i budget source %s",
     async (status, limit_source, outcome) => {
       const fetch = vi.fn<typeof globalThis.fetch>(async () =>
-        Response.json({ error: { code: status, metadata: { limit_source } } }, { status }),
+        Response.json(
+          {
+            error: { code: status, message: "Spending limit exceeded", metadata: { limit_source } },
+          },
+          { status },
+        ),
       );
       expect(await probeModelInference(openRouterInput, { fetch })).toBe(outcome);
       expect(fetch).toHaveBeenCalledOnce();
@@ -957,7 +966,13 @@ describe("model inference check", () => {
   it("recognizes a temporary OpenRouter budget limit from its reason", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       Response.json(
-        { error: { code: 402, metadata: { reason: "in_flight_budget_exhausted" } } },
+        {
+          error: {
+            code: 402,
+            message: "Spending limit exceeded",
+            metadata: { reason: "in_flight_budget_exhausted" },
+          },
+        },
         { status: 402 },
       ),
     );
@@ -971,6 +986,14 @@ describe("model inference check", () => {
     { error: { code: 402 } },
     { error: "Payment Required" },
     { error: { code: 402, message: "Quota information is temporarily unavailable." } },
+    { error: { code: 402, message: "Spending limit information is temporarily unavailable." } },
+    {
+      error: {
+        code: 402,
+        message:
+          "This request would exceed your available credits given your current in-flight requests.",
+      },
+    },
   ])("keeps OpenRouter HTTP 402 without a diagnostic inconclusive: %j", async (body) => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(body, { status: 402 }));
     expect(await probeModelInference(openRouterInput, { fetch })).toBe("unavailable");

@@ -3449,6 +3449,30 @@ describe("model credential persistence", () => {
     },
   );
 
+  it("blocks saving an OpenRouter connection on a readable spending refusal", async () => {
+    const { deps, tx } = persistDeps();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { code: 402, message: "Spending limit exceeded" } }, { status: 402 }),
+    );
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const refused = await call(handler, "models/connect", {
+      provider: "openrouter",
+      modelId: "openai/gpt-oss-120b",
+      apiKey: "fixture-gateway-draft",
+      verifyInference: true,
+    });
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).json).toMatchObject({ data: { inferenceStatus: "spending" } });
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("allows saving an OpenRouter connection when the reason for a 402 is unavailable", async () => {
     const { deps, tx } = persistDeps();
     const deadline = new AbortController();
