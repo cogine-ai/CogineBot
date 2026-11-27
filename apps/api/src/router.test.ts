@@ -3449,6 +3449,69 @@ describe("model credential persistence", () => {
     },
   );
 
+  it("checks the native Gemini route and draft key before a first connection", async () => {
+    const { deps, tx } = persistDeps();
+    const input = {
+      provider: "google",
+      modelId: "gemini-3.8-flash",
+      apiKey: "fixture-google-draft",
+    };
+    expect(
+      listPiCatalog().find(
+        (entry) => entry.provider === input.provider && entry.id === input.modelId,
+      )?.inferenceProbe,
+    ).toBe(true);
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]}}]}\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { code: 402, status: "RESOURCE_EXHAUSTED", message: input.apiKey } },
+          { status: 402 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ error: { code: 429, status: "RESOURCE_EXHAUSTED" } }, { status: 429 }),
+      );
+    const handler = new RPCHandler(
+      createRouter({
+        ...deps,
+        modelInferenceProbe: (model, options) => probeModelInference(model, { ...options, fetch }),
+      }),
+    );
+    const tested = await call(handler, "models/probeInference", input);
+    expect((await tested.json()).json).toEqual({ status: "accepted" });
+    const refused = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(refused.status).toBe(400);
+    const rejection = await refused.json();
+    expect(rejection.json).toMatchObject({ data: { inferenceStatus: "credit" } });
+    expect(JSON.stringify(rejection)).not.toContain(input.apiKey);
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    const saved = await call(handler, "models/connect", { ...input, verifyInference: true });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      provider: input.provider,
+      modelId: input.modelId,
+      inferenceStatus: "rate",
+    });
+    expect(deps.secrets.put).toHaveBeenCalledOnce();
+    expect(tx.userModelCredential.create).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const args of fetch.mock.calls) {
+      const request = new Request(...args);
+      expect(request.url).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+      );
+      expect(request.headers.get("x-goog-api-key")).toBe(input.apiKey);
+    }
+  });
+
   it("checks the Anthropic Messages route and draft key before a first connection", async () => {
     const { deps, tx } = persistDeps();
     const input = {

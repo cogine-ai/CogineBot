@@ -18,6 +18,13 @@ const deepseekInput = {
   modelId: "deepseek-flash",
   apiKey: "fixture-deepseek-key",
 };
+const geminiInput = {
+  provider: "google",
+  modelId: "gemini-3.8-flash",
+  apiKey: "fixture-gemini-key",
+};
+const geminiEndpoint =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse";
 const xaiInput = { provider: "xai", modelId: "grok-4.7", apiKey: "fixture-grok-key" };
 const xaiApiModels = listPiCatalog().filter((entry) => entry.provider === "xai");
 const anthropicInput = {
@@ -32,6 +39,16 @@ function chatChunk(choices: unknown[], extra: Record<string, unknown> = {}) {
   return `data: ${JSON.stringify({ id: "gen-fixture", object: "chat.completion.chunk", choices, ...extra })}\n\n`;
 }
 
+function geminiCandidate(content: unknown, finishReason?: string) {
+  return { candidates: [{ content, finishReason }] };
+}
+
+function geminiSse(...frames: unknown[]) {
+  return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+    headers: { "content-type": "text/event-stream; charset=utf-8" },
+  });
+}
+
 function xaiStarted(modelId: string) {
   const response = { id: "resp-fixture", status: "in_progress", model: modelId, error: null };
   return `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response })}\n\n`;
@@ -42,6 +59,167 @@ describe("model inference check", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
+
+  it("checks the selected Gemini model with the draft key and closes the stream on output", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "fixture-deployment-key");
+    const selected = listPiCatalog().find(
+      (entry) => entry.provider === geminiInput.provider && entry.id === geminiInput.modelId,
+    );
+    expect(selected?.inferenceProbe).toBe(true);
+    expect(selected?.catalogProbe).toBeUndefined();
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      const frames = [
+        geminiCandidate({ role: "model", parts: [{ text: "" }] }),
+        geminiCandidate({ role: "model", parts: [{ functionCall: { name: "noop", args: {} } }] }),
+      ];
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const frame of frames)
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+          },
+          cancel,
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    });
+    expect(await probeModelInference(geminiInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe(geminiEndpoint);
+    expect(request.redirect).toBe("error");
+    expect(request.headers.get("x-goog-api-key")).toBe(geminiInput.apiKey);
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(await request.json()).toEqual({
+      systemInstruction: { parts: [{ text: "Reply with OK." }] },
+      contents: [{ role: "user", parts: [{ text: "OK?" }] }],
+      tools: [{ functionDeclarations: [{ name: "noop", description: "Does nothing." }] }],
+      generationConfig: { maxOutputTokens: 1024 },
+    });
+  });
+
+  it.each([
+    [geminiCandidate({ parts: [{ text: "OK" }] }, "STOP"), "accepted"],
+    [geminiCandidate({ role: "model", parts: [] }, "STOP"), "unavailable"],
+    [geminiCandidate({ role: "user", parts: [{ text: "OK" }] }, "STOP"), "unavailable"],
+    [geminiCandidate({ parts: [{ functionCall: { name: "other" } }] }, "STOP"), "unavailable"],
+    [geminiCandidate({ parts: [{ text: "OK" }] }, "SAFETY"), "unavailable"],
+    [{ promptFeedback: { blockReason: "SAFETY" } }, "unavailable"],
+    [{ error: { code: 402, status: "RESOURCE_EXHAUSTED" } }, "credit"],
+  ])("requires real Gemini output or a definitive error in %j", async (frame, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => geminiSse(frame));
+    expect(await probeModelInference(geminiInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      400,
+      {
+        details: [
+          { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "API_KEY_INVALID" },
+        ],
+      },
+      "auth",
+    ],
+    [
+      403,
+      {
+        details: [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            reason: "API_KEY_SERVICE_BLOCKED",
+          },
+        ],
+      },
+      "auth",
+    ],
+    [403, { message: "Permission denied for this model" }, "model"],
+    [404, { message: "Model not found" }, "model"],
+    [402, { status: "RESOURCE_EXHAUSTED" }, "credit"],
+    [
+      429,
+      {
+        status: "RESOURCE_EXHAUSTED",
+        message: "You exceeded your current quota, check your plan and billing",
+      },
+      "rate",
+    ],
+    [
+      429,
+      { status: "RESOURCE_EXHAUSTED", message: "You have exceeded your monthly spend cap." },
+      "spending",
+    ],
+    [503, { code: 402, message: "Credits depleted" }, "unavailable"],
+    [504, {}, "timeout"],
+  ] as const)(
+    "classifies Gemini HTTP %i without leaking its error",
+    async (status, error, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error, request: geminiInput.apiKey }, { status }),
+      );
+      expect(await probeModelInference(geminiInput, { fetch })).toBe(outcome);
+    },
+  );
+
+  it.each([
+    "gemini-fixture-unregistered",
+    "gemini-3.1-flash-live-preview",
+    "gemini-3.1-flash-lite-image",
+    "gemini-3.1-pro-preview-customtools",
+    "gemini-2.5-computer-use-preview-10-2025",
+    "deep-research-preview-04-2026",
+    "gemma-4-31b-it",
+  ])("does not offer or run this Gemini chat check for %s", async (modelId) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(
+      listPiCatalog().find((entry) => entry.provider === "google" && entry.id === modelId)
+        ?.inferenceProbe,
+    ).toBeUndefined();
+    expect(await probeModelInference({ ...geminiInput, modelId }, { fetch })).toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["deadline", "caller"] as const)(
+    "stops reading Gemini output when %s aborts",
+    async (source) => {
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
+      const cancel = vi.fn();
+      let startedReading = () => {};
+      const reading = new Promise<void>((resolve) => {
+        startedReading = resolve;
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            new ReadableStream(
+              {
+                pull() {
+                  startedReading();
+                },
+                cancel,
+              },
+              { highWaterMark: 0 },
+            ),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      const pending = probeModelInference(geminiInput, { fetch, signal: caller.signal });
+      const verified =
+        source === "caller"
+          ? expect(pending).rejects.toMatchObject({ name: "AbortError" })
+          : expect(pending).resolves.toBe("timeout");
+      await reading;
+      (source === "caller" ? caller : deadline).abort();
+      await verified;
+      expect(timeout).toHaveBeenCalledWith(15000);
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each(["deepseek-flash", "deepseek-v4-pro"])(
     "probes the registered DeepSeek model %s",

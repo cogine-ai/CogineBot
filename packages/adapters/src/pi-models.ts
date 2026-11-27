@@ -6,6 +6,7 @@ import { supplementPiModels } from "./pi-current-models.js";
 import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
+  isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
 } from "./pi-live-model.js";
@@ -165,6 +166,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(probeBaseUrl ? { catalogProbe: true, savedCatalogProbe: true } : {}),
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
+          isOfficialGeminiProbeModel(model) ||
           (probeBaseUrl &&
             (isOfficialResponsesModel(model) ||
               isOfficialXaiResponsesProbeModel(model) ||
