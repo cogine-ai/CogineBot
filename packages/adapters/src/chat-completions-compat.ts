@@ -1,4 +1,5 @@
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { isOfficialDeepSeekChatCompletionModel } from "./pi-live-model.js";
 
 /**
  * OpenAI-compatible servers render `messages` through the model's chat template and
@@ -18,7 +19,18 @@ export function withChatCompletionsCompatibility<O extends SimpleStreamOptions>(
     ...options,
     async onPayload(payload, requestModel) {
       const replaced = await previous?.(payload, requestModel);
-      return normalizeChatCompletionsPayload(replaced ?? payload, { stringContent }) ?? replaced;
+      const normalized = normalizeChatCompletionsPayload(replaced ?? payload, { stringContent });
+      const wirePayload = normalized ?? replaced ?? payload;
+      // DeepSeek enables thinking by default. A directory model without known reasoning
+      // support must opt out explicitly, including on follow-up tool calls.
+      if (
+        !requestModel.reasoning &&
+        isOfficialDeepSeekChatCompletionModel(requestModel) &&
+        isRecord(wirePayload)
+      ) {
+        return { ...wirePayload, thinking: { type: "disabled" } };
+      }
+      return normalized ?? replaced;
     },
   };
 }

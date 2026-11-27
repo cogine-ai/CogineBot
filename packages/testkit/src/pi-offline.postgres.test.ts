@@ -19,13 +19,40 @@ type App = { request: (input: string, init?: RequestInit) => Promise<Response> }
 const databaseAvailable = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const fixtureOrigin = "http://127.0.0.1:5173";
 
+function directoryChatCompletion(model: string, content: string): Response {
+  const chunk = {
+    id: "chunk_directory_fixture",
+    object: "chat.completion.chunk",
+    created: 1,
+    model,
+  };
+  const frames = [
+    {
+      ...chunk,
+      choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
+    },
+    { ...chunk, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+    { ...chunk, choices: [], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } },
+  ];
+  return new Response(
+    `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+    { headers: { "content-type": "text/event-stream" } },
+  );
+}
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   const directoryRoutes = [
     { provider: "openai", prefix: "gpt", endpoint: "https://api.openai.com/v1/responses" },
     { provider: "xai", prefix: "grok", endpoint: "https://api.x.ai/v1/responses" },
+    {
+      provider: "deepseek",
+      prefix: "deepseek",
+      endpoint: "https://api.deepseek.com/chat/completions",
+    },
   ];
   it.each(directoryRoutes)("runs a confirmed $provider model", async (route) => {
     const { provider, prefix, endpoint } = route;
+    const chatCompletions = provider === "deepseek";
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
@@ -50,7 +77,12 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(endpoint);
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${expectedWireKey}`);
-      expect(JSON.parse(String(init?.body))).toMatchObject({ model: modelId, stream: true });
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({ model: modelId, stream: true });
+      if (chatCompletions) {
+        expect(body.thinking).toEqual({ type: "disabled" });
+        return directoryChatCompletion(modelId, "Used the selected model.");
+      }
       const message = {
         id: "msg_directory_fixture",
         type: "message",
@@ -83,8 +115,15 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       expect(request.headers.get("authorization")).toBe(`Bearer ${probeKey}`);
       expect(await request.json()).toMatchObject({
         model: modelId,
-        max_output_tokens: 1024,
-        tools: [expect.objectContaining({ name: "noop" })],
+        ...(chatCompletions
+          ? {
+              max_tokens: 1024,
+              thinking: { type: "disabled" },
+              tools: [
+                expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) }),
+              ],
+            }
+          : { max_output_tokens: 1024, tools: [expect.objectContaining({ name: "noop" })] }),
       });
       if (probeResponse !== "accepted")
         return Response.json(
@@ -93,6 +132,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           },
           { status: probeResponse === "auth" ? 401 : 429 },
         );
+      if (chatCompletions) return directoryChatCompletion(modelId, "OK");
       return new Response(
         'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\ndata: {"type":"response.output_text.delta","delta":"OK"}\n\n',
         {

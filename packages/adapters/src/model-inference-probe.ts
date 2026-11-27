@@ -4,6 +4,7 @@ import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { isModelInferenceRefusal, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
 import { createParser } from "eventsource-parser";
+import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
 import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
@@ -45,7 +46,9 @@ export async function probeModelInference(
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
   if (builtIn && isOfficialGeminiProbeModel(model)) return probeGemini(model, apiKey, options);
-  const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
+  const chatCompletions =
+    (builtIn || (model.provider === "deepseek" && input.providerCatalogModel === true)) &&
+    isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
   const xai =
@@ -81,7 +84,7 @@ export async function probeModelInference(
       models,
       probeModel,
       context,
-      {
+      withChatCompletionsCompatibility(probeModel, {
         apiKey,
         signal,
         maxRetries: 0,
@@ -167,7 +170,7 @@ export async function probeModelInference(
             stop.abort();
           }
         },
-      },
+      }),
       undefined,
     );
     errorDetail = (await stream.result()).errorMessage ?? "";
