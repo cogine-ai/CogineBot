@@ -44,6 +44,11 @@ it("tests a draft directory model only with that unsaved API key", () => {
     apiKey: "fixture-draft-key",
   });
   expect(modelInferenceProbeInput(draft, "", undefined, undefined)).toBeUndefined();
+  const [, retained] = withDraftCatalogModels([base], base.provider, [], modelId);
+  expect(retained).toMatchObject({ id: modelId, draftCatalogModel: "unconfirmed" });
+  expect(
+    modelInferenceProbeInput(retained, "fixture-draft-key", undefined, undefined),
+  ).toBeUndefined();
   expect(
     withDraftCatalogModels([{ ...base, inferenceProbe: undefined }], base.provider, [modelId])[1]
       ?.inferenceProbe,

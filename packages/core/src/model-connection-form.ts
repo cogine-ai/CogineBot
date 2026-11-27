@@ -37,7 +37,7 @@ import { RUN_ERROR_LIMIT_MESSAGES } from "./run-error.js";
 
 type ConnectionCatalogEntry = ModelCatalogEntry & {
   connectionCatalogModel?: true;
-  draftCatalogModel?: true;
+  draftCatalogModel?: "listed" | "unconfirmed";
 };
 type CatalogProbeCredential = Pick<
   ModelCredential,
@@ -83,7 +83,11 @@ export function modelInferenceProbeInput(
   if (!entry?.inferenceProbe) return undefined;
   const apiKey = draftKey.trim();
   if (apiKey && apiKey.length < 8) return undefined;
-  if (apiKey && (!entry.connectionCatalogModel || (entry.draftCatalogModel && !credential))) {
+  if (entry.draftCatalogModel === "unconfirmed") return undefined;
+  if (
+    apiKey &&
+    (!entry.connectionCatalogModel || (entry.draftCatalogModel === "listed" && !credential))
+  ) {
     return { provider: entry.provider, modelId: entry.id, apiKey };
   }
   const owner = savedModelProbeInput(entry.provider, credential, expectedRevision);
@@ -211,22 +215,27 @@ export function withDraftCatalogModels(
   models: ModelCatalogEntry[],
   provider: string,
   ids: readonly string[],
+  retainedId?: string,
 ): ConnectionCatalogEntry[] {
+  if (!ids.length && !retainedId) return models;
   const matches = models.filter((entry) => entry.provider === provider);
   const anchor = matches.find((entry) => entry.inferenceProbe) ?? matches[0];
-  if (!anchor || !ids.length) return models;
+  if (!anchor) return models;
   const known = new Set(matches.map(({ id }) => id));
+  const listed = new Set(ids);
+  const choices = retainedId ? new Set([...listed, retainedId]) : listed;
   return [
     ...models,
-    ...ids
+    ...[...choices]
       .filter((id) => !known.has(id))
-      .map(
-        (id): ConnectionCatalogEntry => ({
+      .map((id): ConnectionCatalogEntry => {
+        const confirmed = listed.has(id);
+        return {
           ...providerCatalogEntry(anchor, id),
-          draftCatalogModel: true,
-          ...(anchor.inferenceProbe ? { inferenceProbe: true } : {}),
-        }),
-      ),
+          draftCatalogModel: confirmed ? "listed" : "unconfirmed",
+          ...(confirmed && anchor.inferenceProbe ? { inferenceProbe: true } : {}),
+        };
+      }),
   ];
 }
 
@@ -257,7 +266,9 @@ export function selectedModelDirectoryStatus(
   revision: number | undefined,
   selectedId: string | undefined,
   draftKey: string,
-) {
+  unconfirmedDraft = false,
+): ModelCredential["savedModelDirectory"] {
+  if (unconfirmedDraft) return { confirmationRequired: true };
   return revision !== undefined &&
     revision === credential?.connectionRevision &&
     credential.modelId === selectedId &&
@@ -424,8 +435,8 @@ export type ModelConnectRequest =
 export function modelConnectRequest(input: {
   form: ConnectionFormDraft;
   selected: Pick<
-    ModelCatalogEntry,
-    "provider" | "providerName" | "id" | "thinkingLevels" | "inferenceProbe"
+    ConnectionCatalogEntry,
+    "provider" | "providerName" | "id" | "thinkingLevels" | "inferenceProbe" | "draftCatalogModel"
   >;
   credential?: Pick<
     ModelCredential,
@@ -443,6 +454,7 @@ export function modelConnectRequest(input: {
     expectedRevision,
     settingsOnly = false,
   } = input;
+  if (selected.draftCatalogModel === "unconfirmed") return { status: "incomplete" };
   if (credentialId && expectedRevision === undefined)
     return { status: "invalid", field: "connection" };
   if (

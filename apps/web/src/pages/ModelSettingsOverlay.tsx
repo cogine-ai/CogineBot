@@ -3,6 +3,7 @@ import { Plural, Trans, useLingui } from "@lingui/react/macro";
 import type {
   Me,
   ModelApiProtocol,
+  ModelCatalogProbeResult,
   ModelCredentialReference,
   ModelHeaderRow,
   ThinkingDefaults,
@@ -146,7 +147,11 @@ export function ModelSettingsOverlay({
   modelIdRef.current = modelId;
   const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
-  const [draftDirectory, setDraftDirectory] = useState<{ ids: string[]; scopeKey: string }>();
+  const [draftDirectory, setDraftDirectory] = useState<{
+    ids: string[];
+    retainedId?: string;
+    scopeKey: string;
+  }>();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -479,7 +484,12 @@ export function ModelSettingsOverlay({
   );
   const connectionCatalog =
     !connectionId && apiKey.trim() && draftDirectory?.scopeKey === rpcRecoveryScopeKey()
-      ? withDraftCatalogModels(catalog, provider, draftDirectory.ids)
+      ? withDraftCatalogModels(
+          catalog,
+          provider,
+          draftDirectory.ids,
+          draftDirectory.retainedId === modelId ? modelId : undefined,
+        )
       : withConnectionCatalogModels(catalog, credential, connectionRevision, apiKey);
   const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
@@ -560,11 +570,13 @@ export function ModelSettingsOverlay({
     displayedEffort && activeLevels.some((level) => level !== "off")
       ? thinkingLevelLabel(displayedEffort)
       : null;
+  const unconfirmedDraft = selected?.draftCatalogModel === "unconfirmed";
   const directoryStatus = selectedModelDirectoryStatus(
     credential,
     connectionRevision,
     selected?.id,
     apiKey,
+    unconfirmedDraft,
   );
   const needsModelConfirmation = directoryStatus?.confirmationRequired === true;
   const cannotConfirmModel =
@@ -866,8 +878,7 @@ export function ModelSettingsOverlay({
       else setPreflightFailure({ outcome: "unknown", message: feedback.message });
       return;
     }
-    let catalogUpdated = false;
-    let draftIds: string[] | undefined;
+    let directory: ModelCatalogProbeResult | undefined;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
@@ -875,16 +886,18 @@ export function ModelSettingsOverlay({
       catalogProbe: true,
       catalogRequest: request,
       probeCatalog: async (input) => {
-        const response = await rpc.models.probeCatalog(input);
-        catalogUpdated = response.catalogUpdated === true;
-        draftIds = response.draftModelIds;
-        return response;
+        directory = await rpc.models.probeCatalog(input);
+        return directory;
       },
     });
     if (!isCurrent()) return;
-    if (!connectionId && "apiKey" in request && draftIds?.length)
-      setDraftDirectory({ ids: draftIds, scopeKey });
-    if (catalogUpdated && "credentialId" in request) {
+    if (!connectionId && "apiKey" in request && directory)
+      setDraftDirectory({
+        ids: directory.draftModelIds ?? [],
+        retainedId: selected.draftCatalogModel ? selected.id : undefined,
+        scopeKey,
+      });
+    if (directory?.catalogUpdated && "credentialId" in request) {
       const applied = await refresh(request.credentialId, { keepForm: true }).catch(
         () => undefined,
       );
@@ -1683,6 +1696,7 @@ export function ModelSettingsOverlay({
             disabled={
               busy ||
               preflightTesting ||
+              unconfirmedDraft ||
               !cloudflareRoutingReady ||
               (!builtinLimitSave && apiKey.trim().length < 8)
             }

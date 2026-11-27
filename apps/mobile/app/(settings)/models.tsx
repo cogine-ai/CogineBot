@@ -222,6 +222,7 @@ function ModelsForm({
   const [apiKey, setApiKey] = useState("");
   const [draftDirectory, setDraftDirectory] = useState<{
     ids: string[];
+    retainedId?: string;
     spaceGeneration: number;
     sessionGeneration: number;
     apiBase: string;
@@ -678,7 +679,12 @@ function ModelsForm({
     draftDirectory?.spaceGeneration === currentSpaceSelectionGeneration() &&
     draftDirectory.sessionGeneration === currentSessionGeneration() &&
     draftDirectory.apiBase === currentApiBase()
-      ? withDraftCatalogModels(catalog, provider, draftDirectory.ids)
+      ? withDraftCatalogModels(
+          catalog,
+          provider,
+          draftDirectory.ids,
+          draftDirectory.retainedId === modelId ? modelId : undefined,
+        )
       : withConnectionCatalogModels(catalog, credential, connectionRevision, apiKey);
   const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
@@ -783,11 +789,13 @@ function ModelsForm({
     enabledModelIds,
     probeModels,
   );
+  const unconfirmedDraft = selected?.draftCatalogModel === "unconfirmed";
   const directoryStatus = selectedModelDirectoryStatus(
     credential,
     connectionRevision,
     selected?.id,
     apiKey,
+    unconfirmedDraft,
   );
   const needsModelConfirmation = directoryStatus?.confirmationRequired === true;
   const cannotConfirmModel =
@@ -1059,9 +1067,10 @@ function ModelsForm({
         { requestContext: context, skipSpaceAuthRecovery: true },
       );
       if (!isCurrent(context)) return;
-      if (!connectionId && "apiKey" in request && draftModelIds?.length)
+      if (!connectionId && "apiKey" in request)
         setDraftDirectory({
-          ids: draftModelIds,
+          ids: draftModelIds ?? [],
+          retainedId: selected.draftCatalogModel ? selected.id : undefined,
           spaceGeneration,
           sessionGeneration,
           apiBase: context.apiBase,
@@ -2259,7 +2268,10 @@ function ModelsForm({
             ) : null}
             <NativeActionButton
               disabled={
-                busy || !cloudflareRoutingReady || (!builtinLimitSave && apiKey.trim().length < 8)
+                busy ||
+                unconfirmedDraft ||
+                !cloudflareRoutingReady ||
+                (!builtinLimitSave && apiKey.trim().length < 8)
               }
               label={
                 pending === "connect"

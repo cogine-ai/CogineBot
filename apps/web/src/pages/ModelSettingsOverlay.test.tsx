@@ -43,6 +43,7 @@ vi.mock("../lib/rpc", () => {
   const client = { models, me: vi.fn() };
   return {
     currentSpaceSelectionGeneration: () => scope.generation,
+    rpcRecoveryScopeKey: () => JSON.stringify([scope.generation, scope.spaceId]),
     selectedSpaceId: () => scope.spaceId,
     rpc: client,
     createSpaceRpc: () => client,

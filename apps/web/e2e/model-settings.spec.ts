@@ -2046,6 +2046,7 @@ test("selects and tests a directory model before the first API key save", async 
   const base = catalog.find((entry) => entry.provider === "openai" && entry.catalogProbe)!;
   const modelId = "gpt-fixture-directory-choice";
   const draftKey = "fixture-first-openai-key";
+  let draftModelIds = [modelId];
   await page.route("**/rpc/models/list", async (route) => {
     const response = await route.fetch();
     const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
@@ -2066,7 +2067,10 @@ test("selects and tests a directory model before the first API key save", async 
       json: {
         json:
           apiKey === draftKey
-            ? { models: [base.id, modelId], draftModelIds: [modelId] }
+            ? {
+                models: [base.id, ...draftModelIds],
+                ...(draftModelIds.length ? { draftModelIds } : {}),
+              }
             : { models: [base.id] },
       },
     });
@@ -2104,6 +2108,18 @@ test("selects and tests a directory model before the first API key save", async 
   await picker.click();
   await option.click();
   await expect(picker).toHaveText(modelId);
+  const connect = settings.getByRole("button", { name: "Connect API key", exact: true });
+  for (const observed of [["gpt-fixture-other-directory-choice"], []]) {
+    draftModelIds = observed;
+    await testKey.click();
+    await expect(testKey).toBeEnabled();
+    await expect(picker).toHaveText(modelId);
+    await expect(connect).toBeDisabled();
+    await expect(
+      settings.getByText("Confirm this model for the current API key, or choose another."),
+    ).toBeVisible();
+  }
+  draftModelIds = [modelId];
 
   await key.fill("fixture-different-openai-key");
   await picker.click();
@@ -2124,7 +2140,6 @@ test("selects and tests a directory model before the first API key save", async 
   await expect(
     settings.getByRole("status").filter({ hasText: "accepted the test request" }),
   ).toBeVisible();
-  const connect = settings.getByRole("button", { name: "Connect API key", exact: true });
   await connect.evaluate((button) => button.scrollIntoView({ block: "center" }));
   const fee = settings.getByText("Connecting sends one test request that may incur usage charges.");
   await expect(fee).toBeInViewport({ ratio: 0.98 });
