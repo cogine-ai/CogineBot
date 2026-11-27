@@ -9,8 +9,8 @@ import {
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiModel,
   isOfficialGeminiProbeModel,
+  isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
-  isOfficialTogetherChatModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
 } from "./pi-live-model.js";
@@ -183,7 +183,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
           isOfficialGeminiProbeModel(model) ||
-          isOfficialTogetherChatModel(model) ||
+          isOfficialNativeChatProbeModel(model) ||
           isOpenRouterMessagesModel(model) ||
           (probeBaseUrl &&
             (isOfficialResponsesModel(model) ||

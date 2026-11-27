@@ -19,6 +19,11 @@ const togetherInput = {
   modelId: "openai/gpt-oss-120b",
   apiKey: "fixture-together-key",
 };
+const cerebrasInput = {
+  provider: "cerebras",
+  modelId: "qwen-3.8-27b",
+  apiKey: "fixture-cerebras-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -195,6 +200,155 @@ describe("model inference check", () => {
     await expect(
       probeModelInference(
         { ...togetherInput, modelId: "fixture/unknown-model", providerCatalogModel: true },
+        { fetch },
+      ),
+    ).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["qwen-3.8-27b", "gpt-oss-120b"])(
+    "tests Cerebras %s with one bounded request on the pinned route",
+    async (modelId) => {
+      vi.stubEnv("CEREBRAS_API_KEY", "fixture-deployed-provider-key");
+      vi.stubEnv("OPENAI_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+      expect(
+        listPiCatalog().find((entry) => entry.provider === "cerebras" && entry.id === modelId),
+      ).toMatchObject({ inferenceProbe: true });
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      const cancel = vi.fn();
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    chatChunk([{ delta: { role: "assistant", content: "" } }], { model: modelId }) +
+                      chatChunk([{ delta: { reasoning: "Consider" } }], { model: modelId }) +
+                      'data: {"status_code":402,"error":{"message":"Payment required"}}\n\n',
+                  ),
+                );
+              },
+              cancel,
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      expect(await probeModelInference({ ...cerebrasInput, modelId }, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(timeout).toHaveBeenCalledWith(15_000);
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.url).toBe("https://api.cerebras.ai/v1/chat/completions");
+      expect(request.method).toBe("POST");
+      expect(request.redirect).toBe("error");
+      expect(Object.fromEntries(request.headers)).toEqual({
+        authorization: `Bearer ${cerebrasInput.apiKey}`,
+        "content-type": "application/json",
+      });
+      expect(await request.json()).toEqual({
+        model: modelId,
+        messages: [
+          { role: "system", content: "Reply with OK." },
+          { role: "user", content: "OK?" },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "noop",
+              description: "Does nothing.",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+        max_completion_tokens: 1024,
+        stream: true,
+      });
+    },
+  );
+
+  it.each([
+    [400, "unavailable"],
+    [401, "auth"],
+    [402, "credit"],
+    [403, "model"],
+    [404, "model"],
+    [408, "timeout"],
+    [422, "unavailable"],
+    [429, "rate"],
+    [503, "unavailable"],
+  ] as const)("classifies Cerebras HTTP and stream %i as %s", async (status, expected) => {
+    const error = { code: null, message: "Request failed" };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json({ error }, { status }))
+      .mockResolvedValueOnce(
+        new Response(`data: ${JSON.stringify({ status_code: status, error })}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+    expect(await probeModelInference(cerebrasInput, { fetch })).toBe(expected);
+    expect(await probeModelInference(cerebrasInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [{ error: { code: "402" } }, "unavailable"],
+    [{ status_code: "403", error: { code: "403" } }, "unavailable"],
+    [{ status: 401, error: { code: "401" } }, "unavailable"],
+    [{ status_code: 429, error: { code: "402" } }, "rate"],
+  ] as const)("uses only the documented Cerebras stream status (%#)", async (frame, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(cerebrasInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: cerebrasInput.modelId }),
+      "unavailable",
+    ],
+    [chatChunk([{ delta: { content: "OK" } }]), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture-other-model" }), "model"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "" }), "unavailable"],
+    [
+      chatChunk([{ delta: { content: "OK" }, finish_reason: "content_filter" }], {
+        model: cerebrasInput.modelId,
+      }),
+      "unavailable",
+    ],
+    [
+      chatChunk([{ delta: { tool_calls: [{ type: "function", function: { name: "noop" } }] } }], {
+        model: cerebrasInput.modelId,
+      }),
+      "accepted",
+    ],
+  ] as const)(
+    "checks the Cerebras model and output while streaming (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(cerebrasInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not test a Cerebras model outside the built-in catalog", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      probeModelInference(
+        {
+          ...cerebrasInput,
+          modelId: "fixture-unknown-model",
+          providerCatalogModel: true,
+        },
         { fetch },
       ),
     ).resolves.toBe("unavailable");

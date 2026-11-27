@@ -3443,6 +3443,16 @@ describe("model credential persistence", () => {
       distinctFailure: "model",
       transient: { code: 429 },
     },
+    {
+      provider: "cerebras",
+      modelId: "qwen-3.8-27b",
+      endpoint: "https://api.cerebras.ai/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"qwen-3.8-27b","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\n',
+      rejectionFrame: { status_code: 402, error: { message: "Payment required" } },
+      distinctFailure: "credit",
+      transient: { code: 429 },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -3452,6 +3462,7 @@ describe("model credential persistence", () => {
       acceptedFrame,
       keyHeader,
       rejection,
+      rejectionFrame,
       distinctFailure,
       transient,
     }) => {
@@ -3475,7 +3486,7 @@ describe("model credential persistence", () => {
           ),
         )
         .mockResolvedValueOnce(
-          new Response(`data: ${JSON.stringify({ error: rejection })}\n\n`, {
+          new Response(`data: ${JSON.stringify(rejectionFrame ?? { error: rejection })}\n\n`, {
             headers: { "content-type": "text/event-stream" },
           }),
         )
@@ -3522,19 +3533,22 @@ describe("model credential persistence", () => {
     },
   );
 
-  it.each(["first connection", "key replacement"] as const)(
-    "blocks Together %s when the stream names another model",
-    async (mode) => {
+  it.each([
+    ["together", "openai/gpt-oss-120b", "first connection"],
+    ["together", "openai/gpt-oss-120b", "key replacement"],
+    ["cerebras", "qwen-3.8-27b", "first connection"],
+    ["cerebras", "qwen-3.8-27b", "key replacement"],
+  ] as const)(
+    "blocks %s %s %s when the stream names another model",
+    async (provider, modelId, mode) => {
       const { deps, tx } = persistDeps();
-      const provider = "together";
-      const apiKey = "fixture-together-draft";
-      const modelId = "openai/gpt-oss-120b";
+      const apiKey = `fixture-${provider}-draft`;
       const existing = { id: "fixture-connection", connectionRevision: 7, secretId: "fixture-key" };
       const previousSecret = { id: existing.secretId, ciphertext: "fixture-ciphertext" };
       const load = vi
         .fn()
         .mockResolvedValue(
-          serializeModelSecret({ kind: "api_key", key: "fixture-together-old-key" }),
+          serializeModelSecret({ kind: "api_key", key: `fixture-${provider}-old-key` }),
         );
       if (mode === "key replacement") tx.userModelCredential.findFirst.mockResolvedValue(existing);
       const fetch = vi.fn<typeof globalThis.fetch>(
