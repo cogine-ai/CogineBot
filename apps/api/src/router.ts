@@ -89,6 +89,7 @@ import {
   isAutoReviewCheckerConfigured,
   isCatalogModelChoice,
   isComputerScreenUnavailable,
+  isLegacyConfiguredOpenRouterModel,
   isNamedBotLogin,
   isSandboxGoneError,
   isSandboxUnsafeStop,
@@ -149,6 +150,7 @@ import {
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
+  retainedProviderCatalogRequirements,
   revokeScreenControl,
   routineAdmissionError,
   routineIntervalMode,
@@ -2101,10 +2103,16 @@ export function createRouter(deps: RouterDeps) {
             if (!ciphertext) return { credential: modelCredentialDto(selected) };
             let plaintext: string;
             let credential: ReturnType<typeof modelCredentialDto>;
+            let legacyOpenRouter = false;
             try {
               plaintext = await deps.secrets.load(ciphertext, row.secretId);
               credential = modelCredentialDto(selected, plaintext);
-              const saved = deps.providerCatalogSelections?.read(row, parseModelSecret(plaintext));
+              const secret = parseModelSecret(plaintext);
+              const saved = deps.providerCatalogSelections?.read(row, secret);
+              legacyOpenRouter = Boolean(
+                credential.modelId &&
+                  isLegacyConfiguredOpenRouterModel(row, secret, credential.modelId),
+              );
               if (saved?.length) credential.savedProviderCatalogModelIds = saved;
               if (
                 inferenceProbesEnabled &&
@@ -2118,6 +2126,7 @@ export function createRouter(deps: RouterDeps) {
                 credential.authKind === "api_key" &&
                 credential.modelId &&
                 dynamicProviderCatalogModel(row.provider, credential.modelId) &&
+                !legacyOpenRouter &&
                 !saved?.includes(credential.modelId)
               )
                 credential.savedModelDirectory = {
@@ -2158,7 +2167,9 @@ export function createRouter(deps: RouterDeps) {
                 );
               },
             );
-            return listed ? { credential, catalog: { current, listed, fresh } } : { credential };
+            return listed
+              ? { credential, catalog: { current, listed, fresh, legacyOpenRouter } }
+              : { credential };
           }),
         );
         const credentials = readback.map(({ credential }) => credential);
@@ -2172,6 +2183,7 @@ export function createRouter(deps: RouterDeps) {
               const listed = withCatalogModelAliases(credential.provider, catalog.listed);
               const notListed =
                 catalog.fresh &&
+                !catalog.legacyOpenRouter &&
                 savedModel !== undefined &&
                 providerCatalogModel(credential.provider, savedModel) !== undefined &&
                 !listed.includes(savedModel);
@@ -2319,11 +2331,10 @@ export function createRouter(deps: RouterDeps) {
         }
         const compatible = input.provider === OPENAI_COMPATIBLE_PROVIDER_ID;
         const requested = usableModelId(input.modelId);
-        const discoveredModelId =
+        const catalogCandidate =
           requested && dynamicProviderCatalogModel(input.provider, requested)
             ? requested
             : undefined;
-        const firstCatalogConnection = discoveredModelId !== undefined && !input.credentialId;
         const existing = input.credentialId
           ? await deps.prisma.userModelCredential.findFirst({
               where: {
@@ -2340,7 +2351,8 @@ export function createRouter(deps: RouterDeps) {
                 input.provider,
               );
         if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
-        if (firstCatalogConnection && existing) throw modelConnectionChanged();
+        if (catalogCandidate && !input.credentialId && existing && input.provider !== "openrouter")
+          throw modelConnectionChanged();
         if (existing && input.credentialId)
           assertConnectionRevision(existing, input.expectedRevision);
         let previousPlaintext: string | undefined;
@@ -2379,6 +2391,31 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         try {
+          const legacyModelId =
+            input.provider === "openrouter" &&
+            catalogCandidate &&
+            existing &&
+            previousPlaintext &&
+            plaintextApiKey(previousPlaintext) !== undefined &&
+            isLegacyConfiguredOpenRouterModel(
+              existing,
+              parseModelSecret(previousPlaintext),
+              catalogCandidate,
+            ) &&
+            (await deps.prisma.spaceModelPreference.findFirst({
+              where: {
+                spaceId: context.actor.spaceId,
+                userId: context.actor.userId,
+                credentialId: existing.id,
+                modelId: catalogCandidate,
+              },
+              select: { modelId: true },
+            }))
+              ? catalogCandidate
+              : undefined;
+          const discoveredModelId = legacyModelId ? undefined : catalogCandidate;
+          const firstCatalogConnection = discoveredModelId !== undefined && !input.credentialId;
+          if (firstCatalogConnection && existing) throw modelConnectionChanged();
           const draftKey = input.apiKey?.trim();
           if (discoveredModelId && !draftKey)
             throw new ORPCError("BAD_REQUEST", {
@@ -2469,6 +2506,7 @@ export function createRouter(deps: RouterDeps) {
               expectNewConnection: !existing,
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
+              legacyModelId,
               catalogModelId: confirmNewModel ? discoveredModelId : undefined,
               clearCatalogSelection:
                 input.apiKey !== undefined &&
@@ -2774,6 +2812,7 @@ export function createRouter(deps: RouterDeps) {
           const confirmNewModel =
             auth &&
             !input.updateThinkingLevelOnly &&
+            !auth.legacyOpenRouterModel &&
             dynamicProviderCatalogModel(input.provider, input.modelId) &&
             auth.catalogModelId !== input.modelId &&
             (await confirmProviderCatalogChoice(
@@ -10420,14 +10459,18 @@ async function prepareBoundModelAuth(
       throw new ORPCError("BAD_REQUEST", { message: prepared.auth.message });
     if (plaintext === undefined || prepared.ref === null)
       throw new ORPCError("BAD_REQUEST", { message: "Model connection is unavailable." });
+    const secret = parseModelSecret(plaintext);
     return {
       modelCredentialId: credential.id,
       connectionRevision: credential.connectionRevision,
       secretId: credential.secretId,
       ciphertext: prepared.ref,
       plaintext,
+      legacyOpenRouterModel:
+        credential.defaultModel === binding.modelId &&
+        isLegacyConfiguredOpenRouterModel(credential, secret, binding.modelId),
       catalogModelId: deps.providerCatalogSelections
-        ?.read(credential, parseModelSecret(plaintext))
+        ?.read(credential, secret)
         .includes(binding.modelId)
         ? binding.modelId
         : undefined,
@@ -10670,6 +10713,7 @@ async function persistModelCredential(
     signal?: AbortSignal;
     oauthSession?: Parameters<SaveSubscription>[1];
     catalogModelId?: string;
+    legacyModelId?: string;
     clearCatalogSelection?: boolean;
   },
   codexCatalog: CodexLiveCatalog,
@@ -10754,6 +10798,15 @@ async function persistModelCredential(
                 select: { modelId: true, thinkingLevel: true },
               })
             : null;
+          if (
+            input.legacyModelId &&
+            (!existing ||
+              previous?.modelId !== input.legacyModelId ||
+              retainedProviderCatalogRequirements(existing)?.requiredModelIds.includes(
+                input.legacyModelId,
+              ))
+          )
+            throw modelConnectionChanged();
           const retainedModel =
             input.oauthSession && !requestedModelId ? usableModelId(previous?.modelId) : undefined;
           const defaultModel =
@@ -10839,7 +10892,10 @@ async function persistModelCredential(
                           ),
                         }
                       : input.clearCatalogSelection
-                        ? { providerCatalogSelection: Prisma.DbNull }
+                        ? {
+                            providerCatalogSelection:
+                              retainedProviderCatalogRequirements(existing) ?? Prisma.DbNull,
+                          }
                         : {}),
                     ...(input.supportsImages !== undefined
                       ? { supportsImages: input.supportsImages }

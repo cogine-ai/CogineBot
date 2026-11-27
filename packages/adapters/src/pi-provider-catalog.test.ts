@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { listPiCatalog } from "./pi-models.js";
 import { parseModelSecret } from "./pi-oauth.js";
-import { ApiKeyModelCatalog, ProviderCatalogSelections } from "./pi-provider-catalog.js";
+import {
+  ApiKeyModelCatalog,
+  isLegacyConfiguredOpenRouterModel,
+  ProviderCatalogSelections,
+  retainedProviderCatalogRequirements,
+} from "./pi-provider-catalog.js";
 
 const snapshot = {
   id: "connection-one",
@@ -17,6 +22,35 @@ const bundled = listPiCatalog()
 const hour = 60 * 60_000;
 
 describe("saved catalog selections", () => {
+  it("preserves the distinction between configured and directory models across key changes", () => {
+    const selections = new ProviderCatalogSelections("fixture-deployment-key");
+    const owner = { ...snapshot, provider: "openrouter" };
+    const previous = { kind: "api_key" as const, key: "fixture-first-key", contextWindow: 24_000 };
+    const replacement = { ...previous, key: "fixture-new-key" };
+    const discovered = "fixture-vendor/directory-chat";
+    const legacy = "fixture-vendor/manual-chat";
+    const other = "fixture-vendor/other-chat";
+    const first = {
+      ...owner,
+      providerCatalogSelection: selections.sign(owner, previous, [discovered]),
+    };
+    const rotated = {
+      ...first,
+      providerCatalogSelection: retainedProviderCatalogRequirements(first),
+    };
+    expect(selections.read(rotated, previous)).toEqual([]);
+    expect(selections.read(rotated, replacement)).toEqual([]);
+    expect(isLegacyConfiguredOpenRouterModel(rotated, replacement, legacy)).toBe(true);
+    expect(isLegacyConfiguredOpenRouterModel(rotated, replacement, discovered)).toBe(false);
+    const reconfirmed = {
+      ...rotated,
+      providerCatalogSelection: selections.sign(rotated, replacement, [other]),
+    };
+    expect(selections.read(reconfirmed, previous)).toEqual([]);
+    expect(selections.read(reconfirmed, replacement)).toEqual([other]);
+    expect(isLegacyConfiguredOpenRouterModel(reconfirmed, replacement, discovered)).toBe(false);
+  });
+
   it("uses only server-confirmed IDs for the same account, connection and key", () => {
     const signer = new ProviderCatalogSelections("fixture-deployment-key");
     const id = "gpt-fixture-live";

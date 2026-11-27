@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { canonicalPiProviderId, MODEL_DIRECTORY_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
+import { connectionModelSettings } from "./model-settings.js";
 import { LiveCatalogCache } from "./pi-live-cache.js";
 import {
   isChatModelId,
@@ -29,6 +30,33 @@ type CatalogOwner = Pick<CatalogConnection, "id" | "userId" | "provider"> & {
   providerCatalogSelection?: unknown;
 };
 
+/** Remember which OpenRouter models came from the directory after their key-bound proof expires. */
+export function retainedProviderCatalogRequirements(
+  owner: Pick<CatalogOwner, "provider" | "providerCatalogSelection">,
+): { requiredModelIds: string[] } | undefined {
+  const proof = owner.providerCatalogSelection;
+  if (owner.provider !== "openrouter" || !proof || typeof proof !== "object") return undefined;
+  const required = "requiredModelIds" in proof ? proof.requiredModelIds : undefined;
+  const confirmed = "modelIds" in proof ? proof.modelIds : undefined;
+  const ids = [required, confirmed].flatMap((value) =>
+    Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [],
+  );
+  return ids.length ? { requiredModelIds: [...new Set(ids)] } : undefined;
+}
+
+export function isLegacyConfiguredOpenRouterModel(
+  owner: Pick<CatalogOwner, "provider" | "providerCatalogSelection">,
+  secret: StoredModelSecret,
+  modelId: string,
+): boolean {
+  return (
+    owner.provider === "openrouter" &&
+    secret.kind === "api_key" &&
+    connectionModelSettings(secret, owner.provider, modelId).contextWindow !== undefined &&
+    !retainedProviderCatalogRequirements(owner)?.requiredModelIds.includes(modelId)
+  );
+}
+
 /** Bind the application-owned choice to its exact account, connection and key. */
 export class ProviderCatalogSelections {
   constructor(private readonly key: string) {}
@@ -56,7 +84,14 @@ export class ProviderCatalogSelections {
   }
 
   sign(owner: CatalogOwner, secret: ApiKeySecret, modelIds: string[]) {
-    return { modelIds, signature: this.signature(owner, secret, modelIds).toString("hex") };
+    const { requiredModelIds } = retainedProviderCatalogRequirements(owner) ?? {};
+    return {
+      modelIds,
+      signature: this.signature(owner, secret, modelIds).toString("hex"),
+      ...(owner.provider === "openrouter"
+        ? { requiredModelIds: [...new Set([...(requiredModelIds ?? []), ...modelIds])] }
+        : {}),
+    };
   }
 
   private signature(owner: CatalogOwner, secret: ApiKeySecret, modelIds: string[]): Buffer {

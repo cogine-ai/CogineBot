@@ -194,6 +194,64 @@ describe("request model catalogs", () => {
     expect(providerCatalogModel("google", id)).toBeUndefined();
   });
 
+  it("keeps the signed OpenRouter route when a discovered model has saved limits", () => {
+    const choice = {
+      provider: "openrouter",
+      id: "fixture-vendor/chat-latest:free",
+      apiKey: "fixture-connection-key",
+    };
+    expect(resolveRuntimeModel(choice).model).toBeUndefined();
+    expect(
+      resolveRuntimeModel({ ...choice, contextWindow: 24_000, providerCatalogModel: true }).model,
+    ).toMatchObject({
+      provider: "openrouter",
+      id: choice.id,
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 24_000,
+      compat: { supportsStore: false },
+    });
+    expect(resolveRuntimeModel({ ...choice, contextWindow: 24_000 }).model?.reasoning).toBe(true);
+    expect(
+      resolveRuntimeModel({
+        ...choice,
+        id: "anthropic/claude-opus-4.6",
+        providerCatalogModel: true,
+      }).model?.api,
+    ).toBe("anthropic-messages");
+  });
+
+  it.each([
+    "openrouter/auto",
+    "openrouter/auto-code",
+    "openrouter/free",
+    "@preset/my-preset",
+    "vendor/chat:online",
+    "vendor/chat:batch",
+    "vendor/chat?other",
+  ])("does not discover %s as a concrete OpenRouter model", (id) => {
+    expect(providerCatalogModel("openrouter", id)).toBeUndefined();
+  });
+
+  it("does not discover OpenRouter models on a mismatched registry route", () => {
+    const official = {
+      provider: "openrouter",
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+    };
+    const registry = {
+      getProvider: () => ({
+        getModels: () => [
+          official,
+          { ...official, api: "anthropic-messages", baseUrl: "https://different.example.test/api" },
+        ],
+      }),
+    } as unknown as Models;
+    expect(providerCatalogModel("openrouter", "fixture-vendor/chat", registry)).toBeUndefined();
+  });
+
   it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-completions" }])(
     "rejects mixed Anthropic catalog routes with $baseUrl$api",
     (other) => {

@@ -2,6 +2,7 @@ import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { DEFAULT_MODEL_CONTEXT_WINDOW, DISCOVERED_MODEL_LIMITS } from "@rakazo/contracts";
 import { GEMINI_API_BASE_URL } from "./gemini-model-api.js";
+import { OPENROUTER_API_BASE_URL } from "./openrouter-model-api.js";
 
 /** Models endpoints often mix chat models with tools and media endpoints. */
 export function isChatModelId(id: string): boolean {
@@ -18,12 +19,14 @@ const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
 const anthropicMessagesBaseUrl = "https://api.anthropic.com";
+const nonChatVariant =
+  /(?:^|[/._:-])(?:guard|safeguard|compound|imagine|orpheus|voice|live)(?:[/._:-]|$)/i;
 
 function acceptsGroqModelId(id: string): boolean {
   return (
     id.length <= 512 &&
     /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?$/i.test(id) &&
-    !/(?:^|[/._-])(?:guard|safeguard|compound|imagine|orpheus|voice|live)(?:[/._-]|$)/i.test(id)
+    !nonChatVariant.test(id)
   );
 }
 
@@ -62,7 +65,7 @@ export function isOfficialChatCompletionProbeModel(
 ) {
   if (model.provider === "deepseek") return isOfficialDeepSeekChatCompletionModel(model);
   if (model.api !== "openai-completions" || !isChatModelId(model.id)) return false;
-  if (model.provider === "openrouter") return model.baseUrl === "https://openrouter.ai/api/v1";
+  if (model.provider === "openrouter") return model.baseUrl === OPENROUTER_API_BASE_URL;
   return (
     model.provider === "groq" &&
     model.baseUrl === groqCompletionsBaseUrl &&
@@ -164,6 +167,20 @@ const catalogRoutes = new Map<string, CatalogRoute>([
     },
   ],
   [
+    "openrouter",
+    {
+      api: "openai-completions",
+      baseUrl: OPENROUTER_API_BASE_URL,
+      acceptsId: (id) =>
+        id.length <= 256 &&
+        /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)?$/i.test(id) &&
+        !/^openrouter\/(?:auto(?:-[a-z0-9.-]+)?|free)(?::|$)/i.test(id) &&
+        !nonChatVariant.test(id) &&
+        !/:(?:batch|online)$/i.test(id),
+      compat: { supportsStore: false },
+    },
+  ],
+  [
     "anthropic",
     {
       api: "anthropic-messages",
@@ -184,7 +201,20 @@ const catalogRoutes = new Map<string, CatalogRoute>([
 function providerCatalogRoute(provider: string, models: Models): CatalogRoute | undefined {
   const route = catalogRoutes.get(provider);
   if (!route) return undefined;
-  const siblings = models.getProvider(provider)?.getModels();
+  const registered = models.getProvider(provider)?.getModels();
+  // Built-in OpenRouter Claude models use its native Messages route. Keep their
+  // registration and require the remaining siblings to use the official Chat route.
+  const siblings =
+    provider === "openrouter"
+      ? registered?.filter(
+          (model) =>
+            !(
+              model.provider === provider &&
+              model.api === "anthropic-messages" &&
+              model.baseUrl === "https://openrouter.ai/api"
+            ),
+        )
+      : registered;
   if (
     !siblings?.length ||
     siblings.some(

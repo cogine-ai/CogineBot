@@ -46,6 +46,11 @@ import {
   normalizeOpenAiCompatibleBaseUrl,
   OPENAI_COMPATIBLE_PROVIDER_ID,
 } from "./openai-compatible-url.js";
+import {
+  OPENROUTER_API_BASE_URL,
+  OPENROUTER_USER_MODELS_URL,
+  openRouterDirectoryModelIds,
+} from "./openrouter-model-api.js";
 import { MODEL_CONNECT_TIMEOUT_MS } from "./pi-runtime-limits.js";
 import { guardToolCallNames } from "./pi-tool-call-guard.js";
 import { dispatcherFetch, fetchPairedWithDispatcher } from "./undici-fetch.js";
@@ -517,6 +522,7 @@ export async function probeOpenAiCompatibleModels(
   const baseUrl = geminiCatalog
     ? assertAllowedOpenAiCompatibleRequestUrl(input.baseUrl, urlPolicy)
     : assertAllowedOpenAiCompatibleUrl(input.baseUrl, urlPolicy);
+  const openRouterCatalog = opts?.catalogProbe && baseUrl.href === OPENROUTER_API_BASE_URL;
   const customHeaders = input.headers === undefined ? undefined : parseModelHeaders(input.headers);
   assertHttpsForKeyedOpenAiCompatibleUrl(
     baseUrl,
@@ -537,7 +543,9 @@ export async function probeOpenAiCompatibleModels(
       ...opts,
       headers: customHeaders,
     });
-    const directoryUrl = new URL("models", `${baseUrl.href}/`);
+    const directoryUrl = openRouterCatalog
+      ? new URL(OPENROUTER_USER_MODELS_URL)
+      : new URL("models", `${baseUrl.href}/`);
     const anthropicCatalog = opts?.catalogProbe && input.apiProtocol === "anthropic-messages";
     if (anthropicCatalog) directoryUrl.searchParams.set("limit", "1000");
     if (geminiCatalog) directoryUrl.searchParams.set("pageSize", String(GEMINI_MODEL_PAGE_SIZE));
@@ -571,6 +579,11 @@ export async function probeOpenAiCompatibleModels(
     }
     if (geminiCatalog)
       return geminiDirectoryModelIds(await readBoundedJson(response, merged, opts));
+    if (openRouterCatalog)
+      return openRouterDirectoryModelIds(
+        await readBoundedJson(response, merged, opts),
+        CATALOG_MAX_MODEL_IDS,
+      );
     const body = await readBoundedJson<OpenAiCompatibleModelsResponse>(response, merged, opts);
     if (anthropicCatalog) {
       // An incomplete or malformed list cannot prove a saved model is missing.

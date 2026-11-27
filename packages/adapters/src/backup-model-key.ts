@@ -2,6 +2,7 @@ import type { AgentBackupModel } from "@rakazo/contracts";
 import { readBoundedJsonResponse } from "@rakazo/core";
 import { buildModelConnectPlaintext } from "./model-connect.js";
 import { validateModelAuthAvailability } from "./model-selection.js";
+import { OPENROUTER_USER_MODELS_URL } from "./openrouter-model-api.js";
 import {
   catalogProviderProbeBaseUrl,
   listPiCatalog,
@@ -18,7 +19,7 @@ const keyChecks = new Map([
       header: "x-goog-api-key",
     },
   ],
-  ["openrouter", { url: "https://openrouter.ai/api/v1/models/user", header: "Authorization" }],
+  ["openrouter", { url: OPENROUTER_USER_MODELS_URL, header: "Authorization" }],
 ]);
 const catalogChecks = new Set(["openai", "groq"]);
 const OPENROUTER_MODEL_LIST_MAX_BYTES = 8 * 1024 * 1024;

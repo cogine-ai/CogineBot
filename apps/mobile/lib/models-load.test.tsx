@@ -2550,6 +2550,12 @@ it.each([
   { provider: "openai", providerName: "OpenAI", inferenceStatus: "rate", dynamic: false },
   { provider: "openai", providerName: "OpenAI", inferenceStatus: "accepted", dynamic: true },
   { provider: "openrouter", providerName: "OpenRouter", inferenceStatus: "rate", dynamic: false },
+  {
+    provider: "openrouter",
+    providerName: "OpenRouter",
+    inferenceStatus: "accepted",
+    dynamic: true,
+  },
   { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "accepted", dynamic: true },
@@ -2559,8 +2565,12 @@ it.each([
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {
-    const directoryPrefix =
-      provider === "anthropic" ? "claude" : provider === "google" ? "gemini" : "gpt";
+    const directoryPrefixes: Partial<Record<typeof provider, string>> = {
+      anthropic: "claude",
+      google: "gemini",
+      openrouter: "fixture-vendor/chat",
+    };
+    const directoryPrefix = directoryPrefixes[provider] ?? "gpt";
     const directoryModelId = `${directoryPrefix}-fixture-directory-model`;
     const saved = {
       id: "fixture-model-connection",

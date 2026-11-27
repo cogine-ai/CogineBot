@@ -5,6 +5,7 @@ import {
   CHATGPT_PLAN_PROVIDER_ID,
   enabledOpenAiCompatibleModelIds,
   isCatalogModelChoice,
+  isLegacyConfiguredOpenRouterModel,
   loadStoredModelSecret,
   parseModelSecret,
   providerCatalogModel,
@@ -177,7 +178,8 @@ export async function validateModelBinding(
     !isCatalogModelChoice(binding.modelProvider, binding.modelId) &&
     prepared?.catalogModelId !== binding.modelId &&
     (credential.defaultModel !== binding.modelId ||
-      providerCatalogModel(binding.modelProvider, binding.modelId) !== undefined)
+      (providerCatalogModel(binding.modelProvider, binding.modelId) !== undefined &&
+        !isLegacyConfiguredOpenRouterModel(credential, secret, binding.modelId)))
   ) {
     throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
   }
