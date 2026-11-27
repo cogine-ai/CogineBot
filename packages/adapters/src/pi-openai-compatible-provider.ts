@@ -14,6 +14,11 @@ import {
   MODEL_DIRECTORY_PROBE_TIMEOUT_MS,
   parseModelHeaders,
 } from "@rakazo/contracts";
+import {
+  cancelResponseBody,
+  ResponseBodyTooLargeError,
+  readBoundedJsonResponse,
+} from "@rakazo/core";
 import { Agent } from "undici";
 import {
   modelConnectionErrorMessage,
@@ -422,8 +427,9 @@ export function prepareOpenAiCompatibleConnect(input: OpenAiCompatibleConnectInp
 
 export type OpenAiCompatibleModelsResponse = {
   object?: string;
-  data?: Array<{ id?: string }>;
+  data?: Array<{ id?: string; type?: string }>;
   models?: Array<{ id?: string }>;
+  has_more?: boolean;
 };
 
 /** Shared suffix: /models probe is optional when the user already knows a model id. */
@@ -458,38 +464,20 @@ function probeModelIds(
 
 async function readBoundedJson(
   response: Response,
+  signal: AbortSignal,
   opts?: { catalogProbe?: boolean },
 ): Promise<OpenAiCompatibleModelsResponse> {
   const { maxBytes } = modelsProbeLimits(opts?.catalogProbe);
-  const declaredSize = Number(response.headers.get("content-length") ?? 0);
-  if (declaredSize > maxBytes) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error(`Model server response is too large. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
-  }
-  if (!response.body) {
-    throw new Error(
-      `Model server returned an empty response. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`,
-    );
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let bytes = 0;
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    bytes += value.byteLength;
-    if (bytes > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(`Model server response is too large. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-  text += decoder.decode();
   try {
-    return JSON.parse(text) as OpenAiCompatibleModelsResponse;
-  } catch {
-    throw new Error(`Model server returned invalid JSON. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
+    return await readBoundedJsonResponse(response, maxBytes, signal);
+  } catch (error) {
+    if (error instanceof ResponseBodyTooLargeError)
+      throw new Error(`Model server response is too large. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
+    if (error instanceof SyntaxError) {
+      const problem = response.body ? "invalid JSON" : "an empty response";
+      throw new Error(`Model server returned ${problem}. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`);
+    }
+    throw error;
   }
 }
 
@@ -536,26 +524,41 @@ export async function probeOpenAiCompatibleModels(
       ...opts,
       headers: customHeaders,
     });
-    const response = await safeFetch(new URL("models", `${baseUrl.href}/`).href, {
+    const directoryUrl = new URL("models", `${baseUrl.href}/`);
+    const anthropicCatalog = opts?.catalogProbe && input.apiProtocol === "anthropic-messages";
+    if (anthropicCatalog) directoryUrl.searchParams.set("limit", "1000");
+    const response = await safeFetch(directoryUrl.href, {
       headers,
       redirect: "error",
       signal: merged,
     });
     if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
-      await response.body?.cancel().catch(() => undefined);
+      cancelResponseBody(response);
       throw new Error(
         `Model server redirects are not allowed. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`,
       );
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
+      cancelResponseBody(response);
       const message = `Model server returned ${response.status}. ${OPENAI_COMPAT_PROBE_HAND_FILL_HINT}`;
       if (response.status === 401 || response.status === 403)
         throw new ModelDirectoryError(message, "auth");
       if (response.status === 429) throw new ModelDirectoryError(message, "rate");
       throw new Error(message);
     }
-    const body = await readBoundedJson(response, opts);
+    const body = await readBoundedJson(response, merged, opts);
+    if (anthropicCatalog) {
+      // An incomplete or malformed list cannot prove a saved model is missing.
+      if (body?.has_more !== false)
+        throw new Error("Model server returned an incomplete models list.");
+      if (
+        !Array.isArray(body.data) ||
+        body.data.some(
+          (entry) => entry?.type !== "model" || typeof entry.id !== "string" || !entry.id.trim(),
+        )
+      )
+        throw new Error("Model server returned an invalid models list.");
+    }
     return probeModelIds(body, opts);
   } catch (error) {
     const aborted =

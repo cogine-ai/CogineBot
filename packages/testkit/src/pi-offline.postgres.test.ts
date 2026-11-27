@@ -40,6 +40,35 @@ function directoryChatCompletion(model: string, content: string): Response {
   );
 }
 
+function directoryAnthropicMessage(model: string, content: string): Response {
+  const frames = [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_directory_fixture",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 2, output_tokens: 0 },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: content } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+    { type: "message_stop" },
+  ];
+  return new Response(
+    frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(""),
+    {
+      headers: { "content-type": "text/event-stream" },
+    },
+  );
+}
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   const directoryRoutes = [
     { provider: "openai", prefix: "gpt", endpoint: "https://api.openai.com/v1/responses" },
@@ -54,11 +83,19 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       prefix: "fixture-vendor/chat",
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
     },
+    {
+      provider: "anthropic",
+      prefix: "claude",
+      endpoint: "https://api.anthropic.com/v1/messages?beta=true",
+    },
   ];
   it.each(directoryRoutes)("runs a confirmed $provider model", async (route) => {
     const { provider, prefix, endpoint } = route;
     const chatCompletions = endpoint.endsWith("/chat/completions");
     const deepSeek = provider === "deepseek";
+    const anthropic = provider === "anthropic";
+    const authHeader = anthropic ? "x-api-key" : "authorization";
+    const headerValue = (key: string) => (anthropic ? key : `Bearer ${key}`);
     const apiKey = "fixture-discovered-model-key";
     const differentKey = "fixture-replacement-model-key";
     const qualifiedKey = "fixture-qualified-model-key";
@@ -82,9 +119,15 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     let expectedWireKey = apiKey;
     const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(endpoint);
-      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${expectedWireKey}`);
+      const headers = new Headers(init?.headers);
+      expect(headers.get(authHeader)).toBe(headerValue(expectedWireKey));
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({ model: modelId, stream: true });
+      if (anthropic) {
+        expect(headers.has("authorization")).toBe(false);
+        expect(body).not.toHaveProperty("fallbacks");
+        return directoryAnthropicMessage(modelId, "Used the selected model.");
+      }
       if (chatCompletions) {
         if (deepSeek) expect(body.thinking).toEqual({ type: "disabled" });
         else {
@@ -122,7 +165,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     const inferenceFetch = vi.fn<typeof fetch>(async (input, init) => {
       const request = new Request(input, init);
       expect(request.url).toBe(endpoint);
-      expect(request.headers.get("authorization")).toBe(`Bearer ${probeKey}`);
+      expect(request.headers.get(authHeader)).toBe(headerValue(probeKey));
       expect(await request.json()).toMatchObject({
         model: modelId,
         ...(chatCompletions
@@ -133,7 +176,10 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
                 expect.objectContaining({ function: expect.objectContaining({ name: "noop" }) }),
               ],
             }
-          : { max_output_tokens: 1024, tools: [expect.objectContaining({ name: "noop" })] }),
+          : {
+              [anthropic ? "max_tokens" : "max_output_tokens"]: 1024,
+              tools: [expect.objectContaining({ name: "noop" })],
+            }),
       });
       if (probeResponse !== "accepted")
         return Response.json(
@@ -143,6 +189,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           { status: probeResponse === "auth" ? 401 : 429 },
         );
       if (chatCompletions) return directoryChatCompletion(modelId, "OK");
+      if (anthropic) return directoryAnthropicMessage(modelId, "OK");
       return new Response(
         'data: {"type":"response.created","response":{"id":"inference-fixture"}}\n\ndata: {"type":"response.output_text.delta","delta":"OK"}\n\n',
         {

@@ -6,6 +6,7 @@ import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "
 import { createParser } from "eventsource-parser";
 import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
 import {
+  anthropicModelAlias,
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiProbeModel,
@@ -47,12 +48,12 @@ export async function probeModelInference(
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
   if (builtIn && isOfficialGeminiProbeModel(model)) return probeGemini(model, apiKey, options);
-  const chatCompletions =
-    (builtIn ||
-      (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider))) &&
-    isOfficialChatCompletionProbeModel(model);
+  const canProbeCatalogRoute =
+    builtIn ||
+    (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
+  const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
-  const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
+  const anthropic = canProbeCatalogRoute && isOfficialAnthropicProbeModel(model);
   const xai =
     (builtIn || input.providerCatalogModel === true) && isOfficialXaiResponsesProbeModel(model);
   const readFrames = chatCompletions || anthropic || xai;
@@ -481,12 +482,9 @@ function anthropicFrameOutcome(
     typeof message.model !== "string"
   )
     return "unavailable";
-  // The Claude 4.5 aliases can report the dated snapshot of the same model.
-  const aliasSnapshot =
-    requestedModel.endsWith("-4-5") &&
-    message.model.startsWith(`${requestedModel}-`) &&
-    /^\d{8}$/.test(message.model.slice(requestedModel.length + 1));
-  return message.model === requestedModel || aliasSnapshot ? "accepted" : "unavailable";
+  return message.model === requestedModel || anthropicModelAlias(message.model) === requestedModel
+    ? "accepted"
+    : "unavailable";
 }
 
 function anthropicFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {

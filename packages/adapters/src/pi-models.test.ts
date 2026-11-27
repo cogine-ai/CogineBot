@@ -118,7 +118,7 @@ describe("Pi model catalog", () => {
       expect(listPiCatalog().find((entry) => entry.provider === provider)?.catalogProbe).toBe(true);
     }
     expect(catalogProviderProbeBaseUrl("openai-compatible")).toBeNull();
-    expect(catalogProviderProbeBaseUrl("anthropic")).toBeNull();
+    expect(catalogProviderProbeBaseUrl("anthropic")).toBe("https://api.anthropic.com");
     expect(catalogProviderProbeBaseUrl("cloudflare-workers-ai")).toBeNull();
     expect(
       listPiCatalog().find((entry) => entry.provider === "cloudflare-workers-ai")?.catalogProbe,
@@ -153,6 +153,78 @@ describe("Pi model catalog", () => {
       if (previous === undefined) delete process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC;
       else process.env.RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC = previous;
     }
+  });
+
+  it("reads the official Claude model list with the selected API key", async () => {
+    const apiKey = "fixture-claude-directory-key";
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const req = new Request(input, init);
+      expect(req.url).toBe("https://api.anthropic.com/v1/models?limit=1000");
+      expect(req.headers.get("x-api-key")).toBe(apiKey);
+      expect(req.headers.get("anthropic-version")).toBe("2023-06-01");
+      expect(req.headers.has("authorization")).toBe(false);
+      expect(req.redirect).toBe("error");
+      return Response.json({
+        data: [{ type: "model", id: "claude-fixture-directory" }],
+        has_more: false,
+      });
+    });
+    await expect(
+      probeCatalogProviderModels({ provider: "anthropic", apiKey }, fetchImpl),
+    ).resolves.toEqual(["claude-fixture-directory"]);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("does not use a partial Claude directory", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ data: [{ type: "model", id: "claude-fixture-directory" }], has_more: true }),
+    );
+    await expect(
+      probeCatalogProviderModels(
+        { provider: "anthropic", apiKey: "fixture-claude-key" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow("incomplete models list");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { models: [{ id: "claude-fixture-directory" }] },
+    {
+      data: [
+        { type: "model", id: "claude-fixture-directory" },
+        { type: "model", id: "  " },
+      ],
+    },
+  ])("rejects a malformed native Claude models response", async (page) => {
+    const fetchImpl = vi.fn(async () => Response.json({ ...page, has_more: false }));
+    await expect(
+      probeCatalogProviderModels(
+        { provider: "anthropic", apiKey: "fixture-claude-key" },
+        fetchImpl,
+      ),
+    ).rejects.toThrow("invalid models list");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a Claude directory read while waiting for the response body", async () => {
+    const controller = new AbortController();
+    const cancel = vi.fn();
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream({ pull: open, cancel })));
+    const pending = probeCatalogProviderModels(
+      { provider: "anthropic", apiKey: "fixture-claude-key" },
+      fetchImpl,
+      controller.signal,
+    );
+    const cancelled = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await opened;
+    controller.abort();
+    await cancelled;
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("accepts catalog model lists larger than the custom-server probe cap", async () => {

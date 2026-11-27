@@ -3220,6 +3220,7 @@ describe("model credential persistence", () => {
     grokDraftModel,
     deepSeekDraftModel,
     { ...draftModel, provider: "groq", modelId: "fixture-vendor/chat-new-directory-model" },
+    { ...draftModel, provider: "anthropic", modelId: "claude-fixture-new-directory-model" },
   ];
 
   it.each(draftModels)("checks a first $provider model draft", async (model) => {
@@ -3621,7 +3622,7 @@ describe("model credential persistence", () => {
       (entry) => entry.provider === input.provider && entry.id === input.modelId,
     );
     expect(model?.inferenceProbe).toBe(true);
-    expect(model?.catalogProbe).toBeUndefined();
+    expect(model?.catalogProbe).toBe(true);
     const frame =
       'event: message_start\ndata: {"type":"message_start","message":{"type":"message","id":"msg-fixture","role":"assistant","model":"claude-haiku-5-5"}}\n\n';
     const fetch = vi
@@ -6562,6 +6563,7 @@ describe("saved model catalog checks", () => {
     ["xai", "grok-fixture-signed-choice"],
     ["deepseek", "deepseek-fixture-signed-choice"],
     ["groq", "fixture-vendor/chat-signed-choice"],
+    ["anthropic", "claude-fixture-signed-choice"],
   ])(
     "tests a signed %s choice without refreshing the catalog or accepting an unbound ID",
     async (provider, modelId) => {
@@ -6593,6 +6595,7 @@ describe("saved model catalog checks", () => {
     ["xai", "grok-fixture-dynamic-choice"],
     ["deepseek", "deepseek-fixture-dynamic-choice"],
     ["groq", "fixture-vendor/chat-dynamic-choice"],
+    ["anthropic", "claude-fixture-dynamic-choice"],
   ])(
     "checks a replacement %s key's own catalog before sending inference",
     async (provider, modelId) => {
@@ -6755,6 +6758,30 @@ describe("saved model catalog checks", () => {
       savedModelDirectory: { notListed: true },
     });
     expect((await credentials(actor, false))[0]).not.toHaveProperty("savedModelDirectory");
+  });
+
+  it("recognizes a saved Claude 4.5 alias from its listed snapshot", async () => {
+    const provider = "anthropic";
+    const { credentials, state, probe, call } = fixture(true, provider);
+    const alias = "claude-haiku-4-5";
+    const snapshot = "claude-haiku-4-5-20251001";
+    const models = listPiCatalog()
+      .filter((entry) => entry.provider === provider && !entry.id.endsWith("-4-5"))
+      .map(({ id }) => id);
+    expect(models).toContain(snapshot);
+    state.modelId = alias;
+    probe.mockResolvedValue(models);
+
+    const [saved] = await credentials();
+    expect(saved).toMatchObject({
+      modelId: alias,
+      providerListedModelIds: expect.arrayContaining([snapshot, alias]),
+    });
+    expect(saved).not.toHaveProperty("savedModelDirectory");
+    expect(await call({ ...savedInput, provider })).toMatchObject({
+      status: 200,
+      body: { json: { catalogUpdated: true, models: expect.arrayContaining([snapshot, alias]) } },
+    });
   });
 
   it("requires new confirmation after the stored key changes without proving retirement", async () => {
