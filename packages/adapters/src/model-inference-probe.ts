@@ -13,6 +13,7 @@ import {
   isOfficialGeminiProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
+  isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
 } from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
@@ -51,6 +52,8 @@ export async function probeModelInference(
   const canProbeCatalogRoute =
     builtIn ||
     (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
+  if (builtIn && isOpenRouterMessagesModel(model))
+    return probeOpenRouterMessages(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
     return probeGemini(model, apiKey, options);
   const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
@@ -71,7 +74,7 @@ export async function probeModelInference(
       ? anthropicFailureStatus(error, status)
       : xai
         ? xaiFailureStatus(error, apiKey, status)
-        : chatCompletionFailureStatus(model.provider, error, apiKey, status);
+        : providerProbeFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -215,47 +218,85 @@ async function probeGemini(
   apiKey: string,
   options: ProbeOptions,
 ): Promise<ModelInferenceProbeStatus> {
+  return await probeNativeEventStream(
+    `${model.baseUrl}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`,
+    { "x-goog-api-key": apiKey },
+    {
+      systemInstruction: { parts: [{ text: PROBE_SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: PROBE_USER_PROMPT }] }],
+      tools: [
+        { functionDeclarations: [{ name: PROBE_TOOL_NAME, description: PROBE_TOOL_DESCRIPTION }] },
+      ],
+      generationConfig: { maxOutputTokens: Math.min(model.maxTokens, OUTPUT_LIMIT) },
+    },
+    options,
+    (error, status) => geminiFailureStatus(error, apiKey, status),
+    (frame, event) => geminiFrameOutcome(frame, apiKey, event),
+  );
+}
+
+async function probeOpenRouterMessages(
+  model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
+  apiKey: string,
+  options: ProbeOptions,
+): Promise<ModelInferenceProbeStatus> {
+  const classifyFailure = (error: unknown, status?: number) =>
+    openRouterMessagesFailureStatus(error, apiKey, status ?? errorHttpStatus(error));
+  // The Anthropic SDK inherits deployment-level headers. This gateway only
+  // receives the selected OpenRouter key and the headers for this request.
+  return await probeNativeEventStream(
+    `${model.baseUrl}/v1/messages`,
+    { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    {
+      model: model.id,
+      system: PROBE_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: PROBE_USER_PROMPT }],
+      tools: [
+        {
+          name: PROBE_TOOL_NAME,
+          description: PROBE_TOOL_DESCRIPTION,
+          input_schema: { type: "object", properties: {} },
+        },
+      ],
+      max_tokens: Math.min(model.maxTokens, OUTPUT_LIMIT),
+      stream: true,
+    },
+    options,
+    classifyFailure,
+    (frame, event) => anthropicFrameOutcome(frame, model.id, classifyFailure, event),
+  );
+}
+
+async function probeNativeEventStream(
+  url: string,
+  headers: Record<string, string>,
+  body: object,
+  options: ProbeOptions,
+  classifyFailure: StreamFailureClassifier,
+  frameOutcome: (frame: unknown, event?: string) => ModelInferenceProbeStatus | undefined,
+): Promise<ModelInferenceProbeStatus> {
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const transport = options.fetch ?? globalThis.fetch;
   try {
-    const response = await transport(
-      `${model.baseUrl}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: PROBE_SYSTEM_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text: PROBE_USER_PROMPT }] }],
-          tools: [
-            {
-              functionDeclarations: [
-                { name: PROBE_TOOL_NAME, description: PROBE_TOOL_DESCRIPTION },
-              ],
-            },
-          ],
-          generationConfig: { maxOutputTokens: Math.min(model.maxTokens, OUTPUT_LIMIT) },
-        }),
-        redirect: "error",
-        signal,
-      },
-    );
+    const response = await transport(url, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal,
+    });
     if (!response.ok) {
       const { error } = await readProbeError(response, signal);
       options.signal?.throwIfAborted();
-      return failureAtDeadline(geminiFailureStatus(error, apiKey, response.status), deadline);
+      return failureAtDeadline(classifyFailure(error, response.status), deadline);
     }
     if (!isEventStream(response)) {
       cancelResponseBody(response);
       signal.throwIfAborted();
       return "unavailable";
     }
-    return await readModelProbeFrames(response.body, signal, (frame, event) =>
-      geminiFrameOutcome(frame, apiKey, event),
-    );
+    return await readModelProbeFrames(response.body, signal, frameOutcome);
   } catch {
     options.signal?.throwIfAborted();
     return failureAtDeadline("unavailable", deadline);
@@ -621,7 +662,7 @@ function xaiFailureStatus(
   return status === 403 && result === "auth" ? "model" : result;
 }
 
-function chatCompletionFailureStatus(
+function providerProbeFailureStatus(
   provider: string,
   error: unknown,
   apiKey: string,
@@ -666,39 +707,76 @@ function chatCompletionFailureStatus(
       return "model";
   }
   if (provider === "openrouter") {
-    const metadata = probeRecord(record?.metadata);
-    const source = metadata?.limit_source;
-    if (
-      status === 402 &&
-      (source === "openrouter_in_flight_budget" ||
-        (source === undefined && metadata?.reason === "in_flight_budget_exhausted"))
-    )
-      return "rate";
-    if (
-      (status === 402 || status === 403) &&
-      (source === "openrouter_key_limit" ||
-        source === "openrouter_workspace_budget" ||
-        source === "openrouter_guardrail_budget")
-    )
-      return "spending";
-    if (status === 402) {
-      if (source === "openrouter_credits") return "credit";
-      // A 402 alone cannot distinguish exhausted credits from an in-flight budget limit.
-      if (typeof message !== "string") return "unavailable";
-      const detail = message.replaceAll(apiKey, "").trim();
-      if (/^(?:insufficient credits|this request requires more credits)\b/i.test(detail))
-        return "credit";
-      if (
-        /^(?:your )?(?:(?:(?:team|workspace|account|organi[sz]ation|(?:api )?key) )?(?:(?:daily|weekly|monthly) )?spending limit|(?:api )?key limit) (?:has been )?(?:reached|exceeded)\b/i.test(
-          detail,
-        ) ||
-        /^workspace (?:daily|weekly|monthly) budget of \$[\d,.]+ exceeded\b/i.test(detail)
-      )
-        return "spending";
-      return "unavailable";
-    }
+    const budget = openRouterBudgetFailureStatus(error, apiKey, status);
+    if (budget) return budget;
+    if (status === 402) return "unavailable";
   }
   return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
+}
+
+function openRouterMessagesFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  const record = probeRecord(error);
+  const budgetStatus =
+    status ??
+    (record?.type === "billing_error"
+      ? 402
+      : record?.type === "permission_error"
+        ? 403
+        : undefined);
+  const budget = openRouterBudgetFailureStatus(error, apiKey, budgetStatus);
+  if (budget) return budget;
+  if (status === undefined || status === 402) {
+    if (record?.error_type === "payment_required") return "credit";
+    if (status === 402) return "unavailable";
+  }
+  if ((status === undefined || status >= 500) && record?.error_type === "timeout") return "timeout";
+  if (status === undefined && record?.type !== "billing_error") {
+    const outcome = anthropicFailureStatus(error);
+    if (outcome !== "unavailable") return outcome;
+  }
+  return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
+}
+
+function openRouterBudgetFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status: number | undefined,
+): ModelInferenceProbeStatus | undefined {
+  const record = probeRecord(error);
+  const metadata = probeRecord(record?.metadata);
+  const source = metadata?.limit_source;
+  if (
+    status === 402 &&
+    (source === "openrouter_in_flight_budget" ||
+      (source === undefined && metadata?.reason === "in_flight_budget_exhausted"))
+  )
+    return "rate";
+  if (
+    (status === 402 || status === 403) &&
+    (source === "openrouter_key_limit" ||
+      source === "openrouter_workspace_budget" ||
+      source === "openrouter_guardrail_budget")
+  )
+    return "spending";
+  // A 402 can mean exhausted credits or a temporary in-flight budget limit.
+  if (status !== 402) return;
+  if (source === "openrouter_credits") return "credit";
+  const message = typeof error === "string" ? error : record?.message;
+  if (typeof message !== "string") return;
+  const detail = message.replaceAll(apiKey, "").trim();
+  if (/^(?:insufficient credits|this request requires more credits)\b/i.test(detail))
+    return "credit";
+  if (
+    /^(?:your )?(?:(?:(?:team|workspace|account|organi[sz]ation|(?:api )?key) )?(?:(?:daily|weekly|monthly) )?spending limit|(?:api )?key limit) (?:has been )?(?:reached|exceeded)\b/i.test(
+      detail,
+    ) ||
+    /^workspace (?:daily|weekly|monthly) budget of \$[\d,.]+ exceeded\b/i.test(detail)
+  )
+    return "spending";
 }
 
 function failureStatus(error: string, apiKey: string, status?: number): ModelInferenceProbeStatus {
