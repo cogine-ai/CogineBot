@@ -24,6 +24,7 @@ import {
   modelConnectChecksInference,
   modelConnectInferenceRejection,
   pickCatalogModelId,
+  withDraftCatalogModels,
 } from "@rakazo/core";
 import {
   Button,
@@ -55,7 +56,7 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { currentSpaceSelectionGeneration, rpc } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpc, rpcRecoveryScopeKey } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorText } from "../lib/user-error";
 
@@ -139,6 +140,8 @@ export function OnboardingPage() {
   const modelIdRef = useRef(modelId);
   modelIdRef.current = modelId;
   const [apiKey, setApiKey] = useState("");
+  const [draftDirectory, setDraftDirectory] = useState<{ ids: string[]; scopeKey: string }>();
+  const directoryScope = rpcRecoveryScopeKey();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -246,10 +249,12 @@ export function OnboardingPage() {
     return [...seen.values()];
   }, [catalog]);
 
-  const modelsForProvider = useMemo(
-    () => catalog.filter((entry) => entry.provider === provider),
-    [catalog, provider],
-  );
+  const modelsForProvider = useMemo(() => {
+    const ids =
+      apiKey.trim() && draftDirectory?.scopeKey === directoryScope ? draftDirectory.ids : [];
+    const options = withDraftCatalogModels(catalog, provider, ids);
+    return options.filter((entry) => entry.provider === provider);
+  }, [apiKey, catalog, directoryScope, draftDirectory, provider]);
 
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
   const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
@@ -324,6 +329,11 @@ export function OnboardingPage() {
   }
 
   function updateApiKey(nextApiKey: string) {
+    if (nextApiKey.trim() !== apiKey.trim()) {
+      setDraftDirectory(undefined);
+      if (selected?.draftCatalogModel)
+        setModelId(pickCatalogModelId(catalog, provider, deploymentDefaultModelRef.current));
+    }
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -334,6 +344,7 @@ export function OnboardingPage() {
     cancelOAuthAttempt();
     setProvider(nextProvider);
     setApiKey("");
+    setDraftDirectory(undefined);
     setAccountId("");
     setGatewayId("");
     setModelId(
@@ -403,22 +414,30 @@ export function OnboardingPage() {
   async function testApiKeyConnection() {
     if (!selected?.catalogProbe) return;
     const revision = preflightRevisionRef.current;
+    const scopeKey = rpcRecoveryScopeKey();
     setPreflightTarget("api-key");
     setPreflightTesting(true);
     setPreflightSuccess(null);
     setPreflightFailure(null);
     setError(null);
     setNotice(null);
+    let draftIds: string[] | undefined;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
       apiKey,
       modelId: selected.id,
       catalogProbe: true,
-      probeCatalog: rpc.models.probeCatalog,
+      probeCatalog: async (input) => {
+        const response = await rpc.models.probeCatalog(input);
+        draftIds = response.draftModelIds;
+        return response;
+      },
     });
     if (!preflightStillCurrent(revision)) return;
     setPreflightTesting(false);
+    if (scopeKey !== rpcRecoveryScopeKey()) return;
+    if (draftIds?.length) setDraftDirectory({ ids: draftIds, scopeKey });
     if (result.ok) {
       setPreflightSuccess(modelPreflightSuccessMessage(result.discoveredModels.length));
       return;
@@ -464,10 +483,13 @@ export function OnboardingPage() {
 
   async function saveModel() {
     if (!canSaveModel || probing || preflightTesting || connectAttempt.current) return;
+    if (!isOpenAiCompatible && selected?.id !== modelId) return;
     const controller = new AbortController();
     const spaceGeneration = currentSpaceSelectionGeneration();
     const current = () =>
-      !controller.signal.aborted && spaceGeneration === currentSpaceSelectionGeneration();
+      !controller.signal.aborted &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      directoryScope === rpcRecoveryScopeKey();
     connectAttempt.current = controller;
     setConnecting(true);
     setError(null);

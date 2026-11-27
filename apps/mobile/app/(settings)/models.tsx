@@ -1,6 +1,7 @@
 import type {
   ModelApiProtocol,
   ModelBackupChoice,
+  ModelCatalogProbeResult,
   ModelConnectResult,
   ModelCredentialReference,
   ModelHeaderRow,
@@ -61,6 +62,7 @@ import {
   selectedModelDirectoryStatus,
   toggleEnabledModelId,
   withConnectionCatalogModels,
+  withDraftCatalogModels,
 } from "@rakazo/core";
 import * as Clipboard from "expo-clipboard";
 import { Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -218,6 +220,12 @@ function ModelsForm({
   const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState({ provider: "", query: "" });
   const [apiKey, setApiKey] = useState("");
+  const [draftDirectory, setDraftDirectory] = useState<{
+    ids: string[];
+    spaceGeneration: number;
+    sessionGeneration: number;
+    apiBase: string;
+  }>();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -464,6 +472,7 @@ function ModelsForm({
         current: preferred.modelId,
       });
       resetOpenAiCompatibleProbe();
+      setDraftDirectory(undefined);
       setProvider(nextProvider);
       setConnectionId(nextCredential?.id ?? null);
       setConnectionRevision(nextCredential?.connectionRevision);
@@ -663,12 +672,14 @@ function ModelsForm({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
-  const connectionCatalog = withConnectionCatalogModels(
-    catalog,
-    credential,
-    connectionRevision,
-    apiKey,
-  );
+  const connectionCatalog =
+    !connectionId &&
+    apiKey.trim() &&
+    draftDirectory?.spaceGeneration === currentSpaceSelectionGeneration() &&
+    draftDirectory.sessionGeneration === currentSessionGeneration() &&
+    draftDirectory.apiBase === currentApiBase()
+      ? withDraftCatalogModels(catalog, provider, draftDirectory.ids)
+      : withConnectionCatalogModels(catalog, credential, connectionRevision, apiKey);
   const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -877,6 +888,10 @@ function ModelsForm({
 
   function updateApiKey(nextApiKey: string) {
     selectionRevisionRef.current += 1;
+    if (nextApiKey.trim() !== apiKey.trim()) {
+      setDraftDirectory(undefined);
+      if (selected?.draftCatalogModel) setModelId("");
+    }
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidateCatalogCheck();
@@ -927,6 +942,7 @@ function ModelsForm({
     setHeaderRows(null);
     setShowHeaders(false);
     setApiKey("");
+    setDraftDirectory(undefined);
     resetOpenAiCompatibleProbe();
     clearFeedback();
   }
@@ -1037,12 +1053,19 @@ function ModelsForm({
           report(modelInferenceProbeMessage(status, t), status !== "accepted");
         return;
       }
-      const { models, catalogUpdated } = await rpc<{ models: string[]; catalogUpdated?: true }>(
+      const { models, catalogUpdated, draftModelIds } = await rpc<ModelCatalogProbeResult>(
         "models/probeCatalog",
         request,
         { requestContext: context, skipSpaceAuthRecovery: true },
       );
       if (!isCurrent(context)) return;
+      if (!connectionId && "apiKey" in request && draftModelIds?.length)
+        setDraftDirectory({
+          ids: draftModelIds,
+          spaceGeneration,
+          sessionGeneration,
+          apiBase: context.apiBase,
+        });
       if (catalogUpdated && "credentialId" in request) {
         const applied = await load({
           connectionId: request.credentialId,

@@ -3106,6 +3106,7 @@ describe("model credential persistence", () => {
         createdAt: new Date(0),
         updatedAt: new Date(0),
       })),
+      update: vi.fn(),
     };
     const spaceModelPreference = {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -3180,6 +3181,123 @@ describe("model credential persistence", () => {
     apiKey: "fixture-connect-key",
     verifyInference: true,
   };
+
+  const draftModel = { ...verifiedConnect, modelId: "gpt-fixture-new-directory-model" };
+  const draftCatalog = listPiCatalog()
+    .filter(({ provider }) => provider === draftModel.provider)
+    .map(({ id }) => id);
+
+  function draftCatalogFixture(modelLiveCatalogEnabled = true) {
+    const fixture = persistDeps();
+    const catalogProbe = vi.fn().mockResolvedValue([...draftCatalog, draftModel.modelId]);
+    const selections = new ProviderCatalogSelections("fixture-directory-signer");
+    const handler = new RPCHandler(
+      createRouter({
+        ...fixture.deps,
+        env: { ...fixture.deps.env, modelLiveCatalogEnabled },
+        providerCatalogSelections: selections,
+        catalogProbe,
+      }),
+    );
+    return { ...fixture, handler, catalogProbe, selections };
+  }
+
+  it("discovers, tests, and binds a first connection's dynamic model to the exact stored key", async () => {
+    const { handler, catalogProbe, inference, tx, selections } = draftCatalogFixture();
+    const probeRequest = { provider: draftModel.provider, apiKey: draftModel.apiKey };
+    catalogProbe.mockResolvedValueOnce([
+      ...draftCatalog,
+      draftModel.modelId,
+      "fixture-embedding",
+      `gpt-${draftModel.apiKey}`,
+    ]);
+    const directory = await call(handler, "models/probeCatalog", probeRequest);
+    const { json } = await directory.json();
+    expect(json.draftModelIds).toEqual([draftModel.modelId]);
+    expect(JSON.stringify(json)).not.toContain(draftModel.apiKey);
+    expect(inference).not.toHaveBeenCalled();
+    const { verifyInference, ...input } = draftModel;
+    const tested = await call(handler, "models/probeInference", input);
+    expect((await tested.json()).json).toEqual({ status: "accepted" });
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    tx.userModelCredential.update.mockImplementation(async ({ data }) => ({
+      id: "cred-1",
+      provider: input.provider,
+      userId: actor.userId,
+      label: "Fixture",
+      ...data,
+    }));
+    const saved = await call(handler, "models/connect", { ...input, verifyInference });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).json).toMatchObject({
+      modelId: input.modelId,
+      inferenceStatus: "accepted",
+      savedProviderCatalogModelIds: [input.modelId],
+    });
+    expect(catalogProbe).toHaveBeenCalledTimes(3);
+    expect(catalogProbe.mock.calls.map(([request]) => request)).toEqual(
+      Array.from({ length: 3 }, () => probeRequest),
+    );
+    expect(inference).toHaveBeenCalledTimes(2);
+    for (const [request] of inference.mock.calls)
+      expect(request).toEqual({ ...input, providerCatalogModel: true });
+    const { where, data } = tx.userModelCredential.update.mock.calls[0]![0];
+    expect(where).toEqual({ id: "cred-1" });
+    const owner = { id: where.id, userId: actor.userId, provider: input.provider, ...data };
+    expect(selections.read(owner, { kind: "api_key", key: input.apiKey })).toEqual([input.modelId]);
+    expect(selections.read(owner, { kind: "api_key", key: "fixture-different-key" })).toEqual([]);
+  });
+
+  it.each([
+    { enabled: false, listed: [...draftCatalog, draftModel.modelId], status: "unavailable" },
+    { enabled: true, listed: [draftModel.modelId], status: "unavailable" },
+    { enabled: true, listed: draftCatalog, status: "model" },
+  ])(
+    "requires a trusted current draft directory before inference or writes: $status",
+    async ({ enabled, listed, status }) => {
+      const { handler, catalogProbe, inference, deps } = draftCatalogFixture(enabled);
+      catalogProbe.mockResolvedValue(listed);
+      const { verifyInference, ...input } = draftModel;
+      const tested = await call(handler, "models/probeInference", input);
+      expect((await tested.json()).json).toEqual({ status });
+      const refused = await call(handler, "models/connect", { ...input, verifyInference });
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).json).toMatchObject({ data: { inferenceStatus: status } });
+      expect(catalogProbe).toHaveBeenCalledTimes(enabled ? 2 : 0);
+      expect(inference).not.toHaveBeenCalled();
+      expect(deps.secrets.put).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discards the directory result if a first connection is created while confirming the draft", async () => {
+    const { handler, catalogProbe, inference, deps, tx } = draftCatalogFixture();
+    catalogProbe.mockImplementationOnce(async () => {
+      tx.userModelCredential.findFirst.mockResolvedValue({ id: "newer-connection" });
+      return [...draftCatalog, draftModel.modelId];
+    });
+    const response = await call(handler, "models/connect", draftModel);
+    expect(response.status).toBe(409);
+    expect(inference).not.toHaveBeenCalled();
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it("guards the first connection in the write transaction even without inference consent", async () => {
+    const { handler, catalogProbe, inference, tx } = draftCatalogFixture();
+    catalogProbe.mockImplementationOnce(async () => {
+      tx.userModelCredential.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+        id: "newer-connection",
+      });
+      return [...draftCatalog, draftModel.modelId];
+    });
+    const response = await call(handler, "models/connect", {
+      ...draftModel,
+      verifyInference: undefined,
+    });
+    expect(response.status).toBe(409);
+    expect(inference).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.create).not.toHaveBeenCalled();
+    expect(tx.userModelCredential.update).not.toHaveBeenCalled();
+  });
 
   it.each(["auth", "model", "credit", "spending"])(
     "refuses to save a new key with a conclusive %s failure",

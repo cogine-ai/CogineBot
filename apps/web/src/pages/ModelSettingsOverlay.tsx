@@ -50,6 +50,7 @@ import {
   selectedModelDirectoryStatus,
   toggleEnabledModelId,
   withConnectionCatalogModels,
+  withDraftCatalogModels,
 } from "@rakazo/core";
 import {
   AlertDialog,
@@ -95,7 +96,7 @@ import {
   runModelConnectionPreflight,
   unavailableSelectedModel,
 } from "../lib/model-connection-preflight";
-import { currentSpaceSelectionGeneration, selectedSpaceId } from "../lib/rpc";
+import { currentSpaceSelectionGeneration, rpcRecoveryScopeKey, selectedSpaceId } from "../lib/rpc";
 import { useBoundSpaceId, useSpaceRpc, useSpaceRpcCurrent } from "../lib/space-rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 import { errorCode, errorText } from "../lib/user-error";
@@ -145,6 +146,7 @@ export function ModelSettingsOverlay({
   modelIdRef.current = modelId;
   const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
+  const [draftDirectory, setDraftDirectory] = useState<{ ids: string[]; scopeKey: string }>();
   const [accountId, setAccountId] = useState("");
   const [gatewayId, setGatewayId] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -365,6 +367,7 @@ export function ModelSettingsOverlay({
       }
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
+      setDraftDirectory(undefined);
       setProvider(nextProvider);
       setConnectionId(nextCredential?.id ?? null);
       setConnectionRevision(nextCredential?.connectionRevision);
@@ -474,12 +477,10 @@ export function ModelSettingsOverlay({
       canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? "") &&
       entry.id === connectionId,
   );
-  const connectionCatalog = withConnectionCatalogModels(
-    catalog,
-    credential,
-    connectionRevision,
-    apiKey,
-  );
+  const connectionCatalog =
+    !connectionId && apiKey.trim() && draftDirectory?.scopeKey === rpcRecoveryScopeKey()
+      ? withDraftCatalogModels(catalog, provider, draftDirectory.ids)
+      : withConnectionCatalogModels(catalog, credential, connectionRevision, apiKey);
   const modelsForProvider = connectionCatalog.filter(
     (entry) => canonicalPiProviderId(entry.provider) === canonicalPiProviderId(provider ?? ""),
   );
@@ -684,6 +685,10 @@ export function ModelSettingsOverlay({
 
   function updateApiKey(nextApiKey: string) {
     selectionRevisionRef.current += 1;
+    if (nextApiKey.trim() !== apiKey.trim()) {
+      setDraftDirectory(undefined);
+      if (selected?.draftCatalogModel) setModelId("");
+    }
     setApiKey(nextApiKey);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
@@ -743,6 +748,7 @@ export function ModelSettingsOverlay({
     setCompatibleQuery("");
     detailScrollRef.current?.scrollTo({ top: 0 });
     setApiKey("");
+    setDraftDirectory(undefined);
     resetOpenAiCompatibleProbe();
     invalidatePreflight();
     setError(null);
@@ -829,8 +835,11 @@ export function ModelSettingsOverlay({
         : null;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
+    const scopeKey = rpcRecoveryScopeKey();
     const isCurrent = () =>
-      preflightStillCurrent(revision) && spaceGeneration === currentSpaceSelectionGeneration();
+      preflightStillCurrent(revision) &&
+      spaceGeneration === currentSpaceSelectionGeneration() &&
+      scopeKey === rpcRecoveryScopeKey();
     setPreflightTarget(kind);
     setPreflightTesting(true);
     setPreflightSuccess(null);
@@ -858,6 +867,7 @@ export function ModelSettingsOverlay({
       return;
     }
     let catalogUpdated = false;
+    let draftIds: string[] | undefined;
     const result = await runModelConnectionPreflight({
       authKind: "api-key",
       provider: selected.provider,
@@ -867,10 +877,13 @@ export function ModelSettingsOverlay({
       probeCatalog: async (input) => {
         const response = await rpc.models.probeCatalog(input);
         catalogUpdated = response.catalogUpdated === true;
+        draftIds = response.draftModelIds;
         return response;
       },
     });
     if (!isCurrent()) return;
+    if (!connectionId && "apiKey" in request && draftIds?.length)
+      setDraftDirectory({ ids: draftIds, scopeKey });
     if (catalogUpdated && "credentialId" in request) {
       const applied = await refresh(request.credentialId, { keepForm: true }).catch(
         () => undefined,

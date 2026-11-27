@@ -137,6 +137,28 @@ export class ApiKeyModelCatalog {
     return ++this.manualObservationOrder;
   }
 
+  /** Drafts have no stored credential or revision, so their observations are never cached. */
+  draftModels(provider: string, apiKey: string, listed: readonly string[]) {
+    // Discovered models currently have a runtime route only on the official OpenAI endpoint.
+    if (provider !== "openai") return undefined;
+    const endpoint = catalogProviderProbeBaseUrl(provider);
+    return endpoint ? trustedModels({ provider, endpoint }, apiKey, listed) : undefined;
+  }
+
+  async observeDraft(
+    provider: string,
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ models?: string[]; failure?: ModelDirectoryFailure }> {
+    try {
+      const listed = await this.probe({ provider, apiKey }, undefined, signal);
+      return { models: this.draftModels(provider, apiKey, listed) };
+    } catch (error) {
+      signal?.throwIfAborted();
+      return { failure: error instanceof ModelDirectoryError ? error.failure : undefined };
+    }
+  }
+
   /** Reuse the exact-key result of a successful manual directory check. */
   record(
     connection: CatalogConnection,

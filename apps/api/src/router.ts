@@ -2314,6 +2314,12 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         const compatible = input.provider === OPENAI_COMPATIBLE_PROVIDER_ID;
+        const requested = usableModelId(input.modelId);
+        const discoveredModelId =
+          requested && dynamicProviderCatalogModel(input.provider, requested)
+            ? requested
+            : undefined;
+        const firstCatalogConnection = discoveredModelId !== undefined && !input.credentialId;
         const existing = input.credentialId
           ? await deps.prisma.userModelCredential.findFirst({
               where: {
@@ -2330,6 +2336,7 @@ export function createRouter(deps: RouterDeps) {
                 input.provider,
               );
         if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
+        if (firstCatalogConnection && existing) throw modelConnectionChanged();
         if (existing && input.credentialId)
           assertConnectionRevision(existing, input.expectedRevision);
         let previousPlaintext: string | undefined;
@@ -2368,12 +2375,8 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         try {
-          const requested = usableModelId(input.modelId);
-          const discoveredModelId =
-            requested && dynamicProviderCatalogModel(input.provider, requested)
-              ? requested
-              : undefined;
-          if (discoveredModelId && !input.apiKey?.trim())
+          const draftKey = input.apiKey?.trim();
+          if (discoveredModelId && !draftKey)
             throw new ORPCError("BAD_REQUEST", {
               message: "Enter a replacement key to update this connection.",
             });
@@ -2381,17 +2384,30 @@ export function createRouter(deps: RouterDeps) {
             discoveredModelId && input.credentialId && existing && expectedCiphertext
               ? { ...existing, ciphertext: expectedCiphertext }
               : undefined;
+          const ensureNew = () => ensureNewModelProbeTarget(deps, context, input.provider);
           const confirmNewModel = discoveredModelId
-            ? await confirmProviderCatalogChoice(
-                deps,
-                apiKeyCatalog,
-                catalogConnection,
-                context,
-                discoveredModelId,
-                plaintext,
-                previousPlaintext,
-                inferenceProbesEnabled && input.verifyInference === true,
-              )
+            ? firstCatalogConnection && draftKey
+              ? await confirmDraftCatalogChoice(
+                  deps,
+                  apiKeyCatalog,
+                  {
+                    provider: input.provider,
+                    modelId: discoveredModelId,
+                    apiKey: draftKey,
+                  },
+                  ensureNew,
+                  context.signal,
+                )
+              : await confirmProviderCatalogChoice(
+                  deps,
+                  apiKeyCatalog,
+                  catalogConnection,
+                  context,
+                  discoveredModelId,
+                  plaintext,
+                  previousPlaintext,
+                  inferenceProbesEnabled && input.verifyInference === true,
+                )
             : false;
           if (typeof confirmNewModel === "string") throw modelInferenceRejection(confirmNewModel);
           const probeModelId =
@@ -2408,6 +2424,7 @@ export function createRouter(deps: RouterDeps) {
             if (saved.kind === "api_key") {
               const previousKey = catalogConnection && plaintextApiKey(previousPlaintext);
               const ensureCurrent = async () => {
+                if (firstCatalogConnection) return ensureNew();
                 await ensureModelProbeAuthorized(context);
                 if (
                   catalogConnection &&
@@ -2450,7 +2467,8 @@ export function createRouter(deps: RouterDeps) {
               credentialId: existing?.id ?? input.credentialId,
               expectedRevision: existing?.connectionRevision ?? input.expectedRevision,
               ...(existing ? { expectedCiphertext } : {}),
-              expectNewConnection: inferenceStatus !== undefined && !existing,
+              expectNewConnection:
+                firstCatalogConnection || (inferenceStatus !== undefined && !existing),
               thinkingLevel: compatible ? undefined : input.thinkingLevel,
               supportsImages: input.supportsImages,
               catalogModelId: confirmNewModel ? discoveredModelId : undefined,
@@ -2589,7 +2607,17 @@ export function createRouter(deps: RouterDeps) {
           }
         }
 
-        if ("apiKey" in input) return { models: await listModels(input.apiKey) };
+        if ("apiKey" in input) {
+          await ensureModelProbeAuthorized(context);
+          const models = await listModels(input.apiKey);
+          await ensureModelProbeAuthorized(context);
+          const draftModelIds =
+            deps.providerCatalogSelections &&
+            apiKeyCatalog
+              ?.draftModels(input.provider, input.apiKey, models)
+              ?.filter((id) => dynamicProviderCatalogModel(input.provider, id));
+          return { models, ...(draftModelIds?.length ? { draftModelIds } : {}) };
+        }
 
         const { key, snapshot, ensureCurrent } = await loadSavedModelProbeKey(deps, context, input);
         await ensureCurrent();
@@ -2608,20 +2636,24 @@ export function createRouter(deps: RouterDeps) {
       }),
       probeInference: authed.models.probeInference.handler(async ({ context, input }) => {
         const discovered =
-          inferenceProbesEnabled &&
-          "credentialId" in input &&
-          dynamicProviderCatalogModel(input.provider, input.modelId);
+          inferenceProbesEnabled && dynamicProviderCatalogModel(input.provider, input.modelId);
         if (!discovered && !canProbeInference(input.provider, input.modelId))
           return { status: "unavailable" as const };
 
         const target =
           "credentialId" in input
             ? await loadSavedModelProbeKey(deps, context, input)
-            : { key: input.apiKey, ensureCurrent: () => ensureModelProbeAuthorized(context) };
+            : {
+                key: input.apiKey,
+                ensureCurrent: () =>
+                  discovered && apiKeyCatalog && deps.providerCatalogSelections
+                    ? ensureNewModelProbeTarget(deps, context, input.provider)
+                    : ensureModelProbeAuthorized(context),
+              };
         const apiKey = "apiKey" in input ? input.apiKey : target.key;
-        await target.ensureCurrent();
         try {
           if (discovered && "snapshot" in target) {
+            await target.ensureCurrent();
             const confirmation = await confirmProviderCatalogChoice(
               deps,
               apiKeyCatalog,
@@ -2633,6 +2665,17 @@ export function createRouter(deps: RouterDeps) {
               true,
             );
             if (typeof confirmation === "string") return { status: confirmation };
+          } else if (discovered && !("credentialId" in input)) {
+            const confirmation = await confirmDraftCatalogChoice(
+              deps,
+              apiKeyCatalog,
+              input,
+              target.ensureCurrent,
+              context.signal,
+            );
+            if (typeof confirmation === "string") return { status: confirmation };
+          } else {
+            await target.ensureCurrent();
           }
           return {
             status: await probeInference(
@@ -10423,6 +10466,26 @@ function modelInferenceRejection(inferenceStatus: Exclude<ModelInferenceProbeSta
   });
 }
 
+async function confirmDraftCatalogChoice(
+  deps: Pick<RouterDeps, "providerCatalogSelections">,
+  catalog: ApiKeyModelCatalog | undefined,
+  selection: { provider: string; modelId: string; apiKey: string },
+  ensureCurrent: () => Promise<void>,
+  signal?: AbortSignal,
+): Promise<true | "model" | "unavailable" | ModelDirectoryFailure> {
+  if (!catalog || !deps.providerCatalogSelections) return "unavailable";
+  await ensureCurrent();
+  const { models, failure } = await catalog.observeDraft(
+    selection.provider,
+    selection.apiKey,
+    signal,
+  );
+  await ensureCurrent();
+  if (failure) return failure;
+  if (!models) return "unavailable";
+  return models.includes(selection.modelId) ? true : "model";
+}
+
 async function confirmProviderCatalogChoice(
   deps: RouterDeps,
   catalog: ApiKeyModelCatalog | undefined,
@@ -10520,6 +10583,21 @@ async function ensureModelProbeAuthorized({ signal, stillAuthorized }: ModelProb
   signal?.throwIfAborted();
   if (stillAuthorized && !(await stillAuthorized())) throw new ORPCError("FORBIDDEN");
   signal?.throwIfAborted();
+}
+
+async function ensureNewModelProbeTarget(
+  deps: Pick<RouterDeps, "prisma">,
+  context: ModelProbeContext,
+  provider: string,
+) {
+  await ensureModelProbeAuthorized(context);
+  if (await findNewestUserModelCredential(deps.prisma, context.actor.userId, provider))
+    throw modelConnectionChanged();
+  context.signal?.throwIfAborted();
+}
+
+function modelConnectionChanged() {
+  return new ORPCError("CONFLICT", { message: "Model connection changed. Reload and try again." });
 }
 
 async function loadSavedModelProbeKey(
@@ -10644,10 +10722,7 @@ async function persistModelCredential(
                   orderBy: newestModelCredentialOrder,
                 });
           if (input.credentialId && !existing) throw new ORPCError("NOT_FOUND");
-          if (input.expectNewConnection && existing)
-            throw new ORPCError("CONFLICT", {
-              message: "Model connection changed. Reload and try again.",
-            });
+          if (input.expectNewConnection && existing) throw modelConnectionChanged();
           if (
             input.oauthSession &&
             ((existing?.id ?? null) !== input.oauthSession.credentialId ||
@@ -10733,7 +10808,7 @@ async function persistModelCredential(
             },
           });
           throwIfAborted(input.signal);
-          const credential = !existing
+          let credential = !existing
             ? await tx.userModelCredential.create({
                 data: {
                   userId: actor.userId,
@@ -10774,6 +10849,19 @@ async function persistModelCredential(
                     });
                   throw error;
                 });
+          if (!existing && input.catalogModelId) {
+            credential = await tx.userModelCredential.update({
+              where: { id: credential.id },
+              data: {
+                providerCatalogSelection: signProviderCatalogChoice(
+                  deps,
+                  credential,
+                  parseModelSecret(input.plaintext),
+                  input.catalogModelId,
+                ),
+              },
+            });
+          }
           throwIfAborted(input.signal);
           let thinkingLevel = input.thinkingLevel;
           let preserveDormantThinking = false;
@@ -10823,7 +10911,15 @@ async function persistModelCredential(
     created ? "credential.created" : "credential.changed",
     credential.updatedAt,
   );
-  return modelCredentialDto(credential, input.plaintext);
+  const dto = modelCredentialDto(credential, input.plaintext);
+  if (input.catalogModelId) {
+    const saved = deps.providerCatalogSelections?.read(
+      credential,
+      parseModelSecret(input.plaintext),
+    );
+    if (saved?.length) dto.savedProviderCatalogModelIds = saved;
+  }
+  return dto;
 }
 
 function throwIfAborted(signal?: AbortSignal) {

@@ -35,7 +35,10 @@ import { credentialModelSettings } from "./model-settings-form.js";
 import type { RunErrorTranslator } from "./run-error.js";
 import { RUN_ERROR_LIMIT_MESSAGES } from "./run-error.js";
 
-type ConnectionCatalogEntry = ModelCatalogEntry & { connectionCatalogModel?: true };
+type ConnectionCatalogEntry = ModelCatalogEntry & {
+  connectionCatalogModel?: true;
+  draftCatalogModel?: true;
+};
 type CatalogProbeCredential = Pick<
   ModelCredential,
   "id" | "provider" | "authKind" | "connectionRevision"
@@ -80,7 +83,7 @@ export function modelInferenceProbeInput(
   if (!entry?.inferenceProbe) return undefined;
   const apiKey = draftKey.trim();
   if (apiKey && apiKey.length < 8) return undefined;
-  if (apiKey && !entry.connectionCatalogModel) {
+  if (apiKey && (!entry.connectionCatalogModel || (entry.draftCatalogModel && !credential))) {
     return { provider: entry.provider, modelId: entry.id, apiKey };
   }
   const owner = savedModelProbeInput(entry.provider, credential, expectedRevision);
@@ -188,31 +191,62 @@ export function withConnectionCatalogModels(
   return [
     ...models,
     ...added.map(
-      (id): ConnectionCatalogEntry => ({
-        provider: anchor.provider,
-        providerName: anchor.providerName,
-        id,
-        label: id,
-        billing: anchor.billing,
-        auth: "api-key",
-        subscription: false,
-        ...DISCOVERED_MODEL_LIMITS,
-        reasoning: false,
-        images: false,
-        thinkingLevels: ["off"],
-        catalogProbe: anchor.catalogProbe,
-        savedCatalogProbe: anchor.savedCatalogProbe,
-        connectionCatalogModel: true,
-        ...((
-          hasDraft
-            ? probeMode === "replacement"
-            : probeMode && (confirmed.has(id) || listed.has(id))
-        )
-          ? { inferenceProbe: true }
-          : {}),
-      }),
+      (id) =>
+        ({
+          ...providerCatalogEntry(anchor, id),
+          ...((
+            hasDraft
+              ? probeMode === "replacement"
+              : probeMode && (confirmed.has(id) || listed.has(id))
+          )
+            ? { inferenceProbe: true }
+            : {}),
+        }) satisfies ConnectionCatalogEntry,
     ),
   ];
+}
+
+/** These choices belong to an unsaved key and must only be used by that form. */
+export function withDraftCatalogModels(
+  models: ModelCatalogEntry[],
+  provider: string,
+  ids: readonly string[],
+): ConnectionCatalogEntry[] {
+  const matches = models.filter((entry) => entry.provider === provider);
+  const anchor = matches.find((entry) => entry.inferenceProbe) ?? matches[0];
+  if (!anchor || !ids.length) return models;
+  const known = new Set(matches.map(({ id }) => id));
+  return [
+    ...models,
+    ...ids
+      .filter((id) => !known.has(id))
+      .map(
+        (id): ConnectionCatalogEntry => ({
+          ...providerCatalogEntry(anchor, id),
+          draftCatalogModel: true,
+          ...(anchor.inferenceProbe ? { inferenceProbe: true } : {}),
+        }),
+      ),
+  ];
+}
+
+function providerCatalogEntry(anchor: ModelCatalogEntry, id: string): ConnectionCatalogEntry {
+  return {
+    provider: anchor.provider,
+    providerName: anchor.providerName,
+    id,
+    label: id,
+    billing: anchor.billing,
+    auth: "api-key",
+    subscription: false,
+    ...DISCOVERED_MODEL_LIMITS,
+    reasoning: false,
+    images: false,
+    thinkingLevels: ["off"],
+    catalogProbe: anchor.catalogProbe,
+    savedCatalogProbe: anchor.savedCatalogProbe,
+    connectionCatalogModel: true,
+  };
 }
 
 /** The status belongs to the saved ID on the exact revision being edited. */

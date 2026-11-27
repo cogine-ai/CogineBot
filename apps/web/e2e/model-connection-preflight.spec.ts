@@ -27,6 +27,22 @@ test("onboarding preflight stays on the connection being tested", async ({ page 
   await expect(page.getByRole("button", { name: "Test API key" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Test sign-in" })).toHaveCount(0);
 
+  const modelId = "gpt-fixture-onboarding-directory";
+  const draftKey = "fixture-onboarding-openai-key";
+  const model = page.getByRole("combobox", { name: "Model", exact: true });
+  await page.route("**/rpc/models/probeCatalog", (route) => {
+    expect(route.request().postDataJSON().json).toEqual({ provider: "openai", apiKey: draftKey });
+    return route.fulfill({ json: { json: { models: [modelId], draftModelIds: [modelId] } } });
+  });
+  await page.getByLabel("API key", { exact: true }).fill(draftKey);
+  const testKey = page.getByRole("button", { name: "Test API key", exact: true });
+  await testKey.click();
+  await expect(testKey).toBeEnabled();
+  await model.click();
+  await page.getByRole("option", { name: modelId, exact: true }).click();
+  await expect(model).toContainText(modelId);
+  await captureScreenshot(page, testInfo, "onboarding-first-directory-model");
+
   await provider.click();
   await page.getByRole("option", { name: "Anthropic" }).click();
   await expect(page.getByRole("button", { name: "Test sign-in" })).toBeVisible();
@@ -49,8 +65,8 @@ test("onboarding preflight stays on the connection being tested", async ({ page 
   await provider.click();
   await page.getByRole("option", { name: "OpenAI-compatible" }).click();
   await page.getByLabel("OpenAI-compatible server URL").fill("http://127.0.0.1:8090/v1");
-  const modelId = page.getByLabel("Model id");
-  await modelId.fill("missing-model");
+  const compatibleModelId = page.getByLabel("Model id");
+  await compatibleModelId.fill("missing-model");
   await page.getByRole("button", { name: "Find models" }).click();
   const alert = page.getByRole("alert");
   await expect(alert).toHaveCount(1);
@@ -62,7 +78,7 @@ test("onboarding preflight stays on the connection being tested", async ({ page 
   const held = page.waitForRequest("**/rpc/models/probeOpenAiCompatible");
   await page.getByRole("button", { name: "Find models" }).click();
   await held;
-  await modelId.fill("missing-model-edited");
+  await compatibleModelId.fill("missing-model-edited");
   await expect(alert).toHaveCount(0);
   releaseProbe();
   await expect(page.getByRole("button", { name: "Find models" })).toBeEnabled();
