@@ -752,7 +752,7 @@ describe("model inference check", () => {
     );
     const models = listPiCatalog().filter((entry) => entry.provider === "anthropic");
     expect(models.length).toBeGreaterThan(0);
-    expect(models.every((entry) => entry.inferenceProbe && !entry.catalogProbe)).toBe(true);
+    expect(models.every((entry) => entry.inferenceProbe && entry.catalogProbe)).toBe(true);
     expect(await probeModelInference(anthropicInput, { fetch })).toBe("accepted");
     expect(fetch).toHaveBeenCalledOnce();
     const [url, init] = fetch.mock.calls[0]!;
@@ -798,6 +798,31 @@ describe("model inference check", () => {
       expect(payload).not.toHaveProperty("fallbacks");
     },
   );
+
+  it("checks a confirmed Claude directory ID without using a fallback model", async () => {
+    const modelId = "claude-fixture-next";
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(anthropicStart.replace("claude-haiku-5-5", modelId), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    const target = { ...anthropicInput, modelId };
+    await expect(probeModelInference(target, { fetch })).resolves.toBe("unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(
+      probeModelInference({ ...target, providerCatalogModel: true }, { fetch }),
+    ).resolves.toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://api.anthropic.com/v1/messages?beta=true");
+    expect(request.headers.get("x-api-key")).toBe(anthropicInput.apiKey);
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(request.redirect).toBe("error");
+    const body = await request.json();
+    expect(body).toMatchObject({ model: modelId, max_tokens: 1024 });
+    expect(body).not.toHaveProperty("fallbacks");
+  });
 
   it.each([
     [401, "authentication_error", "Rejected", undefined, "auth"],

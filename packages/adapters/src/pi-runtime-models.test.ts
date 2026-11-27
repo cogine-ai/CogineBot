@@ -135,6 +135,7 @@ describe("request model catalogs", () => {
     ["xai", "grok-fixture-model", "https://api.x.ai/v1", "openai-responses"],
     ["deepseek", "deepseek-fixture-model", "https://api.deepseek.com", "openai-completions"],
     ["groq", "fixture-vendor/chat-new", "https://api.groq.com/openai/v1", "openai-completions"],
+    ["anthropic", "claude-fixture-chat", "https://api.anthropic.com", "anthropic-messages"],
   ])("resolves a confirmed %s model on its API-key route", (provider, id, baseUrl, api) => {
     const choice = { provider, id, apiKey: "fixture-connection-key" };
     expect(resolveRuntimeModel(choice).model).toBeUndefined();
@@ -169,6 +170,7 @@ describe("request model catalogs", () => {
       { id: "fixture-vendor/safety.model-guard" },
       { id: "groq/compound-mini" },
       { id: "fixture-vendor/organization/chat" },
+      { id: "claude-fixture-embedding" },
       { apiKey: undefined },
     ]) {
       expect(
@@ -176,6 +178,21 @@ describe("request model catalogs", () => {
       ).toBeUndefined();
     }
   });
+
+  it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-completions" }])(
+    "rejects mixed Anthropic catalog routes with $baseUrl$api",
+    (other) => {
+      const known = {
+        provider: "anthropic",
+        api: "anthropic-messages",
+        baseUrl: "https://api.anthropic.com",
+      };
+      const registry = {
+        getProvider: () => ({ getModels: () => [known, { ...known, ...other }] }),
+      } as unknown as Models;
+      expect(providerCatalogModel("anthropic", "claude-fixture-chat", registry)).toBeUndefined();
+    },
+  );
 
   it.each([{ baseUrl: "https://gateway.example.test/v1" }, { api: "openai-completions" }])(
     "rejects a mixed Grok catalog route with $baseUrl$api",

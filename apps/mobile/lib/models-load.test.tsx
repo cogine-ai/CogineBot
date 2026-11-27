@@ -2552,11 +2552,14 @@ it.each([
   { provider: "openrouter", providerName: "OpenRouter", inferenceStatus: "rate", dynamic: false },
   { provider: "groq", providerName: "Groq", inferenceStatus: "rate", dynamic: false },
   { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "rate", dynamic: false },
+  { provider: "anthropic", providerName: "Anthropic", inferenceStatus: "accepted", dynamic: true },
   { provider: "xai", providerName: "xAI", inferenceStatus: "rate", dynamic: false },
   { provider: "deepseek", providerName: "DeepSeek", inferenceStatus: "rate", dynamic: false },
 ] as const)(
   "checks a $providerName replacement key and keeps the $inferenceStatus write receipt",
   async ({ provider, providerName, inferenceStatus, dynamic }) => {
+    const directoryModelId =
+      provider === "anthropic" ? "claude-fixture-directory-model" : "gpt-fixture-directory-model";
     const saved = {
       id: "fixture-model-connection",
       provider,
@@ -2564,7 +2567,7 @@ it.each([
       hasKey: true,
       isDefault: true,
       authKind: "api_key",
-      modelId: dynamic ? "gpt-fixture-directory-model" : "fixture-chat",
+      modelId: dynamic ? directoryModelId : "fixture-chat",
       connectionRevision: 7,
       ...(dynamic
         ? {
@@ -2597,7 +2600,8 @@ it.each([
             label: "Example Chat",
             auth: "api-key",
             billing: "API",
-            ...(provider === "anthropic" ? {} : { catalogProbe: true, savedCatalogProbe: true }),
+            catalogProbe: true,
+            savedCatalogProbe: true,
             inferenceProbe: true,
           },
         ];
@@ -2617,8 +2621,8 @@ it.each([
     const disclosure = "Connecting sends one test request that may incur usage charges.";
     expect(container.textContent).not.toContain(disclosure);
     if (dynamic) expect(container.textContent).not.toContain("Test model");
-    if (provider === "anthropic") {
-      expect(container.textContent).not.toContain("Check models");
+    if (provider === "anthropic" && !dynamic) {
+      expect(container.textContent).toContain("Check models");
       await act(async () => button("Test model").click());
       expect(container.textContent).toContain("The model accepted the test request.");
       expect(state.rpc.mock.calls.find(([name]) => name === "models/probeInference")?.[1]).toEqual({

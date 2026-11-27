@@ -2140,6 +2140,12 @@ for (const { provider, providerName, prefix, screenshot } of [
     prefix: "fixture-vendor/chat",
     screenshot: "a1-groq-first-directory-model",
   },
+  {
+    provider: "anthropic",
+    providerName: "Anthropic",
+    prefix: "claude",
+    screenshot: "a1-anthropic-first-directory-model",
+  },
 ]) {
   test(`selects and tests the ${providerName} directory model before the first API key save`, async ({
     page,
@@ -2216,7 +2222,7 @@ for (const { provider, providerName, prefix, screenshot } of [
       await expect(settings.getByText(/Sign in with SuperGrok or X Premium, or paste/)).toHaveCount(
         0,
       );
-    } else {
+    } else if (provider !== "anthropic") {
       await expect(
         settings.getByText(`Uses your ${providerName} API key`, { exact: false }),
       ).toBeVisible();
@@ -2507,10 +2513,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
       .getByRole("button")
       .filter({ has: page.getByText(providerName, { exact: true }) })
       .click();
-    if (provider === "anthropic" || provider === "google") {
+    if (provider === "google") {
       await expect(settings.getByRole("button", { name: "Check models", exact: true })).toHaveCount(
         0,
       );
+    } else if (provider === "anthropic") {
+      await expect(
+        settings.getByRole("button", { name: "Check models", exact: true }),
+      ).toBeVisible();
     }
     const tested = page.waitForRequest("**/rpc/models/probeInference");
     await settings.getByRole("button", { name: "Test model", exact: true }).click();

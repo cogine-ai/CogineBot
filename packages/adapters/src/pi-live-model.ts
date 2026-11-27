@@ -16,6 +16,7 @@ const openAiResponsesBaseUrl = "https://api.openai.com/v1";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
+const anthropicMessagesBaseUrl = "https://api.anthropic.com";
 
 function acceptsGroqModelId(id: string): boolean {
   return (
@@ -74,8 +75,24 @@ export function isOfficialAnthropicProbeModel(
   return (
     model.provider === "anthropic" &&
     model.api === "anthropic-messages" &&
-    model.baseUrl === "https://api.anthropic.com"
+    model.baseUrl === anthropicMessagesBaseUrl
   );
+}
+
+/** Claude 4.5 aliases address the same model family as their dated snapshots. */
+export function anthropicModelAlias(id: string): string | undefined {
+  return /^(claude-(?:haiku|sonnet|opus)-4-5)-\d{8}$/.exec(id)?.[1];
+}
+
+/** Preserve selectable aliases when the official list returns only dated snapshots. */
+export function withCatalogModelAliases(provider: string, ids: string[]): string[] {
+  if (provider !== "anthropic") return ids;
+  const choices = new Set(ids);
+  for (const id of ids) {
+    const alias = anthropicModelAlias(id);
+    if (alias) choices.add(alias);
+  }
+  return [...choices];
 }
 
 export function isOfficialGeminiProbeModel(
@@ -94,7 +111,7 @@ export function isOfficialGeminiProbeModel(
 const catalogModels = builtinModels();
 
 type CatalogRoute = {
-  api: "openai-responses" | "openai-completions";
+  api: "openai-responses" | "openai-completions" | "anthropic-messages";
   baseUrl: string;
   acceptsId: (id: string) => boolean;
   compat?: Model<"openai-completions">["compat"];
@@ -138,6 +155,14 @@ const catalogRoutes = new Map<string, CatalogRoute>([
       acceptsId: acceptsGroqModelId,
       // The Chat Completions endpoint does not support the OpenAI store option.
       compat: { supportsStore: false },
+    },
+  ],
+  [
+    "anthropic",
+    {
+      api: "anthropic-messages",
+      baseUrl: anthropicMessagesBaseUrl,
+      acceptsId: (id) => /^claude-[a-z0-9][a-z0-9-]{0,504}$/i.test(id),
     },
   ],
 ]);

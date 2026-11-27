@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelOAuthSignInMode, ThinkingLevel } from "@rakazo/contracts";
@@ -63,7 +64,11 @@ export async function probeCatalogProviderModels(
 ): Promise<string[]> {
   const baseUrl = catalogProviderProbeBaseUrl(input.provider);
   if (!baseUrl) throw new Error("This provider cannot be tested without saving.");
-  return probeOpenAiCompatibleModels({ baseUrl, apiKey: input.apiKey }, fetchImpl, signal, {
+  const route =
+    input.provider === "anthropic"
+      ? { baseUrl: `${baseUrl}/v1`, apiProtocol: "anthropic-messages" as const }
+      : { baseUrl };
+  return probeOpenAiCompatibleModels({ ...route, apiKey: input.apiKey }, fetchImpl, signal, {
     allowPublic: true,
     catalogProbe: true,
   });
@@ -74,7 +79,7 @@ const CATALOG_PROBE_APIS = new Set(["openai-completions", "openai-responses"]);
 
 function pinnedCatalogProbeBaseUrl(
   providerId: string,
-  models: ReadonlyArray<{ api: string; baseUrl?: string }>,
+  models: readonly Model<Api>[],
 ): string | null {
   if (
     providerId === OPENAI_COMPATIBLE_PROVIDER_ID ||
@@ -82,6 +87,9 @@ function pinnedCatalogProbeBaseUrl(
     providerId === CHATGPT_PLAN_PROVIDER_ID
   ) {
     return null;
+  }
+  if (providerId === "anthropic") {
+    return models.every(isOfficialAnthropicProbeModel) ? (models[0]?.baseUrl ?? null) : null;
   }
   const urls = new Set<string>();
   for (const model of models) {

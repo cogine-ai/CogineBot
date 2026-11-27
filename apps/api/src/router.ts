@@ -177,6 +177,7 @@ import {
   validateModelAuthAvailability,
   verifyMcpInstall,
   waitForModelOAuthSave,
+  withCatalogModelAliases,
   withModelSettings,
 } from "@rakazo/adapters";
 import type { Auth } from "@rakazo/auth";
@@ -2168,14 +2169,15 @@ export function createRouter(deps: RouterDeps) {
             readback.map(async ({ credential, catalog }) => {
               if (!catalog || !(await catalog.current())) return credential;
               const savedModel = credential.modelId;
+              const listed = withCatalogModelAliases(credential.provider, catalog.listed);
               const notListed =
                 catalog.fresh &&
                 savedModel !== undefined &&
                 providerCatalogModel(credential.provider, savedModel) !== undefined &&
-                !catalog.listed.includes(savedModel);
+                !listed.includes(savedModel);
               return {
                 ...credential,
-                providerListedModelIds: catalog.listed,
+                providerListedModelIds: listed,
                 ...(notListed
                   ? {
                       savedModelDirectory: {
@@ -2612,7 +2614,10 @@ export function createRouter(deps: RouterDeps) {
             apiKeyCatalog
               ?.draftModels(input.provider, input.apiKey, models)
               ?.filter((id) => dynamicProviderCatalogModel(input.provider, id));
-          return { models, ...(draftModelIds?.length ? { draftModelIds } : {}) };
+          return {
+            models: withCatalogModelAliases(input.provider, models),
+            ...(draftModelIds?.length ? { draftModelIds } : {}),
+          };
         }
 
         const { key, snapshot, ensureCurrent } = await loadSavedModelProbeKey(deps, context, input);
@@ -2628,7 +2633,10 @@ export function createRouter(deps: RouterDeps) {
         const updated =
           observationOrder !== undefined &&
           apiKeyCatalog?.record(snapshot, key, models, observationOrder);
-        return updated ? { models, catalogUpdated: true as const } : { models };
+        return {
+          models: withCatalogModelAliases(input.provider, models),
+          ...(updated ? { catalogUpdated: true as const } : {}),
+        };
       }),
       probeInference: authed.models.probeInference.handler(async ({ context, input }) => {
         const discovered =
