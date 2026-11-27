@@ -2192,6 +2192,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText } of [
     rejection: "model",
     rejectionText: /cannot use the selected model/,
   },
+  {
+    provider: "xai",
+    providerName: "xAI",
+    modelId: "grok-4.7",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
 ] as const) {
   test(`offers the ${providerName} model test and checks the replacement key before saving`, async ({
     page,

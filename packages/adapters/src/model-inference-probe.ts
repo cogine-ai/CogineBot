@@ -8,6 +8,7 @@ import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialResponsesModel,
+  isOfficialXaiResponsesProbeModel,
 } from "./pi-live-model.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
@@ -36,7 +37,9 @@ export async function probeModelInference(
   const builtIn = Boolean(models.getModel(model.provider, model.id));
   const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
-  if (!anthropic && !chatCompletions && !isOfficialResponsesModel(model)) return "unavailable";
+  const xai = builtIn && isOfficialXaiResponsesProbeModel(model);
+  const readFrames = chatCompletions || anthropic || xai;
+  if (!readFrames && !isOfficialResponsesModel(model)) return "unavailable";
   // A probe confirms one selected model. Some registered Claude models request a
   // second, potentially billable model when the first one refuses a normal run.
   const probeModel =
@@ -46,7 +49,9 @@ export async function probeModelInference(
   const classifyFailure = (error: unknown, status?: number) =>
     anthropic
       ? anthropicFailureStatus(error, status)
-      : chatCompletionFailureStatus(model.provider, error, apiKey, status);
+      : xai
+        ? xaiFailureStatus(error, apiKey, status)
+        : chatCompletionFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -112,10 +117,9 @@ export async function probeModelInference(
             ).catch(() => undefined);
             signal.throwIfAborted();
             const error = body && typeof body === "object" && "error" in body ? body.error : body;
-            rejected =
-              chatCompletions || anthropic
-                ? classifyFailure(error, response.status)
-                : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
+            rejected = readFrames
+              ? classifyFailure(error, response.status)
+              : failureStatus(JSON.stringify(body) ?? "", apiKey, response.status);
             // The SDK's debug logger runs before the application can redact its errors.
             return new Response(null, { status: response.status });
           }
@@ -128,13 +132,13 @@ export async function probeModelInference(
             cancelResponseBody(response);
             throw new Error("Model server did not return an event stream");
           }
-          if (chatCompletions || anthropic) {
+          if (readFrames) {
             // Interpret provider frames before the SDK turns stream errors into diagnostic text.
-            const outcome = await readModelProbeFrames(response.body, signal, (frame, event) =>
-              anthropic
-                ? anthropicFrameOutcome(frame, model.id, classifyFailure, event)
-                : chatCompletionChunkOutcome(frame, classifyFailure, event === "error"),
-            ).catch(() => {
+            const outcome = await readModelProbeFrames(response.body, signal, (frame, event) => {
+              if (anthropic) return anthropicFrameOutcome(frame, model.id, classifyFailure, event);
+              if (xai) return xaiFrameOutcome(frame, classifyFailure, event);
+              return chatCompletionChunkOutcome(frame, classifyFailure, event === "error");
+            }).catch(() => {
               signal.throwIfAborted();
               return "unavailable" as const;
             });
@@ -152,7 +156,7 @@ export async function probeModelInference(
           });
         },
         onProviderStreamEvent: (event) => {
-          if (!signal.aborted && !chatCompletions && !anthropic && createdResponse(event)) {
+          if (!signal.aborted && !readFrames && createdResponse(event)) {
             accepted = true;
             stop.abort();
           }
@@ -352,6 +356,57 @@ function anthropicFailureStatus(error: unknown, status?: number): ModelInference
     }
   }
   return "unavailable";
+}
+
+function xaiFrameOutcome(
+  frame: unknown,
+  classifyFailure: StreamFailureClassifier,
+  event?: string,
+): ModelInferenceProbeStatus | undefined {
+  if (!frame || typeof frame !== "object") return event === "error" ? "unavailable" : undefined;
+  const type = "type" in frame ? frame.type : undefined;
+  if (event === "error" || type === "error" || "error" in frame)
+    return classifyFailure("error" in frame ? frame.error : frame);
+  const response = "response" in frame ? frame.response : undefined;
+  if (response && typeof response === "object") {
+    if ("error" in response && response.error) return classifyFailure(response.error);
+    if (
+      "status" in response &&
+      (response.status === "failed" ||
+        response.status === "cancelled" ||
+        response.status === "incomplete")
+    )
+      return "unavailable";
+  }
+  if (type === "response.failed" || type === "response.incomplete" || type === "response.cancelled")
+    return "unavailable";
+  if ((!event || event === "response.created") && createdResponse(frame)) return "accepted";
+}
+
+function xaiFailureStatus(
+  error: unknown,
+  apiKey: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  if (status === 429) return "rate";
+  const message =
+    typeof error === "string"
+      ? error
+      : error && typeof error === "object" && "message" in error
+        ? error.message
+        : undefined;
+  if (typeof message === "string") {
+    // The provider can return a text error in its JSON envelope, with no billing code.
+    if (
+      (status === 403 || status === undefined) &&
+      /^Your newly created team doesn't have any credits or licenses yet\b/i.test(message)
+    )
+      return "credit";
+    if (status === 400 && /^(?:incorrect|invalid) API key\b/i.test(message)) return "auth";
+  }
+  const result = failureStatus(JSON.stringify(error) ?? "", apiKey, status);
+  // A forbidden request can mean the team or key is barred from the selected model.
+  return status === 403 && result === "auth" ? "model" : result;
 }
 
 function chatCompletionFailureStatus(

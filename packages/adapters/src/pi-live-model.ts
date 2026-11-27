@@ -22,6 +22,17 @@ export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "a
   );
 }
 
+export function isOfficialXaiResponsesProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "xai" &&
+    model.api === "openai-responses" &&
+    model.baseUrl === "https://api.x.ai/v1" &&
+    isChatModelId(model.id)
+  );
+}
+
 export function isOfficialChatCompletionProbeModel(
   model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
 ) {

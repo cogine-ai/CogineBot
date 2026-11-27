@@ -13,6 +13,8 @@ const openRouterInput = {
   apiKey: "fixture-gateway-key",
 };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
+const xaiInput = { provider: "xai", modelId: "grok-4.7", apiKey: "fixture-grok-key" };
+const xaiApiModels = listPiCatalog().filter((entry) => entry.provider === "xai");
 const anthropicInput = {
   provider: "anthropic",
   modelId: "claude-haiku-5-5",
@@ -23,6 +25,11 @@ const anthropicStart =
 
 function chatChunk(choices: unknown[], extra: Record<string, unknown> = {}) {
   return `data: ${JSON.stringify({ id: "gen-fixture", object: "chat.completion.chunk", choices, ...extra })}\n\n`;
+}
+
+function xaiStarted(modelId: string) {
+  const response = { id: "resp-fixture", status: "in_progress", model: modelId, error: null };
+  return `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response })}\n\n`;
 }
 
 describe("model inference check", () => {
@@ -69,6 +76,124 @@ describe("model inference check", () => {
       tools: [expect.objectContaining({ name: "noop" })],
     });
     expect(JSON.parse(String(init?.body)).max_output_tokens).toBeLessThanOrEqual(1024);
+  });
+
+  it("advertises the registered Grok chat models without enabling live model guessing", () => {
+    expect(xaiApiModels.map((entry) => entry.id)).toContain(xaiInput.modelId);
+    expect(xaiApiModels.every((entry) => entry.inferenceProbe && entry.catalogProbe)).toBe(true);
+  });
+
+  it.each(xaiApiModels)(
+    "sends one bounded Responses request with the selected $id key",
+    async ({ id }) => {
+      vi.stubEnv("XAI_API_KEY", "fixture-deployment-key");
+      vi.stubEnv("OPENAI_ORG_ID", "fixture-openai-organization");
+      vi.stubEnv("OPENAI_PROJECT_ID", "fixture-openai-project");
+      const cancel = vi.fn();
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(`: warming up\n\n${xaiStarted(id)}`));
+              },
+              cancel,
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      expect(await probeModelInference({ ...xaiInput, modelId: id }, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.url).toBe("https://api.x.ai/v1/responses");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${xaiInput.apiKey}`);
+      expect(request.headers.has("openai-organization")).toBe(false);
+      expect(request.headers.has("openai-project")).toBe(false);
+      expect(request.redirect).toBe("error");
+      expect(fetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
+      const payload = await request.json();
+      expect(payload).toMatchObject({
+        model: id,
+        store: false,
+        stream: true,
+        tools: [expect.objectContaining({ type: "function", name: "noop" })],
+      });
+      expect(payload.max_output_tokens).toBeGreaterThan(0);
+      expect(payload.max_output_tokens).toBeLessThanOrEqual(1024);
+    },
+  );
+
+  it.each([
+    [400, { error: "Invalid API key" }, "auth"],
+    [400, { error: "Invalid request parameter" }, "unavailable"],
+    [401, { error: "Unauthorized" }, "auth"],
+    [402, { error: "Payment required" }, "credit"],
+    [
+      403,
+      {
+        code: "Forbidden",
+        error: "Your newly created team doesn't have any credits or licenses yet.",
+      },
+      "credit",
+    ],
+    [403, { error: { code: "permission_denied" } }, "model"],
+    [403, { error: "The team has reached its spending limit." }, "spending"],
+    [404, { error: "Model does not exist" }, "model"],
+    [429, { error: "Too many requests" }, "rate"],
+    [
+      503,
+      { error: "Your newly created team doesn't have any credits or licenses yet." },
+      "unavailable",
+    ],
+    [504, { error: "Gateway timeout" }, "timeout"],
+  ] as const)("classifies Grok HTTP %i with %j", async (status, body, outcome) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(body, { status }));
+    expect(await probeModelInference(xaiInput, { fetch })).toBe(outcome);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [": ping\n\n", "unavailable"],
+    [
+      'data: {"type":"response.created","response":{"id":"resp-fixture","status":"failed"}}\n\n',
+      "unavailable",
+    ],
+    [
+      'data: {"type":"response.created","response":{"id":"resp-fixture","status":"cancelled"}}\n\n',
+      "unavailable",
+    ],
+    [
+      'data: {"type":"response.failed","response":{"error":{"code":"model_not_found"}}}\n\n',
+      "model",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":"Your newly created team doesn\'t have any credits or licenses yet."}\n\n',
+      "credit",
+    ],
+    ['data: {"type":"error","code":"rate_limit_exceeded"}\n\n', "rate"],
+  ] as const)(
+    "does not accept a Grok stream without a valid acceptance frame (%s)",
+    async (body, outcome) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(body, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      );
+      expect(await probeModelInference(xaiInput, { fetch })).toBe(outcome);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not reinterpret unregistered Grok models or fall back to a gateway", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const modelId of ["grok-fixture-unknown", openRouterInput.modelId]) {
+      expect(
+        await probeModelInference({ ...xaiInput, modelId, providerCatalogModel: true }, { fetch }),
+      ).toBe("unavailable");
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
