@@ -18,6 +18,7 @@ const openAiResponsesBaseUrl = "https://api.openai.com/v1";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
+const togetherCompletionsBaseUrl = "https://api.together.ai/v1";
 const anthropicMessagesBaseUrl = "https://api.anthropic.com";
 const nonChatVariant =
   /(?:^|[/._:-])(?:guard|safeguard|compound|imagine|orpheus|voice|live)(?:[/._:-]|$)/i;
@@ -70,6 +71,17 @@ export function isOfficialChatCompletionProbeModel(
     model.provider === "groq" &&
     model.baseUrl === groqCompletionsBaseUrl &&
     acceptsGroqModelId(model.id)
+  );
+}
+
+export function isOfficialTogetherChatModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "together" &&
+    model.api === "openai-completions" &&
+    model.baseUrl === togetherCompletionsBaseUrl &&
+    isChatModelId(model.id)
   );
 }
 
