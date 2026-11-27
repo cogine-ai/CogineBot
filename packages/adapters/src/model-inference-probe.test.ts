@@ -13,6 +13,11 @@ const openRouterInput = {
   apiKey: "fixture-gateway-key",
 };
 const groqInput = { provider: "groq", modelId: "openai/gpt-oss-120b", apiKey: "fixture-groq-key" };
+const deepseekInput = {
+  provider: "deepseek",
+  modelId: "deepseek-flash",
+  apiKey: "fixture-deepseek-key",
+};
 const xaiInput = { provider: "xai", modelId: "grok-4.7", apiKey: "fixture-grok-key" };
 const xaiApiModels = listPiCatalog().filter((entry) => entry.provider === "xai");
 const anthropicInput = {
@@ -36,6 +41,120 @@ describe("model inference check", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it.each(["deepseek-flash", "deepseek-v4-pro"])(
+    "probes the registered DeepSeek model %s",
+    async (modelId) => {
+      vi.stubEnv("DEEPSEEK_API_KEY", "fixture-deployment-key");
+      const entry = listPiCatalog().find(
+        (model) => model.provider === "deepseek" && model.id === modelId,
+      );
+      expect(entry).toMatchObject({ inferenceProbe: true, catalogProbe: true });
+      const cancel = vi.fn();
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                const header = chatChunk(
+                  [{ index: 0, delta: { role: "assistant", content: "" } }],
+                  { model: modelId },
+                );
+                const delta = chatChunk([{ index: 0, delta: { reasoning_content: "Thinking" } }], {
+                  model: modelId,
+                });
+                for (const frame of [": keep-alive\n\n", header, delta])
+                  controller.enqueue(new TextEncoder().encode(frame));
+              },
+              cancel,
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      );
+      expect(await probeModelInference({ ...deepseekInput, modelId }, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.url).toBe("https://api.deepseek.com/chat/completions");
+      expect(request.headers.get("authorization")).toBe(`Bearer ${deepseekInput.apiKey}`);
+      expect(request.redirect).toBe("error");
+      const body = await request.json();
+      expect(body).toMatchObject({
+        model: modelId,
+        stream: true,
+        tools: [
+          expect.objectContaining({
+            type: "function",
+            function: expect.objectContaining({ name: "noop" }),
+          }),
+        ],
+      });
+      expect(body.max_tokens).toBeGreaterThan(0);
+      expect(body.max_tokens).toBeLessThanOrEqual(1024);
+      expect(body).not.toHaveProperty("max_completion_tokens");
+    },
+  );
+
+  it.each([
+    [401, "Wrong API key", "auth"],
+    [402, "Insufficient Balance", "credit"],
+    [404, "Model not found", "model"],
+    [429, "Concurrency limit exceeded", "rate"],
+    [503, "Insufficient Balance", "unavailable"],
+    [504, "Gateway timeout", "timeout"],
+  ] as const)("classifies DeepSeek HTTP %i without retrying", async (status, message, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ error: { message } }, { status }),
+    );
+    expect(await probeModelInference(deepseekInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [chatChunk([]), "unavailable"],
+    [chatChunk([{ delta: { role: "assistant", content: "" } }]), "unavailable"],
+    [chatChunk([{ delta: { tool_calls: [{}] } }]), "unavailable"],
+    [
+      chatChunk([{ delta: { tool_calls: [{ type: "function", function: { name: "noop" } }] } }]),
+      "accepted",
+    ],
+    [
+      chatChunk([{ delta: { content: "OK" }, finish_reason: "insufficient_system_resource" }]),
+      "unavailable",
+    ],
+    [chatChunk([], { error: { message: "Insufficient Balance" } }), "credit"],
+    [
+      chatChunk([], { status: "503", error: { code: "402", message: "Insufficient Balance" } }),
+      "unavailable",
+    ],
+  ] as const)("reads DeepSeek model output and terminal errors (%s)", async (suffix, expected) => {
+    const preface = chatChunk([{ delta: { role: "assistant", content: "" } }]);
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(preface + suffix, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(deepseekInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not probe unknown DeepSeek or similarly named gateway models", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const modelId of [
+      "deepseek-fixture-unlisted",
+      "deepseek/deepseek-v4-pro",
+      openRouterInput.modelId,
+    ]) {
+      expect(
+        await probeModelInference(
+          { ...deepseekInput, modelId, providerCatalogModel: true },
+          { fetch },
+        ),
+      ).toBe("unavailable");
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([

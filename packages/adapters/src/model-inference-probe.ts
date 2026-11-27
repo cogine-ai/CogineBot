@@ -15,10 +15,11 @@ import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 const OUTPUT_LIMIT = 1024;
 const ERROR_BODY_LIMIT = 16 * 1024;
 const STREAM_PREFIX_LIMIT = 64 * 1024;
+const PROBE_TOOL_NAME = "noop";
 const context: Context = {
   systemPrompt: "Reply with OK.",
   messages: [{ role: "user", content: "OK?", timestamp: 0 }],
-  tools: [{ name: "noop", description: "Does nothing.", parameters: Type.Object({}) }],
+  tools: [{ name: PROBE_TOOL_NAME, description: "Does nothing.", parameters: Type.Object({}) }],
 };
 
 /** Test one agent request on an eligible provider route and stop on acceptance. */
@@ -36,6 +37,7 @@ export async function probeModelInference(
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
   const chatCompletions = builtIn && isOfficialChatCompletionProbeModel(model);
+  const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = builtIn && isOfficialAnthropicProbeModel(model);
   const xai = builtIn && isOfficialXaiResponsesProbeModel(model);
   const readFrames = chatCompletions || anthropic || xai;
@@ -137,7 +139,12 @@ export async function probeModelInference(
             const outcome = await readModelProbeFrames(response.body, signal, (frame, event) => {
               if (anthropic) return anthropicFrameOutcome(frame, model.id, classifyFailure, event);
               if (xai) return xaiFrameOutcome(frame, classifyFailure, event);
-              return chatCompletionChunkOutcome(frame, classifyFailure, event === "error");
+              return chatCompletionChunkOutcome(
+                frame,
+                classifyFailure,
+                event === "error",
+                deepseek,
+              );
             }).catch(() => {
               signal.throwIfAborted();
               return "unavailable" as const;
@@ -248,11 +255,13 @@ function chatCompletionChunkOutcome(
   event: unknown,
   classifyFailure: StreamFailureClassifier,
   isErrorEvent: boolean,
+  requireOutput: boolean,
 ): ModelInferenceProbeStatus | undefined {
   if (!event || typeof event !== "object") return isErrorEvent ? "unavailable" : undefined;
   const choice = "choices" in event && Array.isArray(event.choices) ? event.choices[0] : undefined;
   const error = ("error" in event ? event.error : undefined) ?? choice?.error;
-  if (error || isErrorEvent) return classifyFailure(error ?? event);
+  if (error || isErrorEvent)
+    return classifyFailure(error ?? event, requireOutput ? errorHttpStatus(event) : undefined);
   const finish = choice?.finish_reason;
   if (finish != null && !chatSuccessFinishReasons.has(finish)) return "unavailable";
   const delta = choice?.delta;
@@ -264,13 +273,23 @@ function chatCompletionChunkOutcome(
     event.id.trim() &&
     delta &&
     typeof delta === "object" &&
-    (delta.role === "assistant" ||
+    ((!requireOutput && delta.role === "assistant") ||
       [delta.content, delta.reasoning, delta.reasoning_content].some(
         (text) => typeof text === "string" && text.length > 0,
       ) ||
-      (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0))
+      (Array.isArray(delta.tool_calls) &&
+        (requireOutput ? delta.tool_calls.some(isProbeToolCall) : delta.tool_calls.length > 0)))
   )
     return "accepted";
+}
+
+function isProbeToolCall(call: unknown): boolean {
+  if (!call || typeof call !== "object" || !("type" in call) || call.type !== "function")
+    return false;
+  const tool = "function" in call ? call.function : undefined;
+  return Boolean(
+    tool && typeof tool === "object" && "name" in tool && tool.name === PROBE_TOOL_NAME,
+  );
 }
 
 function anthropicFrameOutcome(
@@ -366,11 +385,11 @@ function xaiFrameOutcome(
   if (!frame || typeof frame !== "object") return event === "error" ? "unavailable" : undefined;
   const type = "type" in frame ? frame.type : event;
   if (event === "error" || type === "error" || "error" in frame)
-    return classifyFailure("error" in frame ? frame.error : frame, xaiErrorStatus(frame));
+    return classifyFailure("error" in frame ? frame.error : frame, errorHttpStatus(frame));
   const response = "response" in frame ? frame.response : undefined;
   if (response && typeof response === "object") {
     if ("error" in response && response.error)
-      return classifyFailure(response.error, xaiErrorStatus(frame) ?? xaiErrorStatus(response));
+      return classifyFailure(response.error, errorHttpStatus(frame) ?? errorHttpStatus(response));
     if (
       "status" in response &&
       (response.status === "failed" ||
@@ -406,15 +425,15 @@ function xaiFrameOutcome(
     return "accepted";
 }
 
-function xaiErrorStatus(error: unknown): number | undefined {
+function errorHttpStatus(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   return (
-    ("status" in error ? xaiStatusNumber(error.status) : undefined) ??
-    ("code" in error ? xaiStatusNumber(error.code) : undefined)
+    ("status" in error ? httpErrorStatusNumber(error.status) : undefined) ??
+    ("code" in error ? httpErrorStatusNumber(error.code) : undefined)
   );
 }
 
-function xaiStatusNumber(value: unknown): number | undefined {
+function httpErrorStatusNumber(value: unknown): number | undefined {
   if (typeof value === "string" && /^[45]\d{2}$/.test(value)) return Number(value);
   return typeof value === "number" && Number.isInteger(value) && value >= 400 && value < 600
     ? value
@@ -426,7 +445,7 @@ function xaiFailureStatus(
   apiKey: string,
   status?: number,
 ): ModelInferenceProbeStatus {
-  status ??= xaiErrorStatus(error);
+  status ??= errorHttpStatus(error);
   if (status === 429) return "rate";
   const message =
     typeof error === "string"
@@ -456,6 +475,23 @@ function chatCompletionFailureStatus(
 ): ModelInferenceProbeStatus {
   const record = error && typeof error === "object" ? error : undefined;
   const code = record && "code" in record ? record.code : undefined;
+  if (provider === "deepseek") {
+    status ??= errorHttpStatus(error);
+    if (status === 402) return "credit";
+    if (status === 429) return "rate";
+    const message =
+      typeof error === "string"
+        ? error
+        : record && "message" in record
+          ? record.message
+          : undefined;
+    if (
+      status === undefined &&
+      (code === "insufficient_balance" ||
+        (typeof message === "string" && /^insufficient balance\b/i.test(message)))
+    )
+      return "credit";
+  }
   status ??= typeof code === "number" ? code : undefined;
   if (provider === "groq") {
     if (status === 429 || status === 498) return "rate";

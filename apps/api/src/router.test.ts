@@ -3245,6 +3245,7 @@ describe("model credential persistence", () => {
   it.each([
     {
       provider: "openrouter",
+      modelId: "openai/gpt-oss-120b",
       endpoint: "https://openrouter.ai/api/v1/chat/completions",
       rejection: { code: 402, message: "Payment Required" },
       distinctFailure: "credit",
@@ -3252,17 +3253,26 @@ describe("model credential persistence", () => {
     },
     {
       provider: "groq",
+      modelId: "openai/gpt-oss-120b",
       endpoint: "https://api.groq.com/openai/v1/chat/completions",
       rejection: { code: "blocked_api_access", message: "Request failed" },
       distinctFailure: "spending",
       transient: { code: 498 },
     },
+    {
+      provider: "deepseek",
+      modelId: "deepseek-flash",
+      endpoint: "https://api.deepseek.com/chat/completions",
+      rejection: { code: 402, message: "Insufficient Balance" },
+      distinctFailure: "credit",
+      transient: { code: 429 },
+    },
   ])(
     "tests and connects a $provider model using exactly the draft credential",
-    async ({ provider, endpoint, rejection, distinctFailure, transient }) => {
+    async ({ provider, modelId, endpoint, rejection, distinctFailure, transient }) => {
       const { deps, tx } = persistDeps();
       const model = listPiCatalog().find(
-        (entry) => entry.provider === provider && entry.id === "openai/gpt-oss-120b",
+        (entry) => entry.provider === provider && entry.id === modelId,
       )!;
       expect(model.inferenceProbe).toBe(true);
       const input = {
