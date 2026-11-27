@@ -1,7 +1,7 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
-import { MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
+import { isModelInferenceRefusal, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
 import { createParser } from "eventsource-parser";
 import {
@@ -177,8 +177,13 @@ export async function probeModelInference(
   }
   options.signal?.throwIfAborted();
   if (accepted) return "accepted";
+  if (rejected) return failureAtDeadline(rejected, deadline);
   if (deadline.aborted) return "timeout";
-  return rejected ?? failureStatus(errorDetail, apiKey);
+  return failureStatus(errorDetail, apiKey);
+}
+
+function failureAtDeadline(status: ModelInferenceProbeStatus, deadline: AbortSignal) {
+  return deadline.aborted && !isModelInferenceRefusal(status) ? "timeout" : status;
 }
 
 function isEventStream(response: Response): boolean {
@@ -192,7 +197,6 @@ async function readProbeError(response: Response, signal: AbortSignal) {
   const body = await readBoundedJsonResponse<unknown>(response, ERROR_BODY_LIMIT, signal).catch(
     () => undefined,
   );
-  signal.throwIfAborted();
   return { body, error: body && typeof body === "object" && "error" in body ? body.error : body };
 }
 
@@ -232,7 +236,8 @@ async function probeGemini(
     );
     if (!response.ok) {
       const { error } = await readProbeError(response, signal);
-      return geminiFailureStatus(error, apiKey, response.status);
+      options.signal?.throwIfAborted();
+      return failureAtDeadline(geminiFailureStatus(error, apiKey, response.status), deadline);
     }
     if (!isEventStream(response)) {
       cancelResponseBody(response);
@@ -244,7 +249,7 @@ async function probeGemini(
     );
   } catch {
     options.signal?.throwIfAborted();
-    return deadline.aborted ? "timeout" : "unavailable";
+    return failureAtDeadline("unavailable", deadline);
   }
 }
 
@@ -670,15 +675,16 @@ function chatCompletionFailureStatus(
     )
       return "model";
   }
-  if (
-    provider === "openrouter" &&
-    record &&
-    "metadata" in record &&
-    record.metadata &&
-    typeof record.metadata === "object"
-  ) {
-    const source = "limit_source" in record.metadata ? record.metadata.limit_source : undefined;
-    if (status === 402 && source === "openrouter_in_flight_budget") return "rate";
+  if (provider === "openrouter") {
+    const diagnostic = probeRecord(error);
+    const metadata = probeRecord(diagnostic?.metadata);
+    const source = metadata?.limit_source;
+    if (
+      status === 402 &&
+      (source === "openrouter_in_flight_budget" ||
+        (source === undefined && metadata?.reason === "in_flight_budget_exhausted"))
+    )
+      return "rate";
     if (
       (status === 402 || status === 403) &&
       (source === "openrouter_key_limit" ||
@@ -686,6 +692,17 @@ function chatCompletionFailureStatus(
         source === "openrouter_guardrail_budget")
     )
       return "spending";
+    if (status === 402) {
+      if (source === "openrouter_credits") return "credit";
+      // A 402 alone cannot distinguish exhausted credits from an in-flight budget limit.
+      const message = typeof error === "string" ? error : diagnostic?.message;
+      return typeof message === "string" &&
+        /^(?:insufficient credits|this request requires more credits)\b/i.test(
+          message.replaceAll(apiKey, "").trim(),
+        )
+        ? "credit"
+        : "unavailable";
+    }
   }
   return failureStatus(JSON.stringify(error) ?? "", apiKey, status);
 }
