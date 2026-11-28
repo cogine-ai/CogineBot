@@ -3577,6 +3577,18 @@ describe("model credential persistence", () => {
     },
     {
       provider: "vercel-ai-gateway",
+      modelId: "openai/gpt-4.1-mini",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"openai/gpt-4.1-mini"}}\n\n',
+      rejection: { type: "customer_verification_required" },
+      rejectionHttpStatus: 403,
+      distinctFailure: "credit",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
+    {
+      provider: "vercel-ai-gateway",
       modelId: "openai/gpt-5.5",
       endpoint: "https://ai-gateway.vercel.sh/v1/messages",
       keyHeader: "x-api-key",
