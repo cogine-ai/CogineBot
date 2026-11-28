@@ -7981,3 +7981,23 @@ msgstr "连接时会发送一次测试请求，可能产生用量费用。"
 
 msgid "The model test timed out."
 msgstr "模型测试超时。"
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "模型已答复。"
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "请重新登录后再测试此模型。"
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "此账号无法使用所选模型。"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "测试可能占用订阅额度。"
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "已达到订阅使用额度。"

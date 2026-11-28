@@ -111,6 +111,19 @@ describe("loadStoredModelAuth", () => {
     ).resolves.toMatchObject({ storedAuthKind: "api_key" });
   });
 
+  it("reads the selected subscription credential without falling back to another account", async () => {
+    const credentials = async () => [
+      { id: "other", provider: "openai-codex", authKind: "oauth" as const, modelId: "gpt-6.2-sol" },
+      { id: "selected", provider: "openai-codex", modelId: "gpt-6.2-sol" },
+    ];
+    await expect(
+      loadStoredModelAuth("openai-codex", credentials, "gpt-6.2-sol", "selected"),
+    ).resolves.toMatchObject({ storedAuthKind: null, credentialUnreadable: true });
+    await expect(
+      loadStoredModelAuth("openai-codex", credentials, "gpt-6.2-sol", "missing"),
+    ).resolves.toMatchObject({ storedAuthKind: null, credentialUnreadable: false });
+  });
+
   it("prefers a saved provider credential over a newer unused row", async () => {
     await expect(
       loadStoredModelAuth(

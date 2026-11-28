@@ -1565,6 +1565,7 @@ export const ModelInferenceProbeStatusSchema = z.enum([
   "model",
   "credit",
   "spending",
+  "subscription_limit",
   "rate",
   "timeout",
   "unavailable",
@@ -1572,7 +1573,13 @@ export const ModelInferenceProbeStatusSchema = z.enum([
 export type ModelInferenceProbeStatus = z.infer<typeof ModelInferenceProbeStatusSchema>;
 
 export function isModelInferenceRefusal(status: ModelInferenceProbeStatus) {
-  return status === "auth" || status === "model" || status === "credit" || status === "spending";
+  return (
+    status === "auth" ||
+    status === "model" ||
+    status === "credit" ||
+    status === "spending" ||
+    status === "subscription_limit"
+  );
 }
 
 export const ModelConnectInferenceRejectionSchema = z.object({

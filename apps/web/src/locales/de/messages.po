@@ -7667,3 +7667,23 @@ msgstr "Der Modelltest hat das Zeitlimit überschritten."
 #: src/lib/model-connection-preflight.ts
 msgid "Check your model provider's billing settings and available credits."
 msgstr "Prüfen Sie die Abrechnungseinstellungen und das verfügbare Guthaben bei Ihrem Modellanbieter."
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "Das Modell hat geantwortet."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "Melde dich erneut an, um dieses Modell zu testen."
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "Dieses Konto kann das ausgewählte Modell nicht verwenden."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "Der Test kann auf dein Abonnementkontingent angerechnet werden."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "Du hast das Nutzungslimit deines Abonnements erreicht."

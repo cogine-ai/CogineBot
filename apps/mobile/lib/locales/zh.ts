@@ -986,6 +986,11 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Test model": "测试模型",
   "Connecting sends one test request that may incur usage charges.":
     "连接时会发送一次测试请求，可能产生用量费用。",
+  "The model replied.": "模型已答复。",
+  "Sign in again to test this model.": "请重新登录后再测试此模型。",
+  "This account cannot use the selected model.": "此账号无法使用所选模型。",
+  "Testing may count toward your subscription usage.": "测试可能占用订阅额度。",
+  "Your subscription usage limit was reached.": "已达到订阅使用额度。",
   "The model accepted the test request.": "模型已接收测试请求。",
   "This key cannot use the selected model.": "此密钥无法使用所选模型。",
   "Could not verify this model.": "无法验证此模型。",

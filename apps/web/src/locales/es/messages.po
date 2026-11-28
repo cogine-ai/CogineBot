@@ -7611,3 +7611,23 @@ msgstr "La prueba del modelo superó el tiempo de espera."
 #: src/lib/model-connection-preflight.ts
 msgid "Check your model provider's billing settings and available credits."
 msgstr "Revisa la configuración de facturación y los créditos disponibles de tu proveedor de modelos."
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "El modelo respondió."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "Vuelve a iniciar sesión para probar este modelo."
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "Esta cuenta no puede usar el modelo seleccionado."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "La prueba puede descontarse de la cuota de tu suscripción."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "Alcanzaste el límite de uso de tu suscripción."

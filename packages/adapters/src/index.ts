@@ -154,6 +154,7 @@ export {
 export { LOCAL_PROVIDER_ID } from "./pi-local-provider.js";
 export * from "./pi-models.js";
 export * from "./pi-oauth.js";
+export { oauthCredentialAccountId } from "./pi-oauth.js";
 export * from "./pi-openai-compatible-provider.js";
 export {
   ApiKeyModelCatalog,

@@ -1,3 +1,4 @@
+import { zstdDecompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeModelInference } from "./model-inference-probe.js";
 import { listPiCatalog } from "./pi-models.js";
@@ -147,6 +148,182 @@ describe("model inference check", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  const codexAccount = "fixture-account";
+  const codexToken = `header.${Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: codexAccount } }),
+  ).toString("base64")}.signature`;
+  const codexInput = {
+    provider: "openai-codex",
+    modelId: "gpt-6.2-sol",
+    codex: { accountId: codexAccount, accessToken: codexToken },
+  };
+  const codexCreated = {
+    type: "response.created",
+    response: {
+      id: "fixture-response",
+      headers: { "OpenAI-Model": [codexInput.modelId] },
+      status: "in_progress",
+    },
+  };
+  const codexText = { type: "response.output_text.delta", delta: "OK" };
+
+  it("proves the selected subscription model replied and stops that single bounded request", async () => {
+    const cancel = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  [codexCreated, codexText]
+                    .map((frame) => `data: ${JSON.stringify(frame)}\n\n`)
+                    .join(""),
+                ),
+              );
+            },
+            cancel,
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    const entry = listPiCatalog().find(
+      ({ provider, id }) => provider === codexInput.provider && id === codexInput.modelId,
+    );
+    expect(entry).toMatchObject({ auth: "oauth", inferenceProbe: true });
+    expect(await probeModelInference(codexInput, { fetch })).toBe("accepted");
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(request.redirect).toBe("error");
+    expect(request.headers.get("authorization")).toBe(`Bearer ${codexToken}`);
+    expect(request.headers.get("chatgpt-account-id")).toBe(codexAccount);
+    expect(request.headers.get("openai-project")).toBeNull();
+    const bytes = Buffer.from(await request.arrayBuffer());
+    const body =
+      request.headers.get("content-encoding") === "zstd" ? zstdDecompressSync(bytes) : bytes;
+    expect(JSON.parse(body.toString())).toMatchObject({
+      model: codexInput.modelId,
+      stream: true,
+      store: false,
+      instructions: "Reply with OK.",
+      max_output_tokens: 1024,
+      reasoning: { effort: "low" },
+      tool_choice: "none",
+    });
+  });
+
+  it.each([
+    ["an open stream", [codexCreated]],
+    ["a text-only stream", [codexText]],
+    [
+      "a payload-only model field",
+      [
+        {
+          type: "response.created",
+          response: { id: "fixture-response", model: codexInput.modelId },
+        },
+        codexText,
+      ],
+    ],
+    [
+      "reasoning without an answer",
+      [codexCreated, { type: "response.reasoning_text.delta", delta: "OK" }],
+    ],
+    ["blank text", [codexCreated, { ...codexText, delta: " " }]],
+    ["a completed stream without text", [codexCreated, { type: "response.completed" }]],
+    [
+      "a response reporting no output limit",
+      [
+        { ...codexCreated, response: { ...codexCreated.response, max_output_tokens: null } },
+        codexText,
+      ],
+    ],
+    [
+      "a different response model",
+      [
+        {
+          ...codexCreated,
+          response: { ...codexCreated.response, headers: { "openai-model": ["gpt-6-sol"] } },
+        },
+        codexText,
+      ],
+    ],
+    [
+      "a failed response that reports a model after text",
+      [codexText, { ...codexCreated, type: "response.failed" }],
+    ],
+  ] as const)("does not mark %s verified", async (_name, frames) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(geminiSse(...frames));
+    expect(await probeModelInference(codexInput, { fetch })).toBe("unavailable");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [401, {}, "auth"],
+    [403, { code: "model_not_available" }, "model"],
+    [403, {}, "unavailable"],
+    [429, { type: "usage_limit_reached" }, "subscription_limit"],
+    [429, { type: "usage_not_included" }, "model"],
+    [429, { type: "insufficient_quota", code: "generic_error" }, "credit"],
+    [429, { code: "credit_balance_exhausted" }, "credit"],
+    [429, { type: "insufficient_quota", code: "organization_usage_limit_exceeded" }, "spending"],
+    [429, { type: "insufficient_quota", code: "organization_spend_limit_exceeded" }, "spending"],
+    [429, { type: "insufficient_quota", code: "project_spend_limit_exceeded" }, "spending"],
+    [429, { type: "insufficient_quota", code: "api_key_spend_limit_exceeded" }, "spending"],
+    [429, { type: "rate_limit_exceeded" }, "rate"],
+    [429, { code: "model_not_found" }, "rate"],
+    [429, { code: "model_not_available" }, "rate"],
+    [400, { code: "unsupported_parameter", param: "max_output_tokens" }, "unavailable"],
+    [503, { code: "model_not_found" }, "unavailable"],
+  ] as const)("handles Codex HTTP %s without a second request", async (status, error, expected) => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ error }, { status }));
+    expect(await probeModelInference(codexInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(["model_not_found", "usage_not_included"])(
+    "classifies the %s refusal after stream creation",
+    async (code) => {
+      const errorFrame = {
+        type: "response.failed",
+        response: { error: { code } },
+      };
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(geminiSse(codexCreated, errorFrame));
+      expect(await probeModelInference(codexInput, { fetch })).toBe("model");
+    },
+  );
+
+  it.each([
+    [codexInput.modelId, "accepted"],
+    ["gpt-6-sol", "unavailable"],
+  ])(
+    "checks the transport model header %s against the selected model",
+    async (reportedModel, expected) => {
+      const sse = geminiSse(codexText);
+      sse.headers.set("openai-model", reportedModel);
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(sse);
+      expect(await probeModelInference(codexInput, { fetch })).toBe(expected);
+    },
+  );
+
+  it("fences the stored subscription account and excludes unregistered or legacy models", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    for (const target of [
+      { ...codexInput, modelId: "gpt-6.2-terra" },
+      { ...codexInput, modelId: "gpt-5.6-sol" },
+      { ...codexInput, codex: { ...codexInput.codex, accountId: "another-fixture" } },
+    ]) {
+      expect(await probeModelInference(target, { fetch })).toBe("unavailable");
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("checks a Together model on the pinned endpoint without deployment headers", async () => {
@@ -824,44 +1001,46 @@ describe("model inference check", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(["deadline", "caller"] as const)(
-    "stops reading Gemini output when %s aborts",
-    async (source) => {
-      const caller = new AbortController();
-      const deadline = new AbortController();
-      const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
-      const cancel = vi.fn();
-      let startedReading = () => {};
-      const reading = new Promise<void>((resolve) => {
-        startedReading = resolve;
-      });
-      const fetch = vi.fn<typeof globalThis.fetch>(
-        async () =>
-          new Response(
-            new ReadableStream(
-              {
-                pull() {
-                  startedReading();
-                },
-                cancel,
+  it.each([
+    [geminiInput, "deadline"],
+    [geminiInput, "caller"],
+    [codexInput, "deadline"],
+    [codexInput, "caller"],
+  ] as const)("stops reading $provider output when %s aborts", async (target, source) => {
+    const caller = new AbortController();
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal);
+    const cancel = vi.fn();
+    let startedReading = () => {};
+    const reading = new Promise<void>((resolve) => {
+      startedReading = resolve;
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(
+          new ReadableStream(
+            {
+              pull() {
+                startedReading();
               },
-              { highWaterMark: 0 },
-            ),
-            { headers: { "content-type": "text/event-stream" } },
+              cancel,
+            },
+            { highWaterMark: 0 },
           ),
-      );
-      const pending = probeModelInference(geminiInput, { fetch, signal: caller.signal });
-      const verified =
-        source === "caller"
-          ? expect(pending).rejects.toMatchObject({ name: "AbortError" })
-          : expect(pending).resolves.toBe("timeout");
-      await reading;
-      (source === "caller" ? caller : deadline).abort();
-      await verified;
-      expect(timeout).toHaveBeenCalledWith(15000);
-      expect(cancel).toHaveBeenCalledOnce();
-    },
-  );
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+    const pending = probeModelInference(target, { fetch, signal: caller.signal });
+    const verified =
+      source === "caller"
+        ? expect(pending).rejects.toMatchObject({ name: "AbortError" })
+        : expect(pending).resolves.toBe("timeout");
+    await reading;
+    (source === "caller" ? caller : deadline).abort();
+    await verified;
+    expect(timeout).toHaveBeenCalledWith(15000);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
 
   it.each([
     [geminiInput, 401, "auth"],

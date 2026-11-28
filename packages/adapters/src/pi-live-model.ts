@@ -37,6 +37,17 @@ function acceptsGroqModelId(id: string): boolean {
   );
 }
 
+export function isCodexInferenceProbeModel(
+  model: Pick<Model<Api>, "provider" | "id" | "api" | "baseUrl">,
+): boolean {
+  return (
+    model.provider === "openai-codex" &&
+    model.api === "openai-codex-responses" &&
+    model.baseUrl === "https://chatgpt.com/backend-api" &&
+    /^gpt-6(?:\.[12])?-(?:astra|sol|luna|terra)$/.test(model.id)
+  );
+}
+
 export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "openai" &&

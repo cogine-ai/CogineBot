@@ -2425,6 +2425,70 @@ it("keeps the native committed revision when a settings readback supersedes the 
   ).toMatchObject({ expectedRevision: 8 });
 });
 
+it("checks the selected subscription model and reports the actual probe outcome", async () => {
+  const saved = {
+    id: "fixture-subscription",
+    provider: "openai-codex",
+    label: "ChatGPT Plus/Pro",
+    hasKey: false,
+    authKind: "oauth",
+    modelId: "gpt-6.2-sol",
+    connectionRevision: 7,
+  };
+  const normal = state.rpc.getMockImplementation()!;
+  const outcomes = ["auth", "model", "unavailable", "subscription_limit", "accepted"];
+  state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+    if (procedure === "me")
+      return {
+        userId: "user-1",
+        spaceId: "space-1",
+        defaultProvider: saved.provider,
+        defaultModel: saved.modelId,
+        defaultModelCredentialId: saved.id,
+      };
+    if (procedure === "models/list")
+      return [
+        {
+          provider: saved.provider,
+          providerName: saved.label,
+          id: saved.modelId,
+          label: "GPT-6.2 Sol",
+          auth: "oauth",
+          billing: "Subscription",
+          signIn: "device-code",
+          subscription: true,
+          inferenceProbe: true,
+        },
+      ];
+    if (procedure === "models/credentials") return [saved];
+    if (procedure === "models/probeInference") return { status: outcomes.shift() };
+    return normal(procedure, input);
+  });
+  await act(async () => root.render(<Models />));
+  expect(state.rpc.mock.calls.some(([name]) => name === "models/probeInference")).toBe(false);
+  expect(container.textContent).toContain("Testing may count toward your subscription usage.");
+  for (const message of [
+    "Sign in again to test this model.",
+    "This account cannot use the selected model.",
+    "Could not verify this model.",
+    "Your subscription usage limit was reached.",
+    "The model replied.",
+  ]) {
+    await act(async () => button("Test model").click());
+    expect(container.textContent).toContain(message);
+  }
+  const attempts = state.rpc.mock.calls.filter(([name]) => name === "models/probeInference");
+  expect(attempts.map(([, input]) => input)).toEqual(
+    Array.from({ length: 5 }, () => ({
+      provider: saved.provider,
+      modelId: saved.modelId,
+      credentialId: saved.id,
+      expectedRevision: 7,
+    })),
+  );
+  expect(AccessibilityInfo.announceForAccessibility).toHaveBeenCalledWith("The model replied.");
+});
+
 it("checks a saved API key without exposing it to the editor", async () => {
   const saved = {
     id: "owned-key",

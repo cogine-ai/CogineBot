@@ -63,9 +63,10 @@ function savedModelProbeInput(
   provider: string,
   credential: CatalogProbeCredential | undefined,
   expectedRevision: number | undefined,
+  authKind: CatalogProbeCredential["authKind"] = "api_key",
 ) {
   if (
-    credential?.authKind !== "api_key" ||
+    credential?.authKind !== authKind ||
     !expectedRevision ||
     expectedRevision !== credential.connectionRevision ||
     canonicalPiProviderId(credential.provider) !== canonicalPiProviderId(provider)
@@ -82,6 +83,11 @@ export function modelInferenceProbeInput(
 ): ModelInferenceProbeInput | undefined {
   if (!entry?.inferenceProbe) return undefined;
   const apiKey = draftKey.trim();
+  if (entry.auth === "oauth") {
+    if (apiKey) return undefined;
+    const connection = savedModelProbeInput(entry.provider, credential, expectedRevision, "oauth");
+    return connection ? { ...connection, modelId: entry.id } : undefined;
+  }
   if (apiKey && apiKey.length < 8) return undefined;
   if (entry.draftCatalogModel === "unconfirmed") return undefined;
   if (
@@ -107,6 +113,7 @@ export const MODEL_INFERENCE_PROBE_MESSAGES = {
   model: "This key cannot use the selected model.",
   credit: "Check your model provider's billing settings and available credits.",
   spending: RUN_ERROR_LIMIT_MESSAGES.spending.none,
+  subscription_limit: "Your subscription usage limit was reached.",
   rate: "{provider} is rate limiting requests. Try again shortly.",
   timeout: "{provider} took too long to respond. Try again.",
   unavailable: "Could not verify this model.",
@@ -115,7 +122,13 @@ export const MODEL_INFERENCE_PROBE_MESSAGES = {
 export function modelInferenceProbeMessage(
   status: ModelInferenceProbeStatus,
   translate: RunErrorTranslator,
+  authKind?: "oauth",
 ): string {
+  if (authKind === "oauth") {
+    if (status === "accepted") return translate("The model replied.");
+    if (status === "auth") return translate("Sign in again to test this model.");
+    if (status === "model") return translate("This account cannot use the selected model.");
+  }
   return translate(MODEL_INFERENCE_PROBE_MESSAGES[status], {
     provider: translate("Your model provider"),
   });
