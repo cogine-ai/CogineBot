@@ -6856,6 +6856,28 @@ describe("saved model catalog checks", () => {
     expect(inference).not.toHaveBeenCalled();
   });
 
+  it.each(["before", "after"] as const)(
+    "rejects a connection changed during the secret read %s the subscription check",
+    async (timing) => {
+      const { infer, inference, load, state } = codexFixture();
+      const rotateOnSecretRead = async () => {
+        state.revision += 1;
+        return state.plaintext;
+      };
+      if (timing === "before") {
+        load.mockResolvedValueOnce(state.plaintext).mockImplementationOnce(rotateOnSecretRead);
+      } else {
+        inference.mockImplementationOnce(async () => {
+          load.mockImplementationOnce(rotateOnSecretRead);
+          return "accepted";
+        });
+      }
+
+      expect((await infer(codexProbe)).status).toBe(409);
+      expect(inference).toHaveBeenCalledTimes(timing === "before" ? 0 : 1);
+    },
+  );
+
   it("runs inference only on explicit draft and owned saved-key requests", async () => {
     const { call, infer, inference, probe } = fixture();
     const modelId = inferenceModelId;

@@ -275,6 +275,8 @@ describe("model inference check", () => {
     [429, { type: "insufficient_quota", code: "project_spend_limit_exceeded" }, "spending"],
     [429, { type: "insufficient_quota", code: "api_key_spend_limit_exceeded" }, "spending"],
     [429, { type: "rate_limit_exceeded" }, "rate"],
+    [429, { code: "model_not_found" }, "rate"],
+    [429, { code: "model_not_available" }, "rate"],
     [400, { code: "unsupported_parameter", param: "max_output_tokens" }, "unavailable"],
     [503, { code: "model_not_found" }, "unavailable"],
   ] as const)("handles Codex HTTP %s without a second request", async (status, error, expected) => {

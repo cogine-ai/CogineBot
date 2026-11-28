@@ -10748,7 +10748,8 @@ async function loadSavedModelProbeConnection(
       await ensureModelProbeAuthorized(context);
       if (
         !(await modelCatalogConnectionCurrent(deps.prisma, snapshot)) ||
-        (await deps.secrets.load(ciphertext, secretId)) !== plaintext
+        (await deps.secrets.load(ciphertext, secretId)) !== plaintext ||
+        !(await modelCatalogConnectionCurrent(deps.prisma, snapshot))
       )
         throw modelConnectionChanged();
       context.signal?.throwIfAborted();
