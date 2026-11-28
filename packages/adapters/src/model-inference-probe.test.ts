@@ -90,6 +90,10 @@ const vercelGatewayMessagesInputs = [
   "openai/gpt-6-luna",
   "openai/gpt-6-sol",
   "openai/gpt-6.1-sol",
+  "openai/o1",
+  "openai/o3",
+  "openai/o3-mini",
+  "openai/o4-mini",
 ].map((modelId) => ({ ...vercelGatewayInput, modelId }));
 const groqDirectoryInput = {
   ...groqInput,
@@ -1673,6 +1677,10 @@ describe("model inference check", () => {
     ["vercel-ai-gateway", "openai/gpt-6.1-sol-batch"],
     ["vercel-ai-gateway", "openai/gpt-6.1-sol-fast"],
     ["vercel-ai-gateway", "openai/gpt-6.2-sol"],
+    ["vercel-ai-gateway", "openai/o3-fast"],
+    ["vercel-ai-gateway", "openai/o4-mini-fast"],
+    ["vercel-ai-gateway", "openai/o3-pro"],
+    ["vercel-ai-gateway", "openai/o1-mini"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1712,6 +1720,8 @@ describe("model inference check", () => {
     ["openai/gpt-5.5", "gpt-5.5"],
     ["openai/gpt-6.1-sol", "openai/gpt-6-sol"],
     ["openai/gpt-6.1-sol", "gpt-6.1-sol"],
+    ["openai/o4-mini", "openai/o3-mini"],
+    ["openai/o4-mini", "o4-mini"],
   ])(
     "does not accept %s from Vercel AI Gateway when it reports %s",
     async (modelId, returnedId) => {
