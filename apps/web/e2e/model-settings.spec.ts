@@ -2554,6 +2554,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, variant 
     rejectionText: /rejected the API key/,
   },
   {
+    provider: "vercel-ai-gateway",
+    providerName: "Vercel AI Gateway",
+    variant: "o-series",
+    modelId: "openai/o4-mini",
+    rejection: "model",
+    rejectionText: /cannot use the selected model/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",
