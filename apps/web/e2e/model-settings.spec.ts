@@ -225,7 +225,10 @@ test("settings saves a subscription directory model and retains it if the accoun
     billing: "",
     auth: "oauth",
     subscription: true,
-    thinkingLevels: ["low"],
+    signIn: "device-code",
+    oauthLabel: "ChatGPT Plus/Pro",
+    reasoning: true,
+    thinkingLevels: ["low", "medium"],
   };
   const saved = {
     id: "fixture-subscription-connection",

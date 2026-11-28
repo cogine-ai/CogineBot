@@ -672,12 +672,20 @@ describe("codexLiveListsModel", () => {
     const id = "gpt-fixture-directory";
     const media = "gpt-fixture-image";
     const dynamic = liveModel(id, { reasoningEfforts: ["low", "unknown"], supportsImages: true });
-    const models = [liveModel(LUNA), dynamic, liveModel(media), liveModel("unknown/path")];
+    const known = listPiCatalog().filter(({ provider }) => provider === CHATGPT_OAUTH_PROVIDER);
+    const required = Math.ceil(known.length / 4);
+    const anchors = known.slice(0, required).map(({ id }) => liveModel(id));
+    const models = [...anchors, dynamic, liveModel(media), liveModel("unknown/path")];
     const catalog = { read: async () => models };
     await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id)).resolves.toBe(true);
     await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), media)).resolves.toBe(false);
     await expect(
-      codexLiveListsModel({ read: async () => [dynamic] }, "user-1", oauthSecret(), id),
+      codexLiveListsModel(
+        { read: async () => [...anchors.slice(1), dynamic] },
+        "user-1",
+        oauthSecret(),
+        id,
+      ),
     ).resolves.toBe(false);
     expect(codexConnectionDirectory(models, id)).toEqual({
       models: [
@@ -685,7 +693,7 @@ describe("codexLiveListsModel", () => {
       ],
       savedModelDirectory: undefined,
     });
-    expect(codexConnectionDirectory([liveModel(LUNA)], id)).toEqual({
+    expect(codexConnectionDirectory(anchors, id)).toEqual({
       models: [expect.objectContaining({ id, images: false, thinkingLevels: ["off"] })],
       savedModelDirectory: { confirmationRequired: true, notListed: true },
     });
@@ -693,6 +701,41 @@ describe("codexLiveListsModel", () => {
       confirmationRequired: true,
       confirmationUnavailable: true,
     });
+  });
+
+  it("isolates catalog results for different credential revisions of one account", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_, init) =>
+      okResponse(
+        catalogPayload([
+          {
+            slug:
+              new Headers(init?.headers).get("authorization") === "Bearer old-access"
+                ? LUNA
+                : SPARK,
+            visibility: "list",
+            supported_in_api: true,
+          },
+        ]),
+      ),
+    );
+    const cache = new CodexCatalogCache({ fetch });
+    const old = {
+      accountId: ACCOUNT_ID,
+      accessToken: async () => "old-access",
+      connection: { secretId: "secret-a", connectionRevision: 1 },
+    };
+    const current = {
+      ...old,
+      accessToken: async () => "next-access",
+      connection: { secretId: "secret-b", connectionRevision: 2 },
+    };
+    const [oldList, newList] = await Promise.all([
+      cache.read("user-1", old),
+      cache.read("user-1", current),
+    ]);
+    expect(oldList?.map(({ slug }) => slug)).toEqual([LUNA]);
+    expect(newList?.map(({ slug }) => slug)).toEqual([SPARK]);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("confirms a model the credential's own account catalog lists", async () => {

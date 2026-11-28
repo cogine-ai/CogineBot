@@ -296,6 +296,10 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const catalog = listPiCatalog()
         .filter((entry) => entry.provider === "openai")
         .map(({ id }) => id);
+      const codexAnchors = listPiCatalog().filter((entry) => entry.provider === "openai-codex");
+      const subscriptionModels = codexAnchors
+        .slice(0, Math.ceil(codexAnchors.length / 4))
+        .map(({ id }) => id);
       const catalogProbe: typeof probeCatalogProviderModels = (input, _fetch, signal) =>
         probeCatalogProviderModels(
           input,
@@ -350,9 +354,9 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
                 );
                 const modelIds =
                   requestedAccount === otherAccountId || modelRetired
-                    ? ["gpt-6.2-sol"]
+                    ? subscriptionModels
                     : discovered
-                      ? ["gpt-6.2-sol", modelId]
+                      ? [...subscriptionModels, modelId]
                       : [modelId];
                 return Response.json({
                   models: modelIds.map((slug) => ({
@@ -539,6 +543,25 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           notifyOnFinish: false,
         });
         await discardBotIntroRun(handles, cookie, bot.id);
+        if (discovered) {
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+            thinkingLevel: "low",
+          });
+          await rpc(app, cookie, "models/setDefault", {
+            ...selection,
+            modelId: subscriptionModels[0],
+          });
+          await expect(rpc(app, cookie, "me", null)).resolves.toMatchObject({
+            defaultModel: subscriptionModels[0],
+            defaultModelCredentialId: connection.id,
+          });
+          await rpc(app, cookie, "models/setBackups", [{ ...selection, thinkingLevel: "low" }]);
+        }
         modelFetch.mockClear();
         const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
           botId: bot.id,
@@ -568,6 +591,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         });
         expect(JSON.stringify(thread.messages)).toContain(answer);
         if (discovered) {
+          await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
           modelRetired = true;
           catalogTime += 16 * 60_000;
           await expect

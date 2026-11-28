@@ -27,7 +27,7 @@ import type {
   CodexLiveReadOptions,
 } from "./pi-codex-catalog.js";
 import { applyCodexLiveCatalog, codexLiveModel, readCodexLiveModels } from "./pi-codex-catalog.js";
-import { providerCatalogModel } from "./pi-live-model.js";
+import { codexDirectoryModel, providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
@@ -601,6 +601,10 @@ export async function validateConnectedModelChoice(
   }
   if (isCatalogModelChoice(provider, modelId) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID)
     return undefined;
+  // The executor checks dynamic subscription models against this exact account
+  // after resolving and, if needed, refreshing its OAuth credential.
+  if (provider === CHATGPT_OAUTH_PROVIDER && modelCredentialId && codexDirectoryModel(modelId))
+    return undefined;
   if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID && !providerCatalogModel(provider, modelId))
     return "Unknown model for that provider";
   const secret = await loadStoredModelSecret(
@@ -716,6 +720,7 @@ export function pinnedModelCredentialError(
     modelId &&
     !isCatalogModelChoice(choice.modelProvider, modelId) &&
     credential.defaultModel !== modelId &&
+    !(choice.modelProvider === CHATGPT_OAUTH_PROVIDER && codexDirectoryModel(modelId)) &&
     !providerCatalogModel(choice.modelProvider, modelId)
   ) {
     return "Unknown model for that provider";

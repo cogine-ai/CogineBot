@@ -14113,6 +14113,7 @@ async function resolveModelKey(
     id: string;
     secretId: string;
     provider: string;
+    connectionRevision: number;
     providerCatalogSelection?: unknown;
     defaultModel?: string | null;
     supportsImages?: boolean;
@@ -14159,7 +14160,11 @@ async function resolveModelKey(
         });
         if (!row) {
           if (provider === CHATGPT_PLAN_PROVIDER_ID) throw new Error("Connect ChatGPT again");
-          if (requireStoredSecret || credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID) {
+          if (
+            requireStoredSecret ||
+            credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID ||
+            (provider === CHATGPT_OAUTH_PROVIDER && !isCatalogModelChoice(provider, modelId))
+          ) {
             throw new UnavailableModelForAuthError("Model connection is unavailable");
           }
           cloudflareGatewayProviderEnv({ provider });
@@ -14225,6 +14230,7 @@ async function resolveModelKey(
           ) {
             resolved = await resolveAuth();
             liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+              connection: credential,
               waitMs: CODEX_LIVE_RUN_WAIT_MS,
             });
             liveListed = Boolean(liveCodex);

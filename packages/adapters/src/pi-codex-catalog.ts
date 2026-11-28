@@ -63,13 +63,16 @@ export type CodexCatalogResult =
 export type CodexCatalogAccount = {
   accountId: string;
   accessToken: () => Promise<string | null>;
+  connection?: { secretId: string; connectionRevision: number };
 };
+
+type CodexCacheReadOptions = { waitMs?: number; cacheOnly?: boolean; freshOnly?: boolean };
 
 export interface CodexLiveCatalog {
   read(
     userId: string,
     account: CodexCatalogAccount,
-    opts?: { waitMs?: number; cacheOnly?: boolean },
+    opts?: CodexCacheReadOptions,
   ): Promise<CodexCatalogModel[] | undefined>;
 }
 
@@ -81,9 +84,8 @@ export interface CodexLiveCatalog {
  * `onExpiredToken` fires when the stored bearer is expired so the caller can
  * kick a detached refresh through the runtime's credential lock.
  */
-export type CodexLiveReadOptions = {
-  waitMs?: number;
-  cacheOnly?: boolean;
+export type CodexLiveReadOptions = CodexCacheReadOptions & {
+  connection?: CodexCatalogAccount["connection"];
   onExpiredToken?: () => void;
 };
 
@@ -266,13 +268,19 @@ export class CodexCatalogCache implements CodexLiveCatalog {
     });
   }
 
-  read(
+  async read(
     userId: string,
     account: CodexCatalogAccount,
-    opts?: { waitMs?: number; cacheOnly?: boolean },
+    opts?: CodexCacheReadOptions,
   ): Promise<CodexCatalogModel[] | undefined> {
-    return this.cache.read(
-      JSON.stringify([userId, account.accountId]),
+    const key = JSON.stringify([
+      userId,
+      account.accountId,
+      account.connection?.secretId,
+      account.connection?.connectionRevision,
+    ]);
+    const models = await this.cache.read(
+      key,
       async (signal) => {
         let accessToken: string | null;
         try {
@@ -292,6 +300,7 @@ export class CodexCatalogCache implements CodexLiveCatalog {
       },
       opts,
     );
+    return opts?.freshOnly && models && !this.cache.isFresh(key, models) ? undefined : models;
   }
 }
 
@@ -343,14 +352,26 @@ export async function codexLiveModel(
   modelId: string,
   opts?: CodexLiveReadOptions,
 ): Promise<CodexCatalogModel | undefined> {
-  const models = await readCodexLiveModels(catalog, userId, secret, opts);
   const known = knownCodexSlugs();
+  const models = await readCodexLiveModels(catalog, userId, secret, opts);
   if (
     !known.has(modelId) &&
-    (!codexDirectoryModel(modelId) || !models?.some(({ slug }) => known.has(slug)))
+    (!codexDirectoryModel(modelId) || !trustedCodexDirectory(models, known))
   )
     return undefined;
   return models?.find((model) => model.slug === modelId);
+}
+
+function trustedCodexDirectory(
+  models: readonly CodexCatalogModel[] | undefined,
+  known: ReadonlySet<string>,
+) {
+  return models &&
+    known.size > 0 &&
+    new Set(models.filter(({ slug }) => known.has(slug)).map(({ slug }) => slug)).size >=
+      Math.ceil(known.size / 4)
+    ? models
+    : undefined;
 }
 
 /** Directory-only choices for the account whose credential the caller loaded. */
@@ -360,7 +381,7 @@ export function codexConnectionDirectory(
 ) {
   const known = knownCodexSlugs();
   const anchor = listPiCatalog().find((entry) => entry.provider === CHATGPT_OAUTH_PROVIDER);
-  const observed = models?.some(({ slug }) => known.has(slug)) ? models : undefined;
+  const observed = trustedCodexDirectory(models, known);
   const discovered = new Map<string, PiCatalogEntry>();
   const entryFor = (id: string, live?: CodexCatalogModel): PiCatalogEntry | undefined => {
     const model = !known.has(id) ? codexDirectoryModel(id) : undefined;
@@ -385,7 +406,7 @@ export function codexConnectionDirectory(
   };
   for (const model of observed ?? []) {
     const entry = entryFor(model.slug, model);
-    if (entry) discovered.set(entry.id, entry);
+    if (entry && !discovered.has(entry.id)) discovered.set(entry.id, entry);
   }
   const retained = savedId && !discovered.has(savedId) ? entryFor(savedId) : undefined;
   return {
@@ -407,7 +428,15 @@ export async function readCodexLiveModels(
 ) {
   if (!catalog || secret.kind !== "oauth") return undefined;
   const account = codexAccountHandle(secret.credential, opts?.onExpiredToken);
-  return account ? catalog.read(userId, account, opts).catch(() => undefined) : undefined;
+  return account
+    ? catalog
+        .read(
+          userId,
+          opts?.connection ? { ...account, connection: opts.connection } : account,
+          opts,
+        )
+        .catch(() => undefined)
+    : undefined;
 }
 
 function knownCodexSlugs(): Set<string> {

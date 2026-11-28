@@ -2159,16 +2159,26 @@ export function createRouter(deps: RouterDeps) {
             };
             if (row.provider === CHATGPT_OAUTH_PROVIDER && secret.kind === "oauth") {
               probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
-              if (!(await probeAuthorization) || signal?.aborted) return { credential };
-              const models = await readCodexLiveModels(codexCatalog, userId, secret, {
-                onExpiredToken: () => refreshExpiredCredential(actor, row.secretId, row.provider),
-              });
+              const current = () => modelCatalogConnectionCurrent(deps.prisma, snapshot);
+              if (
+                !(await probeAuthorization) ||
+                signal?.aborted ||
+                !(await current()) ||
+                signal?.aborted
+              )
+                return { credential };
+              const models =
+                deps.env.modelLiveCatalogEnabled === false
+                  ? undefined
+                  : await readCodexLiveModels(codexCatalog, userId, secret, {
+                      connection: snapshot,
+                      freshOnly: true,
+                      onExpiredToken: () =>
+                        refreshExpiredCredential(actor, row.secretId, row.provider),
+                    });
               return {
                 credential,
-                codexDirectory: {
-                  models,
-                  current: () => modelCatalogConnectionCurrent(deps.prisma, snapshot),
-                },
+                codexDirectory: { models, current },
               };
             }
             if (!catalogCache || secret.kind !== "api_key") return { credential };
@@ -10503,6 +10513,15 @@ async function prepareBoundModelAuth(
   });
   if (!credential) throw new ORPCError("NOT_FOUND", { message: "Model connection not found." });
   assertConnectionRevision(credential, binding.expectedRevision);
+  const directoryModel =
+    binding.modelProvider === CHATGPT_OAUTH_PROVIDER &&
+    !isCatalogModelChoice(binding.modelProvider, binding.modelId);
+  if (
+    directoryModel &&
+    deps.env.modelLiveCatalogEnabled === false &&
+    credential.defaultModel !== binding.modelId
+  )
+    throw new ORPCError("BAD_REQUEST", { message: "Unknown model for that provider." });
   try {
     let plaintext: string | undefined;
     const prepared = await prepareStoredModelAuth(
@@ -10519,6 +10538,8 @@ async function prepareBoundModelAuth(
       binding.modelId,
       codexCatalog,
       {
+        connection: credential,
+        freshOnly: directoryModel,
         onExpiredToken: () =>
           onExpiredToken?.(credential.secretId, binding.modelProvider!) ?? Promise.resolve(),
       },
@@ -10546,8 +10567,7 @@ async function prepareBoundModelAuth(
           : undefined,
       catalogThinkingLevels:
         prepared.codexModel &&
-        (liveThinkingLevels(prepared.codexModel) ??
-          (!isCatalogModelChoice(binding.modelProvider, binding.modelId) ? ["off"] : undefined)),
+        (liveThinkingLevels(prepared.codexModel) ?? (directoryModel ? ["off"] : undefined)),
     };
   } catch (error) {
     if (error instanceof SecretStoreUnavailableError)
