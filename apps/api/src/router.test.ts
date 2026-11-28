@@ -3512,6 +3512,17 @@ describe("model credential persistence", () => {
       distinctFailure: "model",
       transient: { code: 429, type: "rate_limit_error" },
     },
+    {
+      provider: "fireworks",
+      modelId: "accounts/fireworks/models/glm-5p3",
+      endpoint: "https://api.fireworks.ai/inference/v1/chat/completions",
+      acceptedFrame:
+        'data: {"id":"gen-fixture","object":"chat.completion.chunk","model":"accounts/fireworks/models/glm-5p3","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\n',
+      rejection: { code: "PAYMENT_REQUIRED", message: "Payment required" },
+      rejectionHttpStatus: 402,
+      distinctFailure: "credit",
+      transient: { code: 429, message: "Too many requests" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -3603,6 +3614,7 @@ describe("model credential persistence", () => {
     ["moonshotai", "kimi-k3", "first connection"],
     ["moonshotai-cn", "kimi-k3", "key replacement"],
     ["kimi-coding", "k3-256k", "key replacement"],
+    ["fireworks", "accounts/fireworks/models/glm-5p3", "key replacement"],
   ] as const)(
     "blocks %s %s %s when the stream names another model",
     async (provider, modelId, mode) => {

@@ -44,6 +44,10 @@ const fireworksInput = {
   modelId: "accounts/fireworks/models/gpt-oss-120b",
   apiKey: "fixture-fireworks-key",
 };
+const fireworksChatInput = {
+  ...fireworksInput,
+  modelId: "accounts/fireworks/models/glm-5p3",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -1594,7 +1598,7 @@ describe("model inference check", () => {
     ["minimax", "MiniMax-M3.1-Flash"],
     ["minimax-cn", "MiniMax-M3"],
     ["fireworks", "accounts/fireworks/routers/minimax-latest"],
-    ["fireworks", "accounts/fireworks/models/glm-5p3"],
+    ["fireworks", "accounts/fireworks/routers/glm-5p3-fast"],
     ["fireworks", "accounts/fixture/models/private-chat"],
     ["fireworks", "accounts/fireworks/models/unregistered-fixture"],
   ])(
@@ -1612,6 +1616,97 @@ describe("model inference check", () => {
         ),
       ).toBe("unavailable");
       expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["accounts/fireworks/models/glm-5p3", { content: "OK" }],
+    ["accounts/fireworks/models/glm-5p3-flash", { reasoning_content: "Plan" }],
+    [
+      "accounts/fireworks/models/kimi-k3",
+      {
+        tool_calls: [{ type: "function", function: { name: "noop" } }],
+      },
+    ],
+  ])("checks the registered Fireworks Chat Completions model %s", async (modelId, delta) => {
+    vi.stubEnv("FIREWORKS_API_KEY", "fixture-deployment-fireworks-key");
+    vi.stubEnv("OPENAI_API_KEY", "fixture-deployment-openai-key");
+    vi.stubEnv("OPENAI_ORG_ID", "fixture-deployment-org");
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            chatChunk([{ delta: { role: "assistant" } }], { model: modelId }) +
+              chatChunk([{ delta }], { model: modelId }),
+          ),
+        );
+      },
+      cancel,
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(
+      listPiCatalog().find((m) => m.provider === "fireworks" && m.id === modelId)?.inferenceProbe,
+    ).toBe(true);
+    expect(await probeModelInference({ ...fireworksChatInput, modelId }, { fetch })).toBe(
+      "accepted",
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    const request = new Request(...fetch.mock.calls[0]!);
+    expect(request.url).toBe("https://api.fireworks.ai/inference/v1/chat/completions");
+    expect(request.redirect).toBe("error");
+    expect(Object.fromEntries(request.headers)).toEqual({
+      authorization: `Bearer ${fireworksChatInput.apiKey}`,
+      "content-type": "application/json",
+    });
+    expect(await request.json()).toEqual({
+      model: modelId,
+      messages: [
+        { role: "system", content: "Reply with OK." },
+        { role: "user", content: "OK?" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "noop",
+            description: "Does nothing.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      max_tokens: 1024,
+      stream: true,
+    });
+  });
+
+  it.each([
+    [
+      chatChunk([{ delta: { role: "assistant" } }], { model: fireworksChatInput.modelId }),
+      "unavailable",
+    ],
+    [chatChunk([{ delta: { content: "OK" } }]), "unavailable"],
+    [chatChunk([{ delta: { content: "OK" } }], { model: "fixture/wrong-model" }), "model"],
+    [
+      chatChunk([{ finish_reason: "error", delta: {} }], { model: fireworksChatInput.modelId }),
+      "unavailable",
+    ],
+    ['data: {"status_code":403,"error":{"message":"Unexpected error"}}\n\n', "unavailable"],
+    [
+      'data: {"error":{"code":"NOT_FOUND","message":"Model not found, inaccessible, and/or not deployed"}}\n\n',
+      "model",
+    ],
+  ] as const)(
+    "validates Fireworks Chat Completions stream evidence (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(fireworksChatInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
     },
   );
 
@@ -1638,6 +1733,29 @@ describe("model inference check", () => {
         Response.json({ error }, { status }),
       );
       expect(await probeModelInference(fireworksInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [401, { code: "UNAUTHENTICATED" }, "auth"],
+    [402, { code: "PAYMENT_REQUIRED" }, "credit"],
+    [403, { code: "PERMISSION_DENIED" }, "auth"],
+    [
+      404,
+      { code: "NOT_FOUND", message: "Model not found, inaccessible, and/or not deployed" },
+      "model",
+    ],
+    [404, { code: "NOT_FOUND", message: "Path not found" }, "unavailable"],
+    [429, { code: "RESOURCE_EXHAUSTED" }, "rate"],
+    [504, {}, "timeout"],
+  ] as const)(
+    "recognizes Fireworks Chat Completions HTTP %i (%#)",
+    async (status, error, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error }, { status }),
+      );
+      expect(await probeModelInference(fireworksChatInput, { fetch })).toBe(expected);
       expect(fetch).toHaveBeenCalledOnce();
     },
   );
