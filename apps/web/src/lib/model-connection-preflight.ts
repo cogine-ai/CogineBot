@@ -303,7 +303,7 @@ export function modelInferenceTestMessage(status: ModelInferenceProbeStatus): st
     case "model":
       return t`This key cannot use the selected model.`;
     case "credit":
-      return t`${provider} reached its credit limit.`;
+      return t`Check your model provider's billing settings and available credits.`;
     case "spending":
       return t`${provider} reached its spending limit.`;
     case "rate":

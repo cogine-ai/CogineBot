@@ -7607,3 +7607,7 @@ msgstr "A conexão envia uma solicitação de teste que pode gerar cobrança pel
 
 msgid "The model test timed out."
 msgstr "O teste do modelo excedeu o tempo limite."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "Verifique as configurações de faturamento e os créditos disponíveis do seu provedor de modelos."

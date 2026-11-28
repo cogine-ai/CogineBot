@@ -48,6 +48,11 @@ const fireworksChatInput = {
   ...fireworksInput,
   modelId: "accounts/fireworks/models/glm-5p3",
 };
+const vercelClaudeInput = {
+  provider: "vercel-ai-gateway",
+  modelId: "anthropic/claude-haiku-4.5",
+  apiKey: "fixture-vercel-gateway-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -1535,12 +1540,15 @@ describe("model inference check", () => {
     { selectedInput: openRouterMessagesInput, endpoint: "https://openrouter.ai/api/v1/messages" },
     { selectedInput: miniMaxInput, endpoint: "https://api.minimax.io/anthropic/v1/messages" },
     { selectedInput: fireworksInput, endpoint: "https://api.fireworks.ai/inference/v1/messages" },
+    { selectedInput: vercelClaudeInput, endpoint: "https://ai-gateway.vercel.sh/v1/messages" },
   ] as const)(
     "tests $selectedInput.provider Messages using the selected key",
     async ({ selectedInput, endpoint }) => {
       vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
       vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
       vi.stubEnv("FIREWORKS_API_KEY", "fixture-deployment-fireworks-key");
+      vi.stubEnv("AI_GATEWAY_API_KEY", "fixture-deployment-vercel-key");
+      vi.stubEnv("VERCEL_OIDC_TOKEN", "fixture-deployment-vercel-oidc");
       vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
       vi.stubEnv("ANTHROPIC_LOG", "debug");
       const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
@@ -1601,6 +1609,11 @@ describe("model inference check", () => {
     ["fireworks", "accounts/fireworks/routers/glm-5p3-fast"],
     ["fireworks", "accounts/fixture/models/private-chat"],
     ["fireworks", "accounts/fireworks/models/unregistered-fixture"],
+    ["vercel-ai-gateway", "anthropic/claude-opus-5.5-batch"],
+    ["vercel-ai-gateway", "anthropic/claude-opus-5.5-fast"],
+    ["vercel-ai-gateway", "anthropic/claude-fable-5.1"],
+    ["vercel-ai-gateway", "anthropic/claude-sonnet-99"],
+    ["vercel-ai-gateway", "zai/glm-5v-turbo"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1616,6 +1629,92 @@ describe("model inference check", () => {
         ),
       ).toBe("unavailable");
       expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "anthropic/claude-haiku-4.5",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-5.5",
+  ])("offers the Vercel AI Gateway check for %s", (modelId) => {
+    expect(
+      listPiCatalog().find((m) => m.provider === "vercel-ai-gateway" && m.id === modelId)
+        ?.inferenceProbe,
+    ).toBe(true);
+  });
+
+  it.each([
+    [401, { type: "authentication_error" }, "auth"],
+    [403, { type: "permission_error" }, "auth"],
+    [403, { type: "customer_verification_required" }, "credit"],
+    [403, { type: "no_providers_available", param: { name: "RestrictedModelsError" } }, "credit"],
+    [403, { type: "no_providers_available" }, "unavailable"],
+    [
+      403,
+      {
+        type: "forbidden",
+        message: "Request denied by a routing rule.",
+        param: { ruleId: "fixture-rule" },
+      },
+      "model",
+    ],
+    [
+      403,
+      {
+        type: "forbidden",
+        message: "Select a model approved for your team.",
+        param: { ruleId: "fixture-rule" },
+      },
+      "model",
+    ],
+    [403, { type: "forbidden" }, "auth"],
+    [403, "Your team has restricted access to this model.", "model"],
+    [403, "Your team (fixture) has restricted access to this provider.", "model"],
+    [402, { type: "quota_for_entity_exceeded" }, "spending"],
+    [402, { type: "billing_error" }, "credit"],
+    [404, { type: "model_not_found" }, "model"],
+    [404, { type: "not_found_error", message: "Model not found" }, "model"],
+    [
+      404,
+      { type: "not_found_error", message: "The requested resource was not found" },
+      "unavailable",
+    ],
+    [429, { type: "rate_limit_error" }, "rate"],
+    [504, {}, "timeout"],
+    [500, { type: "quota_for_entity_exceeded" }, "unavailable"],
+  ] as const)(
+    "classifies Vercel AI Gateway HTTP %i by its meaning (%#)",
+    async (status, error, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error }, { status }),
+      );
+      expect(await probeModelInference(vercelClaudeInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [": processing\n\n", "unavailable"],
+    [anthropicStart, "unavailable"],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"quota_for_entity_exceeded"}}\n\n',
+      "spending",
+    ],
+    ['event: error\ndata: {"type":"error","error":{"type":"billing_error"}}\n\n', "credit"],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"customer_verification_required"}}\n\n',
+      "credit",
+    ],
+    ['event: error\ndata: {"type":"error","error":{"type":"rate_limit_error"}}\n\n', "rate"],
+    ['event: error\ndata: {"type":"error","error":{"type":"not_found_error"}}\n\n', "unavailable"],
+  ] as const)(
+    "requires matching Vercel Messages acceptance or an explicit refusal (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(vercelClaudeInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
     },
   );
 

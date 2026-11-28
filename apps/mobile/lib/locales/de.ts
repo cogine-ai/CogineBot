@@ -280,6 +280,8 @@ export const DE_MESSAGES: Record<string, string> = {
   "{provider} key hit its limit.": "{provider}: Schlüssellimit erreicht.",
   "{provider} key hit its monthly limit.": "{provider}: monatliches Schlüssellimit erreicht.",
   "{provider} key hit its weekly limit.": "{provider}: wöchentliches Schlüssellimit erreicht.",
+  "Check your model provider's billing settings and available credits.":
+    "Prüfen Sie die Abrechnungseinstellungen und das verfügbare Guthaben bei Ihrem Modellanbieter.",
   "{provider} reached its credit limit.": "{provider}: Guthabenlimit erreicht.",
   "{provider} reached its daily credit limit.": "{provider}: tägliches Guthabenlimit erreicht.",
   "{provider} reached its daily spending limit.": "{provider}: tägliches Ausgabenlimit erreicht.",

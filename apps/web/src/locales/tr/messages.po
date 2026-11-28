@@ -7607,3 +7607,7 @@ msgstr "Bağlanırken kullanım ücreti doğurabilecek bir test isteği gönderi
 
 msgid "The model test timed out."
 msgstr "Model testi zaman aşımına uğradı."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "Model sağlayıcınızın faturalandırma ayarlarını ve kullanılabilir kredilerini kontrol edin."

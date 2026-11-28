@@ -7607,3 +7607,7 @@ msgstr "La connexion envoie une requête de test qui peut entraîner des frais d
 
 msgid "The model test timed out."
 msgstr "Le test du modèle a dépassé le délai d’attente."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "Vérifiez les paramètres de facturation et les crédits disponibles auprès de votre fournisseur de modèles."

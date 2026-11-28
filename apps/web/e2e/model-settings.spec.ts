@@ -2432,7 +2432,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     providerName: "OpenRouter",
     modelId: "openai/gpt-oss-120b",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "openrouter",
@@ -2461,14 +2461,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     providerName: "Cerebras",
     modelId: "qwen-3.8-27b",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "moonshotai",
     providerName: "Moonshot AI",
     modelId: "kimi-k3",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "moonshotai-cn",
@@ -2489,7 +2489,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     providerName: "MiniMax",
     modelId: "MiniMax-M3",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "fireworks",
@@ -2504,7 +2504,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     protocol: "Chat",
     modelId: "accounts/fireworks/models/glm-5p3",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
+  },
+  {
+    provider: "vercel-ai-gateway",
+    providerName: "Vercel AI Gateway",
+    modelId: "anthropic/claude-haiku-4.5",
+    rejection: "credit",
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "anthropic",
@@ -2518,21 +2525,21 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     providerName: "xAI",
     modelId: "grok-4.7",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "deepseek",
     providerName: "DeepSeek",
     modelId: "deepseek-flash",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
   {
     provider: "google",
     providerName: "Google",
     modelId: "gemini-3.8-flash",
     rejection: "credit",
-    rejectionText: /credit limit/,
+    rejectionText: /billing settings and available credits/,
   },
 ] as const) {
   const testLabel = protocol ? `${providerName} ${protocol}` : providerName;
@@ -2628,7 +2635,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
       apiKey: newKey,
       verifyInference: true,
     });
-    await expect(settings.getByRole("alert").filter({ hasText: rejectionText })).toBeVisible();
+    const refusal = settings.getByRole("alert").filter({ hasText: rejectionText });
+    await expect(refusal).toBeVisible();
     await expect(draft).toHaveValue(newKey);
+    if (provider === "vercel-ai-gateway") {
+      await refusal.scrollIntoViewIfNeeded();
+      await expect(refusal).toBeInViewport({ ratio: 0.98 });
+      await captureScreenshot(page, testInfo, "a1-vercel-ai-gateway-model-billing-refusal");
+    }
   });
 }

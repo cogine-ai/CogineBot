@@ -105,7 +105,7 @@ export const MODEL_INFERENCE_PROBE_MESSAGES = {
   accepted: "The model accepted the test request.",
   auth: "{provider} rejected the API key. Check your connection settings.",
   model: "This key cannot use the selected model.",
-  credit: RUN_ERROR_LIMIT_MESSAGES.credit.none,
+  credit: "Check your model provider's billing settings and available credits.",
   spending: RUN_ERROR_LIMIT_MESSAGES.spending.none,
   rate: "{provider} is rate limiting requests. Try again shortly.",
   timeout: "{provider} took too long to respond. Try again.",

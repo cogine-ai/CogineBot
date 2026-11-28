@@ -258,6 +258,8 @@ export const ZH_MESSAGES: Record<string, string> = {
   "{provider} key hit its limit.": "{provider}的密钥已达到限额。",
   "{provider} key hit its monthly limit.": "{provider}的密钥已达到每月限额。",
   "{provider} key hit its weekly limit.": "{provider}的密钥已达到每周限额。",
+  "Check your model provider's billing settings and available credits.":
+    "请检查模型提供商的账单设置和可用额度。",
   "{provider} reached its credit limit.": "{provider}已达到额度上限。",
   "{provider} reached its daily credit limit.": "{provider}已达到每日额度上限。",
   "{provider} reached its daily spending limit.": "{provider}已达到每日支出限额。",

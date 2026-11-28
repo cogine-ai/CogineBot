@@ -15,6 +15,7 @@ import {
   isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
+  isOfficialVercelGatewayClaudeProbeModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
@@ -62,6 +63,8 @@ export async function probeModelInference(
   }
   if (builtIn && isOfficialMiniMaxProbeModel(model))
     return probeNativeMessages(model, apiKey, options, miniMaxFailureStatus);
+  if (builtIn && isOfficialVercelGatewayClaudeProbeModel(model))
+    return probeNativeMessages(model, apiKey, options, vercelGatewayMessagesFailureStatus);
   if (builtIn && isOfficialFireworksProbeModel(model)) {
     return model.api === "anthropic-messages"
       ? probeNativeMessages(model, apiKey, options, fireworksFailureStatus)
@@ -282,6 +285,55 @@ async function probeNativeMessages(
     classifyFailure,
     (frame, event) => anthropicFrameOutcome(frame, model.id, classifyFailure, event),
   );
+}
+
+function vercelGatewayMessagesFailureStatus(
+  error: unknown,
+  status?: number,
+): ModelInferenceProbeStatus {
+  const record = probeRecord(error);
+  const type = record?.type;
+  const message = typeof error === "string" ? error : record?.message;
+  if ((status === 402 || status === undefined) && type === "quota_for_entity_exceeded")
+    return "spending";
+  if (status === 403 || status === undefined) {
+    const param = probeRecord(record?.param);
+    if (
+      type === "customer_verification_required" ||
+      (type === "no_providers_available" && param?.name === "RestrictedModelsError")
+    )
+      return "credit";
+    if (
+      (type === "forbidden" && typeof param?.ruleId === "string") ||
+      (typeof message === "string" &&
+        /^Your team(?: \([^)]+\))? has restricted access to this (?:model|provider)\b/i.test(
+          message.trim(),
+        ))
+    )
+      return "model";
+    if (status === 403) return type === "no_providers_available" ? "unavailable" : "auth";
+  }
+  // The same HTTP status is also used for an unknown endpoint.
+  if (status === 404 || status === undefined) {
+    if (
+      type === "model_not_found" ||
+      (typeof message === "string" && /^model not found\b/i.test(message.trim()))
+    )
+      return "model";
+    if (status === 404) return "unavailable";
+  }
+  if (status === undefined) {
+    switch (type) {
+      case "authentication_error":
+      case "permission_error":
+        return "auth";
+      case "billing_error":
+        return "credit";
+      case "rate_limit_error":
+        return "rate";
+    }
+  }
+  return nativeChatFailureStatus(undefined, status);
 }
 
 function fireworksFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {

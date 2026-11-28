@@ -13,6 +13,7 @@ import {
   isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
+  isOfficialVercelGatewayClaudeProbeModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
 } from "./pi-live-model.js";
@@ -187,6 +188,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
           isOfficialFireworksProbeModel(model) ||
           isOfficialGeminiProbeModel(model) ||
           isOfficialMiniMaxProbeModel(model) ||
+          isOfficialVercelGatewayClaudeProbeModel(model) ||
           isOfficialNativeChatProbeModel(model) ||
           isOpenRouterMessagesModel(model) ||
           (probeBaseUrl &&

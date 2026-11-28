@@ -7607,3 +7607,7 @@ msgstr "कनेक्ट करने पर एक परीक्षण अ�
 
 msgid "The model test timed out."
 msgstr "मॉडल परीक्षण की समय-सीमा समाप्त हो गई।"
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "अपने मॉडल प्रदाता की बिलिंग सेटिंग और उपलब्ध क्रेडिट देखें।"

@@ -1199,6 +1199,10 @@ msgid "This key cannot use the selected model."
 msgstr "此密钥无法使用所选模型。"
 
 #: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "请检查模型提供商的账单设置和可用额度。"
+
+#: src/lib/model-connection-preflight.ts
 msgid "Could not verify this model."
 msgstr "无法验证此模型。"
 

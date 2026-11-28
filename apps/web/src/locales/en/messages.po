@@ -1199,6 +1199,10 @@ msgid "This key cannot use the selected model."
 msgstr "This key cannot use the selected model."
 
 #: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "Check your model provider's billing settings and available credits."
+
+#: src/lib/model-connection-preflight.ts
 msgid "Could not verify this model."
 msgstr "Could not verify this model."
 
