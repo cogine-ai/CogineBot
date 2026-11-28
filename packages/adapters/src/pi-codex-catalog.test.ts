@@ -951,7 +951,7 @@ describe("applyCodexLiveCatalog", () => {
   const liveFor = (entries: Record<string, CodexCatalogModel[]>) =>
     new Map(Object.entries(entries));
 
-  it.each(["gpt-6.2-astra", "gpt-6.2-sol"])(
+  it.each(["gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol"])(
     "shows %s only for the OAuth connection whose catalog includes it",
     (modelId) => {
       const hasModel = (entries: readonly { provider: string; id: string }[]) =>
@@ -1009,6 +1009,21 @@ describe("applyCodexLiveCatalog", () => {
     expect(spark?.auth).toBe("oauth");
     expect(spark?.label).toBeTruthy();
     expect(spark?.billing).toBeTruthy();
+  });
+
+  it("omits Off when the connected account lists Terra without reasoning levels", () => {
+    const listed = applyCodexLiveCatalog(
+      base,
+      oauthAuth,
+      liveFor({ "secret-a": [liveModel("gpt-6.1-terra")] }),
+    );
+    expect(listed).toContainEqual(
+      expect.objectContaining({
+        provider: CHATGPT_OAUTH_PROVIDER,
+        id: "gpt-6.1-terra",
+        thinkingLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      }),
+    );
   });
 
   it("drops OAuth-governed models the live catalog does not list", () => {
