@@ -380,19 +380,20 @@ interface RecordedCall {
 
 type Script = (
   args: string[],
+  options: Parameters<RunDocker>[2],
 ) => Partial<RunDockerResult> & { lines?: string[]; wait?: Promise<void> };
 
 function fakeRun(calls: RecordedCall[], script: Script): RunDocker {
   return async (binary, args, options) => {
     calls.push({ binary, args, cwd: options.cwd, env: options.env });
-    const { lines = [], wait, ...reply } = script(args);
+    const { lines = [], wait, ...reply } = script(args, options);
     for (const line of lines) options.onLine?.(line);
     await wait;
     return { code: 0, stdout: "", stderr: "", ...reply };
   };
 }
 
-const ok: Script = (args) => {
+const ok = (args: string[]): ReturnType<Script> => {
   if (args[0] === "compose" && args[1] === "version") return { stdout: "2.29.0\n" };
   if (args[0] === "info") return { stdout: "27.1.1\n" };
   const subcommand = args[7];
@@ -690,6 +691,74 @@ describe("LocalStackController", () => {
       output: ["Error response from daemon: manifest unknown"],
     });
     expect(calls.map((call) => call.args[7] ?? call.args[0])).toEqual(["compose", "info", "pull"]);
+  });
+
+  it.each([
+    {
+      version: "2.29.0",
+      upArgs: [
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        String(COMPOSE_WAIT_TIMEOUT_S),
+        "--pull",
+        "never",
+      ],
+    },
+    { version: "2.8.0", upArgs: ["up", "-d", "--pull", "never"] },
+    { version: "2.7.0", upArgs: ["up", "-d"] },
+  ])("recovers from a missing helper on Compose $version", async ({ version, upArgs }) => {
+    const dockerConfig = path.join(root, "docker");
+    const config = {
+      currentContext: "colima",
+      credsStore: "desktop",
+      credHelpers: { "ghcr.io": "desktop", "registry.example": "osxkeychain" },
+      auths: { "mirror.example": { auth: "dGVzdDp0ZXN0" } },
+    };
+    await mkdir(path.join(dockerConfig, "contexts"), { recursive: true });
+    await mkdir(path.join(dockerConfig, "cli-plugins"));
+    await writeFile(path.join(dockerConfig, "contexts", "marker"), "context");
+    await writeFile(path.join(dockerConfig, "cli-plugins", "marker"), "plugin");
+    await writeFile(path.join(dockerConfig, "config.json"), JSON.stringify(config));
+
+    let retryConfig: string | undefined;
+    const stack = controller(
+      { env: { DOCKER_CONFIG: "../docker", DOCKER_CONTEXT: "colima" } },
+      (args, options) => {
+        if (args[0] === "compose" && args[1] === "version") return { stdout: version };
+        if (args[7] !== "pull") return ok(args);
+        if (options.env.DOCKER_CONFIG === "../docker") {
+          return {
+            code: 1,
+            stderr:
+              'error getting credentials - err: exec: "docker-credential-desktop": executable file not found in $PATH, out: ``',
+          };
+        }
+        retryConfig = options.env.DOCKER_CONFIG!;
+        expect(options.env.DOCKER_CONTEXT).toBe("colima");
+        expect(options.env.DOCKER_CERT_PATH).toBe(dockerConfig);
+        const { credsStore: _, ...retained } = config;
+        expect(JSON.parse(readFileSync(path.join(retryConfig, "config.json"), "utf8"))).toEqual({
+          ...retained,
+          credHelpers: { "registry.example": "osxkeychain" },
+        });
+        expect(readFileSync(path.join(retryConfig, "contexts", "marker"), "utf8")).toBe("context");
+        expect(readFileSync(path.join(retryConfig, "cli-plugins", "marker"), "utf8")).toBe(
+          "plugin",
+        );
+        return ok(args);
+      },
+    );
+    expect((await stack.start()).phase).toBe("ready");
+    expect(calls.filter((call) => call.args[7] === "pull")).toHaveLength(2);
+    const up = calls.find((call) => call.args[7] === "up");
+    expect(up?.args.slice(7)).toEqual(upArgs);
+    expect(up?.env.DOCKER_CONFIG).toBe("../docker");
+    await expect(stat(retryConfig!)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(path.join(dockerConfig, "config.json"), "utf8")).resolves.toBe(
+      JSON.stringify(config),
+    );
   });
 
   it("reports interruption instead of a pull failure when docker returns 130", async () => {

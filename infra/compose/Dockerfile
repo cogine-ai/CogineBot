@@ -1,4 +1,6 @@
 FROM node:22.23.5-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
+# Build as root and run as node with the same pnpm cache. The database migration has no internet.
+ENV COREPACK_HOME=/opt/corepack
 RUN corepack enable
 WORKDIR /app
 # Manifests land before the source tree so editing a source file does not re-run the
@@ -40,4 +42,5 @@ ENV NODE_ENV=production
 ENV GIT_SHA=$GIT_SHA
 EXPOSE 3100 5173 7091
 USER node
+RUN --network=none pnpm --version
 CMD ["pnpm", "--filter", "@rakazo/api", "start"]

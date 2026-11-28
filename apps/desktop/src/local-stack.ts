@@ -5,10 +5,12 @@ import type { DesktopLocalStackState } from "@rakazo/contracts";
 import type { DockerFailureKind, RunDocker, RunDockerResult } from "./docker-cli.js";
 import {
   classifyDockerFailure,
+  composeSupportsUpPull,
   composeSupportsWaitTimeout,
   dockerSpawnEnv,
   resolveDockerBinary,
 } from "./docker-cli.js";
+import { retryPullWithoutMissingHelpers } from "./docker-pull-config.js";
 import { readPrivateFile, writePrivateFile } from "./setup-store.js";
 
 export const STACK_DIR_NAME = "stack";
@@ -491,7 +493,19 @@ export class LocalStackController {
     this.currentStackToken = stackToken;
 
     this.push({ type: "pull-start" });
-    const pulled = await this.compose(binary, ["pull"], PULL_TIMEOUT_MS, signal);
+    let pulled = await this.compose(binary, ["pull"], PULL_TIMEOUT_MS, signal);
+    let recoveredPull = false;
+    if (pulled.code !== 0 && !interrupted(signal, pulled)) {
+      const retried = await retryPullWithoutMissingHelpers(
+        pulled,
+        { cwd: this.deps.stackDir, env: this.deps.env, platform: this.deps.platform, signal },
+        (env) => this.compose(binary, ["pull"], PULL_TIMEOUT_MS, signal, env),
+      );
+      if (retried !== null) {
+        pulled = retried;
+        recoveredPull = true;
+      }
+    }
     if (interrupted(signal, pulled))
       return this.push({ type: "failed", message: START_INTERRUPTED });
     if (pulled.code !== 0) {
@@ -515,6 +529,10 @@ export class LocalStackController {
     const upArgs = composeSupportsWaitTimeout(version.stdout)
       ? ["up", "-d", "--wait", "--wait-timeout", String(COMPOSE_WAIT_TIMEOUT_S)]
       : ["up", "-d"];
+    // The recovered pull fetched every image, including any override tagged latest.
+    if (recoveredPull && composeSupportsUpPull(version.stdout)) {
+      upArgs.push("--pull", "never");
+    }
     await writePrivateFile(path.join(this.deps.stackDir, STACK_WEB_URL_FILE), this.currentWebUrl);
     let up = await this.compose(binary, upArgs, UP_TIMEOUT_MS, signal);
     for (
@@ -604,6 +622,7 @@ export class LocalStackController {
     timeoutMs: number,
     signal?: AbortSignal,
     quiet = false,
+    envOverrides: Record<string, string> = {},
   ) {
     return this.deps.run(binary, args, {
       cwd: this.deps.stackDir,
@@ -620,6 +639,7 @@ export class LocalStackController {
         WEB_ORIGIN: this.currentWebUrl,
         API_URL: this.currentWebUrl,
         COMPOSE_PROGRESS: "plain",
+        ...envOverrides,
       }),
       timeoutMs,
       signal,
@@ -627,7 +647,13 @@ export class LocalStackController {
     });
   }
 
-  private compose(binary: string, args: string[], timeoutMs: number, signal?: AbortSignal) {
+  private compose(
+    binary: string,
+    args: string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+    envOverrides?: Record<string, string>,
+  ) {
     return this.docker(
       binary,
       [
@@ -642,6 +668,8 @@ export class LocalStackController {
       ],
       timeoutMs,
       signal,
+      false,
+      envOverrides,
     );
   }
 }

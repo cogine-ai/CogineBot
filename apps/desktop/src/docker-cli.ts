@@ -286,11 +286,20 @@ export function classifyDockerFailure(output: string): DockerFailureKind {
   return "other";
 }
 
-/** `up --wait --wait-timeout` needs Compose 2.17; older plugins get a plain `up -d`. */
-export function composeSupportsWaitTimeout(versionText: string): boolean {
+function composeVersionAtLeast(versionText: string, minimumMinor: number): boolean {
   const match = versionText.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
   if (!match) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major > 2 || (major === 2 && minor >= 17);
+  return major > 2 || (major === 2 && minor >= minimumMinor);
+}
+
+/** `up --wait --wait-timeout` needs Compose 2.17. */
+export function composeSupportsWaitTimeout(versionText: string): boolean {
+  return composeVersionAtLeast(versionText, 17);
+}
+
+/** `up --pull never` needs Compose 2.8. */
+export function composeSupportsUpPull(versionText: string): boolean {
+  return composeVersionAtLeast(versionText, 8);
 }
