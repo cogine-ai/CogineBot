@@ -15,7 +15,7 @@ import {
   isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
-  isOfficialVercelGatewayClaudeProbeModel,
+  isOfficialVercelGatewayMessagesProbeModel,
   isOfficialXaiResponsesProbeModel,
   isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
@@ -63,7 +63,7 @@ export async function probeModelInference(
   }
   if (builtIn && isOfficialMiniMaxProbeModel(model))
     return probeNativeMessages(model, apiKey, options, miniMaxFailureStatus);
-  if (builtIn && isOfficialVercelGatewayClaudeProbeModel(model))
+  if (builtIn && isOfficialVercelGatewayMessagesProbeModel(model))
     return probeNativeMessages(model, apiKey, options, vercelGatewayMessagesFailureStatus);
   if (builtIn && isOfficialFireworksProbeModel(model)) {
     return model.api === "anthropic-messages"

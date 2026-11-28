@@ -48,11 +48,19 @@ const fireworksChatInput = {
   ...fireworksInput,
   modelId: "accounts/fireworks/models/glm-5p3",
 };
-const vercelClaudeInput = {
+const vercelGatewayInput = {
   provider: "vercel-ai-gateway",
-  modelId: "anthropic/claude-haiku-4.5",
   apiKey: "fixture-vercel-gateway-key",
 };
+const vercelClaudeInput = {
+  ...vercelGatewayInput,
+  modelId: "anthropic/claude-haiku-4.5",
+};
+const vercelDeepSeekInputs = [
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4.1-flash",
+].map((modelId) => ({ ...vercelGatewayInput, modelId }));
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -1541,8 +1549,12 @@ describe("model inference check", () => {
     { selectedInput: miniMaxInput, endpoint: "https://api.minimax.io/anthropic/v1/messages" },
     { selectedInput: fireworksInput, endpoint: "https://api.fireworks.ai/inference/v1/messages" },
     { selectedInput: vercelClaudeInput, endpoint: "https://ai-gateway.vercel.sh/v1/messages" },
+    ...vercelDeepSeekInputs.map((selectedInput) => ({
+      selectedInput,
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+    })),
   ] as const)(
-    "tests $selectedInput.provider Messages using the selected key",
+    "tests $selectedInput.provider $selectedInput.modelId Messages using the selected key",
     async ({ selectedInput, endpoint }) => {
       vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
       vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
@@ -1614,6 +1626,9 @@ describe("model inference check", () => {
     ["vercel-ai-gateway", "anthropic/claude-fable-5.1"],
     ["vercel-ai-gateway", "anthropic/claude-sonnet-99"],
     ["vercel-ai-gateway", "zai/glm-5v-turbo"],
+    ["vercel-ai-gateway", "deepseek/deepseek-v4.1-flash-fast"],
+    ["vercel-ai-gateway", "deepseek/deepseek-v4-flash-vision-exp"],
+    ["vercel-ai-gateway", "deepseek/deepseek-v4-flash-0731"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1641,6 +1656,18 @@ describe("model inference check", () => {
       listPiCatalog().find((m) => m.provider === "vercel-ai-gateway" && m.id === modelId)
         ?.inferenceProbe,
     ).toBe(true);
+  });
+
+  it("does not accept a different Vercel DeepSeek model from the selected one", async () => {
+    const selectedInput = { ...vercelGatewayInput, modelId: "deepseek/deepseek-v4.1-flash" };
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () =>
+        new Response(anthropicStart.replace(anthropicInput.modelId, "deepseek/deepseek-v4-flash"), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+    );
+    expect(await probeModelInference(selectedInput, { fetch })).toBe("unavailable");
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it.each([

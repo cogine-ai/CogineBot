@@ -3547,6 +3547,22 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429, type: "rate_limit_error" },
     },
+    {
+      provider: "vercel-ai-gateway",
+      modelId: "deepseek/deepseek-v4.1-flash",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"deepseek/deepseek-v4.1-flash"}}\n\n',
+      rejection: {
+        type: "forbidden",
+        message: "Select a model approved for your team.",
+        param: { ruleId: "fixture-rule" },
+      },
+      rejectionHttpStatus: 403,
+      distinctFailure: "model",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({

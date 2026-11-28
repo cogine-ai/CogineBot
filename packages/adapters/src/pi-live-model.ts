@@ -125,14 +125,21 @@ export function isOfficialFireworksProbeModel(
   );
 }
 
-export function isOfficialVercelGatewayClaudeProbeModel(
+const vercelGatewayDeepSeekProbeIds = new Set([
+  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
+  "deepseek/deepseek-v4.1-flash",
+]);
+
+export function isOfficialVercelGatewayMessagesProbeModel(
   model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
 ) {
   return (
     model.provider === "vercel-ai-gateway" &&
     model.api === "anthropic-messages" &&
     model.baseUrl === "https://ai-gateway.vercel.sh" &&
-    /^anthropic\/claude-(?:haiku|sonnet|opus)-\d+(?:\.\d+)?$/.test(model.id)
+    (/^anthropic\/claude-(?:haiku|sonnet|opus)-\d+(?:\.\d+)?$/.test(model.id) ||
+      vercelGatewayDeepSeekProbeIds.has(model.id))
   );
 }
 
