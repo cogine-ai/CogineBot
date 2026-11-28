@@ -7,6 +7,7 @@ import {
   BUILTIN_AGENT_SKILLS,
   canonicalBotPackageJson,
   EncryptedSecretStore,
+  listPiCatalog,
 } from "@rakazo/adapters";
 import type {
   Actor,
@@ -1182,83 +1183,103 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
     ).toMatchObject({ modelProvider: null, modelId: null, modelCredentialId: null });
   });
 
-  it("honors model availability on the exact saved subscription account", async () => {
-    const owner = await account();
-    const model = { provider: "openai-codex", modelId: "gpt-5.3-codex-spark" };
-    const value = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
-    const secret = await new EncryptedSecretStore("offline-package-http-fixture-key").put(
-      JSON.stringify({
-        type: "oauth",
-        access: "synthetic-access",
-        refresh: "synthetic-refresh",
-        expires: Date.now() + 60_000,
-        accountId: "fixture-account",
-      }),
-      {
-        ...owner.actor,
-        operationId: "fixture",
-        traceId: "fixture",
-        signal: AbortSignal.timeout(5000),
-      },
-    );
-    await database.prisma.secret.create({
-      data: {
-        id: secret.id,
-        userId: owner.actor.userId,
-        kind: "model",
-        ciphertext: secret.ciphertext,
-      },
-    });
-    const credential = await database.prisma.userModelCredential.create({
-      data: {
-        userId: owner.actor.userId,
-        provider: model.provider,
-        label: "Fixture",
-        secretId: secret.id,
-      },
-    });
-    await database.prisma.spaceModelPreference.create({
-      data: {
-        userId: owner.actor.userId,
-        spaceId: owner.actor.spaceId,
-        credentialId: credential.id,
-        modelId: model.modelId,
-      },
-    });
-    readCodexCatalog.mockResolvedValue([]);
-    expect(await preview(owner, value)).toMatchObject({ canImport: false });
-    const available = [
-      {
-        slug: model.modelId,
+  it.each([
+    { id: "gpt-5.3-codex-spark", directoryOnly: false },
+    { id: "gpt-fixture-backup-directory-model", directoryOnly: true },
+  ])(
+    "honors $id availability on the exact saved subscription account",
+    async ({ id, directoryOnly }) => {
+      const owner = await account();
+      const model = { provider: "openai-codex", modelId: id };
+      const value = { format: AGENT_BACKUP_FORMAT, source: "hermes", files: [], model };
+      const secret = await new EncryptedSecretStore("offline-package-http-fixture-key").put(
+        JSON.stringify({
+          type: "oauth",
+          access: "synthetic-access",
+          refresh: "synthetic-refresh",
+          expires: Date.now() + 60_000,
+          accountId: "fixture-account",
+        }),
+        {
+          ...owner.actor,
+          operationId: "fixture",
+          traceId: "fixture",
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      await database.prisma.secret.create({
+        data: {
+          id: secret.id,
+          userId: owner.actor.userId,
+          kind: "model",
+          ciphertext: secret.ciphertext,
+        },
+      });
+      const credential = await database.prisma.userModelCredential.create({
+        data: {
+          userId: owner.actor.userId,
+          provider: model.provider,
+          label: "Fixture",
+          secretId: secret.id,
+        },
+      });
+      await database.prisma.spaceModelPreference.create({
+        data: {
+          userId: owner.actor.userId,
+          spaceId: owner.actor.spaceId,
+          credentialId: credential.id,
+          modelId: model.modelId,
+        },
+      });
+      readCodexCatalog.mockResolvedValue([]);
+      expect(await preview(owner, value)).toMatchObject({ canImport: false });
+      const known = listPiCatalog().filter(({ provider }) => provider === model.provider);
+      const ids = directoryOnly
+        ? [...known.slice(0, Math.ceil(known.length / 4)).map(({ id }) => id), model.modelId]
+        : [model.modelId];
+      const available = ids.map((slug) => ({
+        slug,
         reasoningEfforts: [],
         supportsImages: false,
         supportsFastTier: true,
-      },
-    ];
-    readCodexCatalog.mockResolvedValue(available);
-    const reviewed = await preview(owner, value);
-    expect(reviewed.model).toEqual(model);
-    expect(JSON.stringify(reviewed)).not.toContain("fixture-account");
-    expect(JSON.stringify(reviewed)).not.toContain("synthetic-access");
-    expect(readCodexCatalog).toHaveBeenLastCalledWith(
-      owner.actor.userId,
-      expect.objectContaining({ accountId: "fixture-account" }),
-      undefined,
-    );
-    const receipt = await importPackage(owner, reviewed);
-    expect(receipt.status).toBe("completed");
-    expect(
-      await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } }),
-    ).toMatchObject({ modelCredentialId: credential.id, modelId: model.modelId });
-    expect(readCodexCatalog).toHaveBeenLastCalledWith(
-      owner.actor.userId,
-      expect.objectContaining({ accountId: "fixture-account" }),
-      { cacheOnly: true },
-    );
-    const prior = await preview(owner, value);
-    readCodexCatalog.mockResolvedValue([]);
-    expect(await importPackage(owner, prior)).toMatchObject({ status: "cancelled", botId: null });
-  });
+      }));
+      readCodexCatalog.mockResolvedValue(available);
+      const reviewed = await preview(owner, value);
+      expect(reviewed.model).toEqual(model);
+      expect(JSON.stringify(reviewed)).not.toContain("fixture-account");
+      expect(JSON.stringify(reviewed)).not.toContain("synthetic-access");
+      const connection = {
+        secretId: credential.secretId,
+        connectionRevision: credential.connectionRevision,
+      };
+      expect(readCodexCatalog).toHaveBeenLastCalledWith(
+        owner.actor.userId,
+        expect.objectContaining({
+          accountId: "fixture-account",
+          ...(directoryOnly ? { connection: expect.objectContaining(connection) } : {}),
+        }),
+        directoryOnly ? expect.objectContaining({ freshOnly: true, cacheOnly: false }) : undefined,
+      );
+      const receipt = await importPackage(owner, reviewed);
+      expect(receipt.status).toBe("completed");
+      expect(
+        await database.prisma.bot.findUniqueOrThrow({ where: { id: receipt.botId! } }),
+      ).toMatchObject({ modelCredentialId: credential.id, modelId: model.modelId });
+      expect(readCodexCatalog).toHaveBeenLastCalledWith(
+        owner.actor.userId,
+        expect.objectContaining({
+          accountId: "fixture-account",
+          ...(directoryOnly ? { connection: expect.objectContaining(connection) } : {}),
+        }),
+        directoryOnly
+          ? expect.objectContaining({ freshOnly: true, cacheOnly: true })
+          : { cacheOnly: true },
+      );
+      const prior = await preview(owner, value);
+      readCodexCatalog.mockResolvedValue([]);
+      expect(await importPackage(owner, prior)).toMatchObject({ status: "cancelled", botId: null });
+    },
+  );
 
   it("binds the receipt to the selected backup files even when the Bot documents match", async () => {
     const owner = await account();
