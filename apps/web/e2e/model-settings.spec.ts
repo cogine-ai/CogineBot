@@ -2426,7 +2426,7 @@ test("tests model access with the selected saved or draft API key", async ({ pag
   ).toBeInViewport({ ratio: 1 });
 });
 
-for (const { provider, providerName, modelId, rejection, rejectionText, protocol } of [
+for (const { provider, providerName, modelId, rejection, rejectionText, variant } of [
   {
     provider: "openrouter",
     providerName: "OpenRouter",
@@ -2440,7 +2440,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     modelId: "anthropic/claude-sonnet-4.6",
     rejection: "spending",
     rejectionText: /spending limit/,
-    protocol: "Messages",
+    variant: "Messages",
   },
   {
     provider: "groq",
@@ -2501,7 +2501,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
   {
     provider: "fireworks",
     providerName: "Fireworks",
-    protocol: "Chat",
+    variant: "Chat",
     modelId: "accounts/fireworks/models/glm-5p3",
     rejection: "credit",
     rejectionText: /billing settings and available credits/,
@@ -2512,6 +2512,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     modelId: "anthropic/claude-haiku-4.5",
     rejection: "credit",
     rejectionText: /billing settings and available credits/,
+  },
+  {
+    provider: "vercel-ai-gateway",
+    providerName: "Vercel AI Gateway",
+    variant: "DeepSeek",
+    modelId: "deepseek/deepseek-v4.1-flash",
+    rejection: "model",
+    rejectionText: /cannot use the selected model/,
   },
   {
     provider: "anthropic",
@@ -2542,13 +2550,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /billing settings and available credits/,
   },
 ] as const) {
-  const testLabel = protocol ? `${providerName} ${protocol}` : providerName;
+  const testLabel = variant ? `${providerName} ${variant}` : providerName;
+  const screenshotPrefix = variant ? `${provider}-${variant.toLowerCase()}` : provider;
   test(`offers the ${testLabel} model test and checks the replacement key before saving`, async ({
     page,
   }, testInfo) => {
     await signup(
       page,
-      `provider-check-${provider}-${Date.now()}@example.test`,
+      `provider-check-${screenshotPrefix}-${Date.now()}@example.test`,
       "password12",
       "Model fixture",
     );
@@ -2614,7 +2623,6 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     await expect(
       settings.getByRole("status").filter({ hasText: "accepted the test request" }),
     ).toBeInViewport({ ratio: 0.98 });
-    const screenshotPrefix = protocol ? `${provider}-${protocol.toLowerCase()}` : provider;
     await captureScreenshot(page, testInfo, `a1-${screenshotPrefix}-model-test-accepted`);
 
     const draft = settings.getByLabel("Replace API key", { exact: true });
@@ -2638,7 +2646,7 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     const refusal = settings.getByRole("alert").filter({ hasText: rejectionText });
     await expect(refusal).toBeVisible();
     await expect(draft).toHaveValue(newKey);
-    if (provider === "vercel-ai-gateway") {
+    if (provider === "vercel-ai-gateway" && rejection === "credit") {
       await refusal.scrollIntoViewIfNeeded();
       await expect(refusal).toBeInViewport({ ratio: 0.98 });
       await captureScreenshot(page, testInfo, "a1-vercel-ai-gateway-model-billing-refusal");
