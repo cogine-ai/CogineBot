@@ -173,6 +173,7 @@ export function withConnectionCatalogModels(
         ModelCredential,
         | "provider"
         | "providerListedModelIds"
+        | "connectionCatalogModels"
         | "savedProviderCatalogModelIds"
         | "providerCatalogInferenceProbe"
         | "savedModelDirectory"
@@ -185,6 +186,8 @@ export function withConnectionCatalogModels(
 ): ConnectionCatalogEntry[] {
   if (!credential || revision === undefined || revision !== credential.connectionRevision)
     return models;
+  if (!draftKey.trim() && credential.connectionCatalogModels?.length)
+    return [...models, ...credential.connectionCatalogModels];
   const provider = canonicalPiProviderId(credential.provider);
   const anchor = models.find((entry) => canonicalPiProviderId(entry.provider) === provider);
   if (!anchor) return models;

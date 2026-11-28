@@ -21,12 +21,12 @@ import {
   modelCredentialAuthKindFromPlaintext,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
 } from "./pi-catalog-availability.js";
-import type { CodexLiveCatalog, CodexLiveReadOptions } from "./pi-codex-catalog.js";
-import {
-  applyCodexLiveCatalog,
-  codexLiveListsModel,
-  readCodexLiveModels,
+import type {
+  CodexCatalogModel,
+  CodexLiveCatalog,
+  CodexLiveReadOptions,
 } from "./pi-codex-catalog.js";
+import { applyCodexLiveCatalog, codexLiveModel, readCodexLiveModels } from "./pi-codex-catalog.js";
 import { providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -239,6 +239,8 @@ export function validateModelAuthAvailability(
   const catalogEntry = listPiCatalog().find(
     (item) => item.provider === provider && item.id === modelId,
   );
+  if (provider === CHATGPT_OAUTH_PROVIDER && !catalogEntry)
+    return UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE;
   if (!catalogModelAvailableForAuth(provider, modelId, authKind, catalogEntry?.auth)) {
     return UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE;
   }
@@ -317,7 +319,7 @@ export async function prepareStoredModelAuth(
   modelId: string,
   live?: CodexLiveCatalog,
   liveOpts?: CodexLiveReadOptions,
-): Promise<{ ref: string | null; auth: StoredModelAuthRead }> {
+): Promise<{ ref: string | null; auth: StoredModelAuthRead; codexModel?: CodexCatalogModel }> {
   const secret = await loadStoredModelSecret(prisma, secretStore, userId, secretId);
   if (secret.status === "missing") return { ref: null, auth: { status: "unreadable" } };
   if (secret.status === "unreadable") {
@@ -332,12 +334,15 @@ export async function prepareStoredModelAuth(
     return { ref: secret.ciphertext, auth: { status: "unreadable" } };
   }
   // validateModelAuthAvailability already parsed the secret without throwing.
-  if (
-    message &&
-    provider === CHATGPT_OAUTH_PROVIDER &&
-    (await codexLiveListsModel(live, userId, parseModelSecret(plaintext), modelId, liveOpts))
-  ) {
-    return { ref: secret.ciphertext, auth: { status: "ready" } };
+  if (message && provider === CHATGPT_OAUTH_PROVIDER) {
+    const codexModel = await codexLiveModel(
+      live,
+      userId,
+      parseModelSecret(plaintext),
+      modelId,
+      liveOpts,
+    );
+    if (codexModel) return { ref: secret.ciphertext, auth: { status: "ready" }, codexModel };
   }
   return {
     ref: secret.ciphertext,

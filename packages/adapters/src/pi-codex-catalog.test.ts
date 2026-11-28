@@ -6,6 +6,7 @@ import {
   applyCodexLiveCatalog,
   CODEX_MODELS_ENDPOINT,
   CodexCatalogCache,
+  codexConnectionDirectory,
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
   fetchCodexCatalog,
@@ -666,6 +667,33 @@ describe("CodexCatalogCache", () => {
 describe("codexLiveListsModel", () => {
   const oauthSecret = (access = ACCESS_TOKEN, expiresInMs = 3_600_000, accountId = ACCOUNT_ID) =>
     parseModelSecret(oauthPlaintext(access, expiresInMs, accountId));
+
+  it("requires a trusted account list and a runnable chat slug for directory-only models", async () => {
+    const id = "gpt-fixture-directory";
+    const media = "gpt-fixture-image";
+    const dynamic = liveModel(id, { reasoningEfforts: ["low", "unknown"], supportsImages: true });
+    const models = [liveModel(LUNA), dynamic, liveModel(media), liveModel("unknown/path")];
+    const catalog = { read: async () => models };
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id)).resolves.toBe(true);
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), media)).resolves.toBe(false);
+    await expect(
+      codexLiveListsModel({ read: async () => [dynamic] }, "user-1", oauthSecret(), id),
+    ).resolves.toBe(false);
+    expect(codexConnectionDirectory(models, id)).toEqual({
+      models: [
+        expect.objectContaining({ id, auth: "oauth", images: true, thinkingLevels: ["low"] }),
+      ],
+      savedModelDirectory: undefined,
+    });
+    expect(codexConnectionDirectory([liveModel(LUNA)], id)).toEqual({
+      models: [expect.objectContaining({ id, images: false, thinkingLevels: ["off"] })],
+      savedModelDirectory: { confirmationRequired: true, notListed: true },
+    });
+    expect(codexConnectionDirectory(undefined, id).savedModelDirectory).toEqual({
+      confirmationRequired: true,
+      confirmationUnavailable: true,
+    });
+  });
 
   it("confirms a model the credential's own account catalog lists", async () => {
     const read = vi.fn(async () => [liveModel(SPARK)]);

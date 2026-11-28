@@ -59,6 +59,8 @@ import {
   canTrustComputerGoneError,
   canUsePlatformModel,
   clearInactiveUserComputerControl,
+  codexConnectionDirectory,
+  codexDirectoryModel,
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
   commentTicket,
@@ -106,6 +108,7 @@ import {
   listPiCatalog,
   listScratchpadItems,
   listSpaceBotCredentialMetadata,
+  liveThinkingLevels,
   loadStoredModelSecret,
   lockModelOAuthProvider,
   McpOAuthBroker,
@@ -140,6 +143,7 @@ import {
   queueComputerUpdate,
   RoutineTimingError,
   readChatGPTPlanModels,
+  readCodexLiveModels,
   releaseComputerExecutionLease,
   repeatStartAt,
   replaceComputer,
@@ -2143,11 +2147,8 @@ export function createRouter(deps: RouterDeps) {
                 });
               return { credential: modelCredentialDto(selected) };
             }
-            if (!catalogCache || credential.authKind !== "api_key" || signal?.aborted)
-              return { credential };
+            if (!input?.includeProviderCatalog || signal?.aborted) return { credential };
             const secret = parseModelSecret(plaintext);
-            if (secret.kind !== "api_key") return { credential };
-            const apiKey = secret.key.trim();
             const snapshot = {
               id: row.id,
               userId,
@@ -2156,6 +2157,22 @@ export function createRouter(deps: RouterDeps) {
               connectionRevision: row.connectionRevision,
               ciphertext,
             };
+            if (row.provider === CHATGPT_OAUTH_PROVIDER && secret.kind === "oauth") {
+              probeAuthorization ??= stillAuthorized?.() ?? Promise.resolve(true);
+              if (!(await probeAuthorization) || signal?.aborted) return { credential };
+              const models = await readCodexLiveModels(codexCatalog, userId, secret, {
+                onExpiredToken: () => refreshExpiredCredential(actor, row.secretId, row.provider),
+              });
+              return {
+                credential,
+                codexDirectory: {
+                  models,
+                  current: () => modelCatalogConnectionCurrent(deps.prisma, snapshot),
+                },
+              };
+            }
+            if (!catalogCache || secret.kind !== "api_key") return { credential };
+            const apiKey = secret.key.trim();
             const current = () => modelCatalogKeyCurrent(deps, snapshot, apiKey);
             const { models: listed, fresh } = await catalogCache.observe(
               snapshot,
@@ -2176,11 +2193,23 @@ export function createRouter(deps: RouterDeps) {
           }),
         );
         const credentials = readback.map(({ credential }) => credential);
-        if (!readback.some((entry) => entry.catalog) || signal?.aborted) return credentials;
+        if (!readback.some((entry) => entry.catalog || entry.codexDirectory) || signal?.aborted)
+          return credentials;
         try {
           if (stillAuthorized && !(await stillAuthorized())) return credentials;
           const verified = await Promise.all(
-            readback.map(async ({ credential, catalog }) => {
+            readback.map(async ({ credential, catalog, codexDirectory }) => {
+              if (codexDirectory && (await codexDirectory.current())) {
+                const directory = codexConnectionDirectory(
+                  codexDirectory.models,
+                  credential.modelId,
+                );
+                return {
+                  ...credential,
+                  ...(directory.models.length ? { connectionCatalogModels: directory.models } : {}),
+                  savedModelDirectory: directory.savedModelDirectory,
+                };
+              }
               if (!catalog || !(await catalog.current())) return credential;
               const savedModel = credential.modelId;
               const listed = withCatalogModelAliases(credential.provider, catalog.listed);
@@ -2911,10 +2940,11 @@ export function createRouter(deps: RouterDeps) {
                           checked.plaintext,
                           input.modelId,
                         ).allowed
-                      : listPiCatalog().find(
+                      : (prepared?.catalogThinkingLevels ??
+                        listPiCatalog().find(
                           (entry) =>
                             entry.provider === input.provider && entry.id === input.modelId,
-                        )?.thinkingLevels;
+                        )?.thinkingLevels);
                   const dormant =
                     input.thinkingLevel === undefined &&
                     checked.credential.defaultModel === input.modelId &&
@@ -10509,11 +10539,15 @@ async function prepareBoundModelAuth(
       legacyOpenRouterModel:
         credential.defaultModel === binding.modelId &&
         isLegacyConfiguredOpenRouterModel(credential, secret, binding.modelId),
-      catalogModelId: deps.providerCatalogSelections
-        ?.read(credential, secret)
-        .includes(binding.modelId)
-        ? binding.modelId
-        : undefined,
+      catalogModelId:
+        prepared.codexModel ||
+        deps.providerCatalogSelections?.read(credential, secret).includes(binding.modelId)
+          ? binding.modelId
+          : undefined,
+      catalogThinkingLevels:
+        prepared.codexModel &&
+        (liveThinkingLevels(prepared.codexModel) ??
+          (!isCatalogModelChoice(binding.modelProvider, binding.modelId) ? ["off"] : undefined)),
     };
   } catch (error) {
     if (error instanceof SecretStoreUnavailableError)
@@ -10784,13 +10818,13 @@ async function persistModelCredential(
   const modelAuthError = async (modelId: string) => {
     const error = validateModelAuthAvailability(input.provider, modelId, input.plaintext);
     // The account's live catalog may clear a static OAuth exclusion.
-    return error &&
-      !(await codexLiveListsModel(
-        codexCatalog,
-        actor.userId,
-        parseModelSecret(input.plaintext),
-        modelId,
-      ))
+    if (!error || input.provider !== CHATGPT_OAUTH_PROVIDER) return error;
+    return !(await codexLiveListsModel(
+      codexCatalog,
+      actor.userId,
+      parseModelSecret(input.plaintext),
+      modelId,
+    ))
       ? error
       : undefined;
   };
@@ -10870,8 +10904,16 @@ async function persistModelCredential(
             throw modelConnectionChanged();
           const retainedModel =
             input.oauthSession && !requestedModelId ? usableModelId(previous?.modelId) : undefined;
+          const retainedDirectoryModel = Boolean(
+            retainedModel &&
+              input.provider === CHATGPT_OAUTH_PROVIDER &&
+              !isCatalogModelChoice(input.provider, retainedModel) &&
+              codexDirectoryModel(retainedModel),
+          );
           const defaultModel =
-            retainedModel && !(await modelAuthError(retainedModel)) ? retainedModel : fallbackModel;
+            retainedModel && (retainedDirectoryModel || !(await modelAuthError(retainedModel)))
+              ? retainedModel
+              : fallbackModel;
           const allowedThinking = !defaultModel
             ? undefined
             : input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
@@ -10992,8 +11034,9 @@ async function persistModelCredential(
               previous?.modelId === usableModelId(defaultModel) ? previous.thinkingLevel : null;
             preserveDormantThinking =
               previous?.modelId === usableModelId(defaultModel) &&
-              input.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
-              allowedThinking?.every((level) => level === "off") === true;
+              (retainedDirectoryModel ||
+                (input.provider === OPENAI_COMPATIBLE_PROVIDER_ID &&
+                  allowedThinking?.every((level) => level === "off") === true));
           }
           // Connect and limit saves can still carry an effort chosen for the previous
           // model. Preserve an untouched dormant choice only for the same model.

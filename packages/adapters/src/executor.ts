@@ -14219,7 +14219,7 @@ async function resolveModelKey(
           // first — rotating a stale token the way any run would — then ask.
           let liveListed = false;
           if (
-            provider !== CHATGPT_PLAN_PROVIDER_ID &&
+            provider === CHATGPT_OAUTH_PROVIDER &&
             deps.codexCatalog &&
             parseModelSecret(plaintext).kind === "oauth"
           ) {

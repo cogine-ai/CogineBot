@@ -119,6 +119,8 @@ function responsesMessage(text: string) {
   };
 }
 
+const subscriptionDirectoryModel = "gpt-fixture-subscription-discovered";
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   it.each([
     { provider: "openai", modelId: "gpt-6.1-terra" },
@@ -128,6 +130,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     { provider: "openai", modelId: "gpt-6.2-sol" },
     { provider: "openai-codex", modelId: "gpt-6.2-astra" },
     { provider: "openai-codex", modelId: "gpt-6.2-sol" },
+    { provider: "openai-codex", modelId: subscriptionDirectoryModel },
     { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-astra" },
     { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-sol" },
   ])(
@@ -135,6 +138,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     async ({ provider, modelId }) => {
       const gateway = provider === "vercel-ai-gateway";
       const codex = provider === "openai-codex";
+      const discovered = modelId === subscriptionDirectoryModel;
       const endpoint = gateway
         ? "https://ai-gateway.vercel.sh/v1/messages"
         : codex
@@ -142,10 +146,14 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           : "https://api.openai.com/v1/responses";
       const apiKey = "fixture-tool-round-trip-key";
       const accountId = "fixture-directory-account";
-      const claims = Buffer.from(
-        JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
-      ).toString("base64url");
-      const oauthToken = `fixture.${claims}.fixture`;
+      const otherAccountId = "fixture-other-directory-account";
+      const tokenForAccount = (id: string) => {
+        const claims = Buffer.from(
+          JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: id } }),
+        ).toString("base64url");
+        return `fixture.${claims}.fixture`;
+      };
+      const oauthToken = tokenForAccount(accountId);
       const encryptionKey = "offline-responses-fixture-encryption-key";
       const filePath = "notes/result.txt";
       const prompt = "Save hello to notes/result.txt.";
@@ -325,25 +333,35 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       let stop: (() => Promise<void>) | undefined;
       try {
         const { createApp } = await import("../../../apps/api/src/app.ts");
+        let catalogTime = Date.now();
+        let modelRetired = false;
         const codexCatalog = codex
           ? new CodexCatalogCache({
+              now: () => catalogTime,
               fetch: async (input, init) => {
                 const request = new Request(input, init);
                 expect(request.url).toBe(
                   "https://chatgpt.com/backend-api/codex/models?client_version=0.169.1",
                 );
-                expect(request.headers.get("authorization")).toBe(`Bearer ${oauthToken}`);
-                expect(request.headers.get("chatgpt-account-id")).toBe(accountId);
+                const requestedAccount = request.headers.get("chatgpt-account-id");
+                expect([accountId, otherAccountId]).toContain(requestedAccount);
+                expect(request.headers.get("authorization")).toBe(
+                  `Bearer ${tokenForAccount(requestedAccount!)}`,
+                );
+                const modelIds =
+                  requestedAccount === otherAccountId || modelRetired
+                    ? ["gpt-6.2-sol"]
+                    : discovered
+                      ? ["gpt-6.2-sol", modelId]
+                      : [modelId];
                 return Response.json({
-                  models: [
-                    {
-                      slug: modelId,
-                      visibility: "list",
-                      supported_in_api: true,
-                      input_modalities: ["text"],
-                      supported_reasoning_levels: [{ effort: "low" }],
-                    },
-                  ],
+                  models: modelIds.map((slug) => ({
+                    slug,
+                    visibility: "list",
+                    supported_in_api: true,
+                    input_modalities: ["text"],
+                    supported_reasoning_levels: [{ effort: "low" }],
+                  })),
                 });
               },
             })
@@ -380,40 +398,50 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         expect(signup.status).toBeLessThan(400);
         const cookie = sessionCookieHeader(signup);
         let connection: Pick<ModelCredential, "id" | "connectionRevision">;
+        let otherConnection: typeof connection | undefined;
         if (codex) {
           const user = await handles.prisma.user.findUniqueOrThrow({ where: { email } });
           const membership = await handles.prisma.spaceMember.findFirstOrThrow({
             where: { userId: user.id },
           });
-          const credential = serializeModelSecret({
-            kind: "oauth",
-            credential: {
-              type: "oauth",
-              access: oauthToken,
-              refresh: "fixture-refresh",
-              expires: Date.now() + 60 * 60_000,
-              accountId,
-            },
-          });
-          // Start with an existing synthetic sign-in. OAuth exchange is tested separately.
-          const stored = await new EncryptedSecretStore(encryptionKey).put(credential, {
-            userId: user.id,
-            spaceId: membership.spaceId,
-            operationId: "fixture",
-            traceId: "fixture",
-            signal: new AbortController().signal,
-          });
-          await handles.prisma.secret.create({
-            data: {
-              id: stored.id,
+          const createConnection = async (id: string) => {
+            const credential = serializeModelSecret({
+              kind: "oauth",
+              credential: {
+                type: "oauth",
+                access: tokenForAccount(id),
+                refresh: "fixture-refresh",
+                expires: Date.now() + 60 * 60_000,
+                accountId: id,
+              },
+            });
+            // Start with an existing synthetic sign-in. OAuth exchange is tested separately.
+            const stored = await new EncryptedSecretStore(encryptionKey).put(credential, {
               userId: user.id,
-              kind: "model",
-              ciphertext: stored.ciphertext,
-            },
-          });
-          connection = await handles.prisma.userModelCredential.create({
-            data: { userId: user.id, provider, label: "Subscription fixture", secretId: stored.id },
-          });
+              spaceId: membership.spaceId,
+              operationId: "fixture",
+              traceId: "fixture",
+              signal: new AbortController().signal,
+            });
+            await handles.prisma.secret.create({
+              data: {
+                id: stored.id,
+                userId: user.id,
+                kind: "model",
+                ciphertext: stored.ciphertext,
+              },
+            });
+            return handles.prisma.userModelCredential.create({
+              data: {
+                userId: user.id,
+                provider,
+                label: "Subscription fixture",
+                secretId: stored.id,
+              },
+            });
+          };
+          connection = await createConnection(accountId);
+          if (discovered) otherConnection = await createConnection(otherAccountId);
         } else {
           const checked = await rpc<ModelConnectResult>(app, cookie, "models/connect", {
             provider,
@@ -430,7 +458,31 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           modelCredentialId: connection.id,
           expectedRevision: connection.connectionRevision,
         };
-        if (codex) {
+        if (otherConnection) {
+          const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+            includeProviderCatalog: true,
+          });
+          expect(
+            connections.find(({ id }) => id === connection.id)?.connectionCatalogModels,
+          ).toEqual([
+            expect.objectContaining({
+              id: modelId,
+              auth: "oauth",
+              thinkingLevels: ["low"],
+              images: false,
+            }),
+          ]);
+          expect(
+            connections.find(({ id }) => id === otherConnection.id)?.connectionCatalogModels,
+          ).toBeUndefined();
+          await expect(
+            rpc(app, cookie, "models/setDefault", {
+              ...selection,
+              modelCredentialId: otherConnection.id,
+              expectedRevision: otherConnection.connectionRevision,
+            }),
+          ).rejects.toThrow(/models\/setDefault: 400/);
+        } else if (codex) {
           const unavailable = modelId === "gpt-6.2-sol" ? "gpt-6.2-astra" : "gpt-6.2-sol";
           const catalog = await rpc<Array<{ provider: string; id: string }>>(
             app,
@@ -472,6 +524,13 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           ...selection,
           ...(codex ? { thinkingLevel: "low" } : {}),
         });
+        if (discovered) {
+          await expect(rpc(app, cookie, "me", null)).resolves.toMatchObject({
+            defaultProvider: provider,
+            defaultModel: modelId,
+            defaultModelCredentialId: connection.id,
+          });
+        }
         const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
           name: "Responses fixture",
           title: "",
@@ -508,6 +567,26 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           botId: bot.id,
         });
         expect(JSON.stringify(thread.messages)).toContain(answer);
+        if (discovered) {
+          modelRetired = true;
+          catalogTime += 16 * 60_000;
+          await expect
+            .poll(async () => {
+              const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+                includeProviderCatalog: true,
+              });
+              return connections.find(({ id }) => id === connection.id);
+            })
+            .toMatchObject({
+              modelId,
+              isDefault: true,
+              savedModelDirectory: { confirmationRequired: true, notListed: true },
+            });
+          await expect(rpc(app, cookie, "models/setDefault", selection)).rejects.toThrow(
+            /models\/setDefault: 400/,
+          );
+          expect(modelFetch).toHaveBeenCalledTimes(2);
+        }
       } finally {
         try {
           await stop?.();

@@ -6,6 +6,7 @@ import type { PrismaClient } from "@rakazo/db";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
 import { codexAccountCatalogModelIds } from "./pi-current-models.js";
 import { LiveCatalogCache } from "./pi-live-cache.js";
+import { codexDirectoryModel } from "./pi-live-model.js";
 import type { PiCatalogEntry } from "./pi-models.js";
 import { listPiCatalog } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -333,7 +334,7 @@ function codexAccountHandle(
 /**
  * Whether the live catalog for the account this credential signs into lists
  * `modelId` — the selection/run-time half of the models.list overlay, consulted
- * only when the static auth gate already rejected a catalog model.
+ * including a directory-only chat model on a trusted account list.
  */
 export async function codexLiveModel(
   catalog: CodexLiveCatalog | undefined,
@@ -343,7 +344,59 @@ export async function codexLiveModel(
   opts?: CodexLiveReadOptions,
 ): Promise<CodexCatalogModel | undefined> {
   const models = await readCodexLiveModels(catalog, userId, secret, opts);
+  const known = knownCodexSlugs();
+  if (
+    !known.has(modelId) &&
+    (!codexDirectoryModel(modelId) || !models?.some(({ slug }) => known.has(slug)))
+  )
+    return undefined;
   return models?.find((model) => model.slug === modelId);
+}
+
+/** Directory-only choices for the account whose credential the caller loaded. */
+export function codexConnectionDirectory(
+  models: readonly CodexCatalogModel[] | undefined,
+  savedId: string | undefined,
+) {
+  const known = knownCodexSlugs();
+  const anchor = listPiCatalog().find((entry) => entry.provider === CHATGPT_OAUTH_PROVIDER);
+  const observed = models?.some(({ slug }) => known.has(slug)) ? models : undefined;
+  const discovered = new Map<string, PiCatalogEntry>();
+  const entryFor = (id: string, live?: CodexCatalogModel): PiCatalogEntry | undefined => {
+    const model = !known.has(id) ? codexDirectoryModel(id) : undefined;
+    if (!anchor || !model) return undefined;
+    const thinkingLevels = live && liveThinkingLevels(live);
+    return {
+      provider: anchor.provider,
+      providerName: anchor.providerName,
+      id,
+      label: id,
+      auth: "oauth",
+      subscription: true,
+      billing: anchor.billing,
+      signIn: anchor.signIn,
+      oauthLabel: anchor.oauthLabel,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      images: live?.supportsImages ?? false,
+      reasoning: Boolean(thinkingLevels?.some((level) => level !== "off")),
+      thinkingLevels: thinkingLevels ?? ["off"],
+    };
+  };
+  for (const model of observed ?? []) {
+    const entry = entryFor(model.slug, model);
+    if (entry) discovered.set(entry.id, entry);
+  }
+  const retained = savedId && !discovered.has(savedId) ? entryFor(savedId) : undefined;
+  return {
+    models: [...discovered.values(), ...(retained ? [retained] : [])],
+    savedModelDirectory: retained
+      ? {
+          confirmationRequired: true as const,
+          ...(observed ? { notListed: true as const } : { confirmationUnavailable: true as const }),
+        }
+      : undefined,
+  };
 }
 
 export async function readCodexLiveModels(

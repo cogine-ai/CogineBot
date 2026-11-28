@@ -206,6 +206,101 @@ test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in ef
   expect(writes).toEqual([]);
 });
 
+test("settings saves a subscription directory model and retains it if the account stops listing it", async ({
+  page,
+}, testInfo) => {
+  await signup(
+    page,
+    `subscription-directory-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  await completeOnboarding(page);
+  const discovered = "gpt-fixture-subscription-model";
+  const provider = "openai-codex";
+  const model = {
+    provider,
+    id: discovered,
+    label: discovered,
+    billing: "",
+    auth: "oauth",
+    subscription: true,
+    thinkingLevels: ["low"],
+  };
+  const saved = {
+    id: "fixture-subscription-connection",
+    provider,
+    label: "ChatGPT Plus/Pro",
+    modelId: "gpt-6.1-sol",
+    authKind: "oauth",
+    hasKey: false,
+    isDefault: false,
+    connectionRevision: 3,
+  };
+  let listed = true;
+  await page.route("**/rpc/models/credentials", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCredential[] };
+    await route.fulfill({
+      response,
+      json: {
+        json: [
+          ...json,
+          {
+            ...saved,
+            connectionCatalogModels: [model],
+            ...(listed
+              ? {}
+              : { savedModelDirectory: { confirmationRequired: true, notListed: true } }),
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/rpc/models/setDefault", (route) => {
+    const input = route.request().postDataJSON().json;
+    expect(input).toMatchObject({
+      provider,
+      modelId: discovered,
+      modelCredentialId: saved.id,
+      expectedRevision: 3,
+    });
+    saved.modelId = input.modelId;
+    return route.fulfill({ json: { json: { ok: true } } });
+  });
+  const openConnection = async () => {
+    const settings = await openUserSettings(page, "models");
+    await settings.getByPlaceholder("Search providers").fill("openai-codex");
+    await settings
+      .getByRole("button", { name: /ChatGPT Plus\/Pro/ })
+      .first()
+      .click();
+    return settings;
+  };
+  const settings = await openConnection();
+  const picker = settings.getByRole("combobox", { name: "Model", exact: true });
+  await picker.click();
+  await settings.getByRole("option", { name: discovered, exact: true }).click();
+  await expect(picker).toHaveText(discovered);
+  await captureScreenshot(page, testInfo, "a1-subscription-directory-model");
+  await settings.getByRole("button", { name: "Use this model", exact: true }).click();
+  await expect.poll(() => saved.modelId).toBe(discovered);
+  listed = false;
+  await page.reload();
+  const reloaded = await openConnection();
+  await expect(reloaded.getByRole("combobox", { name: "Model", exact: true })).toHaveText(
+    discovered,
+  );
+  await expect(
+    reloaded.getByText(
+      "This model is missing from the provider’s list. You can choose another model.",
+    ),
+  ).toBeVisible();
+  await expect(
+    reloaded.getByRole("button", { name: "Use this model", exact: true }),
+  ).toBeDisabled();
+});
+
 test("ChatGPT plan model settings choose a saved account or add a separate registration", async ({
   page,
 }, testInfo) => {

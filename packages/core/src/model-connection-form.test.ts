@@ -67,6 +67,17 @@ function credential(overrides: Partial<ModelCredential> = {}): ModelCredential {
   };
 }
 
+it("only adds subscription choices for the form's current connection revision", () => {
+  const builtin = { provider: "openai-codex", id: "gpt-base", label: "Base", billing: "" };
+  const choice = { ...builtin, id: "gpt-fixture-discovered", auth: "oauth" as const };
+  const saved = credential({ provider: builtin.provider, connectionCatalogModels: [choice] });
+  expect(withConnectionCatalogModels([builtin], saved)).toEqual([builtin, choice]);
+  expect(withConnectionCatalogModels([builtin], saved, 6)).toEqual([builtin]);
+  expect(
+    withConnectionCatalogModels([builtin], credential({ provider: builtin.provider })),
+  ).toEqual([builtin]);
+});
+
 it("keeps subscription billing copy off API-key-only directory choices", () => {
   const modelId = "grok-fixture-directory-choice";
   const base = {

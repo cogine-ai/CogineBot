@@ -147,6 +147,7 @@ export * from "./pi-catalog-availability.js";
 export * from "./pi-codex-catalog.js";
 export * from "./pi-credentials.js";
 export {
+  codexDirectoryModel,
   providerCatalogModel,
   supportsProviderCatalogModels,
   withCatalogModelAliases,
