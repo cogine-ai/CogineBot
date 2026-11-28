@@ -3563,6 +3563,18 @@ describe("model credential persistence", () => {
       distinctFailure: "model",
       transient: { code: 429, type: "rate_limit_error" },
     },
+    {
+      provider: "vercel-ai-gateway",
+      modelId: "google/gemini-3.8-flash",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"google/gemini-3.8-flash"}}\n\n',
+      rejection: { type: "model_not_found" },
+      rejectionHttpStatus: 404,
+      distinctFailure: "model",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
