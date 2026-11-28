@@ -670,6 +670,39 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await expect(rpc(app, cookie, "threads/imageInput", { botId: bot.id })).resolves.toEqual({
             status: "supported",
           });
+          const binding = {
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+          };
+          const draft = {
+            ...binding,
+            botId: bot.id,
+            name: "Bound fixture routine",
+            prompt: "Complete the task.",
+            crons: ["0 9 * * 1"],
+            timezone: "UTC",
+            notify: false,
+            active: false,
+          };
+          await expect(
+            rpc(app, cookie, "routines/create", { ...draft, thinkingLevel: "high" }),
+          ).rejects.toThrow(/routines\/create: 400/);
+          const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
+            ...draft,
+            thinkingLevel: "low",
+          });
+          await expect(
+            rpc(app, cookie, "routines/update", {
+              routineId: routine.id,
+              ...binding,
+              thinkingLevel: "high",
+            }),
+          ).rejects.toThrow(/routines\/update: 400/);
+          await expect(
+            rpc(app, cookie, "routines/update", { routineId: routine.id, thinkingLevel: "high" }),
+          ).rejects.toThrow(/routines\/update: 400/);
         }
         modelFetch.mockClear();
         const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
@@ -714,6 +747,27 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await expect(rpc(app, cookie, "models/setDefault", selection)).rejects.toThrow(
             /models\/setDefault: 400/,
           );
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: null,
+            modelId: null,
+            modelCredentialId: null,
+            thinkingLevel: null,
+          });
+          const replacement = codexAnchors.find(
+            ({ id, thinkingLevels }) =>
+              subscriptionModels.includes(id) && thinkingLevels?.includes("low"),
+          )!;
+          await expect(
+            rpc(app, cookie, "bots/update", {
+              botId: bot.id,
+              modelProvider: provider,
+              modelId: replacement.id,
+              modelCredentialId: connection.id,
+              expectedRevision: selection.expectedRevision,
+              thinkingLevel: "low",
+            }),
+          ).resolves.toMatchObject({ modelId: replacement.id, thinkingLevel: "low" });
           expect(modelFetch).toHaveBeenCalledTimes(2);
         }
       } finally {

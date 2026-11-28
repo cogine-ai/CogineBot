@@ -996,9 +996,12 @@ describe("recent turn images follow model vision", () => {
         thinkingLevel: "minimal",
         supportedThinkingLevels: levels,
       });
-      expect(readCodex).toHaveBeenCalledWith(run.userId, expect.anything(), {
-        waitMs: expect.any(Number),
-      });
+      const connection = { secretId: "primary-secret", connectionRevision: 1 };
+      expect(readCodex).toHaveBeenCalledWith(
+        run.userId,
+        expect.objectContaining({ connection: expect.objectContaining(connection) }),
+        expect.objectContaining({ waitMs: expect.any(Number) }),
+      );
       expect(readCodex.mock.calls[0]?.[2]?.waitMs).toBeGreaterThan(0);
       expect(run).toMatchObject({
         botSettingsSnapshot: expect.objectContaining({
@@ -1016,6 +1019,7 @@ describe("recent turn images follow model vision", () => {
       });
       await executor.continueRun(run.id, "worker-2");
       expect(readCodex.mock.calls.at(-1)?.[2]?.waitMs).toBe(0);
+      expect(readCodex.mock.calls.at(-1)?.[1]).toMatchObject({ connection });
       expect(runtimeRun.mock.calls[1]?.[0].model).toMatchObject({
         thinkingLevel: "minimal",
         supportedThinkingLevels: levels,

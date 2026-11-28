@@ -3457,7 +3457,7 @@ export function createRouter(deps: RouterDeps) {
             : undefined;
         const thinkingLevel = input.thinkingLevel;
         const defaultCredential =
-          thinkingLevel && (!existing.modelProvider || (settingModel && !input.modelProvider))
+          thinkingLevel && (settingModel ? !input.modelProvider : !existing.modelProvider)
             ? (await findEffectiveModelDefault(deps.prisma, context.actor)).credential
             : null;
         const preparedDefault = defaultCredential?.defaultModel
@@ -5665,7 +5665,7 @@ export function createRouter(deps: RouterDeps) {
                 preparedAuth,
               );
               assertPreparedModelAuth(checked, preparedAuth);
-              assertBoundThinkingLevel(checked, input.thinkingLevel);
+              assertBoundThinkingLevel(checked, input.thinkingLevel, preparedAuth);
               if (input.active) {
                 const error = await routineAdmissionError(tx, {
                   ...context.actor,
@@ -5897,7 +5897,7 @@ export function createRouter(deps: RouterDeps) {
                   preparedAuth,
                 );
                 assertPreparedModelAuth(checked, preparedAuth);
-                assertBoundThinkingLevel(checked, input.thinkingLevel);
+                assertBoundThinkingLevel(checked, input.thinkingLevel, preparedAuth);
               }
               const promptChanged = input.prompt !== undefined && input.prompt !== current.prompt;
               const authorizationChanged =
@@ -10532,14 +10532,25 @@ function computerHostFor(
 function assertBoundThinkingLevel(
   checked: Awaited<ReturnType<typeof validateModelBinding>>,
   thinkingLevel: string | null | undefined,
+  prepared: Awaited<ReturnType<typeof prepareBoundModelAuth>>,
 ) {
   if (!checked || !thinkingLevel) return;
+  const provider = checked.credential.provider;
+  const directoryOnly =
+    provider === CHATGPT_OAUTH_PROVIDER && !isCatalogModelChoice(provider, checked.modelId);
+  if (
+    (directoryOnly && !prepared?.catalogThinkingLevels) ||
+    (prepared?.catalogThinkingLevels &&
+      (prepared.catalogModelId !== checked.modelId ||
+        prepared.connectionRevision !== checked.credential.connectionRevision))
+  )
+    throw new ORPCError("CONFLICT", { message: "Model selection changed. Reload and try again." });
   const allowed =
-    checked.credential.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+    provider === OPENAI_COMPATIBLE_PROVIDER_ID
       ? compatibleThinkingLevels(checked.credential, checked.plaintext, checked.modelId).allowed
-      : listPiCatalog().find(
-          (entry) => entry.provider === checked.credential.provider && entry.id === checked.modelId,
-        )?.thinkingLevels;
+      : (prepared?.catalogThinkingLevels ??
+        listPiCatalog().find((entry) => entry.provider === provider && entry.id === checked.modelId)
+          ?.thinkingLevels);
   if (allowed && !allowed.includes(thinkingLevel))
     throw new ORPCError("BAD_REQUEST", {
       message: `Thinking level must be one of: ${allowed.join(", ")}`,
