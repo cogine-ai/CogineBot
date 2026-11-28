@@ -677,14 +677,21 @@ describe("codexLiveListsModel", () => {
     const anchors = known.slice(0, required).map(({ id }) => liveModel(id));
     const models = [...anchors, dynamic, liveModel(media), liveModel("unknown/path")];
     const catalog = { read: async () => models };
-    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id)).resolves.toBe(true);
-    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), media)).resolves.toBe(false);
+    const scope = { connection: { secretId: "directory-fixture", connectionRevision: 1 } };
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id)).resolves.toBe(false);
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id, scope)).resolves.toBe(
+      true,
+    );
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), media, scope)).resolves.toBe(
+      false,
+    );
     await expect(
       codexLiveListsModel(
         { read: async () => [...anchors.slice(1), dynamic] },
         "user-1",
         oauthSecret(),
         id,
+        scope,
       ),
     ).resolves.toBe(false);
     expect(codexConnectionDirectory(models, id)).toEqual({

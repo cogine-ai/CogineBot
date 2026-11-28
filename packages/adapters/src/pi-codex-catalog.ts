@@ -298,7 +298,7 @@ export class CodexCatalogCache implements CodexLiveCatalog {
         );
         return { attempted: true, models: result.status === "ok" ? result.models : undefined };
       },
-      opts,
+      { ...opts, waitForRevalidation: opts?.freshOnly },
     );
     return opts?.freshOnly && models && !this.cache.isFresh(key, models) ? undefined : models;
   }
@@ -353,12 +353,15 @@ export async function codexLiveModel(
   opts?: CodexLiveReadOptions,
 ): Promise<CodexCatalogModel | undefined> {
   const known = knownCodexSlugs();
-  const models = await readCodexLiveModels(catalog, userId, secret, opts);
-  if (
-    !known.has(modelId) &&
-    (!codexDirectoryModel(modelId) || !trustedCodexDirectory(models, known))
-  )
-    return undefined;
+  const directoryOnly = !known.has(modelId);
+  if (directoryOnly && (!opts?.connection || !codexDirectoryModel(modelId))) return undefined;
+  const models = await readCodexLiveModels(
+    catalog,
+    userId,
+    secret,
+    !directoryOnly && opts?.connection ? { ...opts, connection: undefined } : opts,
+  );
+  if (directoryOnly && !trustedCodexDirectory(models, known)) return undefined;
   return models?.find((model) => model.slug === modelId);
 }
 

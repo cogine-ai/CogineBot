@@ -363,7 +363,8 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
                     slug,
                     visibility: "list",
                     supported_in_api: true,
-                    input_modalities: ["text"],
+                    input_modalities:
+                      slug === subscriptionDirectoryModel ? ["text", "image"] : ["text"],
                     supported_reasoning_levels: [{ effort: "low" }],
                   })),
                 });
@@ -473,7 +474,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
               id: modelId,
               auth: "oauth",
               thinkingLevels: ["low"],
-              images: false,
+              images: true,
             }),
           ]);
           expect(
@@ -561,6 +562,9 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
             defaultModelCredentialId: connection.id,
           });
           await rpc(app, cookie, "models/setBackups", [{ ...selection, thinkingLevel: "low" }]);
+          await expect(rpc(app, cookie, "threads/imageInput", { botId: bot.id })).resolves.toEqual({
+            status: "supported",
+          });
         }
         modelFetch.mockClear();
         const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
@@ -594,18 +598,14 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
           modelRetired = true;
           catalogTime += 16 * 60_000;
-          await expect
-            .poll(async () => {
-              const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
-                includeProviderCatalog: true,
-              });
-              return connections.find(({ id }) => id === connection.id);
-            })
-            .toMatchObject({
-              modelId,
-              isDefault: true,
-              savedModelDirectory: { confirmationRequired: true, notListed: true },
-            });
+          const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+            includeProviderCatalog: true,
+          });
+          expect(connections.find(({ id }) => id === connection.id)).toMatchObject({
+            modelId,
+            isDefault: true,
+            savedModelDirectory: { confirmationRequired: true, notListed: true },
+          });
           await expect(rpc(app, cookie, "models/setDefault", selection)).rejects.toThrow(
             /models\/setDefault: 400/,
           );

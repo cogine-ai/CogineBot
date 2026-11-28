@@ -1370,10 +1370,18 @@ export function createRouter(deps: RouterDeps) {
         }
       }
       const secret = { kind: "oauth" as const, credential: login.credential, ...settings };
+      // Directory picks are saved against an established connection. A sign-in
+      // for a staged pick must not validate the new bearer with the old cache.
+      const requestedModel =
+        login.provider === CHATGPT_OAUTH_PROVIDER &&
+        login.modelId &&
+        !isCatalogModelChoice(login.provider, login.modelId)
+          ? undefined
+          : login.modelId;
       const modelId =
         login.provider === CHATGPT_OAUTH_PROVIDER && !existing
-          ? await resolveCodexOAuthDefaultModel(codexCatalog, actor.userId, secret, login.modelId)
-          : login.modelId;
+          ? await resolveCodexOAuthDefaultModel(codexCatalog, actor.userId, secret, requestedModel)
+          : requestedModel;
       return persistModelCredential(
         deps,
         actor,
