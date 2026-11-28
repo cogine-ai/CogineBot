@@ -3583,6 +3583,9 @@ export function createRouter(deps: RouterDeps) {
           expectedReadAloudRevision: input.expectedReadAloudRevision,
           settingsOwnerId: context.actor.userId,
           emitBotUpdated: botProfileChanged(input),
+          // A Space default may commit while this write waits for its selection lock.
+          // Read it after the lock, alongside the guarded current Bot and credential.
+          isolationLevel: preparedDefault?.catalogThinkingLevels ? "ReadCommitted" : undefined,
           validate,
           data: {
             name: input.name,

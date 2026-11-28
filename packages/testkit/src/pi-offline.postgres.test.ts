@@ -15,6 +15,7 @@ import {
 } from "@rakazo/adapters";
 import type { ModelConnectResult, ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { lockSpaceModelSelection } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -571,25 +572,53 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "low" });
           await clearAndUndoThinking();
           const read = codexCatalog!.read.bind(codexCatalog);
-          const { spaceId } = await rpc<{ spaceId: string }>(app, cookie, "me", null);
-          const changedDefault = vi
-            .spyOn(codexCatalog!, "read")
-            .mockImplementationOnce(async (...args) => {
-              const observed = await read(...args);
-              const result = await handles.prisma.spaceModelPreference.updateMany({
-                where: { spaceId, credentialId: connection.id, isDefault: true },
+          const { spaceId, userId } = await rpc<{ spaceId: string; userId: string }>(
+            app,
+            cookie,
+            "me",
+            null,
+          );
+          const scope = { spaceId, userId };
+          const held = Promise.withResolvers<number>();
+          const release = Promise.withResolvers<void>();
+          const writer = handles.prisma.$transaction(
+            async (tx) => {
+              await lockSpaceModelSelection(tx, scope, "write");
+              const result = await tx.spaceModelPreference.updateMany({
+                where: { ...scope, credentialId: connection.id, isDefault: true },
                 data: { modelId: subscriptionModels[0], thinkingLevel: null },
               });
               expect(result.count).toBe(1);
-              return observed;
-            });
+              const [{ pid }] = await tx.$queryRaw<
+                [{ pid: number }]
+              >`SELECT pg_backend_pid() AS pid`;
+              held.resolve(pid);
+              await release.promise;
+              return pid;
+            },
+            { timeout: 12_000 },
+          );
+          const pid = await Promise.race([held.promise, writer]);
+          const updateThinking = rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            thinkingLevel: "low",
+          }).catch((error: unknown) => error);
           try {
-            await expect(
-              rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "low" }),
-            ).rejects.toThrow(/bots\/update: 409/);
+            await expect
+              .poll(async () => {
+                const [{ waiting }] = await handles.prisma.$queryRaw<[{ waiting: boolean }]>`
+                SELECT EXISTS (SELECT FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pg_stat_activity.pid))) AS waiting
+              `;
+                return waiting;
+              })
+              .toBe(true);
           } finally {
-            changedDefault.mockRestore();
+            release.resolve();
+            await writer;
           }
+          await expect(updateThinking).resolves.toMatchObject({
+            message: expect.stringMatching(/bots\/update: 409/),
+          });
           await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
           await rpc(app, cookie, "bots/update", {
             botId: bot.id,

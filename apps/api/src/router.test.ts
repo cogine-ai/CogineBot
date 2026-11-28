@@ -4648,6 +4648,12 @@ describe("codex live catalog", () => {
     const load = vi.fn((ciphertext: string) =>
       ciphertext === "cipher-oauth" ? oauthPlaintext : apiKey,
     );
+    const apiConnection = {
+      provider: "openai-codex",
+      secretId: "secret-api",
+      connectionRevision: 1,
+    };
+    const oauthConnection = { ...apiConnection, secretId: "secret-oauth" };
     const prisma = opts.disconnected
       ? {
           userModelCredential: { findMany: vi.fn().mockResolvedValue([]) },
@@ -4657,11 +4663,7 @@ describe("codex live catalog", () => {
       : opts.apiKeyOnly
         ? {
             userModelCredential: {
-              findMany: vi
-                .fn()
-                .mockResolvedValue([
-                  { provider: "openai-codex", secretId: "secret-api", connectionRevision: 1 },
-                ]),
+              findMany: vi.fn().mockResolvedValue([apiConnection]),
             },
             spaceModelPreference: { findMany: vi.fn().mockResolvedValue([]) },
             secret: {
@@ -4670,10 +4672,7 @@ describe("codex live catalog", () => {
           }
         : {
             userModelCredential: {
-              findMany: vi.fn().mockResolvedValue([
-                { provider: "openai-codex", secretId: "secret-api", connectionRevision: 1 },
-                { provider: "openai-codex", secretId: "secret-oauth", connectionRevision: 1 },
-              ]),
+              findMany: vi.fn().mockResolvedValue([apiConnection, oauthConnection]),
             },
             spaceMember: {
               findUnique: vi.fn(async () => null),
@@ -4681,17 +4680,7 @@ describe("codex live catalog", () => {
               update: vi.fn(),
             },
             spaceModelPreference: {
-              findMany: vi
-                .fn()
-                .mockResolvedValue([
-                  {
-                    credential: {
-                      provider: "openai-codex",
-                      secretId: "secret-oauth",
-                      connectionRevision: 1,
-                    },
-                  },
-                ]),
+              findMany: vi.fn().mockResolvedValue([{ credential: oauthConnection }]),
             },
             secret: {
               findMany: vi
