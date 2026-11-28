@@ -1018,17 +1018,18 @@ function codexFailureStatus(
   if (reason === "usage_limit_reached") return "subscription_limit";
   if (reason === "usage_not_included") return "model";
   if (
-    type === "insufficient_quota" ||
-    reason === "insufficient_quota" ||
-    reason === "credit_balance_exhausted"
-  )
-    return "credit";
-  if (
+    reason === "api_key_spend_limit_exceeded" ||
     reason === "organization_spend_limit_exceeded" ||
     reason === "project_spend_limit_exceeded" ||
     reason === "organization_usage_limit_exceeded"
   )
     return "spending";
+  if (
+    type === "insufficient_quota" ||
+    reason === "insufficient_quota" ||
+    reason === "credit_balance_exhausted"
+  )
+    return "credit";
   if (status === 429 || reason === "rate_limit_exceeded") return "rate";
   if (reason === "model_not_found" || reason === "model_not_available") return "model";
   // An edge/proxy can also send 403 or 404. Require a model-specific refusal.
