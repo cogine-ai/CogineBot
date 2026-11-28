@@ -111,6 +111,18 @@ export function isOfficialMiniMaxProbeModel(
   );
 }
 
+export function isOfficialFireworksMessagesProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "fireworks" &&
+    model.api === "anthropic-messages" &&
+    model.baseUrl === "https://api.fireworks.ai/inference" &&
+    /^accounts\/fireworks\/models\/[a-z0-9][a-z0-9-]*$/.test(model.id) &&
+    isChatModelId(model.id)
+  );
+}
+
 export function isOpenRouterMessagesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "openrouter" &&

@@ -3498,6 +3498,20 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429, message: "usage limit exceeded (2056)" },
     },
+    {
+      provider: "fireworks",
+      modelId: "accounts/fireworks/models/gpt-oss-120b",
+      endpoint: "https://api.fireworks.ai/inference/v1/messages",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"accounts/fireworks/models/gpt-oss-120b"}}\n\n',
+      rejection: {
+        code: "NOT_FOUND",
+        message: "Model not found, inaccessible, and/or not deployed",
+      },
+      rejectionHttpStatus: 404,
+      distinctFailure: "model",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -6699,6 +6713,7 @@ describe("saved model catalog checks", () => {
     ["xai", "grok-4.7"],
     ["kimi-coding", "k3-256k"],
     ["minimax", "MiniMax-M3"],
+    ["fireworks", "accounts/fireworks/models/gpt-oss-120b"],
   ])("only probes the saved %s connection when it owns an API key", async (provider, modelId) => {
     const { infer, inference, probe, state } = fixture(false, provider);
     const request = { ...savedInput, provider, modelId };

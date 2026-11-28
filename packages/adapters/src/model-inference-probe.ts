@@ -10,6 +10,7 @@ import {
   anthropicModelAlias,
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
+  isOfficialFireworksMessagesProbeModel,
   isOfficialGeminiProbeModel,
   isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
@@ -61,6 +62,8 @@ export async function probeModelInference(
   }
   if (builtIn && isOfficialMiniMaxProbeModel(model))
     return probeNativeMessages(model, apiKey, options, miniMaxFailureStatus);
+  if (builtIn && isOfficialFireworksMessagesProbeModel(model))
+    return probeNativeMessages(model, apiKey, options, fireworksMessagesFailureStatus);
   if (builtIn && isOfficialNativeChatProbeModel(model))
     return probeNativeChatCompletions(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
@@ -245,15 +248,19 @@ async function probeGemini(
 }
 
 async function probeNativeMessages(
-  model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
+  model: Pick<Model<Api>, "provider" | "id" | "baseUrl" | "maxTokens">,
   apiKey: string,
   options: ProbeOptions,
   classifyFailure: StreamFailureClassifier,
 ): Promise<ModelInferenceProbeStatus> {
   // Send only the selected key and protocol headers to the Messages endpoint.
+  const headers: Record<string, string> =
+    model.provider === "fireworks"
+      ? { authorization: `Bearer ${apiKey}` }
+      : { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
   return await probeNativeEventStream(
     `${model.baseUrl}/v1/messages`,
-    { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    headers,
     {
       model: model.id,
       system: PROBE_SYSTEM_PROMPT,
@@ -272,6 +279,30 @@ async function probeNativeMessages(
     classifyFailure,
     (frame, event) => anthropicFrameOutcome(frame, model.id, classifyFailure, event),
   );
+}
+
+function fireworksMessagesFailureStatus(
+  error: unknown,
+  status?: number,
+): ModelInferenceProbeStatus {
+  if (status === 403) return "auth";
+  if (status !== undefined && status !== 404) return nativeChatFailureStatus(undefined, status);
+  const record = probeRecord(error);
+  // Fireworks uses 404 for both unavailable models and unrouted paths.
+  if (typeof record?.message === "string" && /^Model not found\b/i.test(record.message.trim()))
+    return "model";
+  if (status === 404) return "unavailable";
+  switch (record?.type) {
+    case "authentication_error":
+    case "permission_error":
+      return "auth";
+    case "billing_error":
+      return "credit";
+    case "rate_limit_error":
+      return "rate";
+    default:
+      return "unavailable";
+  }
 }
 
 function miniMaxFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {

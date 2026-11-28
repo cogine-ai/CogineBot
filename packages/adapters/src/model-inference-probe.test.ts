@@ -39,6 +39,11 @@ const miniMaxInput = {
   modelId: "MiniMax-M3",
   apiKey: "fixture-minimax-key",
 };
+const fireworksInput = {
+  provider: "fireworks",
+  modelId: "accounts/fireworks/models/gpt-oss-120b",
+  apiKey: "fixture-fireworks-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -1523,13 +1528,15 @@ describe("model inference check", () => {
   });
 
   it.each([
-    [openRouterMessagesInput, "https://openrouter.ai/api/v1/messages"],
-    [miniMaxInput, "https://api.minimax.io/anthropic/v1/messages"],
+    { selectedInput: openRouterMessagesInput, endpoint: "https://openrouter.ai/api/v1/messages" },
+    { selectedInput: miniMaxInput, endpoint: "https://api.minimax.io/anthropic/v1/messages" },
+    { selectedInput: fireworksInput, endpoint: "https://api.fireworks.ai/inference/v1/messages" },
   ] as const)(
-    "tests $provider on the Messages route with the selected key",
-    async (selectedInput, endpoint) => {
+    "tests $selectedInput.provider Messages using the selected key",
+    async ({ selectedInput, endpoint }) => {
       vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
       vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
+      vi.stubEnv("FIREWORKS_API_KEY", "fixture-deployment-fireworks-key");
       vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
       vi.stubEnv("ANTHROPIC_LOG", "debug");
       const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
@@ -1558,9 +1565,10 @@ describe("model inference check", () => {
       expect(request.url).toBe(endpoint);
       expect(request.redirect).toBe("error");
       expect(Object.fromEntries(request.headers)).toEqual({
-        "anthropic-version": "2023-06-01",
         "content-type": "application/json",
-        "x-api-key": selectedInput.apiKey,
+        ...(selectedInput.provider === "fireworks"
+          ? { authorization: `Bearer ${selectedInput.apiKey}` }
+          : { "anthropic-version": "2023-06-01", "x-api-key": selectedInput.apiKey }),
       });
       expect(JSON.stringify(debug.mock.calls)).not.toContain("fixture-ambient-header");
       expect(await request.json()).toEqual({
@@ -1585,6 +1593,10 @@ describe("model inference check", () => {
     ["minimax", "MiniMax-M2.7-highspeed"],
     ["minimax", "MiniMax-M3.1-Flash"],
     ["minimax-cn", "MiniMax-M3"],
+    ["fireworks", "accounts/fireworks/routers/minimax-latest"],
+    ["fireworks", "accounts/fireworks/models/glm-5p3"],
+    ["fireworks", "accounts/fixture/models/private-chat"],
+    ["fireworks", "accounts/fireworks/models/unregistered-fixture"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1600,6 +1612,58 @@ describe("model inference check", () => {
         ),
       ).toBe("unavailable");
       expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [401, { type: "authentication_error" }, "auth"],
+    [402, { type: "billing_error" }, "credit"],
+    [403, { code: "PERMISSION_DENIED" }, "auth"],
+    [403, { type: "permission_error" }, "auth"],
+    [
+      404,
+      { code: "NOT_FOUND", message: "Model not found, inaccessible, and/or not deployed" },
+      "model",
+    ],
+    [404, { code: "NOT_FOUND", message: "Path not found" }, "unavailable"],
+    [412, { code: "FAILED_PRECONDITION" }, "unavailable"],
+    [429, { type: "rate_limit_error" }, "rate"],
+    [503, { type: "overloaded_error" }, "unavailable"],
+    [504, {}, "timeout"],
+    [400, { type: "invalid_request_error" }, "unavailable"],
+  ] as const)(
+    "classifies Fireworks HTTP %i according to the request result (%#)",
+    async (status, error, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({ error }, { status }),
+      );
+      expect(await probeModelInference(fireworksInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [": processing\n\n", "unavailable"],
+    [anthropicStart, "unavailable"],
+    ['event: error\ndata: {"type":"error","error":{"type":"permission_error"}}\n\n', "auth"],
+    ['event: error\ndata: {"type":"error","error":{"type":"billing_error"}}\n\n', "credit"],
+    ['event: error\ndata: {"type":"error","error":{"type":"rate_limit_error"}}\n\n', "rate"],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"not_found_error","message":"Model not found"}}\n\n',
+      "model",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"type":"not_found_error","message":"Path not found"}}\n\n',
+      "unavailable",
+    ],
+  ] as const)(
+    "requires a matching Fireworks acceptance or a recognizable error (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(fireworksInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
     },
   );
 
