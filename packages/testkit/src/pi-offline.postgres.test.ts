@@ -571,6 +571,36 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           await expect(
             handles.prisma.bot.findUnique({ where: { id: bot.id } }),
           ).resolves.toMatchObject({ thinkingLevel: "low" });
+          const read = codexCatalog!.read.bind(codexCatalog);
+          const switched = vi
+            .spyOn(codexCatalog!, "read")
+            .mockImplementationOnce(async (...args) => {
+              const observed = await read(...args);
+              await handles.prisma.bot.update({
+                where: { id: bot.id },
+                data: { modelId: subscriptionModels[0], thinkingLevel: null },
+              });
+              return observed;
+            });
+          try {
+            await expect(
+              rpc(app, cookie, "bots/update", {
+                botId: bot.id,
+                expectedRevision: selection.expectedRevision,
+                thinkingLevel: "low",
+              }),
+            ).rejects.toThrow(/bots\/update: 409/);
+          } finally {
+            switched.mockRestore();
+          }
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+            thinkingLevel: "low",
+          });
           await rpc(app, cookie, "models/setDefault", {
             ...selection,
             modelId: subscriptionModels[0],

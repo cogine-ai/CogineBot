@@ -4659,7 +4659,9 @@ describe("codex live catalog", () => {
             userModelCredential: {
               findMany: vi
                 .fn()
-                .mockResolvedValue([{ provider: "openai-codex", secretId: "secret-api" }]),
+                .mockResolvedValue([
+                  { provider: "openai-codex", secretId: "secret-api", connectionRevision: 1 },
+                ]),
             },
             spaceModelPreference: { findMany: vi.fn().mockResolvedValue([]) },
             secret: {
@@ -4669,8 +4671,8 @@ describe("codex live catalog", () => {
         : {
             userModelCredential: {
               findMany: vi.fn().mockResolvedValue([
-                { provider: "openai-codex", secretId: "secret-api" },
-                { provider: "openai-codex", secretId: "secret-oauth" },
+                { provider: "openai-codex", secretId: "secret-api", connectionRevision: 1 },
+                { provider: "openai-codex", secretId: "secret-oauth", connectionRevision: 1 },
               ]),
             },
             spaceMember: {
@@ -4682,7 +4684,13 @@ describe("codex live catalog", () => {
               findMany: vi
                 .fn()
                 .mockResolvedValue([
-                  { credential: { provider: "openai-codex", secretId: "secret-oauth" } },
+                  {
+                    credential: {
+                      provider: "openai-codex",
+                      secretId: "secret-oauth",
+                      connectionRevision: 1,
+                    },
+                  },
                 ]),
             },
             secret: {
@@ -4717,7 +4725,10 @@ describe("codex live catalog", () => {
     expect(ids).not.toContain(sol);
     expect(read).toHaveBeenCalledWith(
       actor.userId,
-      expect.objectContaining({ accountId: "acct-live-test" }),
+      expect.objectContaining({
+        accountId: "acct-live-test",
+        connection: { secretId: "secret-oauth", connectionRevision: 1 },
+      }),
     );
   });
 
@@ -4783,6 +4794,7 @@ describe("codex live catalog", () => {
       provider: "openai-codex",
       label: "ChatGPT A",
       secretId: "secret-a",
+      connectionRevision: 1,
       createdAt: stamp,
       updatedAt: stamp,
     };
@@ -4865,7 +4877,9 @@ describe("codex live catalog", () => {
       userModelCredential: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ provider: "openai-codex", secretId: "secret-oauth" }]),
+          .mockResolvedValue([
+            { provider: "openai-codex", secretId: "secret-oauth", connectionRevision: 1 },
+          ]),
       },
       spaceModelPreference: { findMany: vi.fn().mockResolvedValue([]) },
       secret: {

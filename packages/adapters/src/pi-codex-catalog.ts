@@ -496,6 +496,8 @@ export async function codexLiveCatalogsForSpace(
   });
   const accounts = new Map<string, CodexCatalogAccount>();
   for (const secret of secrets) {
+    const connectionRevision = auth.connectionRevisionBySecretId?.get(secret.id);
+    if (auth.connectionRevisionBySecretId && connectionRevision === undefined) continue;
     let credential: OAuthCredential | undefined;
     try {
       const parsed = parseModelSecret(await secretStore.load(secret.ciphertext, secret.id));
@@ -507,7 +509,6 @@ export async function codexLiveCatalogsForSpace(
       ? codexAccountHandle(credential, () => opts?.onExpiredToken?.(secret.id))
       : null;
     if (account) {
-      const connectionRevision = auth.connectionRevisionBySecretId?.get(secret.id);
       accounts.set(
         secret.id,
         connectionRevision === undefined

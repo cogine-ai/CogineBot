@@ -3472,6 +3472,15 @@ export function createRouter(deps: RouterDeps) {
                     provider = defaultChoice?.defaultProvider ?? undefined;
                     modelId = defaultChoice?.defaultModel ?? undefined;
                   }
+                  if (
+                    preparedAuth?.catalogThinkingLevels &&
+                    (preparedAuth.catalogModelId !== modelId ||
+                      preparedAuth.modelCredentialId !== selected?.id ||
+                      preparedAuth.connectionRevision !== selected?.connectionRevision)
+                  )
+                    throw new ORPCError("CONFLICT", {
+                      message: "Model selection changed. Reload and try again.",
+                    });
                   let allowed: string[] | undefined =
                     preparedAuth?.catalogThinkingLevels ??
                     listPiCatalog().find(

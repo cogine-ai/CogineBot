@@ -127,6 +127,7 @@ export async function modelCredentialAuthKindsForSpace(
             id: true,
             provider: true,
             secretId: true,
+            connectionRevision: true,
             updatedAt: true,
             createdAt: true,
           },
@@ -142,6 +143,7 @@ export async function modelCredentialAuthKindsForSpace(
     provider: string;
     modelId: string;
     secretId: string;
+    connectionRevision: number;
     modelSpecific: boolean;
   }> = [];
   for (const entry of listPiCatalog()) {
@@ -153,15 +155,14 @@ export async function modelCredentialAuthKindsForSpace(
       credentials,
     });
     if (!choice) continue;
-    const secretId =
-      choice.source === "preference"
-        ? choice.preference.credential.secretId
-        : choice.credential.secretId;
+    const { secretId, connectionRevision } =
+      choice.source === "preference" ? choice.preference.credential : choice.credential;
     const requestedModelId = usableModelId(entry.id);
     selections.push({
       provider: entry.provider,
       modelId: entry.id,
       secretId,
+      connectionRevision,
       modelSpecific:
         choice.source === "preference" &&
         requestedModelId !== null &&
@@ -208,7 +209,7 @@ export async function modelCredentialAuthKindsForSpace(
     secretIdByProvider: {},
     secretIdByModel: {},
     connectionRevisionBySecretId: new Map(
-      credentials
+      selections
         .filter(({ provider }) => provider === CHATGPT_OAUTH_PROVIDER)
         .map(({ secretId, connectionRevision }) => [secretId, connectionRevision] as const),
     ),

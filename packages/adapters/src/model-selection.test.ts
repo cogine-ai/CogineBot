@@ -432,6 +432,7 @@ describe("space catalog auth", () => {
       id,
       provider: "openai-codex",
       secretId,
+      connectionRevision: 1,
       updatedAt: stamp(iso),
       createdAt: stamp(iso),
     };
@@ -475,6 +476,29 @@ describe("space catalog auth", () => {
       (entry) => entry.provider === "openai-codex" && entry.id === spark,
     );
   }
+
+  it("uses the revision paired with the secret in the selected preference snapshot", async () => {
+    const afterReconnect = storedPreference({
+      id: "pref-oauth",
+      modelId: luna,
+      isDefault: true,
+      credentialId: "credential",
+      secretId: "secret-reconnected",
+      iso: "2026-01-02T00:00:00.000Z",
+    });
+    const { prisma } = authPrisma({
+      credentials: [
+        storedCredential("credential", "secret-before-reconnect", "2026-01-01T00:00:00.000Z"),
+      ],
+      preferences: [
+        { ...afterReconnect, credential: { ...afterReconnect.credential, connectionRevision: 2 } },
+      ],
+      secrets: [{ id: "secret-reconnected", ciphertext: "cipher-reconnected" }],
+    });
+    const auth = await modelCredentialAuthKindsForSpace(prisma, { load: async () => oauth }, scope);
+    expect(auth.secretIdByProvider["openai-codex"]).toBe("secret-reconnected");
+    expect(auth.connectionRevisionBySecretId?.get("secret-reconnected")).toBe(2);
+  });
 
   it("uses the space preference instead of a newer account credential", async () => {
     const { prisma, preferenceFindMany } = authPrisma({
