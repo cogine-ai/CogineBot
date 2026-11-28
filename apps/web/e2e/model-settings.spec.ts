@@ -2499,6 +2499,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /cannot use the selected model/,
   },
   {
+    provider: "fireworks",
+    providerName: "Fireworks",
+    protocol: "Chat",
+    modelId: "accounts/fireworks/models/glm-5p3",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

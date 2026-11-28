@@ -10,7 +10,7 @@ import {
   anthropicModelAlias,
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
-  isOfficialFireworksMessagesProbeModel,
+  isOfficialFireworksProbeModel,
   isOfficialGeminiProbeModel,
   isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
@@ -62,8 +62,11 @@ export async function probeModelInference(
   }
   if (builtIn && isOfficialMiniMaxProbeModel(model))
     return probeNativeMessages(model, apiKey, options, miniMaxFailureStatus);
-  if (builtIn && isOfficialFireworksMessagesProbeModel(model))
-    return probeNativeMessages(model, apiKey, options, fireworksMessagesFailureStatus);
+  if (builtIn && isOfficialFireworksProbeModel(model)) {
+    return model.api === "anthropic-messages"
+      ? probeNativeMessages(model, apiKey, options, fireworksFailureStatus)
+      : probeNativeChatCompletions(model, apiKey, options);
+  }
   if (builtIn && isOfficialNativeChatProbeModel(model))
     return probeNativeChatCompletions(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
@@ -281,10 +284,7 @@ async function probeNativeMessages(
   );
 }
 
-function fireworksMessagesFailureStatus(
-  error: unknown,
-  status?: number,
-): ModelInferenceProbeStatus {
+function fireworksFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
   if (status === 403) return "auth";
   if (status !== undefined && status !== 404) return nativeChatFailureStatus(undefined, status);
   const record = probeRecord(error);
@@ -354,19 +354,19 @@ async function probeNativeChatCompletions(
   const cerebras = model.provider === "cerebras";
   const moonshot = model.provider === "moonshotai" || model.provider === "moonshotai-cn";
   const kimiCode = model.provider === "kimi-coding";
-  const classifyFailure = moonshot
-    ? moonshotFailureStatus
-    : kimiCode
-      ? kimiCodeFailureStatus
-      : nativeChatFailureStatus;
+  const fireworks = model.provider === "fireworks";
+  let classifyFailure = nativeChatFailureStatus;
+  if (moonshot) classifyFailure = moonshotFailureStatus;
+  if (kimiCode) classifyFailure = kimiCodeFailureStatus;
+  if (fireworks) classifyFailure = fireworksFailureStatus;
   const maxTokens = Math.min(model.maxTokens, OUTPUT_LIMIT);
-  // For Moonshot, only the HTTP response supplies a trustworthy numeric status.
+  // These providers' stream error payloads do not supply an HTTP status.
   const streamFailure: StreamFailureClassifier =
     cerebras || kimiCode
       ? () => "unavailable"
-      : moonshot
-        ? (error) => moonshotFailureStatus(error)
-        : nativeChatFailureStatus;
+      : moonshot || fireworks
+        ? (error) => classifyFailure(error)
+        : classifyFailure;
   // The SDK can inherit deployment-level headers. Send the selected key and
   // only the headers needed on the fixed provider endpoint.
   return await probeNativeEventStream(

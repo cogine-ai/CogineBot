@@ -111,13 +111,15 @@ export function isOfficialMiniMaxProbeModel(
   );
 }
 
-export function isOfficialFireworksMessagesProbeModel(
+export function isOfficialFireworksProbeModel(
   model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
 ) {
   return (
     model.provider === "fireworks" &&
-    model.api === "anthropic-messages" &&
-    model.baseUrl === "https://api.fireworks.ai/inference" &&
+    ((model.api === "anthropic-messages" &&
+      model.baseUrl === "https://api.fireworks.ai/inference") ||
+      (model.api === "openai-completions" &&
+        model.baseUrl === "https://api.fireworks.ai/inference/v1")) &&
     /^accounts\/fireworks\/models\/[a-z0-9][a-z0-9-]*$/.test(model.id) &&
     isChatModelId(model.id)
   );

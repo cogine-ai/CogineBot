@@ -7,7 +7,7 @@ import { supplementPiModels } from "./pi-current-models.js";
 import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
-  isOfficialFireworksMessagesProbeModel,
+  isOfficialFireworksProbeModel,
   isOfficialGeminiModel,
   isOfficialGeminiProbeModel,
   isOfficialMiniMaxProbeModel,
@@ -184,7 +184,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(probeBaseUrl ? { catalogProbe: true, savedCatalogProbe: true } : {}),
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
-          isOfficialFireworksMessagesProbeModel(model) ||
+          isOfficialFireworksProbeModel(model) ||
           isOfficialGeminiProbeModel(model) ||
           isOfficialMiniMaxProbeModel(model) ||
           isOfficialNativeChatProbeModel(model) ||
