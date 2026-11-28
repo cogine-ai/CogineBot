@@ -693,7 +693,22 @@ describe("LocalStackController", () => {
     expect(calls.map((call) => call.args[7] ?? call.args[0])).toEqual(["compose", "info", "pull"]);
   });
 
-  it("retries a missing credential helper on the same Docker context without editing user config", async () => {
+  it.each([
+    {
+      version: "2.29.0",
+      upArgs: [
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        String(COMPOSE_WAIT_TIMEOUT_S),
+        "--pull",
+        "never",
+      ],
+    },
+    { version: "2.8.0", upArgs: ["up", "-d", "--pull", "never"] },
+    { version: "2.7.0", upArgs: ["up", "-d"] },
+  ])("recovers from a missing helper on Compose $version", async ({ version, upArgs }) => {
     const dockerConfig = path.join(root, "docker");
     const config = {
       currentContext: "colima",
@@ -711,6 +726,7 @@ describe("LocalStackController", () => {
     const stack = controller(
       { env: { DOCKER_CONFIG: "../docker", DOCKER_CONTEXT: "colima" } },
       (args, options) => {
+        if (args[0] === "compose" && args[1] === "version") return { stdout: version };
         if (args[7] !== "pull") return ok(args);
         if (options.env.DOCKER_CONFIG === "../docker") {
           return {
@@ -737,7 +753,7 @@ describe("LocalStackController", () => {
     expect((await stack.start()).phase).toBe("ready");
     expect(calls.filter((call) => call.args[7] === "pull")).toHaveLength(2);
     const up = calls.find((call) => call.args[7] === "up");
-    expect(up?.args.slice(-2)).toEqual(["--pull", "never"]);
+    expect(up?.args.slice(7)).toEqual(upArgs);
     expect(up?.env.DOCKER_CONFIG).toBe("../docker");
     await expect(stat(retryConfig!)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(dockerConfig, "config.json"), "utf8")).resolves.toBe(

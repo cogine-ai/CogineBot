@@ -5,6 +5,7 @@ import type { DesktopLocalStackState } from "@rakazo/contracts";
 import type { DockerFailureKind, RunDocker, RunDockerResult } from "./docker-cli.js";
 import {
   classifyDockerFailure,
+  composeSupportsUpPull,
   composeSupportsWaitTimeout,
   dockerSpawnEnv,
   resolveDockerBinary,
@@ -529,7 +530,9 @@ export class LocalStackController {
       ? ["up", "-d", "--wait", "--wait-timeout", String(COMPOSE_WAIT_TIMEOUT_S)]
       : ["up", "-d"];
     // The recovered pull fetched every image, including any override tagged latest.
-    if (recoveredPull) upArgs.push("--pull", "never");
+    if (recoveredPull && composeSupportsUpPull(version.stdout)) {
+      upArgs.push("--pull", "never");
+    }
     await writePrivateFile(path.join(this.deps.stackDir, STACK_WEB_URL_FILE), this.currentWebUrl);
     let up = await this.compose(binary, upArgs, UP_TIMEOUT_MS, signal);
     for (
