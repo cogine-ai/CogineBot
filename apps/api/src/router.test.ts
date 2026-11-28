@@ -3575,6 +3575,18 @@ describe("model credential persistence", () => {
       distinctFailure: "model",
       transient: { code: 429, type: "rate_limit_error" },
     },
+    {
+      provider: "vercel-ai-gateway",
+      modelId: "openai/gpt-6.1-sol",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"openai/gpt-6.1-sol"}}\n\n',
+      rejection: { type: "authentication_error" },
+      rejectionHttpStatus: 401,
+      distinctFailure: "auth",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({

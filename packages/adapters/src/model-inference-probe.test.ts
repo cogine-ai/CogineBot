@@ -71,6 +71,10 @@ const vercelGatewayMessagesInputs = [
   "google/gemini-3.7-flash",
   "google/gemini-3.8-flash",
   "google/gemini-4-argon",
+  "openai/gpt-6-astra",
+  "openai/gpt-6-luna",
+  "openai/gpt-6-sol",
+  "openai/gpt-6.1-sol",
 ].map((modelId) => ({ ...vercelGatewayInput, modelId }));
 const groqDirectoryInput = {
   ...groqInput,
@@ -1643,6 +1647,9 @@ describe("model inference check", () => {
     ["vercel-ai-gateway", "google/gemini-3.6-flash-batch"],
     ["vercel-ai-gateway", "google/gemini-3.1-pro-preview"],
     ["vercel-ai-gateway", "google/gemini-4-hydrogen"],
+    ["vercel-ai-gateway", "openai/gpt-6.1-sol-batch"],
+    ["vercel-ai-gateway", "openai/gpt-6.1-sol-fast"],
+    ["vercel-ai-gateway", "openai/gpt-6.2-sol"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1676,6 +1683,8 @@ describe("model inference check", () => {
     ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash"],
     ["google/gemini-3.8-flash", "google/gemini-3.7-flash"],
     ["google/gemini-3.8-flash", "gemini-3.8-flash"],
+    ["openai/gpt-6.1-sol", "openai/gpt-6-sol"],
+    ["openai/gpt-6.1-sol", "gpt-6.1-sol"],
   ])(
     "does not accept %s from Vercel AI Gateway when it reports %s",
     async (modelId, returnedId) => {
