@@ -316,6 +316,7 @@ export type CodexCatalogSpaceAuth = {
    */
   secretIdByProvider?: Partial<Record<string, string>>;
   secretIdByModel?: Partial<Record<string, Partial<Record<string, string>>>>;
+  connectionRevisionBySecretId?: ReadonlyMap<string, number>;
 };
 
 /**
@@ -355,12 +356,7 @@ export async function codexLiveModel(
   const known = knownCodexSlugs();
   const directoryOnly = !known.has(modelId);
   if (directoryOnly && (!opts?.connection || !codexDirectoryModel(modelId))) return undefined;
-  const models = await readCodexLiveModels(
-    catalog,
-    userId,
-    secret,
-    !directoryOnly && opts?.connection ? { ...opts, connection: undefined } : opts,
-  );
+  const models = await readCodexLiveModels(catalog, userId, secret, opts);
   if (directoryOnly && !trustedCodexDirectory(models, known)) return undefined;
   return models?.find((model) => model.slug === modelId);
 }
@@ -510,7 +506,18 @@ export async function codexLiveCatalogsForSpace(
     const account = credential
       ? codexAccountHandle(credential, () => opts?.onExpiredToken?.(secret.id))
       : null;
-    if (account) accounts.set(secret.id, account);
+    if (account) {
+      const connectionRevision = auth.connectionRevisionBySecretId?.get(secret.id);
+      accounts.set(
+        secret.id,
+        connectionRevision === undefined
+          ? account
+          : {
+              ...account,
+              connection: { secretId: secret.id, connectionRevision },
+            },
+      );
+    }
   }
   await Promise.all(
     [...accounts].map(async ([secretId, account]) => {

@@ -9,7 +9,6 @@ import {
   connectionModelImageInput,
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
-  isCatalogModelChoice,
   knownModelImageInput,
   loadStoredModelSecret,
   modelAcceptsImageInput,
@@ -212,7 +211,7 @@ export async function resolveThreadImageInput(
     if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
       const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
         connection: credential,
-        waitMs: lockConnection || isCatalogModelChoice(provider, id) ? 0 : undefined,
+        waitMs: lockConnection ? 0 : undefined,
       });
       if (live?.supportsImages !== undefined) supportsImages = live.supportsImages;
     }

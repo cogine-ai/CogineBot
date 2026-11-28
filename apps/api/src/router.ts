@@ -3313,7 +3313,8 @@ export function createRouter(deps: RouterDeps) {
                         checked.plaintext,
                         target.modelId,
                       ).allowed
-                    : (listPiCatalog().find(
+                    : (model.catalogThinkingLevels ??
+                      listPiCatalog().find(
                         ({ provider, id }) =>
                           provider === target.modelProvider && id === target.modelId,
                       )?.thinkingLevels ?? ["off"]);
@@ -3471,9 +3472,11 @@ export function createRouter(deps: RouterDeps) {
                     provider = defaultChoice?.defaultProvider ?? undefined;
                     modelId = defaultChoice?.defaultModel ?? undefined;
                   }
-                  let allowed: string[] | undefined = listPiCatalog().find(
-                    (entry) => entry.provider === provider && entry.id === modelId,
-                  )?.thinkingLevels;
+                  let allowed: string[] | undefined =
+                    preparedAuth?.catalogThinkingLevels ??
+                    listPiCatalog().find(
+                      (entry) => entry.provider === provider && entry.id === modelId,
+                    )?.thinkingLevels;
                   if (selected && provider === OPENAI_COMPATIBLE_PROVIDER_ID && modelId) {
                     const loaded =
                       checked ??

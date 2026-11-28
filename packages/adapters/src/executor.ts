@@ -14254,6 +14254,7 @@ async function resolveModelKey(
           );
         if (provider === CHATGPT_OAUTH_PROVIDER && !liveCodex) {
           liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
+            connection: credential,
             waitMs: waitForThinkingCapabilities ? CODEX_LIVE_RUN_WAIT_MS : 0,
           });
         }

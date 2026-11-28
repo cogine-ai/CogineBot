@@ -118,17 +118,11 @@ export async function validateBackupModelBinding(
     if (
       validateModelAuthAvailability(catalogProvider, binding.modelId, checked.plaintext) &&
       (catalogProvider !== CHATGPT_OAUTH_PROVIDER ||
-        !(await codexLiveListsModel(
-          codexCatalog,
-          actor.userId,
-          checked.secret,
-          binding.modelId,
-          directoryOnly
-            ? { connection: checked.credential, cacheOnly: lock, freshOnly: true }
-            : lock
-              ? { cacheOnly: true }
-              : undefined,
-        )))
+        !(await codexLiveListsModel(codexCatalog, actor.userId, checked.secret, binding.modelId, {
+          connection: checked.credential,
+          cacheOnly: lock,
+          freshOnly: directoryOnly,
+        })))
     )
       return null;
     return model;

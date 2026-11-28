@@ -553,6 +553,24 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
             expectedRevision: selection.expectedRevision,
             thinkingLevel: "low",
           });
+          await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: null });
+          const history = await rpc<{ revision: number; versions: { id: string }[] }>(
+            app,
+            cookie,
+            "bots/settingsHistory",
+            { botId: bot.id },
+          );
+          await expect(
+            rpc(app, cookie, "bots/undoSettings", {
+              botId: bot.id,
+              expectedRevision: history.revision,
+              versionId: history.versions[0]!.id,
+              clientNonce: randomUUID(),
+            }),
+          ).resolves.toMatchObject({ status: "updated" });
+          await expect(
+            handles.prisma.bot.findUnique({ where: { id: bot.id } }),
+          ).resolves.toMatchObject({ thinkingLevel: "low" });
           await rpc(app, cookie, "models/setDefault", {
             ...selection,
             modelId: subscriptionModels[0],

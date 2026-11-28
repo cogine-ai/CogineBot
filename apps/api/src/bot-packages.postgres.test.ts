@@ -1256,9 +1256,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         owner.actor.userId,
         expect.objectContaining({
           accountId: "fixture-account",
-          ...(directoryOnly ? { connection: expect.objectContaining(connection) } : {}),
+          connection: expect.objectContaining(connection),
         }),
-        directoryOnly ? expect.objectContaining({ freshOnly: true, cacheOnly: false }) : undefined,
+        expect.objectContaining({ freshOnly: directoryOnly, cacheOnly: false }),
       );
       const receipt = await importPackage(owner, reviewed);
       expect(receipt.status).toBe("completed");
@@ -1269,11 +1269,9 @@ postgres("Bot packages through authenticated HTTP and transactional PostgreSQL",
         owner.actor.userId,
         expect.objectContaining({
           accountId: "fixture-account",
-          ...(directoryOnly ? { connection: expect.objectContaining(connection) } : {}),
+          connection: expect.objectContaining(connection),
         }),
-        directoryOnly
-          ? expect.objectContaining({ freshOnly: true, cacheOnly: true })
-          : { cacheOnly: true },
+        expect.objectContaining({ freshOnly: directoryOnly, cacheOnly: true }),
       );
       const prior = await preview(owner, value);
       readCodexCatalog.mockResolvedValue([]);

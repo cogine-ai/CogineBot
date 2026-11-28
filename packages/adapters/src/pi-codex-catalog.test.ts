@@ -1,7 +1,11 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { listAvailablePiCatalog } from "./pi-catalog-availability.js";
-import type { CodexCatalogModel, CodexCatalogSpaceAuth } from "./pi-codex-catalog.js";
+import type {
+  CodexCatalogModel,
+  CodexCatalogSpaceAuth,
+  CodexLiveCatalog,
+} from "./pi-codex-catalog.js";
 import {
   applyCodexLiveCatalog,
   CODEX_MODELS_ENDPOINT,
@@ -603,10 +607,22 @@ describe("CodexCatalogCache", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("treats an empty catalog as a failure so the static list stays", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(catalogPayload([])));
-    const cache = new CodexCatalogCache({ fetch: fetchImpl, now: () => 0, waitMs: 50 });
-    expect(await cache.read("user-1", account())).toBeUndefined();
+  it("uses a successful empty response instead of retaining a prior nonempty catalog", async () => {
+    let now = 0;
+    const fetchImpl = listFetch();
+    const cache = new CodexCatalogCache({
+      fetch: fetchImpl,
+      now: () => now,
+      waitMs: 50,
+      ttlMs: 100,
+    });
+    expect(await cache.read("user-1", account())).toEqual([
+      expect.objectContaining({ slug: SPARK }),
+    ]);
+    now += 101;
+    fetchImpl.mockResolvedValue(okResponse(catalogPayload([])));
+    expect(await cache.read("user-1", account(), { freshOnly: true })).toEqual([]);
+    expect(await cache.read("user-1", account())).toEqual([]);
   });
 
   it("does not negative-cache a read that never got a bearer", async () => {
@@ -753,6 +769,17 @@ describe("codexLiveListsModel", () => {
       expect.objectContaining({ accountId: ACCOUNT_ID }),
       undefined,
     );
+  });
+
+  it("uses the selected revision when reading a built-in model's capabilities", async () => {
+    const connection = { secretId: "fixture-bundled", connectionRevision: 2 };
+    const read = vi.fn<CodexLiveCatalog["read"]>(async () => [liveModel(LUNA)]);
+    await expect(
+      codexLiveListsModel({ read }, "user-1", oauthSecret(), LUNA, { connection }),
+    ).resolves.toBe(true);
+    expect(read).toHaveBeenCalledWith("user-1", expect.objectContaining({ connection }), {
+      connection,
+    });
   });
 
   it("rejects when the live catalog does not list the model", async () => {
@@ -902,6 +929,10 @@ describe("codexLiveCatalogsForSpace", () => {
       byModel: { [CHATGPT_OAUTH_PROVIDER]: { [SPARK]: "oauth" } },
       secretIdByProvider: { [CHATGPT_OAUTH_PROVIDER]: "secret-a" },
       secretIdByModel: { [CHATGPT_OAUTH_PROVIDER]: { [SPARK]: "secret-b" } },
+      connectionRevisionBySecretId: new Map([
+        ["secret-a", 1],
+        ["secret-b", 2],
+      ]),
     };
 
     const live = await codexLiveCatalogsForSpace(prisma, secrets, scope, auth, { read });
@@ -910,6 +941,20 @@ describe("codexLiveCatalogsForSpace", () => {
     expect(live.get("secret-b")?.[0]?.slug).toBe(SPARK);
     const accountIds = read.mock.calls.map((call) => call[1].accountId).sort();
     expect(accountIds).toEqual(["acct-a", "acct-b"]);
+    expect(read).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        accountId: "acct-a",
+        connection: { secretId: "secret-a", connectionRevision: 1 },
+      }),
+    );
+    expect(read).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        accountId: "acct-b",
+        connection: { secretId: "secret-b", connectionRevision: 2 },
+      }),
+    );
     expect(secrets.put).not.toHaveBeenCalled();
   });
 

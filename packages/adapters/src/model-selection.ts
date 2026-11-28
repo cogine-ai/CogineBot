@@ -88,6 +88,7 @@ export type SpaceCatalogAuth = {
    */
   secretIdByProvider: Partial<Record<string, string>>;
   secretIdByModel: Partial<Record<string, Partial<Record<string, string>>>>;
+  connectionRevisionBySecretId?: ReadonlyMap<string, number>;
 };
 
 /**
@@ -108,6 +109,7 @@ export async function modelCredentialAuthKindsForSpace(
         id: true,
         provider: true,
         secretId: true,
+        connectionRevision: true,
         updatedAt: true,
         createdAt: true,
       },
@@ -205,6 +207,11 @@ export async function modelCredentialAuthKindsForSpace(
     byModel: {},
     secretIdByProvider: {},
     secretIdByModel: {},
+    connectionRevisionBySecretId: new Map(
+      credentials
+        .filter(({ provider }) => provider === CHATGPT_OAUTH_PROVIDER)
+        .map(({ secretId, connectionRevision }) => [secretId, connectionRevision] as const),
+    ),
   };
   for (const selection of selections) {
     const kind = await readKind(selection.secretId);
@@ -479,7 +486,7 @@ export async function listOwnedModelConnections(
                 .filter((entry) => entry.provider === row.provider)
                 .map((entry) => entry.id);
       if (catalog && row.provider === CHATGPT_OAUTH_PROVIDER && parsed.kind === "oauth") {
-        const live = await readCodexLiveModels(catalog, actor.userId, parsed);
+        const live = await readCodexLiveModels(catalog, actor.userId, parsed, { connection: row });
         if (live) {
           const byProvider = { [row.provider]: "oauth" as const };
           const available = listAvailablePiCatalog(byProvider).filter(

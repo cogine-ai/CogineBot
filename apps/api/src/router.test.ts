@@ -478,6 +478,7 @@ describe("model setup gate", () => {
       provider: choice.provider,
       label: "Fixture",
       secretId: "secret-1",
+      connectionRevision: 2,
     };
     Object.assign(deps.prisma, {
       bot: {
@@ -533,6 +534,13 @@ describe("model setup gate", () => {
         ),
       },
     });
+    const known = listPiCatalog().filter(({ provider }) => provider === choice.provider);
+    const anchors = known.slice(0, Math.ceil(known.length / 4)).map(({ id }) => ({
+      slug: id,
+      reasoningEfforts: [],
+      supportsImages: false,
+      supportsFastTier: false,
+    }));
     const read = vi.spyOn(CodexCatalogCache.prototype, "read").mockResolvedValue([
       {
         slug: choice.modelId,
@@ -540,6 +548,7 @@ describe("model setup gate", () => {
         supportsImages: false,
         supportsFastTier: false,
       },
+      ...anchors,
     ]);
     try {
       const response = await call(handler, actor, "bots/settingsHistory", { botId: "bot-1" });

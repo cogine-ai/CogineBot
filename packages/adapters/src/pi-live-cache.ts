@@ -125,7 +125,7 @@ export class LiveCatalogCache<T, Failure = never> {
     const now = this.options.now();
     if (superseded.value) return { models: this.trusted(prior, now) };
     if (!result.attempted) return {};
-    const models = result.models?.length ? result.models : undefined;
+    const models = result.models;
     const entry = models
       ? { models, fetchedAt: now, expiresAt: now + this.options.ttlMs }
       : {
