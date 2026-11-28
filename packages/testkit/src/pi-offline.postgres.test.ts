@@ -545,6 +545,52 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         });
         await discardBotIntroRun(handles, cookie, bot.id);
         if (discovered) {
+          const clearAndUndoThinking = async () => {
+            await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: null });
+            const history = await rpc<{ revision: number; versions: { id: string }[] }>(
+              app,
+              cookie,
+              "bots/settingsHistory",
+              { botId: bot.id },
+            );
+            await expect(
+              rpc(app, cookie, "bots/undoSettings", {
+                botId: bot.id,
+                expectedRevision: history.revision,
+                versionId: history.versions[0]!.id,
+                clientNonce: randomUUID(),
+              }),
+            ).resolves.toMatchObject({ status: "updated" });
+            await expect(
+              handles.prisma.bot.findUnique({ where: { id: bot.id } }),
+            ).resolves.toMatchObject({ thinkingLevel: "low" });
+          };
+          await expect(
+            rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "high" }),
+          ).rejects.toThrow(/bots\/update: 400/);
+          await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "low" });
+          await clearAndUndoThinking();
+          const read = codexCatalog!.read.bind(codexCatalog);
+          const { spaceId } = await rpc<{ spaceId: string }>(app, cookie, "me", null);
+          const changedDefault = vi
+            .spyOn(codexCatalog!, "read")
+            .mockImplementationOnce(async (...args) => {
+              const observed = await read(...args);
+              const result = await handles.prisma.spaceModelPreference.updateMany({
+                where: { spaceId, credentialId: connection.id, isDefault: true },
+                data: { modelId: subscriptionModels[0], thinkingLevel: null },
+              });
+              expect(result.count).toBe(1);
+              return observed;
+            });
+          try {
+            await expect(
+              rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "low" }),
+            ).rejects.toThrow(/bots\/update: 409/);
+          } finally {
+            changedDefault.mockRestore();
+          }
+          await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
           await rpc(app, cookie, "bots/update", {
             botId: bot.id,
             modelProvider: provider,
@@ -553,25 +599,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
             expectedRevision: selection.expectedRevision,
             thinkingLevel: "low",
           });
-          await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: null });
-          const history = await rpc<{ revision: number; versions: { id: string }[] }>(
-            app,
-            cookie,
-            "bots/settingsHistory",
-            { botId: bot.id },
-          );
-          await expect(
-            rpc(app, cookie, "bots/undoSettings", {
-              botId: bot.id,
-              expectedRevision: history.revision,
-              versionId: history.versions[0]!.id,
-              clientNonce: randomUUID(),
-            }),
-          ).resolves.toMatchObject({ status: "updated" });
-          await expect(
-            handles.prisma.bot.findUnique({ where: { id: bot.id } }),
-          ).resolves.toMatchObject({ thinkingLevel: "low" });
-          const read = codexCatalog!.read.bind(codexCatalog);
+          await clearAndUndoThinking();
           const switched = vi
             .spyOn(codexCatalog!, "read")
             .mockImplementationOnce(async (...args) => {

@@ -26,7 +26,12 @@ import type {
   CodexLiveCatalog,
   CodexLiveReadOptions,
 } from "./pi-codex-catalog.js";
-import { applyCodexLiveCatalog, codexLiveModel, readCodexLiveModels } from "./pi-codex-catalog.js";
+import {
+  applyCodexLiveCatalog,
+  codexConnectionDirectory,
+  codexLiveModel,
+  readCodexLiveModels,
+} from "./pi-codex-catalog.js";
 import { codexDirectoryModel, providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -487,7 +492,10 @@ export async function listOwnedModelConnections(
                 .filter((entry) => entry.provider === row.provider)
                 .map((entry) => entry.id);
       if (catalog && row.provider === CHATGPT_OAUTH_PROVIDER && parsed.kind === "oauth") {
-        const live = await readCodexLiveModels(catalog, actor.userId, parsed, { connection: row });
+        const live = await readCodexLiveModels(catalog, actor.userId, parsed, {
+          connection: row,
+          freshOnly: true,
+        });
         if (live) {
           const byProvider = { [row.provider]: "oauth" as const };
           const available = listAvailablePiCatalog(byProvider).filter(
@@ -498,6 +506,7 @@ export async function listOwnedModelConnections(
             { byProvider, byModel: {}, secretIdByProvider: { [row.provider]: row.secretId } },
             new Map([[row.secretId, live]]),
           ).map(({ id }) => id);
+          modelIds.push(...codexConnectionDirectory(live, undefined).models.map(({ id }) => id));
         }
       }
       if (modelIds.length === 0) return undefined;

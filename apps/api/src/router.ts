@@ -3273,6 +3273,28 @@ export function createRouter(deps: RouterDeps) {
               })
             : undefined;
         const voice = previous?.voiceId ? await loadDefaultVoiceCredential(deps, actor) : undefined;
+        const inherited =
+          !target?.modelProvider && previous?.thinkingLevel
+            ? (await findEffectiveModelDefault(deps.prisma, actor)).credential
+            : null;
+        const inheritedModel =
+          inherited?.provider === CHATGPT_OAUTH_PROVIDER &&
+          inherited.defaultModel &&
+          !isCatalogModelChoice(inherited.provider, inherited.defaultModel)
+            ? await prepareExistingModelAuth(
+                deps,
+                actor,
+                {
+                  modelProvider: inherited.provider,
+                  modelId: inherited.defaultModel,
+                  modelCredentialId: inherited.id,
+                },
+                codexCatalog,
+              ).catch((error) => {
+                if (error instanceof ORPCError && error.code !== "SERVICE_UNAVAILABLE") return null;
+                throw error;
+              })
+            : undefined;
         const restoreVoiceId = previous?.voiceId === undefined ? bot.voiceId : previous.voiceId;
         const availableVoice =
           voice &&
@@ -3321,6 +3343,7 @@ export function createRouter(deps: RouterDeps) {
                 if (!allowed.includes(patch.thinkingLevel)) return false;
               }
             } else if (patch.thinkingLevel) {
+              if (inheritedModel) await lockSpaceModelSelection(tx, actor, "read");
               const defaultConnection = (await findEffectiveModelDefault(tx, actor)).credential;
               if (defaultConnection) {
                 const [locked] = await tx.$queryRaw<{ id: string }[]>`
@@ -3335,10 +3358,26 @@ export function createRouter(deps: RouterDeps) {
                   defaultCatalogModelId(defaultConnection.provider))
                 : deps.env.defaultModel;
               if (!id) return false;
-              const allowed = listPiCatalog().find(
-                (entry) => entry.provider === provider && entry.id === id,
-              )?.thinkingLevels ?? ["off"];
-              if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && defaultConnection && id) {
+              if (provider === CHATGPT_OAUTH_PROVIDER && !isCatalogModelChoice(provider, id)) {
+                if (
+                  !inheritedModel?.catalogThinkingLevels?.includes(patch.thinkingLevel) ||
+                  !defaultConnection ||
+                  inheritedModel.catalogModelId !== id ||
+                  inheritedModel.modelCredentialId !== defaultConnection.id ||
+                  inheritedModel.connectionRevision !== defaultConnection.connectionRevision
+                )
+                  return false;
+                const secret = await tx.secret.findFirst({
+                  where: {
+                    id: defaultConnection.secretId,
+                    userId: actor.userId,
+                    spaceId: null,
+                    ciphertext: inheritedModel.ciphertext,
+                  },
+                  select: { id: true },
+                });
+                if (!secret || inheritedModel.secretId !== defaultConnection.secretId) return false;
+              } else if (provider === OPENAI_COMPATIBLE_PROVIDER_ID && defaultConnection) {
                 const loaded = await loadStoredModelSecret(
                   tx,
                   deps.secrets,
@@ -3354,7 +3393,13 @@ export function createRouter(deps: RouterDeps) {
                   ).allowed.includes(patch.thinkingLevel)
                 )
                   return false;
-              } else if (!allowed.includes(patch.thinkingLevel)) return false;
+              } else if (
+                !(
+                  listPiCatalog().find((entry) => entry.provider === provider && entry.id === id)
+                    ?.thinkingLevels ?? ["off"]
+                ).includes(patch.thinkingLevel)
+              )
+                return false;
             }
             if (patch.voiceId) {
               const currentVoice =
@@ -3463,6 +3508,8 @@ export function createRouter(deps: RouterDeps) {
                 );
                 assertPreparedModelAuth(checked, preparedAuth);
                 if (thinkingLevel) {
+                  if (!checked && defaultCredential?.provider === CHATGPT_OAUTH_PROVIDER)
+                    await lockSpaceModelSelection(tx, context.actor, "read");
                   const selected =
                     checked?.credential ??
                     (await findEffectiveModelDefault(tx, context.actor)).credential;
@@ -3472,21 +3519,31 @@ export function createRouter(deps: RouterDeps) {
                     provider = defaultChoice?.defaultProvider ?? undefined;
                     modelId = defaultChoice?.defaultModel ?? undefined;
                   }
+                  const prepared = checked ? preparedAuth : preparedDefault;
+                  const directoryModel =
+                    provider === CHATGPT_OAUTH_PROVIDER &&
+                    modelId &&
+                    !isCatalogModelChoice(provider, modelId);
                   if (
-                    preparedAuth?.catalogThinkingLevels &&
-                    (preparedAuth.catalogModelId !== modelId ||
-                      preparedAuth.modelCredentialId !== selected?.id ||
-                      preparedAuth.connectionRevision !== selected?.connectionRevision)
+                    (directoryModel && !prepared?.catalogThinkingLevels) ||
+                    (prepared?.catalogThinkingLevels &&
+                      (prepared.catalogModelId !== modelId ||
+                        prepared.modelCredentialId !== selected?.id ||
+                        prepared.connectionRevision !== selected?.connectionRevision))
                   )
                     throw new ORPCError("CONFLICT", {
                       message: "Model selection changed. Reload and try again.",
                     });
                   let allowed: string[] | undefined =
-                    preparedAuth?.catalogThinkingLevels ??
+                    prepared?.catalogThinkingLevels ??
                     listPiCatalog().find(
                       (entry) => entry.provider === provider && entry.id === modelId,
                     )?.thinkingLevels;
-                  if (selected && provider === OPENAI_COMPATIBLE_PROVIDER_ID && modelId) {
+                  if (
+                    selected &&
+                    modelId &&
+                    (provider === OPENAI_COMPATIBLE_PROVIDER_ID || prepared?.catalogThinkingLevels)
+                  ) {
                     const loaded =
                       checked ??
                       (await validateModelBinding(
@@ -3499,9 +3556,9 @@ export function createRouter(deps: RouterDeps) {
                           modelCredentialId: selected.id,
                           expectedRevision: selected.connectionRevision,
                         },
-                        preparedDefault,
+                        prepared,
                       ));
-                    if (loaded)
+                    if (loaded && provider === OPENAI_COMPATIBLE_PROVIDER_ID)
                       allowed = compatibleThinkingLevels(
                         selected,
                         loaded.plaintext,

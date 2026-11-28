@@ -9,6 +9,7 @@ import {
   helperModelChoicesDescription,
   inboundRoutineModelPin,
   listHelperModelConnections,
+  listOwnedModelConnections,
   loadStoredModelSecret,
   modelCredentialAuthKindsForSpace,
   pinnedModelCredentialError,
@@ -21,6 +22,7 @@ import {
   validateModelAuthAvailability,
 } from "./model-selection.js";
 import { listAvailablePiCatalog } from "./pi-catalog-availability.js";
+import { listPiCatalog } from "./pi-models.js";
 
 type SelectionInput = Parameters<typeof selectConfiguredModel>[0];
 
@@ -1419,6 +1421,59 @@ describe("connected model validation", () => {
 });
 
 describe("helper model connections", () => {
+  it("lists directory-only choices for the exact subscription connection that offers them", async () => {
+    const actor = { userId: "user-1", spaceId: "space-1" };
+    const provider = "openai-codex";
+    const model = "gpt-fixture-bot-choice";
+    const first = { ...credential(provider, null), preferences: [] };
+    const second = {
+      ...first,
+      id: "connection-second",
+      secretId: "secret-second",
+      connectionRevision: 2,
+    };
+    const rows = [first, second];
+    const prisma = {
+      userModelCredential: { findMany: async () => rows },
+      secret: {
+        findMany: async () => rows.map(({ secretId }) => ({ id: secretId, ciphertext: secretId })),
+      },
+    } as unknown as PrismaClient;
+    const load = async (value: string) =>
+      JSON.stringify({
+        type: "oauth",
+        access: "fixture-access",
+        refresh: "fixture-refresh",
+        expires: Date.now() + 60_000,
+        accountId: value === first.secretId ? "fixture-a" : "fixture-b",
+      });
+    const known = listPiCatalog().filter((item) => item.provider === provider);
+    const anchors = known.slice(0, Math.ceil(known.length / 4)).map(({ id }) => id);
+    const read = vi.fn<NonNullable<Parameters<typeof listOwnedModelConnections>[3]>["read"]>(
+      async (_, account) =>
+        [...anchors, ...(account.accountId === "fixture-a" ? [model] : [])].map((slug) => ({
+          slug,
+          reasoningEfforts: [],
+          supportsImages: false,
+          supportsFastTier: false,
+        })),
+    );
+    const choices = await listOwnedModelConnections(prisma, { load }, actor, { read });
+    expect(
+      choices.find(({ modelCredentialId }) => modelCredentialId === first.id)?.modelIds,
+    ).toContain(model);
+    expect(
+      choices.find(({ modelCredentialId }) => modelCredentialId === second.id)?.modelIds,
+    ).not.toContain(model);
+    expect(read).toHaveBeenCalledWith(
+      actor.userId,
+      expect.objectContaining({
+        connection: expect.objectContaining({ secretId: second.secretId, connectionRevision: 2 }),
+      }),
+      expect.objectContaining({ freshOnly: true }),
+    );
+  });
+
   it("lists only the owned registration's discovered ChatGPT models with its explicit credential id", async () => {
     const actor = { userId: "user-1", spaceId: "space-1" };
     const findMany = vi.fn(async () => [
