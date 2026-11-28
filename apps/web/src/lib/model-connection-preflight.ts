@@ -133,6 +133,7 @@ export function unavailableSelectedModel(
 }
 
 type ListedModelCredential = {
+  id?: string;
   provider: string;
   authKind?: StoredModelAuthKind;
   modelId?: string;
@@ -166,6 +167,7 @@ export async function loadStoredModelAuth(
   provider: string,
   listCredentials: () => Promise<ReadonlyArray<ListedModelCredential>>,
   modelId?: string,
+  credentialId?: string,
 ): Promise<{
   storedAuthKind: StoredModelAuthKind | null;
   credentialLookupFailed: boolean;
@@ -173,7 +175,9 @@ export async function loadStoredModelAuth(
 }> {
   try {
     const credentials = await listCredentials();
-    const match = credentialForSpaceModel(credentials, provider, modelId);
+    const match = credentialId
+      ? credentials.find((entry) => entry.id === credentialId && entry.provider === provider)
+      : credentialForSpaceModel(credentials, provider, modelId);
     return {
       storedAuthKind: match?.authKind ?? null,
       credentialLookupFailed: false,
@@ -293,7 +297,15 @@ export function modelPreflightSuccessMessage(modelCount: number): string {
 }
 
 /** Static messages keep the inference feedback in the compiled locale catalogs. */
-export function modelInferenceTestMessage(status: ModelInferenceProbeStatus): string {
+export function modelInferenceTestMessage(
+  status: ModelInferenceProbeStatus,
+  authKind?: "oauth",
+): string {
+  if (authKind === "oauth") {
+    if (status === "accepted") return t`The model replied.`;
+    if (status === "auth") return t`Sign in again to test this model.`;
+    if (status === "model") return t`This account cannot use the selected model.`;
+  }
   const provider = t`Your model provider`;
   switch (status) {
     case "accepted":
@@ -306,6 +318,8 @@ export function modelInferenceTestMessage(status: ModelInferenceProbeStatus): st
       return t`Check your model provider's billing settings and available credits.`;
     case "spending":
       return t`${provider} reached its spending limit.`;
+    case "subscription_limit":
+      return t`Your subscription usage limit was reached.`;
     case "rate":
       return t`${provider} is rate limiting requests. Try again shortly.`;
     case "timeout":

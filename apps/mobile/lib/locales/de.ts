@@ -756,6 +756,14 @@ export const DE_MESSAGES: Record<string, string> = {
   "Test model": "Modell testen",
   "Connecting sends one test request that may incur usage charges.":
     "Beim Verbinden wird eine Testanfrage gesendet, für die Nutzungsgebühren anfallen können.",
+  "The model replied.": "Das Modell hat geantwortet.",
+  "Sign in again to test this model.": "Melde dich erneut an, um dieses Modell zu testen.",
+  "This account cannot use the selected model.":
+    "Dieses Konto kann das ausgewählte Modell nicht verwenden.",
+  "Testing may count toward your subscription usage.":
+    "Der Test kann auf dein Abonnementkontingent angerechnet werden.",
+  "Your subscription usage limit was reached.":
+    "Du hast das Nutzungslimit deines Abonnements erreicht.",
   "The model accepted the test request.": "Das Modell hat die Testanfrage angenommen.",
   "This key cannot use the selected model.":
     "Dieser Schlüssel kann das ausgewählte Modell nicht verwenden.",

@@ -601,6 +601,7 @@ export function ModelSettingsOverlay({
   const saveThinkingOnly = isActive && !usingServerCredentials && !needsModelConfirmation;
   const acceptsKey = selected?.auth !== "oauth";
   const subscriptionSignIn = selected?.signIn !== undefined;
+  const canTestSignIn = selected?.provider !== "openai-codex" || credential !== undefined;
   // Effort levels for the staged catalog model — "off" stays out, matching the
   // per-bot Thinking picker.
   const catalogThinkingLevels =
@@ -843,7 +844,7 @@ export function ModelSettingsOverlay({
     });
   }
 
-  async function testApiKeyConnection(target: "api-key" | "inference") {
+  async function testSelectedConnection(target: "api-key" | "inference") {
     const [kind, request] =
       target === "inference"
         ? (["inference", inferenceRequest] as const)
@@ -876,7 +877,10 @@ export function ModelSettingsOverlay({
       const feedback = await rpc.models.probeInference(request).then(
         ({ status }) => ({
           accepted: status === "accepted",
-          message: modelInferenceTestMessage(status),
+          message: modelInferenceTestMessage(
+            status,
+            selected.auth === "oauth" ? "oauth" : undefined,
+          ),
         }),
         (error: unknown) => ({
           accepted: false,
@@ -931,7 +935,7 @@ export function ModelSettingsOverlay({
   }
 
   async function testOAuthConnection() {
-    if (!selected) return;
+    if (!selected || !canTestSignIn) return;
     const revision = preflightRevisionRef.current;
     const spaceGeneration = currentSpaceSelectionGeneration();
     setPreflightTarget("sign-in");
@@ -944,6 +948,7 @@ export function ModelSettingsOverlay({
       selected.provider,
       () => rpc.models.credentials(),
       selected.id,
+      selected.provider === "openai-codex" ? credential?.id : undefined,
     );
     if (
       !contextCurrent() ||
@@ -1580,20 +1585,48 @@ export function ModelSettingsOverlay({
               )}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mt-3"
-            disabled={busy || preflightTesting}
-            onClick={() => void testOAuthConnection()}
-          >
-            {modelPreflightTestingLabel(
-              preflightTesting && preflightTarget === "sign-in",
-              "sign-in",
-            )}
-          </Button>
+          {canTestSignIn ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              disabled={busy || preflightTesting}
+              onClick={() => void testOAuthConnection()}
+            >
+              {modelPreflightTestingLabel(
+                preflightTesting && preflightTarget === "sign-in",
+                "sign-in",
+              )}
+            </Button>
+          ) : null}
           {chatgptUsageLink}
+          {!oauth && selected?.auth === "oauth" && inferenceRequest ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-2 mt-3"
+                disabled={busy || preflightTesting}
+                onClick={() => void testSelectedConnection("inference")}
+              >
+                {preflightTesting && preflightTarget === "inference" ? (
+                  <Trans>Testing…</Trans>
+                ) : (
+                  <Trans>Test model</Trans>
+                )}
+              </Button>
+              <p className="mt-2 text-sm text-muted-foreground">
+                <Trans>Testing may count toward your subscription usage.</Trans>
+              </p>
+            </>
+          ) : null}
+          {selected?.auth === "oauth" && preflightTarget === "inference" ? (
+            <div ref={inferenceFeedbackRef}>
+              <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
+            </div>
+          ) : null}
           {preflightTarget === "sign-in" ? (
             <ModelPreflightFeedback success={preflightSuccess} failure={preflightFailure} />
           ) : null}
@@ -1667,7 +1700,7 @@ export function ModelSettingsOverlay({
                   size="sm"
                   className="mt-3 rounded-full"
                   disabled={busy || preflightTesting || !catalogRequest}
-                  onClick={() => void testApiKeyConnection("api-key")}
+                  onClick={() => void testSelectedConnection("api-key")}
                 >
                   {catalogRequest &&
                   "credentialId" in catalogRequest &&
@@ -1688,7 +1721,7 @@ export function ModelSettingsOverlay({
                   size="sm"
                   className={selected.catalogProbe ? "ml-2 mt-3 rounded-full" : "mt-3 rounded-full"}
                   disabled={busy || preflightTesting || !inferenceRequest}
-                  onClick={() => void testApiKeyConnection("inference")}
+                  onClick={() => void testSelectedConnection("inference")}
                 >
                   {preflightTesting && preflightTarget === "inference" ? (
                     <Trans>Testing…</Trans>

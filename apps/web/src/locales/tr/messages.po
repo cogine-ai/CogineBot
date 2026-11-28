@@ -7611,3 +7611,23 @@ msgstr "Model testi zaman aşımına uğradı."
 #: src/lib/model-connection-preflight.ts
 msgid "Check your model provider's billing settings and available credits."
 msgstr "Model sağlayıcınızın faturalandırma ayarlarını ve kullanılabilir kredilerini kontrol edin."
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "Model yanıt verdi."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "Bu modeli test etmek için yeniden oturum açın."
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "Bu hesap seçilen modeli kullanamaz."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "Test, abonelik kullanım kotanıza dahil edilebilir."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "Abonelik kullanım kotana ulaştın."

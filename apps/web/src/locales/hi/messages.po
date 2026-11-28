@@ -7611,3 +7611,23 @@ msgstr "मॉडल परीक्षण की समय-सीमा सम�
 #: src/lib/model-connection-preflight.ts
 msgid "Check your model provider's billing settings and available credits."
 msgstr "अपने मॉडल प्रदाता की बिलिंग सेटिंग और उपलब्ध क्रेडिट देखें।"
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "मॉडल ने जवाब दिया।"
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "इस मॉडल की जाँच के लिए फिर से साइन इन करें।"
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "यह खाता चुने गए मॉडल का उपयोग नहीं कर सकता।"
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "यह जाँच आपके सब्सक्रिप्शन की उपयोग सीमा में गिनी जा सकती है।"
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "आपके सब्सक्रिप्शन की उपयोग सीमा पूरी हो गई है।"

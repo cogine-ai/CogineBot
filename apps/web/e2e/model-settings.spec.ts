@@ -65,7 +65,10 @@ async function stubCodexModelSignIn(page: Page, needsModel = false) {
       response,
       json: {
         json: connected
-          ? [...catalog, { ...preset, id: saved.modelId, label: "GPT-6.2 Sol" }]
+          ? [
+              ...catalog,
+              { ...preset, id: saved.modelId, label: "GPT-6.2 Sol", inferenceProbe: true },
+            ]
           : catalog,
       },
     });
@@ -121,6 +124,8 @@ test("settings connects Codex using the model selected for the authenticated acc
     .getByRole("button", { name: /ChatGPT Plus\/Pro/ })
     .first()
     .click();
+  await expect(settings.getByRole("button", { name: "Test sign-in", exact: true })).toHaveCount(0);
+  await expect(settings.getByRole("button", { name: "Test model", exact: true })).toHaveCount(0);
   const started = page.waitForRequest("**/rpc/models/beginOAuth");
   await settings.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
   const input = (await started).postDataJSON().json;
@@ -131,6 +136,38 @@ test("settings connects Codex using the model selected for the authenticated acc
     "GPT-6.2 Sol",
   );
   await captureScreenshot(page, testInfo, "a1-codex-gpt-6.2-connected-model");
+
+  const attempts: unknown[] = [];
+  const outcomes = ["unavailable", "model", "auth", "subscription_limit", "accepted"];
+  await page.route("**/rpc/models/probeInference", (route) => {
+    attempts.push(route.request().postDataJSON().json);
+    return route.fulfill({ json: { json: { status: outcomes.shift() } } });
+  });
+  await settings.getByRole("button", { name: "Test sign-in", exact: true }).click();
+  await expect(settings.getByText("A subscription credential is stored securely.")).toBeVisible();
+  expect(attempts).toHaveLength(0);
+  await expect(
+    settings.getByText("Testing may count toward your subscription usage."),
+  ).toBeVisible();
+  for (const message of [
+    "Could not verify this model.",
+    "This account cannot use the selected model.",
+    "Sign in again to test this model.",
+    "Your subscription usage limit was reached.",
+    "The model replied.",
+  ]) {
+    await settings.getByRole("button", { name: "Test model", exact: true }).click();
+    await expect(settings.getByText(message, { exact: true })).toBeVisible();
+  }
+  expect(attempts).toEqual(
+    Array.from({ length: 5 }, () => ({
+      provider: "openai-codex",
+      modelId: "gpt-6.2-sol",
+      credentialId: "fixture-codex-model-connection",
+      expectedRevision: 1,
+    })),
+  );
+  await captureScreenshot(page, testInfo, "a1-codex-oauth-model-check");
 });
 
 test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in effort changes", async ({

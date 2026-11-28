@@ -6675,6 +6675,7 @@ describe("saved model catalog checks", () => {
     };
     const probe = vi.fn().mockResolvedValue(["example-chat"]);
     const inference = vi.fn().mockResolvedValue("accepted");
+    const refreshExpiredModelCredential = vi.fn();
     const findCredential = vi.fn(async ({ where }) =>
       where.id === savedInput.credentialId &&
       where.userId === actor.userId &&
@@ -6730,6 +6731,7 @@ describe("saved model catalog checks", () => {
         secrets: { load },
         catalogProbe: probe,
         modelInferenceProbe: inference,
+        refreshExpiredModelCredential,
         providerCatalogSelections: selections,
         env: {
           defaultProvider: "fake",
@@ -6786,6 +6788,7 @@ describe("saved model catalog checks", () => {
       infer,
       connect,
       inference,
+      refreshExpiredModelCredential,
       credentials,
       findSecret,
       load,
@@ -6793,6 +6796,65 @@ describe("saved model catalog checks", () => {
       confirm,
     };
   }
+
+  const codexProbe = { ...savedInput, provider: "openai-codex", modelId: "gpt-6.2-astra" };
+  const codexAuth = {
+    access: "fixture-stored-access",
+    refresh: "fixture-stored-refresh",
+    accountId: "fixture-stored-account",
+  };
+
+  function codexFixture(expires = Date.now() + 60_000) {
+    const result = fixture(false, codexProbe.provider);
+    result.state.plaintext = serializeModelSecret({
+      kind: "oauth",
+      credential: { type: "oauth", ...codexAuth, expires },
+    });
+    return result;
+  }
+
+  it("checks the exact model with the owned subscription and never accepts a draft credential", async () => {
+    const { infer, inference, state } = codexFixture();
+    const unavailable = { status: 200, body: { json: { status: "unavailable" } } };
+    expect(await infer({ ...codexProbe, apiKey: "fixture-draft-key" })).toEqual(unavailable);
+    expect(await infer({ ...codexProbe, modelId: "gpt-6.2-terra" })).toEqual(unavailable);
+    expect((await infer(codexProbe, { ...actor, userId: "another-fixture-user" })).status).toBe(
+      404,
+    );
+    expect((await infer({ ...codexProbe, expectedRevision: 6 })).status).toBe(409);
+    expect(inference).not.toHaveBeenCalled();
+    expect(await infer(codexProbe)).toEqual({
+      status: 200,
+      body: { json: { status: "accepted" } },
+    });
+    expect(inference).toHaveBeenCalledExactlyOnceWith(
+      {
+        provider: codexProbe.provider,
+        modelId: codexProbe.modelId,
+        codex: { accessToken: codexAuth.access, accountId: codexAuth.accountId },
+      },
+      { signal: undefined },
+    );
+    inference.mockImplementationOnce(async () => {
+      state.ciphertext = "fixture-rotated-ciphertext";
+      return "accepted";
+    });
+    expect((await infer(codexProbe)).status).toBe(409);
+  });
+
+  it("uses normal locked refresh for an expired subscription and reports no inference result", async () => {
+    const { infer, inference, refreshExpiredModelCredential, state } = codexFixture(1);
+    expect(await infer(codexProbe)).toEqual({
+      status: 200,
+      body: { json: { status: "unavailable" } },
+    });
+    expect(refreshExpiredModelCredential).toHaveBeenCalledExactlyOnceWith(
+      actor,
+      state.secretId,
+      codexProbe.provider,
+    );
+    expect(inference).not.toHaveBeenCalled();
+  });
 
   it("runs inference only on explicit draft and owned saved-key requests", async () => {
     const { call, infer, inference, probe } = fixture();

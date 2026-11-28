@@ -7667,3 +7667,23 @@ msgstr "Истекло время ожидания проверки модели
 #: src/lib/model-connection-preflight.ts
 msgid "Check your model provider's billing settings and available credits."
 msgstr "Проверьте настройки оплаты и доступные кредиты у поставщика модели."
+
+#: src/lib/model-connection-preflight.ts
+msgid "The model replied."
+msgstr "Модель ответила."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Sign in again to test this model."
+msgstr "Войдите снова, чтобы проверить эту модель."
+
+#: src/lib/model-connection-preflight.ts
+msgid "This account cannot use the selected model."
+msgstr "Эта учётная запись не может использовать выбранную модель."
+
+#: src/pages/ModelSettingsOverlay.tsx
+msgid "Testing may count toward your subscription usage."
+msgstr "Проверка может учитываться в лимите подписки."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Your subscription usage limit was reached."
+msgstr "Достигнут лимит использования подписки."

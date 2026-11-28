@@ -1,5 +1,6 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { normalizeContext, Type } from "@earendil-works/pi-ai";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
 import type { ModelInferenceProbeStatus } from "@rakazo/contracts";
 import { isModelInferenceRefusal, MODEL_INFERENCE_PROBE_TIMEOUT_MS } from "@rakazo/contracts";
 import { cancelResponseBody, normalizeRunError, readBoundedJsonResponse } from "@rakazo/core";
@@ -8,6 +9,7 @@ import { withChatCompletionsCompatibility } from "./chat-completions-compat.js";
 import { isGeminiApiKeyError } from "./gemini-model-api.js";
 import {
   anthropicModelAlias,
+  isCodexInferenceProbeModel,
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialFireworksProbeModel,
@@ -20,6 +22,7 @@ import {
   isOpenRouterMessagesModel,
   supportsProviderCatalogModels,
 } from "./pi-live-model.js";
+import { codexComputeResidency } from "./pi-oauth.js";
 import { reliableModelStream, resolveRuntimeModel } from "./pi-runtime.js";
 
 const OUTPUT_LIMIT = 1024;
@@ -39,23 +42,30 @@ const context: Context = {
 
 type ProbeOptions = { fetch?: typeof fetch; signal?: AbortSignal };
 
-/** Test one agent request on an eligible provider route and stop on acceptance. */
+type ProbeTarget = { provider: string; modelId: string } & (
+  | { apiKey: string; providerCatalogModel?: true }
+  | { codex: { accessToken: string; accountId: string } }
+);
+
+/** Test one agent request on an eligible provider route. */
 export async function probeModelInference(
-  input: { provider: string; modelId: string; apiKey: string; providerCatalogModel?: true },
+  input: ProbeTarget,
   options: ProbeOptions = {},
 ): Promise<ModelInferenceProbeStatus> {
   options.signal?.throwIfAborted();
+  const codex = "codex" in input ? input.codex : undefined;
+  const catalogModel = "providerCatalogModel" in input && input.providerCatalogModel === true;
   const { models, model, apiKey } = resolveRuntimeModel({
     provider: input.provider,
     id: input.modelId,
-    apiKey: input.apiKey,
-    providerCatalogModel: input.providerCatalogModel,
+    apiKey: "apiKey" in input ? input.apiKey : codex?.accessToken,
+    providerCatalogModel: catalogModel ? true : undefined,
   });
   if (!model || !apiKey || input.provider !== model.provider) return "unavailable";
   const builtIn = Boolean(models.getModel(model.provider, model.id));
+  if (codex && !(builtIn && isCodexInferenceProbeModel(model))) return "unavailable";
   const canProbeCatalogRoute =
-    builtIn ||
-    (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
+    builtIn || (catalogModel && supportsProviderCatalogModels(model.provider));
   if (builtIn && isOpenRouterMessagesModel(model)) {
     return probeNativeMessages(model, apiKey, options, (error, status) =>
       openRouterMessagesFailureStatus(error, apiKey, status ?? errorHttpStatus(error)),
@@ -77,9 +87,8 @@ export async function probeModelInference(
   const chatCompletions = canProbeCatalogRoute && isOfficialChatCompletionProbeModel(model);
   const deepseek = chatCompletions && model.provider === "deepseek";
   const anthropic = canProbeCatalogRoute && isOfficialAnthropicProbeModel(model);
-  const xai =
-    (builtIn || input.providerCatalogModel === true) && isOfficialXaiResponsesProbeModel(model);
-  const readFrames = chatCompletions || anthropic || xai;
+  const xai = (builtIn || catalogModel) && isOfficialXaiResponsesProbeModel(model);
+  const readFrames = Boolean(codex) || chatCompletions || anthropic || xai;
   if (!readFrames && !isOfficialResponsesModel(model)) return "unavailable";
   // A probe confirms one selected model. Some registered Claude models request a
   // second, potentially billable model when the first one refuses a normal run.
@@ -88,11 +97,13 @@ export async function probeModelInference(
       ? { ...model, compat: { ...model.compat, allowedFallbackModels: [] } }
       : model;
   const classifyFailure = (error: unknown, status?: number) =>
-    anthropic
-      ? anthropicFailureStatus(error, status)
-      : xai
-        ? xaiFailureStatus(error, apiKey, status)
-        : providerProbeFailureStatus(model.provider, error, apiKey, status);
+    codex
+      ? codexFailureStatus(error, apiKey, status)
+      : anthropic
+        ? anthropicFailureStatus(error, status)
+        : xai
+          ? xaiFailureStatus(error, apiKey, status)
+          : providerProbeFailureStatus(model.provider, error, apiKey, status);
 
   const stop = new AbortController();
   const deadline = AbortSignal.timeout(MODEL_INFERENCE_PROBE_TIMEOUT_MS);
@@ -102,6 +113,7 @@ export async function probeModelInference(
     ...(options.signal ? [options.signal] : []),
   ]);
   const transport = options.fetch ?? globalThis.fetch;
+  const residency = codexComputeResidency(codex?.accessToken);
   let accepted = false;
   let rejected: ModelInferenceProbeStatus | undefined;
   let errorDetail: string;
@@ -115,8 +127,13 @@ export async function probeModelInference(
         signal,
         maxRetries: 0,
         maxTokens: OUTPUT_LIMIT,
+        ...(codex ? { reasoning: "low" as const, toolChoice: "none" as const } : {}),
         // Do not inherit organization and project defaults from the deployment.
-        headers: { "OpenAI-Organization": null, "OpenAI-Project": null },
+        headers: {
+          "OpenAI-Organization": null,
+          "OpenAI-Project": null,
+          ...(residency ? { "x-openai-internal-codex-residency": residency } : {}),
+        },
         onPayload: (payload) => {
           // The SDK can omit this field when it treats a key as a sign-in token.
           if (!payload || typeof payload !== "object")
@@ -135,6 +152,18 @@ export async function probeModelInference(
           };
         },
         fetch: async (request, init) => {
+          if (codex) {
+            const url = request instanceof Request ? request.url : String(request);
+            const headers = new Headers(
+              init?.headers ?? (request instanceof Request ? request.headers : undefined),
+            );
+            if (
+              url !== "https://chatgpt.com/backend-api/codex/responses" ||
+              headers.get("authorization") !== `Bearer ${apiKey}` ||
+              headers.get("chatgpt-account-id") !== codex.accountId
+            )
+              throw new Error("Model test requires the selected subscription account");
+          }
           if (anthropic) {
             const headers = new Headers(
               init?.headers ?? (request instanceof Request ? request.headers : undefined),
@@ -164,7 +193,16 @@ export async function probeModelInference(
           }
           if (readFrames) {
             // Interpret provider frames before the SDK turns stream errors into diagnostic text.
+            const reportedModel = codex ? response.headers.get("openai-model") : null;
+            if (reportedModel && reportedModel !== model.id) {
+              cancelResponseBody(response);
+              rejected = "unavailable";
+              stop.abort();
+              return new Response(null, { status: response.status });
+            }
+            const reply = { modelConfirmed: reportedModel === model.id, textReceived: false };
             const outcome = await readModelProbeFrames(response.body, signal, (frame, event) => {
+              if (codex) return codexFrameOutcome(frame, model.id, reply, classifyFailure, event);
               if (anthropic) return anthropicFrameOutcome(frame, model.id, classifyFailure, event);
               if (xai) return xaiFrameOutcome(frame, classifyFailure, event);
               return chatCompletionChunkOutcome(
@@ -198,6 +236,14 @@ export async function probeModelInference(
         },
       }),
       undefined,
+      undefined,
+      // The Codex provider does not accept API-key auth in the registry. Send
+      // the one server-selected OAuth bearer using the same transport without
+      // creating a refreshable credential store for the test.
+      codex
+        ? (options) =>
+            openAICodexResponsesApi().streamSimple(probeModel, normalizeContext(context), options)
+        : undefined,
     );
     errorDetail = (await stream.result()).errorMessage ?? "";
   } catch (error) {
@@ -905,6 +951,89 @@ function xaiFrameOutcome(
     frame.delta.length > 0
   )
     return "accepted";
+}
+
+function codexReportedModel(headers: unknown): string | undefined {
+  for (const [name, value] of Object.entries(probeRecord(headers) ?? {})) {
+    if (!["openai-model", "x-openai-model"].includes(name.toLowerCase())) continue;
+    const model = Array.isArray(value) ? value[0] : value;
+    if (typeof model === "string" && model.trim()) return model.trim();
+  }
+}
+
+function codexFrameOutcome(
+  frame: unknown,
+  modelId: string,
+  reply: { modelConfirmed: boolean; textReceived: boolean },
+  classifyFailure: StreamFailureClassifier,
+  event?: string,
+): ModelInferenceProbeStatus | undefined {
+  const record = probeRecord(frame);
+  if (!record) return event === "error" ? "unavailable" : undefined;
+  const response = probeRecord(record.response);
+  const failure = record.error ?? response?.error;
+  if (failure || record.type === "error" || event === "error")
+    return classifyFailure(failure ?? record, errorHttpStatus(record) ?? errorHttpStatus(response));
+  if (event && event !== record.type) return;
+  if (
+    record.type === "response.failed" ||
+    record.type === "response.incomplete" ||
+    record.type === "response.cancelled"
+  )
+    return "unavailable";
+  const reportedModel = codexReportedModel(response?.headers) ?? codexReportedModel(record.headers);
+  if (reportedModel) {
+    if (reportedModel !== modelId) return "unavailable";
+    reply.modelConfirmed = true;
+  }
+  if (
+    response &&
+    "max_output_tokens" in response &&
+    (typeof response.max_output_tokens !== "number" || response.max_output_tokens > OUTPUT_LIMIT)
+  )
+    return "unavailable";
+  const text =
+    record.type === "response.output_text.delta"
+      ? record.delta
+      : record.type === "response.output_text.done"
+        ? record.text
+        : undefined;
+  if (typeof text === "string" && text.trim()) reply.textReceived = true;
+  if (reply.modelConfirmed && reply.textReceived) return "accepted";
+  if (record.type === "response.completed") return "unavailable";
+}
+
+function codexFailureStatus(
+  error: unknown,
+  token: string,
+  status?: number,
+): ModelInferenceProbeStatus {
+  const record = probeRecord(error);
+  const { code, type, param } = probeRecord(record?.detail) ?? record ?? {};
+  const reason = code ?? type;
+  if (status === 408 || status === 504) return "timeout";
+  if (status && status >= 500) return "unavailable";
+  if (status === 401 || reason === "token_expired" || reason === "invalid_token") return "auth";
+  if (param === "max_output_tokens") return "unavailable";
+  if (reason === "usage_limit_reached") return "subscription_limit";
+  if (reason === "usage_not_included") return "model";
+  if (
+    type === "insufficient_quota" ||
+    reason === "insufficient_quota" ||
+    reason === "credit_balance_exhausted"
+  )
+    return "credit";
+  if (
+    reason === "organization_spend_limit_exceeded" ||
+    reason === "project_spend_limit_exceeded" ||
+    reason === "organization_usage_limit_exceeded"
+  )
+    return "spending";
+  if (status === 429 || reason === "rate_limit_exceeded") return "rate";
+  if (reason === "model_not_found" || reason === "model_not_available") return "model";
+  // An edge/proxy can also send 403 or 404. Require a model-specific refusal.
+  if (status === 403 || status === 404) return "unavailable";
+  return failureStatus(JSON.stringify(error) ?? "", token, status);
 }
 
 function errorHttpStatus(error: unknown): number | undefined {

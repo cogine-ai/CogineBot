@@ -1026,7 +1026,7 @@ function ModelsForm({
     });
   }
 
-  async function testKeyConnection(target: "test" | "inference") {
+  async function testSelectedConnection(target: "test" | "inference") {
     const [kind, request] =
       target === "inference"
         ? (["inference", inferenceRequest] as const)
@@ -1061,7 +1061,10 @@ function ModelsForm({
           },
         );
         if (isCurrent(context))
-          report(modelInferenceProbeMessage(status, t), status !== "accepted");
+          report(
+            modelInferenceProbeMessage(status, t, selected.auth === "oauth" ? "oauth" : undefined),
+            status !== "accepted",
+          );
         return;
       }
       const { models, catalogUpdated, draftModelIds } = await rpc<ModelCatalogProbeResult>(
@@ -2201,6 +2204,25 @@ function ModelsForm({
             />
           )
         ) : null}
+        {!oauth && selected.auth === "oauth" && inferenceRequest ? (
+          <>
+            <NativeActionButton
+              disabled={busy}
+              label={pending === "inference" ? t("Testing…") : t("Test model")}
+              onPress={() => void testSelectedConnection("inference")}
+              prominence="secondary"
+              style={{ marginTop: 8 }}
+            />
+            <Text style={styles.secondary}>
+              {t("Testing may count toward your subscription usage.")}
+            </Text>
+            {catalogFeedback ? (
+              <Text style={catalogFeedback.error ? styles.error : styles.secondary}>
+                {catalogFeedback.message}
+              </Text>
+            ) : null}
+          </>
+        ) : null}
         {acceptsKey || builtinLimitSave ? (
           <View style={styles.keySection}>
             {isCloudflareGateway ? (
@@ -2260,7 +2282,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !catalogRequest}
                 label={pending === "test" ? t("Testing…") : t("Check models")}
-                onPress={() => void testKeyConnection("test")}
+                onPress={() => void testSelectedConnection("test")}
                 prominence="secondary"
                 style={{ marginTop: 12 }}
               />
@@ -2270,7 +2292,7 @@ function ModelsForm({
               <NativeActionButton
                 disabled={busy || !inferenceRequest}
                 label={pending === "inference" ? t("Testing…") : t("Test model")}
-                onPress={() => void testKeyConnection("inference")}
+                onPress={() => void testSelectedConnection("inference")}
                 prominence="secondary"
                 style={{ marginTop: 8 }}
               />

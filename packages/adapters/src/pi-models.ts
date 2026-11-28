@@ -5,6 +5,7 @@ import type { ModelOAuthSignInMode, ThinkingLevel } from "@rakazo/contracts";
 import { CHATGPT_PLAN_PROVIDER_ID, registerChatGPTPlanCatalog } from "./chatgpt-plan-provider.js";
 import { supplementPiModels } from "./pi-current-models.js";
 import {
+  isCodexInferenceProbeModel,
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialFireworksProbeModel,
@@ -183,18 +184,19 @@ function buildPiCatalog(): PiCatalogEntry[] {
           ? { placeholder: true }
           : {}),
         ...(probeBaseUrl ? { catalogProbe: true, savedCatalogProbe: true } : {}),
-        ...(apiKey &&
-        (isOfficialAnthropicProbeModel(model) ||
-          isOfficialFireworksProbeModel(model) ||
-          isOfficialGeminiProbeModel(model) ||
-          isOfficialMiniMaxProbeModel(model) ||
-          isOfficialVercelGatewayMessagesProbeModel(model) ||
-          isOfficialNativeChatProbeModel(model) ||
-          isOpenRouterMessagesModel(model) ||
-          (probeBaseUrl &&
-            (isOfficialResponsesModel(model) ||
-              isOfficialXaiResponsesProbeModel(model) ||
-              isOfficialChatCompletionProbeModel(model))))
+        ...(isCodexInferenceProbeModel(model) ||
+        (apiKey &&
+          (isOfficialAnthropicProbeModel(model) ||
+            isOfficialFireworksProbeModel(model) ||
+            isOfficialGeminiProbeModel(model) ||
+            isOfficialMiniMaxProbeModel(model) ||
+            isOfficialVercelGatewayMessagesProbeModel(model) ||
+            isOfficialNativeChatProbeModel(model) ||
+            isOpenRouterMessagesModel(model) ||
+            (probeBaseUrl &&
+              (isOfficialResponsesModel(model) ||
+                isOfficialXaiResponsesProbeModel(model) ||
+                isOfficialChatCompletionProbeModel(model)))))
           ? { inferenceProbe: true }
           : {}),
       });

@@ -1030,6 +1030,13 @@ export const RU_MESSAGES: Record<string, string> = {
   "Test model": "Тестировать модель",
   "Connecting sends one test request that may incur usage charges.":
     "При подключении отправляется один тестовый запрос, который может тарифицироваться.",
+  "The model replied.": "Модель ответила.",
+  "Sign in again to test this model.": "Войдите снова, чтобы проверить эту модель.",
+  "This account cannot use the selected model.":
+    "Эта учётная запись не может использовать выбранную модель.",
+  "Testing may count toward your subscription usage.":
+    "Проверка может учитываться в лимите подписки.",
+  "Your subscription usage limit was reached.": "Достигнут лимит использования подписки.",
   "The model accepted the test request.": "Модель приняла тестовый запрос.",
   "This key cannot use the selected model.":
     "Этот ключ не позволяет использовать выбранную модель.",
