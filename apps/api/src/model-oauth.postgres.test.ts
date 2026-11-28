@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRouterClient, ORPCError } from "@orpc/server";
+import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   EncryptedSecretStore,
   ModelOAuthSessions,
@@ -92,6 +93,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     actor: Actor,
     exchange = vi.fn(async () => token),
     secrets = new EncryptedSecretStore(key),
+    codexCatalog?: CodexLiveCatalog,
   ) {
     const providerResult = gate<typeof token>();
     const providerStarted = vi.fn();
@@ -110,6 +112,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     const deps = {
       prisma: db.prisma,
       oauthLogins: oauth,
+      codexCatalog,
       secrets,
       env: {
         defaultProvider: "anthropic",
@@ -141,6 +144,48 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       select: { action: true, targetId: true, spaceId: true, metadata: true },
     });
   }
+
+  it.each([
+    { requested: "gpt-6.1-sol", expected: "gpt-6.2-sol", catalogAvailable: true },
+    { requested: "gpt-6.2-astra", expected: "gpt-6.2-astra", catalogAvailable: true },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", catalogAvailable: false },
+  ])(
+    "starts a new Codex sign-in on $expected (catalog available $catalogAvailable)",
+    async ({ requested, expected, catalogAvailable }) => {
+      const actor = await member();
+      const accountId = "fixture-codex-account";
+      const read = vi.fn<CodexLiveCatalog["read"]>(async () =>
+        catalogAvailable
+          ? ["gpt-6.2-astra", "gpt-6.2-sol"].map((slug) => ({
+              slug,
+              reasoningEfforts: ["low"],
+              supportsImages: true,
+              supportsFastTier: false,
+            }))
+          : undefined,
+      );
+      const local = process(a, actor, undefined, undefined, { read });
+      const { loginId } = await local.client.models.beginOAuth({
+        provider: "openai-codex",
+        modelId: requested,
+      });
+      const issued = { ...token, accountId };
+      local.providerResult.resolve(issued);
+      await vi.waitFor(async () =>
+        expect(await local.client.models.completeOAuth({ loginId })).toEqual({ status: "ready" }),
+      );
+      expect(await local.client.models.finishOAuth({ loginId })).toMatchObject({
+        modelId: expected,
+        provider: "openai-codex",
+        authKind: "oauth",
+      });
+      expect(read).toHaveBeenCalledWith(
+        actor.userId,
+        expect.objectContaining({ accountId }),
+        undefined,
+      );
+    },
+  );
 
   it.each([
     ["anthropic", false],

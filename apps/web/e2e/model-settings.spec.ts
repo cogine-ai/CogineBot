@@ -2556,6 +2556,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, variant 
   {
     provider: "vercel-ai-gateway",
     providerName: "Vercel AI Gateway",
+    variant: "GPT-6.2",
+    modelId: "openai/gpt-6.2-sol",
+    rejection: "model",
+    rejectionText: /cannot use the selected model/,
+  },
+  {
+    provider: "vercel-ai-gateway",
+    providerName: "Vercel AI Gateway",
     variant: "o-series",
     modelId: "openai/o4-mini",
     rejection: "model",

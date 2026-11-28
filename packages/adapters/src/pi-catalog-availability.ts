@@ -1,3 +1,4 @@
+import { codexAccountCatalogModelIds } from "./pi-current-models.js";
 import type { PiCatalogAuth, PiCatalogEntry } from "./pi-models.js";
 import { listPiCatalog } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
@@ -35,6 +36,7 @@ export function catalogModelAvailableForAuth(
   providerAuth?: PiCatalogAuth,
 ): boolean {
   if (provider !== CHATGPT_OAUTH_PROVIDER) return true;
+  if (codexAccountCatalogModelIds.has(modelId)) return false;
   const usesChatGptSubscription =
     authKind === "oauth" ||
     (authKind === "disconnected" && (providerAuth === "oauth" || providerAuth === "both"));
