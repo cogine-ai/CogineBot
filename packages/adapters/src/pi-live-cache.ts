@@ -33,7 +33,7 @@ export class LiveCatalogCache<T, Failure = never> {
   async read(
     key: string,
     fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T, Failure>>,
-    options?: { waitMs?: number; cacheOnly?: boolean },
+    options?: { waitMs?: number; cacheOnly?: boolean; waitForRevalidation?: boolean },
   ): Promise<T[] | undefined> {
     return (await this.readObservation(key, fetchModels, options)).models;
   }
@@ -41,7 +41,12 @@ export class LiveCatalogCache<T, Failure = never> {
   async readObservation(
     key: string,
     fetchModels: (signal: AbortSignal) => Promise<CatalogFetch<T, Failure>>,
-    { waitMs = this.options.waitMs, cacheOnly = false, waitForRefresh = false } = {},
+    {
+      waitMs = this.options.waitMs,
+      cacheOnly = false,
+      waitForRefresh = false,
+      waitForRevalidation = false,
+    } = {},
   ): Promise<CatalogObservation<T, Failure>> {
     const entry = this.entries.get(key);
     const now = this.options.now();
@@ -63,7 +68,7 @@ export class LiveCatalogCache<T, Failure = never> {
       this.pending.set(key, work);
     }
     if (waitForRefresh) return work.result;
-    if (entry || waitMs === 0) return { models: lastGood };
+    if ((entry && !waitForRevalidation) || waitMs === 0) return { models: lastGood };
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve({}), waitMs);
@@ -120,7 +125,7 @@ export class LiveCatalogCache<T, Failure = never> {
     const now = this.options.now();
     if (superseded.value) return { models: this.trusted(prior, now) };
     if (!result.attempted) return {};
-    const models = result.models?.length ? result.models : undefined;
+    const models = result.models;
     const entry = models
       ? { models, fetchedAt: now, expiresAt: now + this.options.ttlMs }
       : {

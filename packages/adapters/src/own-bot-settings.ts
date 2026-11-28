@@ -274,6 +274,7 @@ async function thinkingSettings(
           scope.userId,
           parseModelSecret(stored.plaintext),
           model,
+          { connection: credential },
         )
       : undefined;
   const levels = live && liveThinkingLevels(live);

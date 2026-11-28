@@ -210,7 +210,8 @@ export async function resolveThreadImageInput(
     }
     if (provider === CHATGPT_OAUTH_PROVIDER && configuration.codexCatalog) {
       const live = await codexLiveModel(configuration.codexCatalog, actor.userId, secret, id, {
-        waitMs: 0,
+        connection: credential,
+        waitMs: lockConnection ? 0 : undefined,
       });
       if (live?.supportsImages !== undefined) supportsImages = live.supportsImages;
     }

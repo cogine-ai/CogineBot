@@ -478,6 +478,7 @@ describe("model setup gate", () => {
       provider: choice.provider,
       label: "Fixture",
       secretId: "secret-1",
+      connectionRevision: 2,
     };
     Object.assign(deps.prisma, {
       bot: {
@@ -533,6 +534,13 @@ describe("model setup gate", () => {
         ),
       },
     });
+    const known = listPiCatalog().filter(({ provider }) => provider === choice.provider);
+    const anchors = known.slice(0, Math.ceil(known.length / 4)).map(({ id }) => ({
+      slug: id,
+      reasoningEfforts: [],
+      supportsImages: false,
+      supportsFastTier: false,
+    }));
     const read = vi.spyOn(CodexCatalogCache.prototype, "read").mockResolvedValue([
       {
         slug: choice.modelId,
@@ -540,6 +548,7 @@ describe("model setup gate", () => {
         supportsImages: false,
         supportsFastTier: false,
       },
+      ...anchors,
     ]);
     try {
       const response = await call(handler, actor, "bots/settingsHistory", { botId: "bot-1" });
@@ -4639,6 +4648,12 @@ describe("codex live catalog", () => {
     const load = vi.fn((ciphertext: string) =>
       ciphertext === "cipher-oauth" ? oauthPlaintext : apiKey,
     );
+    const apiConnection = {
+      provider: "openai-codex",
+      secretId: "secret-api",
+      connectionRevision: 1,
+    };
+    const oauthConnection = { ...apiConnection, secretId: "secret-oauth" };
     const prisma = opts.disconnected
       ? {
           userModelCredential: { findMany: vi.fn().mockResolvedValue([]) },
@@ -4648,9 +4663,7 @@ describe("codex live catalog", () => {
       : opts.apiKeyOnly
         ? {
             userModelCredential: {
-              findMany: vi
-                .fn()
-                .mockResolvedValue([{ provider: "openai-codex", secretId: "secret-api" }]),
+              findMany: vi.fn().mockResolvedValue([apiConnection]),
             },
             spaceModelPreference: { findMany: vi.fn().mockResolvedValue([]) },
             secret: {
@@ -4659,10 +4672,7 @@ describe("codex live catalog", () => {
           }
         : {
             userModelCredential: {
-              findMany: vi.fn().mockResolvedValue([
-                { provider: "openai-codex", secretId: "secret-api" },
-                { provider: "openai-codex", secretId: "secret-oauth" },
-              ]),
+              findMany: vi.fn().mockResolvedValue([apiConnection, oauthConnection]),
             },
             spaceMember: {
               findUnique: vi.fn(async () => null),
@@ -4670,11 +4680,7 @@ describe("codex live catalog", () => {
               update: vi.fn(),
             },
             spaceModelPreference: {
-              findMany: vi
-                .fn()
-                .mockResolvedValue([
-                  { credential: { provider: "openai-codex", secretId: "secret-oauth" } },
-                ]),
+              findMany: vi.fn().mockResolvedValue([{ credential: oauthConnection }]),
             },
             secret: {
               findMany: vi
@@ -4708,7 +4714,10 @@ describe("codex live catalog", () => {
     expect(ids).not.toContain(sol);
     expect(read).toHaveBeenCalledWith(
       actor.userId,
-      expect.objectContaining({ accountId: "acct-live-test" }),
+      expect.objectContaining({
+        accountId: "acct-live-test",
+        connection: { secretId: "secret-oauth", connectionRevision: 1 },
+      }),
     );
   });
 
@@ -4774,6 +4783,7 @@ describe("codex live catalog", () => {
       provider: "openai-codex",
       label: "ChatGPT A",
       secretId: "secret-a",
+      connectionRevision: 1,
       createdAt: stamp,
       updatedAt: stamp,
     };
@@ -4856,7 +4866,9 @@ describe("codex live catalog", () => {
       userModelCredential: {
         findMany: vi
           .fn()
-          .mockResolvedValue([{ provider: "openai-codex", secretId: "secret-oauth" }]),
+          .mockResolvedValue([
+            { provider: "openai-codex", secretId: "secret-oauth", connectionRevision: 1 },
+          ]),
       },
       spaceModelPreference: { findMany: vi.fn().mockResolvedValue([]) },
       secret: {

@@ -44,6 +44,7 @@ export async function commitBotUpdate(
     expectedReadAloudRevision?: number;
     settingsOwnerId?: string;
     validate?: (tx: Prisma.TransactionClient) => Promise<void>;
+    isolationLevel?: Prisma.TransactionIsolationLevel;
   },
   appendEvent: AppendEvent = appendEventInTransaction,
 ): Promise<{ id: string; name: string; title: string; description: string }> {
@@ -156,7 +157,7 @@ export async function commitBotUpdate(
             : undefined;
         return { updated, seq: event?.seq };
       },
-      options.validate ? { isolationLevel: "Serializable" } : undefined,
+      options.validate ? { isolationLevel: options.isolationLevel ?? "Serializable" } : undefined,
     );
   const committed = options.validate ? await withTransactionRetry(save) : await save();
 

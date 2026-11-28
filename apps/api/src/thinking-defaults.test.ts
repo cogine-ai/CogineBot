@@ -24,6 +24,7 @@ describe("thinking defaults on a subscription connection", () => {
         provider,
         defaultModel: modelId,
         secretId: "fixture-secret",
+        connectionRevision: 2,
       };
       const database = {
         secret: { findFirst: vi.fn(async () => ({ id: row.secretId, ciphertext: plaintext })) },
@@ -48,8 +49,9 @@ describe("thinking defaults on a subscription connection", () => {
         "fixture-user",
         expect.objectContaining({
           accountId: "fixture-account",
+          connection: expect.objectContaining({ secretId: row.secretId, connectionRevision: 2 }),
         }),
-        { waitMs: 0 },
+        expect.objectContaining({ waitMs: 0 }),
       );
       expect(info?.levels).toEqual(["minimal", "medium"]);
     },

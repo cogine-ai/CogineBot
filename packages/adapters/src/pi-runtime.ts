@@ -111,6 +111,7 @@ import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js
 import { supplementPiModels } from "./pi-current-models.js";
 import { createPiImageTokenEstimator } from "./pi-image-context.js";
 import {
+  codexDirectoryModel,
   liveModelSibling,
   providerCatalogModel,
   withLiveImageInput,
@@ -1342,9 +1343,11 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
   let model = catalogModelWithOpenRouterFallback(models, provider, modelId);
   const listed = model !== undefined;
   const discovered =
-    !model && modelConfig.providerCatalogModel && modelConfig.apiKey && !modelConfig.oauth
-      ? providerCatalogModel(provider, modelId, models)
-      : undefined;
+    !model && provider === CHATGPT_OAUTH_PROVIDER && modelConfig.oauth
+      ? codexDirectoryModel(modelId)
+      : !model && modelConfig.providerCatalogModel && modelConfig.apiKey && !modelConfig.oauth
+        ? providerCatalogModel(provider, modelId, models)
+        : undefined;
   model ??= discovered;
   if (
     !model &&
@@ -1354,7 +1357,7 @@ export function resolveRuntimeModel(modelConfig: AgentRunRequest["model"]): {
     model = configuredOpenRouterModel(modelId, modelConfig.contextWindow);
   }
   if (provider === CHATGPT_OAUTH_PROVIDER) {
-    model ??= liveModelSibling(models, provider, modelId);
+    if (!modelConfig.oauth) model ??= liveModelSibling(models, provider, modelId);
     if (model) model = withLiveImageInput(model, modelConfig.acceptsImages);
   }
   if (

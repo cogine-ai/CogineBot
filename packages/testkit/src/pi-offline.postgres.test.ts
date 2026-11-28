@@ -15,6 +15,7 @@ import {
 } from "@rakazo/adapters";
 import type { ModelConnectResult, ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
+import { lockSpaceModelSelection } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { discardBotIntroRun } from "./discard-bot-intro.js";
 import { sessionCookieHeader } from "./index.js";
@@ -119,6 +120,8 @@ function responsesMessage(text: string) {
   };
 }
 
+const subscriptionDirectoryModel = "gpt-fixture-subscription-discovered";
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   it.each([
     { provider: "openai", modelId: "gpt-6.1-terra" },
@@ -128,6 +131,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     { provider: "openai", modelId: "gpt-6.2-sol" },
     { provider: "openai-codex", modelId: "gpt-6.2-astra" },
     { provider: "openai-codex", modelId: "gpt-6.2-sol" },
+    { provider: "openai-codex", modelId: subscriptionDirectoryModel },
     { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-astra" },
     { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-sol" },
   ])(
@@ -135,6 +139,7 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
     async ({ provider, modelId }) => {
       const gateway = provider === "vercel-ai-gateway";
       const codex = provider === "openai-codex";
+      const discovered = modelId === subscriptionDirectoryModel;
       const endpoint = gateway
         ? "https://ai-gateway.vercel.sh/v1/messages"
         : codex
@@ -142,10 +147,14 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           : "https://api.openai.com/v1/responses";
       const apiKey = "fixture-tool-round-trip-key";
       const accountId = "fixture-directory-account";
-      const claims = Buffer.from(
-        JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
-      ).toString("base64url");
-      const oauthToken = `fixture.${claims}.fixture`;
+      const otherAccountId = "fixture-other-directory-account";
+      const tokenForAccount = (id: string) => {
+        const claims = Buffer.from(
+          JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: id } }),
+        ).toString("base64url");
+        return `fixture.${claims}.fixture`;
+      };
+      const oauthToken = tokenForAccount(accountId);
       const encryptionKey = "offline-responses-fixture-encryption-key";
       const filePath = "notes/result.txt";
       const prompt = "Save hello to notes/result.txt.";
@@ -288,6 +297,10 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       const catalog = listPiCatalog()
         .filter((entry) => entry.provider === "openai")
         .map(({ id }) => id);
+      const codexAnchors = listPiCatalog().filter((entry) => entry.provider === "openai-codex");
+      const subscriptionModels = codexAnchors
+        .slice(0, Math.ceil(codexAnchors.length / 4))
+        .map(({ id }) => id);
       const catalogProbe: typeof probeCatalogProviderModels = (input, _fetch, signal) =>
         probeCatalogProviderModels(
           input,
@@ -325,25 +338,36 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
       let stop: (() => Promise<void>) | undefined;
       try {
         const { createApp } = await import("../../../apps/api/src/app.ts");
+        let catalogTime = Date.now();
+        let modelRetired = false;
         const codexCatalog = codex
           ? new CodexCatalogCache({
+              now: () => catalogTime,
               fetch: async (input, init) => {
                 const request = new Request(input, init);
                 expect(request.url).toBe(
                   "https://chatgpt.com/backend-api/codex/models?client_version=0.169.1",
                 );
-                expect(request.headers.get("authorization")).toBe(`Bearer ${oauthToken}`);
-                expect(request.headers.get("chatgpt-account-id")).toBe(accountId);
+                const requestedAccount = request.headers.get("chatgpt-account-id");
+                expect([accountId, otherAccountId]).toContain(requestedAccount);
+                expect(request.headers.get("authorization")).toBe(
+                  `Bearer ${tokenForAccount(requestedAccount!)}`,
+                );
+                const modelIds =
+                  requestedAccount === otherAccountId || modelRetired
+                    ? subscriptionModels
+                    : discovered
+                      ? [...subscriptionModels, modelId]
+                      : [modelId];
                 return Response.json({
-                  models: [
-                    {
-                      slug: modelId,
-                      visibility: "list",
-                      supported_in_api: true,
-                      input_modalities: ["text"],
-                      supported_reasoning_levels: [{ effort: "low" }],
-                    },
-                  ],
+                  models: modelIds.map((slug) => ({
+                    slug,
+                    visibility: "list",
+                    supported_in_api: true,
+                    input_modalities:
+                      slug === subscriptionDirectoryModel ? ["text", "image"] : ["text"],
+                    supported_reasoning_levels: [{ effort: "low" }],
+                  })),
                 });
               },
             })
@@ -380,40 +404,50 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         expect(signup.status).toBeLessThan(400);
         const cookie = sessionCookieHeader(signup);
         let connection: Pick<ModelCredential, "id" | "connectionRevision">;
+        let otherConnection: typeof connection | undefined;
         if (codex) {
           const user = await handles.prisma.user.findUniqueOrThrow({ where: { email } });
           const membership = await handles.prisma.spaceMember.findFirstOrThrow({
             where: { userId: user.id },
           });
-          const credential = serializeModelSecret({
-            kind: "oauth",
-            credential: {
-              type: "oauth",
-              access: oauthToken,
-              refresh: "fixture-refresh",
-              expires: Date.now() + 60 * 60_000,
-              accountId,
-            },
-          });
-          // Start with an existing synthetic sign-in. OAuth exchange is tested separately.
-          const stored = await new EncryptedSecretStore(encryptionKey).put(credential, {
-            userId: user.id,
-            spaceId: membership.spaceId,
-            operationId: "fixture",
-            traceId: "fixture",
-            signal: new AbortController().signal,
-          });
-          await handles.prisma.secret.create({
-            data: {
-              id: stored.id,
+          const createConnection = async (id: string) => {
+            const credential = serializeModelSecret({
+              kind: "oauth",
+              credential: {
+                type: "oauth",
+                access: tokenForAccount(id),
+                refresh: "fixture-refresh",
+                expires: Date.now() + 60 * 60_000,
+                accountId: id,
+              },
+            });
+            // Start with an existing synthetic sign-in. OAuth exchange is tested separately.
+            const stored = await new EncryptedSecretStore(encryptionKey).put(credential, {
               userId: user.id,
-              kind: "model",
-              ciphertext: stored.ciphertext,
-            },
-          });
-          connection = await handles.prisma.userModelCredential.create({
-            data: { userId: user.id, provider, label: "Subscription fixture", secretId: stored.id },
-          });
+              spaceId: membership.spaceId,
+              operationId: "fixture",
+              traceId: "fixture",
+              signal: new AbortController().signal,
+            });
+            await handles.prisma.secret.create({
+              data: {
+                id: stored.id,
+                userId: user.id,
+                kind: "model",
+                ciphertext: stored.ciphertext,
+              },
+            });
+            return handles.prisma.userModelCredential.create({
+              data: {
+                userId: user.id,
+                provider,
+                label: "Subscription fixture",
+                secretId: stored.id,
+              },
+            });
+          };
+          connection = await createConnection(accountId);
+          if (discovered) otherConnection = await createConnection(otherAccountId);
         } else {
           const checked = await rpc<ModelConnectResult>(app, cookie, "models/connect", {
             provider,
@@ -430,7 +464,31 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           modelCredentialId: connection.id,
           expectedRevision: connection.connectionRevision,
         };
-        if (codex) {
+        if (otherConnection) {
+          const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+            includeProviderCatalog: true,
+          });
+          expect(
+            connections.find(({ id }) => id === connection.id)?.connectionCatalogModels,
+          ).toEqual([
+            expect.objectContaining({
+              id: modelId,
+              auth: "oauth",
+              thinkingLevels: ["low"],
+              images: true,
+            }),
+          ]);
+          expect(
+            connections.find(({ id }) => id === otherConnection.id)?.connectionCatalogModels,
+          ).toBeUndefined();
+          await expect(
+            rpc(app, cookie, "models/setDefault", {
+              ...selection,
+              modelCredentialId: otherConnection.id,
+              expectedRevision: otherConnection.connectionRevision,
+            }),
+          ).rejects.toThrow(/models\/setDefault: 400/);
+        } else if (codex) {
           const unavailable = modelId === "gpt-6.2-sol" ? "gpt-6.2-astra" : "gpt-6.2-sol";
           const catalog = await rpc<Array<{ provider: string; id: string }>>(
             app,
@@ -472,6 +530,13 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           ...selection,
           ...(codex ? { thinkingLevel: "low" } : {}),
         });
+        if (discovered) {
+          await expect(rpc(app, cookie, "me", null)).resolves.toMatchObject({
+            defaultProvider: provider,
+            defaultModel: modelId,
+            defaultModelCredentialId: connection.id,
+          });
+        }
         const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
           name: "Responses fixture",
           title: "",
@@ -480,6 +545,165 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           notifyOnFinish: false,
         });
         await discardBotIntroRun(handles, cookie, bot.id);
+        if (discovered) {
+          const clearAndUndoThinking = async () => {
+            await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: null });
+            const history = await rpc<{ revision: number; versions: { id: string }[] }>(
+              app,
+              cookie,
+              "bots/settingsHistory",
+              { botId: bot.id },
+            );
+            await expect(
+              rpc(app, cookie, "bots/undoSettings", {
+                botId: bot.id,
+                expectedRevision: history.revision,
+                versionId: history.versions[0]!.id,
+                clientNonce: randomUUID(),
+              }),
+            ).resolves.toMatchObject({ status: "updated" });
+            await expect(
+              handles.prisma.bot.findUnique({ where: { id: bot.id } }),
+            ).resolves.toMatchObject({ thinkingLevel: "low" });
+          };
+          await expect(
+            rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "high" }),
+          ).rejects.toThrow(/bots\/update: 400/);
+          await rpc(app, cookie, "bots/update", { botId: bot.id, thinkingLevel: "low" });
+          await clearAndUndoThinking();
+          const read = codexCatalog!.read.bind(codexCatalog);
+          const { spaceId, userId } = await rpc<{ spaceId: string; userId: string }>(
+            app,
+            cookie,
+            "me",
+            null,
+          );
+          const scope = { spaceId, userId };
+          const held = Promise.withResolvers<number>();
+          const release = Promise.withResolvers<void>();
+          const writer = handles.prisma.$transaction(
+            async (tx) => {
+              await lockSpaceModelSelection(tx, scope, "write");
+              const result = await tx.spaceModelPreference.updateMany({
+                where: { ...scope, credentialId: connection.id, isDefault: true },
+                data: { modelId: subscriptionModels[0], thinkingLevel: null },
+              });
+              expect(result.count).toBe(1);
+              const [{ pid }] = await tx.$queryRaw<
+                [{ pid: number }]
+              >`SELECT pg_backend_pid() AS pid`;
+              held.resolve(pid);
+              await release.promise;
+              return pid;
+            },
+            { timeout: 12_000 },
+          );
+          const pid = await Promise.race([held.promise, writer]);
+          const updateThinking = rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            thinkingLevel: "low",
+          }).catch((error: unknown) => error);
+          try {
+            await expect
+              .poll(async () => {
+                const [{ waiting }] = await handles.prisma.$queryRaw<[{ waiting: boolean }]>`
+                SELECT EXISTS (SELECT FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pg_stat_activity.pid))) AS waiting
+              `;
+                return waiting;
+              })
+              .toBe(true);
+          } finally {
+            release.resolve();
+            await writer;
+          }
+          await expect(updateThinking).resolves.toMatchObject({
+            message: expect.stringMatching(/bots\/update: 409/),
+          });
+          await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+            thinkingLevel: "low",
+          });
+          await clearAndUndoThinking();
+          const switched = vi
+            .spyOn(codexCatalog!, "read")
+            .mockImplementationOnce(async (...args) => {
+              const observed = await read(...args);
+              await handles.prisma.bot.update({
+                where: { id: bot.id },
+                data: { modelId: subscriptionModels[0], thinkingLevel: null },
+              });
+              return observed;
+            });
+          try {
+            await expect(
+              rpc(app, cookie, "bots/update", {
+                botId: bot.id,
+                expectedRevision: selection.expectedRevision,
+                thinkingLevel: "low",
+              }),
+            ).rejects.toThrow(/bots\/update: 409/);
+          } finally {
+            switched.mockRestore();
+          }
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+            thinkingLevel: "low",
+          });
+          await rpc(app, cookie, "models/setDefault", {
+            ...selection,
+            modelId: subscriptionModels[0],
+          });
+          await expect(rpc(app, cookie, "me", null)).resolves.toMatchObject({
+            defaultModel: subscriptionModels[0],
+            defaultModelCredentialId: connection.id,
+          });
+          await rpc(app, cookie, "models/setBackups", [{ ...selection, thinkingLevel: "low" }]);
+          await expect(rpc(app, cookie, "threads/imageInput", { botId: bot.id })).resolves.toEqual({
+            status: "supported",
+          });
+          const binding = {
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+            expectedRevision: selection.expectedRevision,
+          };
+          const draft = {
+            ...binding,
+            botId: bot.id,
+            name: "Bound fixture routine",
+            prompt: "Complete the task.",
+            crons: ["0 9 * * 1"],
+            timezone: "UTC",
+            notify: false,
+            active: false,
+          };
+          await expect(
+            rpc(app, cookie, "routines/create", { ...draft, thinkingLevel: "high" }),
+          ).rejects.toThrow(/routines\/create: 400/);
+          const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
+            ...draft,
+            thinkingLevel: "low",
+          });
+          await expect(
+            rpc(app, cookie, "routines/update", {
+              routineId: routine.id,
+              ...binding,
+              thinkingLevel: "high",
+            }),
+          ).rejects.toThrow(/routines\/update: 400/);
+          await expect(
+            rpc(app, cookie, "routines/update", { routineId: routine.id, thinkingLevel: "high" }),
+          ).rejects.toThrow(/routines\/update: 400/);
+        }
         modelFetch.mockClear();
         const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
           botId: bot.id,
@@ -508,6 +732,44 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
           botId: bot.id,
         });
         expect(JSON.stringify(thread.messages)).toContain(answer);
+        if (discovered) {
+          await rpc(app, cookie, "models/setDefault", { ...selection, thinkingLevel: "low" });
+          modelRetired = true;
+          catalogTime += 16 * 60_000;
+          const connections = await rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+            includeProviderCatalog: true,
+          });
+          expect(connections.find(({ id }) => id === connection.id)).toMatchObject({
+            modelId,
+            isDefault: true,
+            savedModelDirectory: { confirmationRequired: true, notListed: true },
+          });
+          await expect(rpc(app, cookie, "models/setDefault", selection)).rejects.toThrow(
+            /models\/setDefault: 400/,
+          );
+          await rpc(app, cookie, "bots/update", {
+            botId: bot.id,
+            modelProvider: null,
+            modelId: null,
+            modelCredentialId: null,
+            thinkingLevel: null,
+          });
+          const replacement = codexAnchors.find(
+            ({ id, thinkingLevels }) =>
+              subscriptionModels.includes(id) && thinkingLevels?.includes("low"),
+          )!;
+          await expect(
+            rpc(app, cookie, "bots/update", {
+              botId: bot.id,
+              modelProvider: provider,
+              modelId: replacement.id,
+              modelCredentialId: connection.id,
+              expectedRevision: selection.expectedRevision,
+              thinkingLevel: "low",
+            }),
+          ).resolves.toMatchObject({ modelId: replacement.id, thinkingLevel: "low" });
+          expect(modelFetch).toHaveBeenCalledTimes(2);
+        }
       } finally {
         try {
           await stop?.();

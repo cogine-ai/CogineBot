@@ -55,7 +55,10 @@ export async function readThinkingCapabilities(
   }
   const live =
     provider === CHATGPT_OAUTH_PROVIDER
-      ? await codexLiveModel(catalog, actor.userId, secret, modelId, { waitMs: 0 })
+      ? await codexLiveModel(catalog, actor.userId, secret, modelId, {
+          waitMs: 0,
+          connection: credential,
+        })
       : undefined;
   if (rejected && !live) return null;
   const settings = connectionModelSettings(secret, provider, modelId, credential);

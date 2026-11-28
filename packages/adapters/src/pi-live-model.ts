@@ -15,6 +15,7 @@ export function isChatModelId(id: string): boolean {
 }
 
 const openAiResponsesBaseUrl = "https://api.openai.com/v1";
+const codexBaseUrl = "https://chatgpt.com/backend-api";
 const xaiResponsesBaseUrl = "https://api.x.ai/v1";
 const deepseekCompletionsBaseUrl = "https://api.deepseek.com";
 const groqCompletionsBaseUrl = "https://api.groq.com/openai/v1";
@@ -43,9 +44,26 @@ export function isCodexInferenceProbeModel(
   return (
     model.provider === "openai-codex" &&
     model.api === "openai-codex-responses" &&
-    model.baseUrl === "https://chatgpt.com/backend-api" &&
+    model.baseUrl === codexBaseUrl &&
     /^gpt-6(?:\.[12])?-(?:astra|sol|luna|terra)$/.test(model.id)
   );
+}
+
+/** A chat model listed by the selected subscription has one fixed transport. */
+export function codexDirectoryModel(id: string): Model<"openai-codex-responses"> | undefined {
+  if (id.length > 512 || !/^[a-z0-9][a-z0-9._-]*$/i.test(id) || !isChatModelId(id))
+    return undefined;
+  return {
+    id,
+    name: id,
+    provider: "openai-codex",
+    api: "openai-codex-responses",
+    baseUrl: codexBaseUrl,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...DISCOVERED_MODEL_LIMITS,
+  };
 }
 
 export function isOfficialResponsesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {

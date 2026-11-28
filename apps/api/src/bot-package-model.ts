@@ -3,6 +3,7 @@ import type { SecretStore } from "@rakazo/adapter-kit";
 import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   CHATGPT_OAUTH_PROVIDER,
+  codexDirectoryModel,
   codexLiveListsModel,
   LOCAL_PROVIDER_ID,
   listPiCatalog,
@@ -71,16 +72,18 @@ export async function validateBackupModelBinding(
   lock = false,
 ) {
   const catalogProvider = canonicalPiProviderId(binding.provider);
-  if (
-    !listPiCatalog().some(
-      (entry) =>
-        entry.provider === catalogProvider &&
-        entry.id === binding.modelId &&
-        !entry.placeholder &&
-        entry.provider !== LOCAL_PROVIDER_ID,
-    )
-  )
-    return null;
+  const bundled = listPiCatalog().some(
+    (entry) =>
+      entry.provider === catalogProvider &&
+      entry.id === binding.modelId &&
+      !entry.placeholder &&
+      entry.provider !== LOCAL_PROVIDER_ID,
+  );
+  const directoryOnly =
+    !bundled &&
+    catalogProvider === CHATGPT_OAUTH_PROVIDER &&
+    codexDirectoryModel(binding.modelId) !== undefined;
+  if (!bundled && !directoryOnly) return null;
   const model = {
     modelProvider: binding.provider,
     modelId: binding.modelId,
@@ -115,13 +118,11 @@ export async function validateBackupModelBinding(
     if (
       validateModelAuthAvailability(catalogProvider, binding.modelId, checked.plaintext) &&
       (catalogProvider !== CHATGPT_OAUTH_PROVIDER ||
-        !(await codexLiveListsModel(
-          codexCatalog,
-          actor.userId,
-          checked.secret,
-          binding.modelId,
-          lock ? { cacheOnly: true } : undefined,
-        )))
+        !(await codexLiveListsModel(codexCatalog, actor.userId, checked.secret, binding.modelId, {
+          connection: checked.credential,
+          cacheOnly: lock,
+          freshOnly: directoryOnly,
+        })))
     )
       return null;
     return model;

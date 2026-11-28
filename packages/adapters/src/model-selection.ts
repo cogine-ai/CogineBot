@@ -21,13 +21,18 @@ import {
   modelCredentialAuthKindFromPlaintext,
   UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE,
 } from "./pi-catalog-availability.js";
-import type { CodexLiveCatalog, CodexLiveReadOptions } from "./pi-codex-catalog.js";
+import type {
+  CodexCatalogModel,
+  CodexLiveCatalog,
+  CodexLiveReadOptions,
+} from "./pi-codex-catalog.js";
 import {
   applyCodexLiveCatalog,
-  codexLiveListsModel,
+  codexConnectionDirectory,
+  codexLiveModel,
   readCodexLiveModels,
 } from "./pi-codex-catalog.js";
-import { providerCatalogModel } from "./pi-live-model.js";
+import { codexDirectoryModel, providerCatalogModel } from "./pi-live-model.js";
 import { listPiCatalog, scriptedCatalogEntry } from "./pi-models.js";
 import type { StoredModelSecret } from "./pi-oauth.js";
 import { CHATGPT_OAUTH_PROVIDER, parseModelSecret } from "./pi-oauth.js";
@@ -88,6 +93,7 @@ export type SpaceCatalogAuth = {
    */
   secretIdByProvider: Partial<Record<string, string>>;
   secretIdByModel: Partial<Record<string, Partial<Record<string, string>>>>;
+  connectionRevisionBySecretId?: ReadonlyMap<string, number>;
 };
 
 /**
@@ -108,6 +114,7 @@ export async function modelCredentialAuthKindsForSpace(
         id: true,
         provider: true,
         secretId: true,
+        connectionRevision: true,
         updatedAt: true,
         createdAt: true,
       },
@@ -125,6 +132,7 @@ export async function modelCredentialAuthKindsForSpace(
             id: true,
             provider: true,
             secretId: true,
+            connectionRevision: true,
             updatedAt: true,
             createdAt: true,
           },
@@ -140,6 +148,7 @@ export async function modelCredentialAuthKindsForSpace(
     provider: string;
     modelId: string;
     secretId: string;
+    connectionRevision: number;
     modelSpecific: boolean;
   }> = [];
   for (const entry of listPiCatalog()) {
@@ -151,15 +160,14 @@ export async function modelCredentialAuthKindsForSpace(
       credentials,
     });
     if (!choice) continue;
-    const secretId =
-      choice.source === "preference"
-        ? choice.preference.credential.secretId
-        : choice.credential.secretId;
+    const { secretId, connectionRevision } =
+      choice.source === "preference" ? choice.preference.credential : choice.credential;
     const requestedModelId = usableModelId(entry.id);
     selections.push({
       provider: entry.provider,
       modelId: entry.id,
       secretId,
+      connectionRevision,
       modelSpecific:
         choice.source === "preference" &&
         requestedModelId !== null &&
@@ -205,6 +213,11 @@ export async function modelCredentialAuthKindsForSpace(
     byModel: {},
     secretIdByProvider: {},
     secretIdByModel: {},
+    connectionRevisionBySecretId: new Map(
+      selections
+        .filter(({ provider }) => provider === CHATGPT_OAUTH_PROVIDER)
+        .map(({ secretId, connectionRevision }) => [secretId, connectionRevision] as const),
+    ),
   };
   for (const selection of selections) {
     const kind = await readKind(selection.secretId);
@@ -239,6 +252,8 @@ export function validateModelAuthAvailability(
   const catalogEntry = listPiCatalog().find(
     (item) => item.provider === provider && item.id === modelId,
   );
+  if (provider === CHATGPT_OAUTH_PROVIDER && !catalogEntry)
+    return UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE;
   if (!catalogModelAvailableForAuth(provider, modelId, authKind, catalogEntry?.auth)) {
     return UNAVAILABLE_MODEL_FOR_AUTH_MESSAGE;
   }
@@ -317,7 +332,7 @@ export async function prepareStoredModelAuth(
   modelId: string,
   live?: CodexLiveCatalog,
   liveOpts?: CodexLiveReadOptions,
-): Promise<{ ref: string | null; auth: StoredModelAuthRead }> {
+): Promise<{ ref: string | null; auth: StoredModelAuthRead; codexModel?: CodexCatalogModel }> {
   const secret = await loadStoredModelSecret(prisma, secretStore, userId, secretId);
   if (secret.status === "missing") return { ref: null, auth: { status: "unreadable" } };
   if (secret.status === "unreadable") {
@@ -332,12 +347,15 @@ export async function prepareStoredModelAuth(
     return { ref: secret.ciphertext, auth: { status: "unreadable" } };
   }
   // validateModelAuthAvailability already parsed the secret without throwing.
-  if (
-    message &&
-    provider === CHATGPT_OAUTH_PROVIDER &&
-    (await codexLiveListsModel(live, userId, parseModelSecret(plaintext), modelId, liveOpts))
-  ) {
-    return { ref: secret.ciphertext, auth: { status: "ready" } };
+  if (message && provider === CHATGPT_OAUTH_PROVIDER) {
+    const codexModel = await codexLiveModel(
+      live,
+      userId,
+      parseModelSecret(plaintext),
+      modelId,
+      liveOpts,
+    );
+    if (codexModel) return { ref: secret.ciphertext, auth: { status: "ready" }, codexModel };
   }
   return {
     ref: secret.ciphertext,
@@ -474,7 +492,10 @@ export async function listOwnedModelConnections(
                 .filter((entry) => entry.provider === row.provider)
                 .map((entry) => entry.id);
       if (catalog && row.provider === CHATGPT_OAUTH_PROVIDER && parsed.kind === "oauth") {
-        const live = await readCodexLiveModels(catalog, actor.userId, parsed);
+        const live = await readCodexLiveModels(catalog, actor.userId, parsed, {
+          connection: row,
+          freshOnly: true,
+        });
         if (live) {
           const byProvider = { [row.provider]: "oauth" as const };
           const available = listAvailablePiCatalog(byProvider).filter(
@@ -485,6 +506,7 @@ export async function listOwnedModelConnections(
             { byProvider, byModel: {}, secretIdByProvider: { [row.provider]: row.secretId } },
             new Map([[row.secretId, live]]),
           ).map(({ id }) => id);
+          modelIds.push(...codexConnectionDirectory(live, undefined).models.map(({ id }) => id));
         }
       }
       if (modelIds.length === 0) return undefined;
@@ -595,6 +617,10 @@ export async function validateConnectedModelChoice(
         : "Connect that model provider first";
   }
   if (isCatalogModelChoice(provider, modelId) && provider !== OPENAI_COMPATIBLE_PROVIDER_ID)
+    return undefined;
+  // The executor checks dynamic subscription models against this exact account
+  // after resolving and, if needed, refreshing its OAuth credential.
+  if (provider === CHATGPT_OAUTH_PROVIDER && modelCredentialId && codexDirectoryModel(modelId))
     return undefined;
   if (provider !== OPENAI_COMPATIBLE_PROVIDER_ID && !providerCatalogModel(provider, modelId))
     return "Unknown model for that provider";
@@ -711,6 +737,7 @@ export function pinnedModelCredentialError(
     modelId &&
     !isCatalogModelChoice(choice.modelProvider, modelId) &&
     credential.defaultModel !== modelId &&
+    !(choice.modelProvider === CHATGPT_OAUTH_PROVIDER && codexDirectoryModel(modelId)) &&
     !providerCatalogModel(choice.modelProvider, modelId)
   ) {
     return "Unknown model for that provider";

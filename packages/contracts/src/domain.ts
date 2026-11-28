@@ -1314,6 +1314,8 @@ export const ModelCredentialSchema = z.object({
   enabledModelIds: z.array(z.string()).optional(),
   /** Chat model IDs observed in this revision's trusted provider catalog. */
   providerListedModelIds: z.array(z.string()).optional(),
+  /** Additional model entries scoped to the current revision of this connection. */
+  connectionCatalogModels: z.array(z.lazy(() => ModelCatalogEntrySchema)).optional(),
   savedProviderCatalogModelIds: z.array(z.string()).optional(),
   /** A signed saved key can be tested, and a live directory can also confirm a replacement. */
   providerCatalogInferenceProbe: z.enum(["saved", "replacement"]).optional(),

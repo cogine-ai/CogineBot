@@ -1,11 +1,16 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { listAvailablePiCatalog } from "./pi-catalog-availability.js";
-import type { CodexCatalogModel, CodexCatalogSpaceAuth } from "./pi-codex-catalog.js";
+import type {
+  CodexCatalogModel,
+  CodexCatalogSpaceAuth,
+  CodexLiveCatalog,
+} from "./pi-codex-catalog.js";
 import {
   applyCodexLiveCatalog,
   CODEX_MODELS_ENDPOINT,
   CodexCatalogCache,
+  codexConnectionDirectory,
   codexLiveCatalogsForSpace,
   codexLiveListsModel,
   fetchCodexCatalog,
@@ -602,10 +607,22 @@ describe("CodexCatalogCache", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("treats an empty catalog as a failure so the static list stays", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(catalogPayload([])));
-    const cache = new CodexCatalogCache({ fetch: fetchImpl, now: () => 0, waitMs: 50 });
-    expect(await cache.read("user-1", account())).toBeUndefined();
+  it("uses a successful empty response instead of retaining a prior nonempty catalog", async () => {
+    let now = 0;
+    const fetchImpl = listFetch();
+    const cache = new CodexCatalogCache({
+      fetch: fetchImpl,
+      now: () => now,
+      waitMs: 50,
+      ttlMs: 100,
+    });
+    expect(await cache.read("user-1", account())).toEqual([
+      expect.objectContaining({ slug: SPARK }),
+    ]);
+    now += 101;
+    fetchImpl.mockResolvedValue(okResponse(catalogPayload([])));
+    expect(await cache.read("user-1", account(), { freshOnly: true })).toEqual([]);
+    expect(await cache.read("user-1", account())).toEqual([]);
   });
 
   it("does not negative-cache a read that never got a bearer", async () => {
@@ -667,6 +684,83 @@ describe("codexLiveListsModel", () => {
   const oauthSecret = (access = ACCESS_TOKEN, expiresInMs = 3_600_000, accountId = ACCOUNT_ID) =>
     parseModelSecret(oauthPlaintext(access, expiresInMs, accountId));
 
+  it("requires a trusted account list and a runnable chat slug for directory-only models", async () => {
+    const id = "gpt-fixture-directory";
+    const media = "gpt-fixture-image";
+    const dynamic = liveModel(id, { reasoningEfforts: ["low", "unknown"], supportsImages: true });
+    const known = listPiCatalog().filter(({ provider }) => provider === CHATGPT_OAUTH_PROVIDER);
+    const required = Math.ceil(known.length / 4);
+    const anchors = known.slice(0, required).map(({ id }) => liveModel(id));
+    const models = [...anchors, dynamic, liveModel(media), liveModel("unknown/path")];
+    const catalog = { read: async () => models };
+    const scope = { connection: { secretId: "directory-fixture", connectionRevision: 1 } };
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id)).resolves.toBe(false);
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), id, scope)).resolves.toBe(
+      true,
+    );
+    await expect(codexLiveListsModel(catalog, "user-1", oauthSecret(), media, scope)).resolves.toBe(
+      false,
+    );
+    await expect(
+      codexLiveListsModel(
+        { read: async () => [...anchors.slice(1), dynamic] },
+        "user-1",
+        oauthSecret(),
+        id,
+        scope,
+      ),
+    ).resolves.toBe(false);
+    expect(codexConnectionDirectory(models, id)).toEqual({
+      models: [
+        expect.objectContaining({ id, auth: "oauth", images: true, thinkingLevels: ["low"] }),
+      ],
+      savedModelDirectory: undefined,
+    });
+    expect(codexConnectionDirectory(anchors, id)).toEqual({
+      models: [expect.objectContaining({ id, images: false, thinkingLevels: ["off"] })],
+      savedModelDirectory: { confirmationRequired: true, notListed: true },
+    });
+    expect(codexConnectionDirectory(undefined, id).savedModelDirectory).toEqual({
+      confirmationRequired: true,
+      confirmationUnavailable: true,
+    });
+  });
+
+  it("isolates catalog results for different credential revisions of one account", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_, init) =>
+      okResponse(
+        catalogPayload([
+          {
+            slug:
+              new Headers(init?.headers).get("authorization") === "Bearer old-access"
+                ? LUNA
+                : SPARK,
+            visibility: "list",
+            supported_in_api: true,
+          },
+        ]),
+      ),
+    );
+    const cache = new CodexCatalogCache({ fetch });
+    const old = {
+      accountId: ACCOUNT_ID,
+      accessToken: async () => "old-access",
+      connection: { secretId: "secret-a", connectionRevision: 1 },
+    };
+    const current = {
+      ...old,
+      accessToken: async () => "next-access",
+      connection: { secretId: "secret-b", connectionRevision: 2 },
+    };
+    const [oldList, newList] = await Promise.all([
+      cache.read("user-1", old),
+      cache.read("user-1", current),
+    ]);
+    expect(oldList?.map(({ slug }) => slug)).toEqual([LUNA]);
+    expect(newList?.map(({ slug }) => slug)).toEqual([SPARK]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("confirms a model the credential's own account catalog lists", async () => {
     const read = vi.fn(async () => [liveModel(SPARK)]);
     await expect(codexLiveListsModel({ read }, "user-1", oauthSecret(), SPARK)).resolves.toBe(true);
@@ -675,6 +769,17 @@ describe("codexLiveListsModel", () => {
       expect.objectContaining({ accountId: ACCOUNT_ID }),
       undefined,
     );
+  });
+
+  it("uses the selected revision when reading a built-in model's capabilities", async () => {
+    const connection = { secretId: "fixture-bundled", connectionRevision: 2 };
+    const read = vi.fn<CodexLiveCatalog["read"]>(async () => [liveModel(LUNA)]);
+    await expect(
+      codexLiveListsModel({ read }, "user-1", oauthSecret(), LUNA, { connection }),
+    ).resolves.toBe(true);
+    expect(read).toHaveBeenCalledWith("user-1", expect.objectContaining({ connection }), {
+      connection,
+    });
   });
 
   it("rejects when the live catalog does not list the model", async () => {
@@ -824,6 +929,10 @@ describe("codexLiveCatalogsForSpace", () => {
       byModel: { [CHATGPT_OAUTH_PROVIDER]: { [SPARK]: "oauth" } },
       secretIdByProvider: { [CHATGPT_OAUTH_PROVIDER]: "secret-a" },
       secretIdByModel: { [CHATGPT_OAUTH_PROVIDER]: { [SPARK]: "secret-b" } },
+      connectionRevisionBySecretId: new Map([
+        ["secret-a", 1],
+        ["secret-b", 2],
+      ]),
     };
 
     const live = await codexLiveCatalogsForSpace(prisma, secrets, scope, auth, { read });
@@ -832,6 +941,20 @@ describe("codexLiveCatalogsForSpace", () => {
     expect(live.get("secret-b")?.[0]?.slug).toBe(SPARK);
     const accountIds = read.mock.calls.map((call) => call[1].accountId).sort();
     expect(accountIds).toEqual(["acct-a", "acct-b"]);
+    expect(read).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        accountId: "acct-a",
+        connection: { secretId: "secret-a", connectionRevision: 1 },
+      }),
+    );
+    expect(read).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        accountId: "acct-b",
+        connection: { secretId: "secret-b", connectionRevision: 2 },
+      }),
+    );
     expect(secrets.put).not.toHaveBeenCalled();
   });
 

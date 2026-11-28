@@ -1,6 +1,6 @@
 import type { AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import { SecretStoreUnavailableError } from "@rakazo/adapter-kit";
-import { PiAgentRuntime, resolveRuntimeModel } from "@rakazo/adapters";
+import { listPiCatalog, PiAgentRuntime, resolveRuntimeModel } from "@rakazo/adapters";
 import type { Actor } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
@@ -575,23 +575,36 @@ describe("current image send admission", () => {
     },
   );
 
-  it.each([true, false])(
-    "uses the Codex account catalog for a live-only model's image input (%s)",
-    async (supportsImages) => {
+  it.each([
+    { modelId: "gpt-6.1-terra", supportsImages: true },
+    { modelId: "gpt-6.1-terra", supportsImages: false },
+    { modelId: "gpt-fixture-multimodal-chat", supportsImages: true },
+    { modelId: "gpt-fixture-multimodal-chat", supportsImages: false },
+  ])(
+    "uses the selected Codex connection for $modelId image input ($supportsImages)",
+    async ({ modelId, supportsImages }) => {
       const { tx, send } = fixture();
       tx.bot.findFirst.mockResolvedValue({
         id: "bot-1",
         modelProvider: "openai-codex",
         modelCredentialId: "credential-1",
-        modelId: "gpt-6.1-terra",
+        modelId,
       });
+      const connection = { secretId: "secret-1", connectionRevision: 2 };
       tx.userModelCredential.findFirst.mockResolvedValue({
         id: "credential-1",
         provider: "openai-codex",
-        secretId: "secret-1",
+        ...connection,
         preferences: [],
-        defaultModel: "gpt-6.1-terra",
+        defaultModel: modelId,
       });
+      const catalog = listPiCatalog().filter(({ provider }) => provider === "openai-codex");
+      const anchors = catalog.slice(0, Math.ceil(catalog.length / 4)).map(({ id }) => ({
+        slug: id,
+        reasoningEfforts: [],
+        supportsImages: false,
+        supportsFastTier: false,
+      }));
       const configuration = {
         deployment: null,
         secrets: {
@@ -608,11 +621,12 @@ describe("current image send admission", () => {
         codexCatalog: {
           read: vi.fn(async () => [
             {
-              slug: "gpt-6.1-terra",
+              slug: modelId,
               reasoningEfforts: [],
               supportsImages,
               supportsFastTier: false,
             },
+            ...anchors,
           ]),
         },
       };
@@ -626,14 +640,18 @@ describe("current image send admission", () => {
       }
       expect(configuration.codexCatalog.read).toHaveBeenCalledWith(
         "user-1",
-        expect.objectContaining({ accountId: "acct-live" }),
-        { waitMs: 0 },
+        expect.objectContaining({
+          accountId: "acct-live",
+          connection: expect.objectContaining(connection),
+        }),
+        expect.objectContaining({ waitMs: 0 }),
       );
     },
   );
 
   it("keeps a bundled Codex model's images when the account omits input modalities", async () => {
     const { tx, send } = fixture();
+    const connection = { secretId: "secret-1", connectionRevision: 2 };
     tx.bot.findFirst.mockResolvedValue({
       id: "bot-1",
       modelProvider: "openai-codex",
@@ -643,7 +661,7 @@ describe("current image send admission", () => {
     tx.userModelCredential.findFirst.mockResolvedValue({
       id: "credential-1",
       provider: "openai-codex",
-      secretId: "secret-1",
+      ...connection,
       preferences: [],
       defaultModel: "gpt-6.1-sol",
     });
@@ -673,8 +691,11 @@ describe("current image send admission", () => {
     ).resolves.toMatchObject({ runId: "run-1" });
     expect(read).toHaveBeenCalledWith(
       "user-1",
-      expect.objectContaining({ accountId: "acct-live" }),
-      { waitMs: 0 },
+      expect.objectContaining({
+        accountId: "acct-live",
+        connection: expect.objectContaining(connection),
+      }),
+      expect.objectContaining({ waitMs: 0 }),
     );
   });
 

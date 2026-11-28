@@ -3,6 +3,7 @@ import { createRouterClient, ORPCError } from "@orpc/server";
 import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   EncryptedSecretStore,
+  listPiCatalog,
   ModelOAuthSessions,
   PiOAuthLogins,
   parseModelSecret,
@@ -203,6 +204,63 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       ).toMatchObject({ modelId: expected, thinkingLevel: requested === expected ? "low" : null });
     },
   );
+
+  it("keeps a saved directory model when the same account reconnects with different availability", async () => {
+    const actor = await member();
+    const provider = "openai-codex";
+    const modelId = "gpt-fixture-reconnected-directory-model";
+    const accountId = "fixture-reconnected-account";
+    const rotated = { ...token, access: "synthetic-reconnected-access", accountId };
+    const known = listPiCatalog()
+      .filter((entry) => entry.provider === provider)
+      .map(({ id }) => id);
+    const read: CodexLiveCatalog["read"] = async (_user, scope) => {
+      const supportsModel = (await scope.accessToken()) !== rotated.access;
+      return [...known, ...(supportsModel ? [modelId] : [])].map((slug) => ({
+        slug,
+        reasoningEfforts: ["low"],
+        supportsImages: false,
+        supportsFastTier: false,
+      }));
+    };
+    const finish = async (
+      local: ReturnType<typeof process>,
+      credential: typeof rotated,
+      requested?: string,
+    ) => {
+      const { loginId } = await local.client.models.beginOAuth({ provider, modelId: requested });
+      local.providerResult.resolve(credential);
+      await vi.waitFor(async () =>
+        expect(await local.client.models.completeOAuth({ loginId })).toEqual({ status: "ready" }),
+      );
+      return local.client.models.finishOAuth({ loginId });
+    };
+    const first = process(a, actor, undefined, undefined, { read });
+    const connected = await finish(first, { ...token, accountId });
+    await first.client.models.setDefault({
+      provider,
+      modelId,
+      modelCredentialId: connected.id,
+      expectedRevision: connected.connectionRevision!,
+      thinkingLevel: "low",
+    });
+    const again = process(b, actor, undefined, undefined, { read });
+    const reconnected = await finish(again, rotated, modelId);
+    expect(reconnected).toMatchObject({
+      id: connected.id,
+      connectionRevision: connected.connectionRevision! + 1,
+      modelId,
+    });
+    await expect(
+      again.client.models.credentials({ includeProviderCatalog: true }),
+    ).resolves.toContainEqual(
+      expect.objectContaining({
+        id: connected.id,
+        modelId,
+        savedModelDirectory: { confirmationRequired: true, notListed: true },
+      }),
+    );
+  });
 
   it.each([
     ["anthropic", false],
