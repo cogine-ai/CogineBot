@@ -121,6 +121,9 @@ function responsesMessage(text: string) {
 
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
   it.each([
+    { provider: "openai", modelId: "gpt-6.1-terra" },
+    { provider: "openai-codex", modelId: "gpt-6.1-terra" },
+    { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.1-terra" },
     { provider: "openai", modelId: "gpt-6.2-astra" },
     { provider: "openai", modelId: "gpt-6.2-sol" },
     { provider: "openai-codex", modelId: "gpt-6.2-astra" },

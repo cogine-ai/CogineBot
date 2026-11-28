@@ -1,5 +1,26 @@
 import type { Api, Model, MutableModels } from "@earendil-works/pi-ai";
 
+const terra = {
+  id: "gpt-6.1-terra",
+  name: "GPT-6.1 Terra",
+  cost: {
+    input: 1,
+    output: 5,
+    cacheRead: 0.05,
+    cacheWrite: 1.25,
+    tiers: [{ inputTokensAbove: 272000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
+  },
+};
+const terraApiThinkingLevels = {
+  off: "none",
+  minimal: null,
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+} as const;
+
 const gpt62Models = [
   {
     id: "gpt-6.2-astra",
@@ -30,9 +51,10 @@ const gpt62Models = [
 ];
 
 /** These subscription picks require the selected account's live model list. */
-export const codexAccountCatalogModelIds: ReadonlySet<string> = new Set(
-  gpt62Models.map(({ id }) => id),
-);
+export const codexAccountCatalogModelIds: ReadonlySet<string> = new Set([
+  terra.id,
+  ...gpt62Models.map(({ id }) => id),
+]);
 
 /** Fill catalog gaps until the bundled provider library includes these releases. */
 export function supplementPiModels(models: MutableModels): MutableModels {
@@ -97,6 +119,24 @@ export function supplementPiModels(models: MutableModels): MutableModels {
     // Subscription transport keeps its own window; the account catalog may narrow it.
     contextWindow: sol?.contextWindow ?? 272000,
   });
+  add("openai", "gpt-6.1-sol", { ...terra, thinkingLevelMap: terraApiThinkingLevels }, "last");
+  add(
+    "openai-codex",
+    "gpt-6.1-sol",
+    // The subscription catalog supports low and higher reasoning for Terra.
+    { ...terra, thinkingLevelMap: { ...terraApiThinkingLevels, off: null, minimal: "low" } },
+    "last",
+  );
+  add(
+    "vercel-ai-gateway",
+    "openai/gpt-6.1-sol",
+    {
+      ...terra,
+      id: `openai/${terra.id}`,
+      compat: { allowEmptySignature: true, supportsTemperature: false },
+    },
+    "last",
+  );
   for (const { id, name, codexBase, gatewayBase, cost } of gpt62Models) {
     add(
       "openai-codex",
