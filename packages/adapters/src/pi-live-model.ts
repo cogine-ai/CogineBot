@@ -140,6 +140,10 @@ const vercelGatewayMessagesProbeIds = new Set([
   "google/gemini-3.7-flash",
   "google/gemini-3.8-flash",
   "google/gemini-4-argon",
+  "openai/gpt-6-astra",
+  "openai/gpt-6-luna",
+  "openai/gpt-6-sol",
+  "openai/gpt-6.1-sol",
 ]);
 
 export function isOfficialVercelGatewayMessagesProbeModel(
