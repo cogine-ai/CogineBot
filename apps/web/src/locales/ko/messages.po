@@ -7607,3 +7607,7 @@ msgstr "연결할 때 테스트 요청을 한 번 보내며 사용 요금이 발
 
 msgid "The model test timed out."
 msgstr "모델 테스트 시간이 초과되었습니다."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "모델 제공업체의 결제 설정과 사용 가능한 크레딧을 확인하세요."

@@ -125,6 +125,17 @@ export function isOfficialFireworksProbeModel(
   );
 }
 
+export function isOfficialVercelGatewayClaudeProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "vercel-ai-gateway" &&
+    model.api === "anthropic-messages" &&
+    model.baseUrl === "https://ai-gateway.vercel.sh" &&
+    /^anthropic\/claude-(?:haiku|sonnet|opus)-\d+(?:\.\d+)?$/.test(model.id)
+  );
+}
+
 export function isOpenRouterMessagesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "openrouter" &&

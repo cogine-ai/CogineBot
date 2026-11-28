@@ -274,6 +274,8 @@ export const RU_MESSAGES: Record<string, string> = {
   "{provider} key hit its limit.": "{provider}: достигнут лимит ключа.",
   "{provider} key hit its monthly limit.": "{provider}: достигнут месячный лимит ключа.",
   "{provider} key hit its weekly limit.": "{provider}: достигнут недельный лимит ключа.",
+  "Check your model provider's billing settings and available credits.":
+    "Проверьте настройки оплаты и доступные кредиты у поставщика модели.",
   "{provider} reached its credit limit.": "{provider}: достигнут кредитный лимит.",
   "{provider} reached its daily credit limit.": "{provider}: достигнут дневной кредитный лимит.",
   "{provider} reached its daily spending limit.": "{provider}: достигнут дневной лимит расходов.",

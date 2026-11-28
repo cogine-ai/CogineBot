@@ -7663,3 +7663,7 @@ msgstr "При подключении отправляется один тест
 
 msgid "The model test timed out."
 msgstr "Истекло время ожидания проверки модели."
+
+#: src/lib/model-connection-preflight.ts
+msgid "Check your model provider's billing settings and available credits."
+msgstr "Проверьте настройки оплаты и доступные кредиты у поставщика модели."

@@ -3523,6 +3523,30 @@ describe("model credential persistence", () => {
       distinctFailure: "credit",
       transient: { code: 429, message: "Too many requests" },
     },
+    {
+      provider: "vercel-ai-gateway",
+      modelId: "anthropic/claude-haiku-4.5",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"anthropic/claude-haiku-4.5"}}\n\n',
+      rejection: { type: "quota_for_entity_exceeded" },
+      rejectionHttpStatus: 402,
+      distinctFailure: "spending",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
+    {
+      provider: "vercel-ai-gateway",
+      modelId: "anthropic/claude-sonnet-4.6",
+      endpoint: "https://ai-gateway.vercel.sh/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"anthropic/claude-sonnet-4.6"}}\n\n',
+      rejection: { type: "customer_verification_required" },
+      rejectionHttpStatus: 403,
+      distinctFailure: "credit",
+      transient: { code: 429, type: "rate_limit_error" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -6726,6 +6750,7 @@ describe("saved model catalog checks", () => {
     ["kimi-coding", "k3-256k"],
     ["minimax", "MiniMax-M3"],
     ["fireworks", "accounts/fireworks/models/gpt-oss-120b"],
+    ["vercel-ai-gateway", "anthropic/claude-haiku-4.5"],
   ])("only probes the saved %s connection when it owns an API key", async (provider, modelId) => {
     const { infer, inference, probe, state } = fixture(false, provider);
     const request = { ...savedInput, provider, modelId };
