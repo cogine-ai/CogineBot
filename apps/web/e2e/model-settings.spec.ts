@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import type { Me, ModelCatalogEntry, ModelCredential, ThreadSnapshot } from "@rakazo/contracts";
 import {
@@ -13,6 +14,148 @@ import {
 
 const LOCAL_MODEL_ID = "rakazo-e2e-local";
 const LOCAL_MODEL_REPLY = "OpenAI-compatible endpoint verified end to end.";
+
+async function stubCodexModelSignIn(page: Page, needsModel = false) {
+  const saved = {
+    id: "fixture-codex-model-connection",
+    provider: "openai-codex",
+    label: "ChatGPT Plus/Pro",
+    modelId: "gpt-6.2-sol",
+    authKind: "oauth",
+    hasKey: false,
+    isDefault: true,
+    connectionRevision: 1,
+  };
+  let connected = false;
+  await page.route("**/rpc/me", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { json: Me };
+    await route.fulfill({
+      response,
+      json: {
+        json: {
+          ...body.json,
+          ...(needsModel ? { needsModel: !connected } : {}),
+          ...(connected
+            ? {
+                defaultProvider: saved.provider,
+                defaultModel: saved.modelId,
+                defaultModelCredentialId: saved.id,
+              }
+            : {}),
+        },
+      },
+    });
+  });
+  await page.route("**/rpc/models/list", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCatalogEntry[] };
+    const preset = json.find(
+      (entry) => entry.provider === saved.provider && entry.id === "gpt-6.1-sol",
+    )!;
+    const catalog = needsModel ? json.filter((entry) => entry.provider !== "chatgpt-plan") : json;
+    await route.fulfill({
+      response,
+      json: {
+        json: connected
+          ? [...catalog, { ...preset, id: saved.modelId, label: "GPT-6.2 Sol" }]
+          : catalog,
+      },
+    });
+  });
+  await page.route("**/rpc/models/credentials", async (route) => {
+    const response = await route.fetch();
+    const { json } = (await response.json()) as { json: ModelCredential[] };
+    await route.fulfill({ response, json: { json: connected ? [...json, saved] : json } });
+  });
+  await page.route("**/rpc/models/beginOAuth", (route) =>
+    route.fulfill({
+      json: {
+        json: {
+          provider: saved.provider,
+          loginId: "fixture-codex-login",
+          mode: "device-code",
+          verificationUri: "https://auth.example.test",
+          userCode: "CODE",
+          expiresInSeconds: 600,
+        },
+      },
+    }),
+  );
+  await page.route("**/rpc/models/completeOAuth", (route) =>
+    route.fulfill({ json: { json: { status: "ready" } } }),
+  );
+  await page.route("**/rpc/models/finishOAuth", (route) => {
+    connected = true;
+    return route.fulfill({ json: { json: saved } });
+  });
+  await page.addInitScript(() => {
+    window.open = () => null;
+  });
+}
+
+test("settings connects Codex using the model selected for the authenticated account", async ({
+  page,
+}, testInfo) => {
+  await stubCodexModelSignIn(page);
+  await signup(
+    page,
+    `codex-model-settings-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  await completeOnboarding(page);
+  const settings = await openUserSettings(page, "models");
+  await settings.getByPlaceholder("Search providers").fill("openai-codex");
+  await settings
+    .getByRole("button", { name: /ChatGPT Plus\/Pro/ })
+    .first()
+    .click();
+  const started = page.waitForRequest("**/rpc/models/beginOAuth");
+  await settings.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
+  const input = (await started).postDataJSON().json;
+  expect(input.provider).toBe("openai-codex");
+  expect(input).not.toHaveProperty("modelId");
+  await expect(settings.getByText(/Connected and using gpt-6\.2-sol/)).toBeVisible();
+  await expect(settings.getByRole("combobox", { name: "Model", exact: true })).toContainText(
+    "GPT-6.2 Sol",
+  );
+  await captureScreenshot(page, testInfo, "a1-codex-gpt-6.2-connected-model");
+});
+
+test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in effort changes", async ({
+  page,
+}) => {
+  await stubCodexModelSignIn(page, true);
+  await signup(
+    page,
+    `codex-model-onboarding-${Date.now()}@example.test`,
+    "password12",
+    "Model fixture",
+  );
+  const provider = page.getByRole("combobox", { name: "Provider" });
+  await provider.click();
+  await page.getByRole("option", { name: "ChatGPT", exact: true }).click();
+  const picker = page.getByRole("combobox", { name: "Model", exact: true });
+  await picker.click();
+  await page.getByRole("option", { name: "GPT-6.1 Sol", exact: true }).click();
+  await page.getByRole("combobox", { name: "Thinking", exact: true }).click();
+  await page.getByRole("option", { name: "Low", exact: true }).click();
+  const writes: unknown[] = [];
+  await page.route("**/rpc/models/setDefault", (route) => {
+    writes.push(route.request().postDataJSON().json);
+    return route.fulfill({ json: { json: { ok: true } } });
+  });
+  const started = page.waitForRequest("**/rpc/models/beginOAuth");
+  await page.getByRole("button", { name: /Sign in with ChatGPT/ }).click();
+  expect((await started).postDataJSON().json).toMatchObject({
+    provider: "openai-codex",
+    modelId: "gpt-6.1-sol",
+    thinkingLevel: "low",
+  });
+  await expect(page.getByRole("heading", { name: "Connect a model" })).toBeHidden();
+  expect(writes).toEqual([]);
+});
 
 test("ChatGPT plan model settings choose a saved account or add a separate registration", async ({
   page,

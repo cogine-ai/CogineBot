@@ -217,6 +217,7 @@ function ModelsForm({
   const [ownKeyProvider, setOwnKeyProvider] = useState<string | null>(null);
   const [showAllProviders, setShowAllProviders] = useState(false);
   const [modelId, setModelId] = useState("");
+  const explicitModelChoice = useRef(false);
   const [enabledModelIds, setEnabledModelIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState({ provider: "", query: "" });
   const [apiKey, setApiKey] = useState("");
@@ -474,6 +475,7 @@ function ModelsForm({
       });
       resetOpenAiCompatibleProbe();
       setDraftDirectory(undefined);
+      explicitModelChoice.current = false;
       setProvider(nextProvider);
       setConnectionId(nextCredential?.id ?? null);
       setConnectionRevision(nextCredential?.connectionRevision);
@@ -908,6 +910,7 @@ function ModelsForm({
   function chooseProvider(nextProvider: string, nextConnectionId?: string | null) {
     selectionRevisionRef.current += 1;
     cancelOAuth();
+    explicitModelChoice.current = false;
     const nextCredential =
       nextConnectionId === null
         ? undefined
@@ -1394,8 +1397,19 @@ function ModelsForm({
     oauthLoginIdRef.current = null;
     setOauth(null);
     acceptSavedBackupConnection(savedConnection, catalog);
-    const effective = (await load({ provider, modelId, connectionId: savedConnection.id }))?.me;
+    const effective = (
+      await load({
+        provider: savedConnection.provider,
+        modelId: savedConnection.modelId ?? undefined,
+        connectionId: savedConnection.id,
+      })
+    )?.me;
     if (!isCurrent()) return;
+    const savedLabel =
+      catalog.find(
+        (entry) =>
+          entry.provider === savedConnection.provider && entry.id === savedConnection.modelId,
+      )?.label ?? savedConnection.modelId;
     publishFeedback("connection", {
       notice:
         !effective ||
@@ -1403,7 +1417,7 @@ function ModelsForm({
           (effective.defaultModelCredentialId !== savedConnection.id ||
             (savedConnection.modelId && effective.defaultModel !== savedConnection.modelId)))
           ? t("Saved.")
-          : t("Connected and using {label}.", { label: selected?.label ?? t("this model") }),
+          : t("Connected and using {label}.", { label: savedLabel ?? t("this model") }),
     });
   }
 
@@ -1424,7 +1438,10 @@ function ModelsForm({
         "models/beginOAuth",
         {
           provider: selected.provider,
-          modelId: selected.id,
+          modelId:
+            selected.provider === "openai-codex" && !credential && !explicitModelChoice.current
+              ? undefined
+              : selected.id,
           thinkingLevel: clampCatalogThinkingLevel(
             thinkingLevel,
             selected.thinkingLevels,
@@ -1964,6 +1981,7 @@ function ModelsForm({
                   selectionRevisionRef.current += 1;
                   Keyboard.dismiss();
                   cancelOAuth();
+                  explicitModelChoice.current = true;
                   setModelId(entry.id);
                   setThinkingLevel(
                     clampCatalogThinkingLevel(

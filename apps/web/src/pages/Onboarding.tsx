@@ -139,6 +139,7 @@ export function OnboardingPage() {
   const [modelId, setModelId] = useState("");
   const modelIdRef = useRef(modelId);
   modelIdRef.current = modelId;
+  const explicitModelChoice = useRef(false);
   const [apiKey, setApiKey] = useState("");
   const [draftDirectory, setDraftDirectory] = useState<{
     ids: string[];
@@ -188,7 +189,7 @@ export function OnboardingPage() {
     onClearError: () => setError(null),
     onError: setError,
     onFinished: async (_controller, credential) => {
-      // OAuth connect ignores thinkingLevel; persist the staged catalog choice.
+      // Persist the staged effort only when sign-in kept the model it belongs to.
       const level = clampCatalogThinkingLevel(
         thinkingLevel,
         catalog.find((entry) => entry.provider === provider && entry.id === modelId)
@@ -198,6 +199,7 @@ export function OnboardingPage() {
         level &&
         provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
         modelId &&
+        credential.modelId === modelId &&
         credential.connectionRevision !== undefined
       ) {
         try {
@@ -354,6 +356,7 @@ export function OnboardingPage() {
   function selectProvider(nextProvider: string) {
     if (nextProvider === provider) return;
     cancelOAuthAttempt();
+    explicitModelChoice.current = false;
     setProvider(nextProvider);
     setApiKey("");
     setDraftDirectory(undefined);
@@ -626,7 +629,10 @@ export function OnboardingPage() {
     void startSubscriptionSignIn({
       provider: selected.provider,
       modelId:
-        selected.provider === "chatgpt-plan" && selected.placeholder ? undefined : selected.id,
+        (selected.provider === "openai-codex" && !explicitModelChoice.current) ||
+        (selected.provider === "chatgpt-plan" && selected.placeholder)
+          ? undefined
+          : selected.id,
       thinkingLevel: clampCatalogThinkingLevel(
         thinkingLevel,
         selected.thinkingLevels,
@@ -848,6 +854,7 @@ export function OnboardingPage() {
                     value={modelsForProvider.some((entry) => entry.id === modelId) ? modelId : ""}
                     onValueChange={(value) => {
                       if (typeof value !== "string" || !value) return;
+                      explicitModelChoice.current = true;
                       if (value === modelId) return;
                       cancelOAuthAttempt();
                       setModelId(value);

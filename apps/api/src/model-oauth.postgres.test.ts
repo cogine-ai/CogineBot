@@ -146,23 +146,27 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
   }
 
   it.each([
-    { requested: "gpt-6.1-sol", expected: "gpt-6.2-sol", catalogAvailable: true },
-    { requested: "gpt-6.2-astra", expected: "gpt-6.2-astra", catalogAvailable: true },
-    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", catalogAvailable: false },
+    { requested: undefined, expected: "gpt-6.2-sol", models: ["gpt-6.1-sol", "gpt-6.2-sol"] },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", models: ["gpt-6.1-sol", "gpt-6.2-sol"] },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.2-sol", models: ["gpt-6.2-astra", "gpt-6.2-sol"] },
+    {
+      requested: "gpt-6.2-astra",
+      expected: "gpt-6.2-astra",
+      models: ["gpt-6.2-astra", "gpt-6.2-sol"],
+    },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", models: undefined },
   ])(
-    "starts a new Codex sign-in on $expected (catalog available $catalogAvailable)",
-    async ({ requested, expected, catalogAvailable }) => {
+    "starts a new Codex sign-in on $expected for $requested (account models $models)",
+    async ({ requested, expected, models }) => {
       const actor = await member();
       const accountId = "fixture-codex-account";
       const read = vi.fn<CodexLiveCatalog["read"]>(async () =>
-        catalogAvailable
-          ? ["gpt-6.2-astra", "gpt-6.2-sol"].map((slug) => ({
-              slug,
-              reasoningEfforts: ["low"],
-              supportsImages: true,
-              supportsFastTier: false,
-            }))
-          : undefined,
+        models?.map((slug) => ({
+          slug,
+          reasoningEfforts: ["low"],
+          supportsImages: true,
+          supportsFastTier: false,
+        })),
       );
       const local = process(a, actor, undefined, undefined, { read });
       const { loginId } = await local.client.models.beginOAuth({
