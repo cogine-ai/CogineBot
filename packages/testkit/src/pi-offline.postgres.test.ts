@@ -2,12 +2,16 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import {
+  CodexCatalogCache,
   ComposioEmulator,
+  EncryptedSecretStore,
   ExpoPushProvider,
   listPiCatalog,
   PiAgentRuntime,
   probeCatalogProviderModels,
+  serializeModelSecret,
 } from "@rakazo/adapters";
 import type { ModelConnectResult, ModelCredential } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
@@ -83,7 +87,436 @@ function directoryGeminiMessage(model: string, content: string): Response {
   });
 }
 
+function responsesStream(id: string, items: Array<{ type: string; id: string }>): Response {
+  const frames = [
+    { type: "response.created", response: { id } },
+    ...items.flatMap((item, output_index) => [
+      { type: "response.output_item.added", output_index, item },
+      { type: "response.output_item.done", output_index, item },
+    ]),
+    {
+      type: "response.completed",
+      response: {
+        id,
+        status: "completed",
+        output: items,
+        usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+      },
+    },
+  ];
+  return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function responsesMessage(text: string) {
+  return {
+    id: "msg_directory_fixture",
+    type: "message",
+    role: "assistant",
+    status: "completed",
+    content: [{ type: "output_text", text, annotations: [] }],
+  };
+}
+
 describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
+  it.each([
+    { provider: "openai", modelId: "gpt-6.2-astra" },
+    { provider: "openai", modelId: "gpt-6.2-sol" },
+    { provider: "openai-codex", modelId: "gpt-6.2-astra" },
+    { provider: "openai-codex", modelId: "gpt-6.2-sol" },
+    { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-astra" },
+    { provider: "vercel-ai-gateway", modelId: "openai/gpt-6.2-sol" },
+  ])(
+    "runs a tool round trip on $provider with $modelId",
+    async ({ provider, modelId }) => {
+      const gateway = provider === "vercel-ai-gateway";
+      const codex = provider === "openai-codex";
+      const endpoint = gateway
+        ? "https://ai-gateway.vercel.sh/v1/messages"
+        : codex
+          ? "https://chatgpt.com/backend-api/codex/responses"
+          : "https://api.openai.com/v1/responses";
+      const apiKey = "fixture-tool-round-trip-key";
+      const accountId = "fixture-directory-account";
+      const claims = Buffer.from(
+        JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+      ).toString("base64url");
+      const oauthToken = `fixture.${claims}.fixture`;
+      const encryptionKey = "offline-responses-fixture-encryption-key";
+      const filePath = "notes/result.txt";
+      const prompt = "Save hello to notes/result.txt.";
+      const answer = "Saved notes/result.txt.";
+      const reasoning = {
+        id: "rs_directory_fixture",
+        type: "reasoning",
+        summary: [],
+        encrypted_content: "opaque-reasoning-fixture",
+      };
+      const toolCall = {
+        id: "fc_directory_fixture",
+        type: "function_call",
+        call_id: "call_directory_fixture",
+        status: "completed",
+        name: "write_file",
+        arguments: JSON.stringify({ path: filePath, content: "hello" }),
+      };
+      const modelFetch = vi.fn<typeof fetch>(async (input, init) => {
+        const request = new Request(input, init);
+        expect(request.url).toBe(gateway ? `${endpoint}?beta=true` : endpoint);
+        expect(request.method).toBe("POST");
+        const body =
+          request.headers.get("content-encoding") === "zstd"
+            ? JSON.parse(zstdDecompressSync(new Uint8Array(await request.arrayBuffer())).toString())
+            : await request.json();
+        const firstCall = modelFetch.mock.calls.length === 1;
+        if (gateway) {
+          expect(request.headers.get("x-api-key")).toBe(apiKey);
+          expect(request.headers.has("authorization")).toBe(false);
+          expect(body).toMatchObject({
+            model: modelId,
+            stream: true,
+            tools: expect.arrayContaining([expect.objectContaining({ name: "write_file" })]),
+          });
+          expect(body).not.toHaveProperty("input");
+          expect(JSON.stringify(body.messages)).toContain(prompt);
+          if (firstCall) {
+            const frames = [
+              {
+                type: "message_start",
+                message: {
+                  id: "msg_gateway_tool",
+                  model: modelId,
+                  role: "assistant",
+                  content: [],
+                  stop_reason: null,
+                  usage: { input_tokens: 2, output_tokens: 0 },
+                },
+              },
+              {
+                type: "content_block_start",
+                index: 0,
+                content_block: {
+                  type: "tool_use",
+                  id: toolCall.call_id,
+                  name: "write_file",
+                  input: {},
+                },
+              },
+              {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: toolCall.arguments },
+              },
+              { type: "content_block_stop", index: 0 },
+              {
+                type: "message_delta",
+                delta: { stop_reason: "tool_use" },
+                usage: { output_tokens: 1 },
+              },
+              { type: "message_stop" },
+            ];
+            return new Response(
+              frames
+                .map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`)
+                .join(""),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          }
+          const result = body.messages
+            .at(-1)
+            ?.content?.find((item: { type?: string }) => item.type === "tool_result");
+          expect(result).toMatchObject({ tool_use_id: toolCall.call_id });
+          const content =
+            typeof result.content === "string" ? result.content : result.content[0].text;
+          expect(JSON.parse(content)).toMatchObject({ ok: true, path: filePath });
+          return directoryAnthropicMessage(modelId, answer);
+        }
+        expect(request.headers.get("authorization")).toBe(`Bearer ${codex ? oauthToken : apiKey}`);
+        if (codex) {
+          expect(request.headers.get("chatgpt-account-id")).toBe(accountId);
+          expect(body.reasoning).toMatchObject({ effort: "low" });
+        }
+        expect(body).toMatchObject({ model: modelId, store: false, stream: true });
+        for (const field of [
+          "messages",
+          "reasoning_effort",
+          "temperature",
+          "top_p",
+          "top_logprobs",
+          "prompt_cache_retention",
+        ]) {
+          expect(body).not.toHaveProperty(field);
+        }
+        expect(body.include ?? []).not.toContain("message.output_text.logprobs");
+        expect(body.tools).toContainEqual(
+          expect.objectContaining({ type: "function", name: "write_file" }),
+        );
+        expect(JSON.stringify(body.input)).toContain(prompt);
+        if (firstCall) {
+          return responsesStream("resp_directory_tool", [reasoning, toolCall]);
+        }
+        expect(modelFetch.mock.calls).toHaveLength(2);
+        const toolIndex = body.input.findIndex(
+          (item: { type?: string }) => item.type === "function_call",
+        );
+        expect(toolIndex).toBeGreaterThan(0);
+        expect(body.input.slice(toolIndex - 1, toolIndex + 2)).toEqual([
+          reasoning,
+          expect.objectContaining({
+            id: toolCall.id,
+            type: toolCall.type,
+            call_id: toolCall.call_id,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          }),
+          {
+            type: "function_call_output",
+            call_id: toolCall.call_id,
+            output: expect.any(String),
+          },
+        ]);
+        expect(JSON.parse(body.input[toolIndex + 1].output)).toMatchObject({
+          ok: true,
+          path: filePath,
+        });
+        return responsesStream("resp_directory_answer", [responsesMessage(answer)]);
+      });
+      const catalog = listPiCatalog()
+        .filter((entry) => entry.provider === "openai")
+        .map(({ id }) => id);
+      const catalogProbe: typeof probeCatalogProviderModels = (input, _fetch, signal) =>
+        probeCatalogProviderModels(
+          input,
+          async (url, init) => {
+            const request = new Request(url, init);
+            expect(request.url).toBe("https://api.openai.com/v1/models");
+            expect(request.method).toBe("GET");
+            expect(request.headers.get("authorization")).toBe(`Bearer ${apiKey}`);
+            return Response.json({
+              data: [...new Set([...catalog, modelId])].map((id) => ({ id })),
+            });
+          },
+          signal,
+        );
+      const localFetch = globalThis.fetch;
+      const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).origin === fixtureOrigin) return localFetch(input, init);
+        expect(request.url).toBe(endpoint);
+        expect(request.method).toBe("POST");
+        const body = await request.json();
+        expect(body).toMatchObject({
+          model: modelId,
+          [gateway ? "max_tokens" : "max_output_tokens"]: 1024,
+          tools: [expect.objectContaining({ name: "noop" })],
+        });
+        if (gateway) {
+          expect(request.headers.get("x-api-key")).toBe(apiKey);
+          return directoryAnthropicMessage(modelId, "OK");
+        }
+        expect(request.headers.get("authorization")).toBe(`Bearer ${apiKey}`);
+        return responsesStream("resp_directory_probe", [responsesMessage("OK")]);
+      });
+      const dataDir = await mkdtemp(path.join(tmpdir(), "offline-responses-tools-"));
+      let stop: (() => Promise<void>) | undefined;
+      try {
+        const { createApp } = await import("../../../apps/api/src/app.ts");
+        const codexCatalog = codex
+          ? new CodexCatalogCache({
+              fetch: async (input, init) => {
+                const request = new Request(input, init);
+                expect(request.url).toBe(
+                  "https://chatgpt.com/backend-api/codex/models?client_version=0.169.1",
+                );
+                expect(request.headers.get("authorization")).toBe(`Bearer ${oauthToken}`);
+                expect(request.headers.get("chatgpt-account-id")).toBe(accountId);
+                return Response.json({
+                  models: [
+                    {
+                      slug: modelId,
+                      visibility: "list",
+                      supported_in_api: true,
+                      input_modalities: ["text"],
+                      supported_reasoning_levels: [{ effort: "low" }],
+                    },
+                  ],
+                });
+              },
+            })
+          : undefined;
+        const handles = await createApp({
+          databaseUrl: process.env.DATABASE_URL!,
+          realtimeDatabaseUrl: process.env.DATABASE_URL!,
+          authUrl: fixtureOrigin,
+          webOrigin: fixtureOrigin,
+          dataDir,
+          sandboxProvider: "fake",
+          agentRuntime: "pi",
+          runtime: new PiAgentRuntime({ modelFetch }),
+          wakeupDriver: "memory",
+          signupsEnabled: "true",
+          composio: new ComposioEmulator(),
+          encryptionKey,
+          modelLiveCatalogEnabled: true,
+          catalogProbe,
+          codexCatalog,
+        });
+        stop = handles.stop;
+        const { app } = handles;
+        const email = `responses-${randomUUID()}@example.test`;
+        const signup = await app.request("/api/auth/sign-up/email", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: fixtureOrigin },
+          body: JSON.stringify({
+            email,
+            password: "password12",
+            name: "Responses fixture",
+          }),
+        });
+        expect(signup.status).toBeLessThan(400);
+        const cookie = sessionCookieHeader(signup);
+        let connection: Pick<ModelCredential, "id" | "connectionRevision">;
+        if (codex) {
+          const user = await handles.prisma.user.findUniqueOrThrow({ where: { email } });
+          const membership = await handles.prisma.spaceMember.findFirstOrThrow({
+            where: { userId: user.id },
+          });
+          const credential = serializeModelSecret({
+            kind: "oauth",
+            credential: {
+              type: "oauth",
+              access: oauthToken,
+              refresh: "fixture-refresh",
+              expires: Date.now() + 60 * 60_000,
+              accountId,
+            },
+          });
+          // Start with an existing synthetic sign-in. OAuth exchange is tested separately.
+          const stored = await new EncryptedSecretStore(encryptionKey).put(credential, {
+            userId: user.id,
+            spaceId: membership.spaceId,
+            operationId: "fixture",
+            traceId: "fixture",
+            signal: new AbortController().signal,
+          });
+          await handles.prisma.secret.create({
+            data: {
+              id: stored.id,
+              userId: user.id,
+              kind: "model",
+              ciphertext: stored.ciphertext,
+            },
+          });
+          connection = await handles.prisma.userModelCredential.create({
+            data: { userId: user.id, provider, label: "Subscription fixture", secretId: stored.id },
+          });
+        } else {
+          const checked = await rpc<ModelConnectResult>(app, cookie, "models/connect", {
+            provider,
+            modelId,
+            apiKey,
+            verifyInference: true,
+          });
+          expect(checked).toMatchObject({ modelId, inferenceStatus: "accepted" });
+          connection = checked;
+        }
+        const selection = {
+          provider,
+          modelId,
+          modelCredentialId: connection.id,
+          expectedRevision: connection.connectionRevision,
+        };
+        if (codex) {
+          const unavailable = modelId === "gpt-6.2-sol" ? "gpt-6.2-astra" : "gpt-6.2-sol";
+          const catalog = await rpc<Array<{ provider: string; id: string }>>(
+            app,
+            cookie,
+            "models/list",
+            null,
+          );
+          const subscriptionModels = catalog.filter((entry) => entry.provider === provider);
+          expect(subscriptionModels).toContainEqual(
+            expect.objectContaining({
+              provider,
+              id: modelId,
+              thinkingLevels: ["low"],
+              images: false,
+            }),
+          );
+          expect(subscriptionModels.map(({ id }) => id)).not.toContain(unavailable);
+          await expect(
+            rpc(app, cookie, "models/setDefault", { ...selection, modelId: unavailable }),
+          ).rejects.toThrow(/models\/setDefault: 400/);
+        } else if (gateway) {
+          await expect(rpc(app, cookie, "models/list", null)).resolves.toContainEqual(
+            expect.objectContaining({ provider, id: modelId, inferenceProbe: true }),
+          );
+        } else {
+          await expect(
+            rpc<ModelCredential[]>(app, cookie, "models/credentials", {
+              includeProviderCatalog: true,
+            }),
+          ).resolves.toContainEqual(
+            expect.objectContaining({
+              id: connection.id,
+              modelId,
+              providerListedModelIds: expect.arrayContaining([modelId]),
+            }),
+          );
+        }
+        await rpc(app, cookie, "models/setDefault", {
+          ...selection,
+          ...(codex ? { thinkingLevel: "low" } : {}),
+        });
+        const bot = await rpc<{ id: string }>(app, cookie, "bots/create", {
+          name: "Responses fixture",
+          title: "",
+          description: "",
+          instructions: "Complete the task.",
+          notifyOnFinish: false,
+        });
+        await discardBotIntroRun(handles, cookie, bot.id);
+        modelFetch.mockClear();
+        const { runId } = await rpc<{ runId: string }>(app, cookie, "threads/send", {
+          botId: bot.id,
+          text: prompt,
+        });
+        await expect
+          .poll(
+            async () => {
+              const run = await handles.prisma.run.findUnique({ where: { id: runId } });
+              if (run?.status === "failed") throw new Error(`Run failed: ${run.error}`);
+              return run;
+            },
+            { timeout: 15_000, interval: 100 },
+          )
+          .toMatchObject({
+            status: "completed",
+            modelProvider: provider,
+            modelId,
+            modelCredentialId: connection.id,
+          });
+        expect(modelFetch).toHaveBeenCalledTimes(2);
+        await expect(
+          rpc(app, cookie, "computer/readFile", { botId: bot.id, path: filePath }),
+        ).resolves.toMatchObject({ content: "hello" });
+        const thread = await rpc<{ messages: unknown[] }>(app, cookie, "threads/get", {
+          botId: bot.id,
+        });
+        expect(JSON.stringify(thread.messages)).toContain(answer);
+      } finally {
+        try {
+          await stop?.();
+        } finally {
+          transport.mockRestore();
+          await rm(dataDir, { recursive: true, force: true });
+        }
+      }
+    },
+    30_000,
+  );
+
   const directoryRoutes = [
     { provider: "openai", prefix: "gpt", endpoint: "https://api.openai.com/v1/responses" },
     { provider: "xai", prefix: "grok", endpoint: "https://api.x.ai/v1/responses" },
@@ -187,29 +620,9 @@ describe.skipIf(!databaseAvailable)("offline Pi product journey", () => {
         }
         return directoryChatCompletion(expectedWireModel, "Used the selected model.");
       }
-      const message = {
-        id: "msg_directory_fixture",
-        type: "message",
-        role: "assistant",
-        status: "completed",
-        content: [{ type: "output_text", text: "Used the selected model.", annotations: [] }],
-      };
-      const frames = [
-        { type: "response.output_item.added", output_index: 0, item: message },
-        { type: "response.output_item.done", output_index: 0, item: message },
-        {
-          type: "response.completed",
-          response: {
-            id: "resp_directory_fixture",
-            status: "completed",
-            output: [message],
-            usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
-          },
-        },
-      ];
-      return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), {
-        headers: { "content-type": "text/event-stream" },
-      });
+      return responsesStream("resp_directory_fixture", [
+        responsesMessage("Used the selected model."),
+      ]);
     });
     let probeKey = apiKey;
     let probeResponse = "accepted";

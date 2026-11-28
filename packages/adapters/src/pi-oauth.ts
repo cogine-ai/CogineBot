@@ -69,7 +69,7 @@ export const SUBSCRIPTION_SIGN_IN_PROVIDERS: Record<
     loginLabel: "Sign in with ChatGPT Plus/Pro",
     hint: "ChatGPT Plus/Pro",
     billing:
-      "Sign in with ChatGPT Plus or Pro. Uses your OpenAI subscription. Rakazo does not pay.",
+      "Sign in with ChatGPT Plus or Pro. Uses your OpenAI subscription. CogineBot does not pay.",
   },
   [COPILOT_OAUTH_PROVIDER]: {
     mode: "device-code",

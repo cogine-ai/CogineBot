@@ -222,7 +222,7 @@ export function ModelSettingsOverlay({
   const detailScrollRef = useRef<HTMLDivElement>(null);
   const refreshRevisionRef = useRef(0);
   const selectionRevisionRef = useRef(0);
-  const selectedLabelRef = useRef<string | undefined>(undefined);
+  const explicitModelChoice = useRef(false);
   const mountedRef = useRef(true);
   const meRef = useRef(me);
   meRef.current = me;
@@ -263,19 +263,25 @@ export function ModelSettingsOverlay({
         !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
       )
         return;
-      const effective = await refresh(credential.id);
+      const effective = await refresh(credential.id, {
+        preferredModelId: credential.modelId ?? undefined,
+      });
       if (
         controller.signal.aborted ||
         !operationCurrent(owner.selectionRevision, owner.scope, owner.spaceGeneration)
       )
         return;
+      const savedLabel =
+        catalog.find(
+          (entry) => entry.provider === credential.provider && entry.id === credential.modelId,
+        )?.label ?? credential.modelId;
       setNotice(
         !effective ||
           (effective.defaultModelCredentialId !== undefined &&
             (effective.defaultModelCredentialId !== credential.id ||
               (credential.modelId && effective.defaultModel !== credential.modelId)))
           ? t`Saved.`
-          : t`Connected and using ${selectedLabelRef.current ?? "this model"}.`,
+          : t`Connected and using ${savedLabel ?? "this model"}.`,
       );
     },
   });
@@ -285,7 +291,8 @@ export function ModelSettingsOverlay({
     {
       keepForm = false,
       keepConnectionState = false,
-    }: { keepForm?: boolean; keepConnectionState?: boolean } = {},
+      preferredModelId,
+    }: { keepForm?: boolean; keepConnectionState?: boolean; preferredModelId?: string } = {},
   ) {
     const refreshRevision = ++refreshRevisionRef.current;
     const selectionRevision = selectionRevisionRef.current;
@@ -351,7 +358,7 @@ export function ModelSettingsOverlay({
       provider: nextProvider,
       credential: nextCredential,
       defaults: nextMe,
-      current: modelId,
+      current: preferredModelId ?? modelId,
     });
     setCatalog(nextCatalog);
     setCredentials(nextCredentials);
@@ -373,6 +380,7 @@ export function ModelSettingsOverlay({
       invalidatePreflight();
       resetOpenAiCompatibleProbe();
       setDraftDirectory(undefined);
+      explicitModelChoice.current = false;
       setProvider(nextProvider);
       setConnectionId(nextCredential?.id ?? null);
       setConnectionRevision(nextCredential?.connectionRevision);
@@ -498,7 +506,6 @@ export function ModelSettingsOverlay({
     modelsForProvider.find((entry) => entry.id === modelId) ??
     modelsForProvider.find((entry) => entry.id === credential?.modelId) ??
     modelsForProvider[0];
-  selectedLabelRef.current = selected?.label;
   const selectedProviderName = selected?.providerName ?? selected?.provider ?? "";
   const disconnectName = selectedProviderName;
   const hostCredentialSource = me?.hostCredentialSource ?? "";
@@ -719,6 +726,7 @@ export function ModelSettingsOverlay({
   function chooseProvider(nextProvider: string, nextConnectionId?: string | null) {
     cancelOAuthAttempt();
     selectionRevisionRef.current += 1;
+    explicitModelChoice.current = false;
     const nextCredential =
       nextConnectionId === null
         ? undefined
@@ -1200,15 +1208,21 @@ export function ModelSettingsOverlay({
       spaceGeneration: currentSpaceSelectionGeneration(),
     };
     setNotice(null);
+    const pickFromAccount =
+      selected.provider === "openai-codex" &&
+      !credential &&
+      !explicitModelChoice.current &&
+      thinkingLevel === null;
     void startSubscriptionSignIn({
       provider: credential?.provider ?? selected.provider,
       modelId:
-        selected.provider === "chatgpt-plan" &&
-        (selected.placeholder ||
-          newRegistration ||
-          !chatgptProfiles.some(
-            (profile) => profile.id === chatgptRegistrationId && profile.status === "connected",
-          ))
+        pickFromAccount ||
+        (selected.provider === "chatgpt-plan" &&
+          (selected.placeholder ||
+            newRegistration ||
+            !chatgptProfiles.some(
+              (profile) => profile.id === chatgptRegistrationId && profile.status === "connected",
+            )))
           ? undefined
           : selected.id,
       thinkingLevel: clampCatalogThinkingLevel(
@@ -1289,6 +1303,7 @@ export function ModelSettingsOverlay({
               cancelOAuthAttempt();
               selectionRevisionRef.current += 1;
               invalidatePreflight();
+              explicitModelChoice.current = true;
               setModelId(nextModelId);
               const nextEntry = modelsForProvider.find((entry) => entry.id === nextModelId);
               setThinkingLevel(

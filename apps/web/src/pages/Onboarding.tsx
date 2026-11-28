@@ -139,6 +139,7 @@ export function OnboardingPage() {
   const [modelId, setModelId] = useState("");
   const modelIdRef = useRef(modelId);
   modelIdRef.current = modelId;
+  const explicitModelChoice = useRef(false);
   const [apiKey, setApiKey] = useState("");
   const [draftDirectory, setDraftDirectory] = useState<{
     ids: string[];
@@ -187,33 +188,7 @@ export function OnboardingPage() {
   } = useModelOAuthSignIn({
     onClearError: () => setError(null),
     onError: setError,
-    onFinished: async (_controller, credential) => {
-      // OAuth connect ignores thinkingLevel; persist the staged catalog choice.
-      const level = clampCatalogThinkingLevel(
-        thinkingLevel,
-        catalog.find((entry) => entry.provider === provider && entry.id === modelId)
-          ?.thinkingLevels,
-      );
-      if (
-        level &&
-        provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
-        modelId &&
-        credential.connectionRevision !== undefined
-      ) {
-        try {
-          await rpc.models.setDefault({
-            provider,
-            modelId,
-            modelCredentialId: credential.id,
-            expectedRevision: credential.connectionRevision,
-            thinkingLevel: level as ThinkingLevel,
-          });
-        } catch {
-          // The connection itself succeeded; the effort stays adjustable in Models.
-        }
-      }
-      setStep(nextStepAfterModel(needsIntegrationSetup));
-    },
+    onFinished: () => setStep(nextStepAfterModel(needsIntegrationSetup)),
   });
 
   useEffect(() => {
@@ -354,6 +329,7 @@ export function OnboardingPage() {
   function selectProvider(nextProvider: string) {
     if (nextProvider === provider) return;
     cancelOAuthAttempt();
+    explicitModelChoice.current = false;
     setProvider(nextProvider);
     setApiKey("");
     setDraftDirectory(undefined);
@@ -626,7 +602,12 @@ export function OnboardingPage() {
     void startSubscriptionSignIn({
       provider: selected.provider,
       modelId:
-        selected.provider === "chatgpt-plan" && selected.placeholder ? undefined : selected.id,
+        (selected.provider === "openai-codex" &&
+          !explicitModelChoice.current &&
+          thinkingLevel === null) ||
+        (selected.provider === "chatgpt-plan" && selected.placeholder)
+          ? undefined
+          : selected.id,
       thinkingLevel: clampCatalogThinkingLevel(
         thinkingLevel,
         selected.thinkingLevels,
@@ -848,6 +829,7 @@ export function OnboardingPage() {
                     value={modelsForProvider.some((entry) => entry.id === modelId) ? modelId : ""}
                     onValueChange={(value) => {
                       if (typeof value !== "string" || !value) return;
+                      explicitModelChoice.current = true;
                       if (value === modelId) return;
                       cancelOAuthAttempt();
                       setModelId(value);
@@ -880,7 +862,7 @@ export function OnboardingPage() {
                       </span>
                       <Select
                         value={thinkingLevel ?? DEFAULT_THINKING_LEVEL_OPTION}
-                        disabled={connecting}
+                        disabled={connecting || oauthPending}
                         onValueChange={(value) => {
                           const next = String(value);
                           setThinkingLevel(

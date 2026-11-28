@@ -4,6 +4,7 @@ import type { ThinkingLevel } from "@rakazo/contracts";
 import { ThinkingLevelSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import type { ModelCredentialAuthKind } from "./pi-catalog-availability.js";
+import { codexAccountCatalogModelIds } from "./pi-current-models.js";
 import { LiveCatalogCache } from "./pi-live-cache.js";
 import type { PiCatalogEntry } from "./pi-models.js";
 import { listPiCatalog } from "./pi-models.js";
@@ -12,12 +13,11 @@ import { CHATGPT_OAUTH_PROVIDER, oauthCredentialAccountId, parseModelSecret } fr
 
 /**
  * The ChatGPT backend reports which Codex models a subscription account can call.
- * fx resolves `client_version` from npm `@openai/codex@latest`; we pin a recent
- * CLI release (0.159.3 includes GPT-6.1 Sol) so reads stay deterministic — bump
- * the constant to ask the backend for a newer compatibility view.
+ * Pin a client from the GPT-6.2 release window to request the corresponding
+ * compatibility view. The returned catalog still decides account access.
  */
 export const CODEX_MODELS_ENDPOINT = "https://chatgpt.com/backend-api/codex/models";
-const CODEX_CLIENT_VERSION = "0.159.3";
+const CODEX_CLIENT_VERSION = "0.169.1";
 
 const CODEX_CATALOG_TIMEOUT_MS = 12_000;
 const CODEX_CATALOG_HARD_DEADLINE_MS = CODEX_CATALOG_TIMEOUT_MS + 10_000;
@@ -357,6 +357,28 @@ export async function readCodexLiveModels(
   return account ? catalog.read(userId, account, opts).catch(() => undefined) : undefined;
 }
 
+function knownCodexSlugs(): Set<string> {
+  return new Set(
+    listPiCatalog()
+      .filter((entry) => entry.provider === CHATGPT_OAUTH_PROVIDER)
+      .map((entry) => entry.id),
+  );
+}
+
+/** Keep a callable pick, or start a new sign-in on a model the account lists. */
+export async function resolveCodexOAuthDefaultModel(
+  catalog: CodexLiveCatalog,
+  userId: string,
+  secret: StoredModelSecret,
+  requested: string | undefined,
+): Promise<string | undefined> {
+  const models = await readCodexLiveModels(catalog, userId, secret);
+  const known = knownCodexSlugs();
+  const available = models?.filter(({ slug }) => known.has(slug)).map(({ slug }) => slug);
+  if (!available?.length || (requested && available.includes(requested))) return requested;
+  return available.find((id) => id === "gpt-6.2-sol") ?? available[0];
+}
+
 export async function codexLiveListsModel(
   catalog: CodexLiveCatalog | undefined,
   userId: string,
@@ -447,11 +469,7 @@ export function applyCodexLiveCatalog(
   auth: CodexCatalogSpaceAuth,
   liveBySecretId: ReadonlyMap<string, readonly CodexCatalogModel[]>,
 ): PiCatalogEntry[] {
-  const knownSlugs = new Set(
-    listPiCatalog()
-      .filter((entry) => entry.provider === CHATGPT_OAUTH_PROVIDER)
-      .map((entry) => entry.id),
-  );
+  const knownSlugs = knownCodexSlugs();
   const trusted = new Map<string, Map<string, CodexCatalogModel>>();
   for (const [secretId, models] of liveBySecretId) {
     if (!models.some((model) => knownSlugs.has(model.slug))) continue;
@@ -483,10 +501,13 @@ export function applyCodexLiveCatalog(
 }
 
 function withLiveFields(entry: PiCatalogEntry, model: CodexCatalogModel): PiCatalogEntry {
+  const listed = codexAccountCatalogModelIds.has(entry.id)
+    ? { ...entry, images: model.supportsImages }
+    : entry;
   const thinkingLevels = liveThinkingLevels(model);
   return thinkingLevels
-    ? { ...entry, reasoning: true, thinkingLevels }
-    : { ...entry, reasoning: entry.reasoning || model.reasoningEfforts.length > 0 };
+    ? { ...listed, reasoning: true, thinkingLevels }
+    : { ...listed, reasoning: listed.reasoning || model.reasoningEfforts.length > 0 };
 }
 
 export function liveThinkingLevels(model: CodexCatalogModel): ThinkingLevel[] | undefined {

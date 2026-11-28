@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRouterClient, ORPCError } from "@orpc/server";
+import type { CodexLiveCatalog } from "@rakazo/adapters";
 import {
   EncryptedSecretStore,
   ModelOAuthSessions,
@@ -92,6 +93,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     actor: Actor,
     exchange = vi.fn(async () => token),
     secrets = new EncryptedSecretStore(key),
+    codexCatalog?: CodexLiveCatalog,
   ) {
     const providerResult = gate<typeof token>();
     const providerStarted = vi.fn();
@@ -110,6 +112,7 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
     const deps = {
       prisma: db.prisma,
       oauthLogins: oauth,
+      codexCatalog,
       secrets,
       env: {
         defaultProvider: "anthropic",
@@ -141,6 +144,65 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       select: { action: true, targetId: true, spaceId: true, metadata: true },
     });
   }
+
+  it.each([
+    { requested: undefined, expected: "gpt-6.2-sol", models: ["gpt-6.1-sol", "gpt-6.2-sol"] },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", models: ["gpt-6.1-sol", "gpt-6.2-sol"] },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.2-sol", models: ["gpt-6.2-astra", "gpt-6.2-sol"] },
+    {
+      requested: "gpt-6.2-astra",
+      expected: "gpt-6.2-astra",
+      models: ["gpt-6.2-astra", "gpt-6.2-sol"],
+    },
+    { requested: "gpt-6.1-sol", expected: "gpt-6.1-sol", models: undefined },
+  ])(
+    "starts a new Codex sign-in on $expected for $requested (account models $models)",
+    async ({ requested, expected, models }) => {
+      const actor = await member();
+      const accountId = "fixture-codex-account";
+      const read = vi.fn<CodexLiveCatalog["read"]>(async () =>
+        models?.map((slug) => ({
+          slug,
+          reasoningEfforts: ["low"],
+          supportsImages: true,
+          supportsFastTier: false,
+        })),
+      );
+      const local = process(a, actor, undefined, undefined, { read });
+      const { loginId } = await local.client.models.beginOAuth({
+        provider: "openai-codex",
+        modelId: requested,
+        thinkingLevel: "low",
+      });
+      const issued = { ...token, accountId };
+      local.providerResult.resolve(issued);
+      await vi.waitFor(async () =>
+        expect(await local.client.models.completeOAuth({ loginId })).toEqual({ status: "ready" }),
+      );
+      const saved = await local.client.models.finishOAuth({ loginId });
+      expect(saved).toMatchObject({
+        modelId: expected,
+        provider: "openai-codex",
+        authKind: "oauth",
+      });
+      expect(read).toHaveBeenCalledWith(
+        actor.userId,
+        expect.objectContaining({ accountId }),
+        undefined,
+      );
+      expect(
+        await a.prisma.spaceModelPreference.findUnique({
+          where: {
+            spaceId_userId_credentialId: {
+              spaceId: actor.spaceId,
+              userId: actor.userId,
+              credentialId: saved.id,
+            },
+          },
+        }),
+      ).toMatchObject({ modelId: expected, thinkingLevel: requested === expected ? "low" : null });
+    },
+  );
 
   it.each([
     ["anthropic", false],

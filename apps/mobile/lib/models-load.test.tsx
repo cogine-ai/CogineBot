@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { act, useEffect, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
+import { AccessibilityInfo } from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Models from "../app/(settings)/models";
 import SpaceSettings from "../app/(settings)/space-settings";
@@ -1071,6 +1072,76 @@ it("reconciles backups after this screen renews a subscription connection", asyn
     },
   ]);
 });
+
+it.each([undefined, "gpt-6.1-sol"])(
+  "shows the saved Codex model after sign-in (user chose %s)",
+  async (choice) => {
+    const normal = state.rpc.getMockImplementation()!;
+    const provider = "openai-codex";
+    const entry = {
+      provider,
+      providerName: "ChatGPT Plus/Pro",
+      id: "gpt-6-luna",
+      label: "GPT-6 Luna",
+      billing: "",
+      auth: "oauth",
+      signIn: "device-code",
+    };
+    const saved = {
+      id: "fixture-codex-connection",
+      provider,
+      label: entry.providerName,
+      authKind: "oauth",
+      isDefault: true,
+      hasKey: false,
+      modelId: "gpt-6.2-sol",
+      connectionRevision: 1,
+    };
+    let signedIn = false;
+    state.rpc.mockImplementation(async (procedure: string, input: unknown) => {
+      if (procedure === "me")
+        return {
+          userId: "user-1",
+          spaceId: "space-1",
+          defaultProvider: provider,
+          defaultModel: signedIn ? saved.modelId : entry.id,
+          defaultModelCredentialId: signedIn ? saved.id : null,
+        };
+      if (procedure === "models/list")
+        return [
+          entry,
+          { ...entry, id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+          ...(signedIn ? [{ ...entry, id: saved.modelId, label: "GPT-6.2 Sol" }] : []),
+        ];
+      if (procedure === "models/credentials") return signedIn ? [saved] : [];
+      if (procedure === "models/beginOAuth")
+        return {
+          loginId: "fixture-login",
+          mode: "device-code",
+          verificationUri: "https://auth.example.test",
+          userCode: "CODE",
+          expiresInSeconds: 600,
+        };
+      if (procedure === "models/completeOAuth") return { status: "ready" };
+      if (procedure === "models/finishOAuth") {
+        signedIn = true;
+        return saved;
+      }
+      return normal(procedure, input);
+    });
+    await act(async () => root.render(<Models />));
+    if (choice) await act(async () => button("GPT-6.1 Sol").click());
+    await act(async () => button("Sign in").click());
+    expect(state.rpc.mock.calls.find(([name]) => name === "models/beginOAuth")?.[1]).toMatchObject({
+      provider,
+      modelId: choice,
+    });
+    expect(AccessibilityInfo.announceForAccessibility).toHaveBeenLastCalledWith(
+      "Connected and using gpt-6.2-sol.",
+    );
+    expect(button("GPT-6.2 Sol").getAttribute("aria-pressed")).toBe("true");
+  },
+);
 
 it("keeps a newer revision captured by an explicit backup retry", async () => {
   const normal = state.rpc.getMockImplementation()!;

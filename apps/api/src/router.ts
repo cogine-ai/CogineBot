@@ -150,6 +150,7 @@ import {
   resolveBotUploadPath,
   resolveBotWorkspaceCwd,
   resolveBotWorkspacePath,
+  resolveCodexOAuthDefaultModel,
   retainedProviderCatalogRequirements,
   revokeScreenControl,
   routineAdmissionError,
@@ -1363,6 +1364,11 @@ export function createRouter(deps: RouterDeps) {
           }
         }
       }
+      const secret = { kind: "oauth" as const, credential: login.credential, ...settings };
+      const modelId =
+        login.provider === CHATGPT_OAUTH_PROVIDER && !existing
+          ? await resolveCodexOAuthDefaultModel(codexCatalog, actor.userId, secret, login.modelId)
+          : login.modelId;
       return persistModelCredential(
         deps,
         actor,
@@ -1371,16 +1377,12 @@ export function createRouter(deps: RouterDeps) {
           credentialId: existing?.id,
           expectedRevision: session.credentialRevision ?? undefined,
           expectedCiphertext,
-          plaintext: serializeModelSecret({
-            kind: "oauth",
-            credential: login.credential,
-            ...settings,
-          }),
+          plaintext: serializeModelSecret(secret),
           label:
             login.label ??
             listPiCatalog().find((entry) => entry.provider === login.provider)?.providerName,
-          modelId: login.modelId,
-          thinkingLevel: login.thinkingLevel,
+          modelId,
+          thinkingLevel: modelId === login.modelId ? login.thinkingLevel : undefined,
           signal: login.signal,
           oauthSession: session,
         },

@@ -74,7 +74,7 @@ describe("fetchCodexCatalog", () => {
     expect(result.status).toBe("ok");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(String(url)).toBe(`${CODEX_MODELS_ENDPOINT}?client_version=0.159.3`);
+    expect(String(url)).toBe(`${CODEX_MODELS_ENDPOINT}?client_version=0.169.1`);
     const headers = new Headers(init?.headers);
     expect(headers.get("authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
     expect(headers.get("chatgpt-account-id")).toBe(ACCOUNT_ID);
@@ -950,6 +950,43 @@ describe("applyCodexLiveCatalog", () => {
   const base = listAvailablePiCatalog(oauthAuth.byProvider, oauthAuth.byModel);
   const liveFor = (entries: Record<string, CodexCatalogModel[]>) =>
     new Map(Object.entries(entries));
+
+  it.each(["gpt-6.2-astra", "gpt-6.2-sol"])(
+    "shows %s only for the OAuth connection whose catalog includes it",
+    (modelId) => {
+      const hasModel = (entries: readonly { provider: string; id: string }[]) =>
+        entries.some((entry) => entry.provider === CHATGPT_OAUTH_PROVIDER && entry.id === modelId);
+      expect(hasModel(listAvailablePiCatalog())).toBe(false);
+      expect(hasModel(base)).toBe(false);
+      const live = liveFor({ "secret-a": [liveModel(modelId, { reasoningEfforts: ["low"] })] });
+      const listed = applyCodexLiveCatalog(base, oauthAuth, live);
+      expect(listed).toContainEqual(
+        expect.objectContaining({
+          provider: CHATGPT_OAUTH_PROVIDER,
+          id: modelId,
+          thinkingLevels: ["low"],
+        }),
+      );
+      expect(
+        hasModel(
+          applyCodexLiveCatalog(base, oauthAuth, liveFor({ "secret-b": [liveModel(modelId)] })),
+        ),
+      ).toBe(false);
+      expect(
+        hasModel(
+          applyCodexLiveCatalog(
+            base,
+            {
+              ...oauthAuth,
+              byModel: { [CHATGPT_OAUTH_PROVIDER]: { [modelId]: "oauth" } },
+              secretIdByModel: { [CHATGPT_OAUTH_PROVIDER]: { [modelId]: "secret-b" } },
+            },
+            live,
+          ),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("restores statically excluded models the account can call", () => {
     expect(

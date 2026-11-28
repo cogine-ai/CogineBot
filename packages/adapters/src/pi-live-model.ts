@@ -159,6 +159,8 @@ const vercelGatewayMessagesProbeIds = new Set([
   "openai/gpt-6-luna",
   "openai/gpt-6-sol",
   "openai/gpt-6.1-sol",
+  "openai/gpt-6.2-astra",
+  "openai/gpt-6.2-sol",
   "openai/o1",
   "openai/o3",
   "openai/o3-mini",
