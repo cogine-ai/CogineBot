@@ -27,6 +27,7 @@ async function stubCodexModelSignIn(page: Page, needsModel = false) {
     connectionRevision: 1,
   };
   let connected = false;
+  let ready = !needsModel;
   await page.route("**/rpc/me", async (route) => {
     const response = await route.fetch();
     const body = (await response.json()) as { json: Me };
@@ -53,7 +54,13 @@ async function stubCodexModelSignIn(page: Page, needsModel = false) {
     const preset = json.find(
       (entry) => entry.provider === saved.provider && entry.id === "gpt-6.1-sol",
     )!;
-    const catalog = needsModel ? json.filter((entry) => entry.provider !== "chatgpt-plan") : json;
+    const catalog = needsModel
+      ? json.filter(
+          (entry) =>
+            entry.provider !== "chatgpt-plan" &&
+            (entry.provider !== saved.provider || entry.id === preset.id),
+        )
+      : json;
     await route.fulfill({
       response,
       json: {
@@ -83,7 +90,7 @@ async function stubCodexModelSignIn(page: Page, needsModel = false) {
     }),
   );
   await page.route("**/rpc/models/completeOAuth", (route) =>
-    route.fulfill({ json: { json: { status: "ready" } } }),
+    route.fulfill({ json: { json: { status: ready ? "ready" : "pending" } } }),
   );
   await page.route("**/rpc/models/finishOAuth", (route) => {
     connected = true;
@@ -92,6 +99,9 @@ async function stubCodexModelSignIn(page: Page, needsModel = false) {
   await page.addInitScript(() => {
     window.open = () => null;
   });
+  return () => {
+    ready = true;
+  };
 }
 
 test("settings connects Codex using the model selected for the authenticated account", async ({
@@ -126,7 +136,7 @@ test("settings connects Codex using the model selected for the authenticated acc
 test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in effort changes", async ({
   page,
 }) => {
-  await stubCodexModelSignIn(page, true);
+  const finishSignIn = await stubCodexModelSignIn(page, true);
   await signup(
     page,
     `codex-model-onboarding-${Date.now()}@example.test`,
@@ -137,9 +147,9 @@ test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in ef
   await provider.click();
   await page.getByRole("option", { name: "ChatGPT", exact: true }).click();
   const picker = page.getByRole("combobox", { name: "Model", exact: true });
-  await picker.click();
-  await page.getByRole("option", { name: "GPT-6.1 Sol", exact: true }).click();
-  await page.getByRole("combobox", { name: "Thinking", exact: true }).click();
+  await expect(picker).toContainText("GPT-6.1 Sol");
+  const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
+  await thinking.click();
   await page.getByRole("option", { name: "Low", exact: true }).click();
   const writes: unknown[] = [];
   await page.route("**/rpc/models/setDefault", (route) => {
@@ -153,6 +163,8 @@ test("onboarding keeps the model returned by Codex sign-in when a pre-sign-in ef
     modelId: "gpt-6.1-sol",
     thinkingLevel: "low",
   });
+  await expect(thinking).toBeDisabled();
+  finishSignIn();
   await expect(page.getByRole("heading", { name: "Connect a model" })).toBeHidden();
   expect(writes).toEqual([]);
 });

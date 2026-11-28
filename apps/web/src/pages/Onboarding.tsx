@@ -188,34 +188,7 @@ export function OnboardingPage() {
   } = useModelOAuthSignIn({
     onClearError: () => setError(null),
     onError: setError,
-    onFinished: async (_controller, credential) => {
-      // Persist the staged effort only when sign-in kept the model it belongs to.
-      const level = clampCatalogThinkingLevel(
-        thinkingLevel,
-        catalog.find((entry) => entry.provider === provider && entry.id === modelId)
-          ?.thinkingLevels,
-      );
-      if (
-        level &&
-        provider !== OPENAI_COMPATIBLE_PROVIDER_ID &&
-        modelId &&
-        credential.modelId === modelId &&
-        credential.connectionRevision !== undefined
-      ) {
-        try {
-          await rpc.models.setDefault({
-            provider,
-            modelId,
-            modelCredentialId: credential.id,
-            expectedRevision: credential.connectionRevision,
-            thinkingLevel: level as ThinkingLevel,
-          });
-        } catch {
-          // The connection itself succeeded; the effort stays adjustable in Models.
-        }
-      }
-      setStep(nextStepAfterModel(needsIntegrationSetup));
-    },
+    onFinished: () => setStep(nextStepAfterModel(needsIntegrationSetup)),
   });
 
   useEffect(() => {
@@ -629,7 +602,9 @@ export function OnboardingPage() {
     void startSubscriptionSignIn({
       provider: selected.provider,
       modelId:
-        (selected.provider === "openai-codex" && !explicitModelChoice.current) ||
+        (selected.provider === "openai-codex" &&
+          !explicitModelChoice.current &&
+          thinkingLevel === null) ||
         (selected.provider === "chatgpt-plan" && selected.placeholder)
           ? undefined
           : selected.id,
@@ -887,7 +862,7 @@ export function OnboardingPage() {
                       </span>
                       <Select
                         value={thinkingLevel ?? DEFAULT_THINKING_LEVEL_OPTION}
-                        disabled={connecting}
+                        disabled={connecting || oauthPending}
                         onValueChange={(value) => {
                           const next = String(value);
                           setThinkingLevel(

@@ -1439,7 +1439,10 @@ function ModelsForm({
         {
           provider: selected.provider,
           modelId:
-            selected.provider === "openai-codex" && !credential && !explicitModelChoice.current
+            selected.provider === "openai-codex" &&
+            !credential &&
+            !explicitModelChoice.current &&
+            thinkingLevel === null
               ? undefined
               : selected.id,
           thinkingLevel: clampCatalogThinkingLevel(

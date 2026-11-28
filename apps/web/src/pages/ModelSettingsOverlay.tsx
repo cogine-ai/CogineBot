@@ -1209,7 +1209,10 @@ export function ModelSettingsOverlay({
     };
     setNotice(null);
     const pickFromAccount =
-      selected.provider === "openai-codex" && !credential && !explicitModelChoice.current;
+      selected.provider === "openai-codex" &&
+      !credential &&
+      !explicitModelChoice.current &&
+      thinkingLevel === null;
     void startSubscriptionSignIn({
       provider: credential?.provider ?? selected.provider,
       modelId:

@@ -172,13 +172,15 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
       const { loginId } = await local.client.models.beginOAuth({
         provider: "openai-codex",
         modelId: requested,
+        thinkingLevel: "low",
       });
       const issued = { ...token, accountId };
       local.providerResult.resolve(issued);
       await vi.waitFor(async () =>
         expect(await local.client.models.completeOAuth({ loginId })).toEqual({ status: "ready" }),
       );
-      expect(await local.client.models.finishOAuth({ loginId })).toMatchObject({
+      const saved = await local.client.models.finishOAuth({ loginId });
+      expect(saved).toMatchObject({
         modelId: expected,
         provider: "openai-codex",
         authKind: "oauth",
@@ -188,6 +190,17 @@ describe.skipIf(!enabled)("durable model subscription sign-in (PostgreSQL)", () 
         expect.objectContaining({ accountId }),
         undefined,
       );
+      expect(
+        await a.prisma.spaceModelPreference.findUnique({
+          where: {
+            spaceId_userId_credentialId: {
+              spaceId: actor.spaceId,
+              userId: actor.userId,
+              credentialId: saved.id,
+            },
+          },
+        }),
+      ).toMatchObject({ modelId: expected, thinkingLevel: requested === expected ? "low" : null });
     },
   );
 
