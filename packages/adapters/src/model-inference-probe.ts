@@ -11,6 +11,7 @@ import {
   isOfficialAnthropicProbeModel,
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiProbeModel,
+  isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
@@ -53,8 +54,13 @@ export async function probeModelInference(
   const canProbeCatalogRoute =
     builtIn ||
     (input.providerCatalogModel === true && supportsProviderCatalogModels(model.provider));
-  if (builtIn && isOpenRouterMessagesModel(model))
-    return probeOpenRouterMessages(model, apiKey, options);
+  if (builtIn && isOpenRouterMessagesModel(model)) {
+    return probeNativeMessages(model, apiKey, options, (error, status) =>
+      openRouterMessagesFailureStatus(error, apiKey, status ?? errorHttpStatus(error)),
+    );
+  }
+  if (builtIn && isOfficialMiniMaxProbeModel(model))
+    return probeNativeMessages(model, apiKey, options, miniMaxFailureStatus);
   if (builtIn && isOfficialNativeChatProbeModel(model))
     return probeNativeChatCompletions(model, apiKey, options);
   if (canProbeCatalogRoute && isOfficialGeminiProbeModel(model))
@@ -238,15 +244,13 @@ async function probeGemini(
   );
 }
 
-async function probeOpenRouterMessages(
+async function probeNativeMessages(
   model: Pick<Model<Api>, "id" | "baseUrl" | "maxTokens">,
   apiKey: string,
   options: ProbeOptions,
+  classifyFailure: StreamFailureClassifier,
 ): Promise<ModelInferenceProbeStatus> {
-  const classifyFailure = (error: unknown, status?: number) =>
-    openRouterMessagesFailureStatus(error, apiKey, status ?? errorHttpStatus(error));
-  // The Anthropic SDK inherits deployment-level headers. This gateway only
-  // receives the selected OpenRouter key and the headers for this request.
+  // Send only the selected key and protocol headers to the Messages endpoint.
   return await probeNativeEventStream(
     `${model.baseUrl}/v1/messages`,
     { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
@@ -268,6 +272,47 @@ async function probeOpenRouterMessages(
     classifyFailure,
     (frame, event) => anthropicFrameOutcome(frame, model.id, classifyFailure, event),
   );
+}
+
+function miniMaxFailureStatus(error: unknown, status?: number): ModelInferenceProbeStatus {
+  const errorRecord = probeRecord(error);
+  const message = typeof error === "string" ? error : errorRecord?.message;
+  // Some Messages errors include a MiniMax application code after the message.
+  const code = typeof message === "string" ? /\((\d{4})\)\s*$/.exec(message)?.[1] : undefined;
+  if (code === "1001" || code === "2066") return "timeout";
+  if (status === 408 || (status !== undefined && status >= 500))
+    return nativeChatFailureStatus(undefined, status);
+  switch (code) {
+    case "1004":
+    case "2049":
+    case "2057":
+      return "auth";
+    case "1008":
+    case "2053":
+    case "2067":
+      return "credit";
+    case "2022":
+    case "2061":
+    case "2068":
+    case "2069":
+      return "model";
+    case "1002":
+    case "2056":
+    case "2062":
+      return "rate";
+  }
+  // Distinguish the provider's model refusal from a bare intermediary status.
+  if (
+    ((status === undefined || status === 403) && errorRecord?.type === "permission_error") ||
+    ((status === undefined || status === 404) && errorRecord?.type === "not_found_error")
+  )
+    return "model";
+  if (status === 403 || status === 404) return "unavailable";
+  if (status === undefined) {
+    if (errorRecord?.type === "authentication_error") return "auth";
+    if (errorRecord?.type === "rate_limit_error") return "rate";
+  }
+  return nativeChatFailureStatus(undefined, status);
 }
 
 async function probeNativeChatCompletions(

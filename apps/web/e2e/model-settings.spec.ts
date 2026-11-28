@@ -2485,6 +2485,13 @@ for (const { provider, providerName, modelId, rejection, rejectionText, protocol
     rejectionText: /spending limit/,
   },
   {
+    provider: "minimax",
+    providerName: "MiniMax",
+    modelId: "MiniMax-M3",
+    rejection: "credit",
+    rejectionText: /credit limit/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

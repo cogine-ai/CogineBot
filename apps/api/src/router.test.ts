@@ -3486,6 +3486,18 @@ describe("model credential persistence", () => {
       distinctFailure: "spending",
       transient: { code: 429, message: "You've reached your concurrent request limit." },
     },
+    {
+      provider: "minimax",
+      modelId: "MiniMax-M3",
+      endpoint: "https://api.minimax.io/anthropic/v1/messages",
+      keyHeader: "x-api-key",
+      acceptedFrame:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-fixture","type":"message","role":"assistant","model":"MiniMax-M3"}}\n\n',
+      rejection: { message: "usage limit reached and credit auto consumption is off (2067)" },
+      rejectionHttpStatus: 429,
+      distinctFailure: "credit",
+      transient: { code: 429, message: "usage limit exceeded (2056)" },
+    },
   ])(
     "tests and connects a $provider $modelId model using exactly the draft credential",
     async ({
@@ -6686,6 +6698,7 @@ describe("saved model catalog checks", () => {
   it.each([
     ["xai", "grok-4.7"],
     ["kimi-coding", "k3-256k"],
+    ["minimax", "MiniMax-M3"],
   ])("only probes the saved %s connection when it owns an API key", async (provider, modelId) => {
     const { infer, inference, probe, state } = fixture(false, provider);
     const request = { ...savedInput, provider, modelId };
