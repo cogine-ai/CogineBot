@@ -9,6 +9,7 @@ import {
   isOfficialChatCompletionProbeModel,
   isOfficialGeminiModel,
   isOfficialGeminiProbeModel,
+  isOfficialMiniMaxProbeModel,
   isOfficialNativeChatProbeModel,
   isOfficialResponsesModel,
   isOfficialXaiResponsesProbeModel,
@@ -183,6 +184,7 @@ function buildPiCatalog(): PiCatalogEntry[] {
         ...(apiKey &&
         (isOfficialAnthropicProbeModel(model) ||
           isOfficialGeminiProbeModel(model) ||
+          isOfficialMiniMaxProbeModel(model) ||
           isOfficialNativeChatProbeModel(model) ||
           isOpenRouterMessagesModel(model) ||
           (probeBaseUrl &&

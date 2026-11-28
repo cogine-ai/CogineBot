@@ -34,6 +34,11 @@ const kimiCodeInput = {
   modelId: "k3-256k",
   apiKey: "fixture-kimi-code-key",
 };
+const miniMaxInput = {
+  provider: "minimax",
+  modelId: "MiniMax-M3",
+  apiKey: "fixture-minimax-key",
+};
 const groqDirectoryInput = {
   ...groqInput,
   modelId: "fixture-vendor/chat-new",
@@ -1517,57 +1522,161 @@ describe("model inference check", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  it("tests a registered OpenRouter Claude model on its Messages route with the selected key", async () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
-    vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
-    vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
-    vi.stubEnv("ANTHROPIC_LOG", "debug");
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
-    const selected = listPiCatalog().find(
-      (entry) => entry.provider === "openrouter" && entry.id === openRouterMessagesInput.modelId,
-    );
-    expect(selected?.inferenceProbe).toBe(true);
-    const cancel = vi.fn();
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          new TextEncoder().encode(
-            `: processing\n\n${anthropicStart.replace(anthropicInput.modelId, openRouterMessagesInput.modelId)}`,
-          ),
-        );
-      },
-      cancel,
-    });
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
-    );
-    expect(await probeModelInference(openRouterMessagesInput, { fetch })).toBe("accepted");
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(cancel).toHaveBeenCalledOnce();
-    const request = new Request(...fetch.mock.calls[0]!);
-    expect(request.url).toBe("https://openrouter.ai/api/v1/messages");
-    expect(request.redirect).toBe("error");
-    expect(Object.fromEntries(request.headers)).toEqual({
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-      "x-api-key": openRouterMessagesInput.apiKey,
-    });
-    expect(JSON.stringify(debug.mock.calls)).not.toContain("fixture-ambient-header");
-    expect(await request.json()).toEqual({
-      model: selected?.id,
-      system: "Reply with OK.",
-      messages: [{ role: "user", content: "OK?" }],
-      stream: true,
-      max_tokens: 1024,
-      tools: [
-        {
-          name: "noop",
-          description: "Does nothing.",
-          input_schema: { type: "object", properties: {} },
+  it.each([
+    [openRouterMessagesInput, "https://openrouter.ai/api/v1/messages"],
+    [miniMaxInput, "https://api.minimax.io/anthropic/v1/messages"],
+  ] as const)(
+    "tests $provider on the Messages route with the selected key",
+    async (selectedInput, endpoint) => {
+      vi.stubEnv("OPENROUTER_API_KEY", "fixture-deployment-gateway-key");
+      vi.stubEnv("ANTHROPIC_API_KEY", "fixture-deployment-messages-key");
+      vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "X-Gateway-Token: fixture-ambient-header");
+      vi.stubEnv("ANTHROPIC_LOG", "debug");
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+      const selected = listPiCatalog().find(
+        (entry) => entry.provider === selectedInput.provider && entry.id === selectedInput.modelId,
+      );
+      expect(selected?.inferenceProbe).toBe(true);
+      const cancel = vi.fn();
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              `: processing\n\n${anthropicStart.replace(anthropicInput.modelId, selectedInput.modelId)}`,
+            ),
+          );
         },
-      ],
-    });
+        cancel,
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(selectedInput, { fetch })).toBe("accepted");
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledOnce();
+      const request = new Request(...fetch.mock.calls[0]!);
+      expect(request.url).toBe(endpoint);
+      expect(request.redirect).toBe("error");
+      expect(Object.fromEntries(request.headers)).toEqual({
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "x-api-key": selectedInput.apiKey,
+      });
+      expect(JSON.stringify(debug.mock.calls)).not.toContain("fixture-ambient-header");
+      expect(await request.json()).toEqual({
+        model: selected?.id,
+        system: "Reply with OK.",
+        messages: [{ role: "user", content: "OK?" }],
+        stream: true,
+        max_tokens: 1024,
+        tools: [
+          {
+            name: "noop",
+            description: "Does nothing.",
+            input_schema: { type: "object", properties: {} },
+          },
+        ],
+      });
+    },
+  );
+
+  it.each([
+    ["minimax", "MiniMax-M2.7"],
+    ["minimax", "MiniMax-M2.7-highspeed"],
+    ["minimax", "MiniMax-M3.1-Flash"],
+    ["minimax-cn", "MiniMax-M3"],
+  ])(
+    "makes no probe request for %s %s outside the supported Messages route",
+    async (provider, modelId) => {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      expect(
+        listPiCatalog().find((entry) => entry.provider === provider && entry.id === modelId)
+          ?.inferenceProbe,
+      ).toBeUndefined();
+      expect(
+        await probeModelInference(
+          { ...miniMaxInput, provider, modelId, providerCatalogModel: true },
+          { fetch },
+        ),
+      ).toBe("unavailable");
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [401, "Unauthorized", "auth"],
+    [400, "invalid API Key (2049)", "auth"],
+    [400, "insufficient balance (1008)", "credit"],
+    [402, "Payment required", "credit"],
+    [400, "model is not exist (2022)", "model"],
+    [403, "your current token plan not support model (2061)", "model"],
+    [403, "Forbidden", "unavailable"],
+    [404, "Not Found", "unavailable"],
+    [429, "rate limit (1002)", "rate"],
+    [429, "usage limit exceeded (2056)", "rate"],
+    [429, "M Plan rate limit reached (2062)", "rate"],
+    [400, "request timeout (1001)", "timeout"],
+    [500, "The request timed out while processing (2066)", "timeout"],
+    [400, "invalid parameters (2013)", "unavailable"],
+    [503, "upstream unavailable (1008)", "unavailable"],
+  ] as const)("classifies MiniMax HTTP %i %s as %s", async (status, message, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ type: "error", error: { message } }, { status }),
+    );
+    expect(await probeModelInference(miniMaxInput, { fetch })).toBe(expected);
+    expect(fetch).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    [anthropicStart, "unavailable"],
+    [": processing\n\n", "unavailable"],
+    ['event: error\ndata: {"type":"error","error":{"type":"authentication_error"}}\n\n', "auth"],
+    [
+      'event: error\ndata: {"type":"error","error":{"message":"insufficient balance (1008)"}}\n\n',
+      "credit",
+    ],
+    [
+      'event: error\ndata: {"type":"error","error":{"message":"usage limit exceeded (2056)"}}\n\n',
+      "rate",
+    ],
+  ] as const)(
+    "requires a matching MiniMax acceptance or a recognizable error (%#)",
+    async (body, expected) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      );
+      expect(await probeModelInference(miniMaxInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [
+      403,
+      { type: "permission_error", message: "No permission to access this model or path." },
+      "model",
+    ],
+    [404, { type: "not_found_error", message: "Model does not exist." }, "model"],
+    [429, { type: "rate_limit_error", message: "Rate limit triggered." }, "rate"],
+    [429, { message: "usage limit reached and credit auto consumption is off (2067)" }, "credit"],
+    [403, { message: "The current plan tier does not support this model (2068)" }, "model"],
+    [404, { message: "model is no longer available (2069)" }, "model"],
+  ] as const)(
+    "recognizes MiniMax refusals on HTTP %i and in stream errors (%#)",
+    async (status, error, expected) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValueOnce(Response.json({ type: "error", error }, { status }))
+        .mockResolvedValueOnce(
+          new Response(`event: error\ndata: ${JSON.stringify({ type: "error", error })}\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      expect(await probeModelInference(miniMaxInput, { fetch })).toBe(expected);
+      expect(await probeModelInference(miniMaxInput, { fetch })).toBe(expected);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each([
     [": processing\n\n", "unavailable"],

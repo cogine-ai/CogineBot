@@ -100,6 +100,17 @@ export function isOfficialAnthropicProbeModel(
   );
 }
 
+export function isOfficialMiniMaxProbeModel(
+  model: Pick<Model<Api>, "provider" | "api" | "baseUrl" | "id">,
+) {
+  return (
+    model.provider === "minimax" &&
+    model.api === "anthropic-messages" &&
+    model.baseUrl === "https://api.minimax.io/anthropic" &&
+    model.id === "MiniMax-M3"
+  );
+}
+
 export function isOpenRouterMessagesModel(model: Pick<Model<Api>, "provider" | "api" | "baseUrl">) {
   return (
     model.provider === "openrouter" &&
