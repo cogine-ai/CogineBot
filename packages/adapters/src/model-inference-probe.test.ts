@@ -56,10 +56,21 @@ const vercelClaudeInput = {
   ...vercelGatewayInput,
   modelId: "anthropic/claude-haiku-4.5",
 };
-const vercelDeepSeekInputs = [
+const vercelGatewayMessagesInputs = [
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4.1-flash",
+  "google/gemini-2.5-flash",
+  "google/gemini-2.5-flash-lite",
+  "google/gemini-2.5-pro",
+  "google/gemini-3-flash",
+  "google/gemini-3.1-flash-lite",
+  "google/gemini-3.5-flash",
+  "google/gemini-3.5-flash-lite",
+  "google/gemini-3.6-flash",
+  "google/gemini-3.7-flash",
+  "google/gemini-3.8-flash",
+  "google/gemini-4-argon",
 ].map((modelId) => ({ ...vercelGatewayInput, modelId }));
 const groqDirectoryInput = {
   ...groqInput,
@@ -1549,7 +1560,7 @@ describe("model inference check", () => {
     { selectedInput: miniMaxInput, endpoint: "https://api.minimax.io/anthropic/v1/messages" },
     { selectedInput: fireworksInput, endpoint: "https://api.fireworks.ai/inference/v1/messages" },
     { selectedInput: vercelClaudeInput, endpoint: "https://ai-gateway.vercel.sh/v1/messages" },
-    ...vercelDeepSeekInputs.map((selectedInput) => ({
+    ...vercelGatewayMessagesInputs.map((selectedInput) => ({
       selectedInput,
       endpoint: "https://ai-gateway.vercel.sh/v1/messages",
     })),
@@ -1629,6 +1640,9 @@ describe("model inference check", () => {
     ["vercel-ai-gateway", "deepseek/deepseek-v4.1-flash-fast"],
     ["vercel-ai-gateway", "deepseek/deepseek-v4-flash-vision-exp"],
     ["vercel-ai-gateway", "deepseek/deepseek-v4-flash-0731"],
+    ["vercel-ai-gateway", "google/gemini-3.6-flash-batch"],
+    ["vercel-ai-gateway", "google/gemini-3.1-pro-preview"],
+    ["vercel-ai-gateway", "google/gemini-4-hydrogen"],
   ])(
     "makes no probe request for %s %s outside the supported Messages route",
     async (provider, modelId) => {
@@ -1658,17 +1672,25 @@ describe("model inference check", () => {
     ).toBe(true);
   });
 
-  it("does not accept a different Vercel DeepSeek model from the selected one", async () => {
-    const selectedInput = { ...vercelGatewayInput, modelId: "deepseek/deepseek-v4.1-flash" };
-    const fetch = vi.fn<typeof globalThis.fetch>(
-      async () =>
-        new Response(anthropicStart.replace(anthropicInput.modelId, "deepseek/deepseek-v4-flash"), {
-          headers: { "content-type": "text/event-stream" },
-        }),
-    );
-    expect(await probeModelInference(selectedInput, { fetch })).toBe("unavailable");
-    expect(fetch).toHaveBeenCalledOnce();
-  });
+  it.each([
+    ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash"],
+    ["google/gemini-3.8-flash", "google/gemini-3.7-flash"],
+    ["google/gemini-3.8-flash", "gemini-3.8-flash"],
+  ])(
+    "does not accept %s from Vercel AI Gateway when it reports %s",
+    async (modelId, returnedId) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(
+        async () =>
+          new Response(anthropicStart.replace(anthropicInput.modelId, returnedId), {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      );
+      expect(await probeModelInference({ ...vercelGatewayInput, modelId }, { fetch })).toBe(
+        "unavailable",
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [401, { type: "authentication_error" }, "auth"],

@@ -2522,6 +2522,14 @@ for (const { provider, providerName, modelId, rejection, rejectionText, variant 
     rejectionText: /cannot use the selected model/,
   },
   {
+    provider: "vercel-ai-gateway",
+    providerName: "Vercel AI Gateway",
+    variant: "Gemini",
+    modelId: "google/gemini-3.8-flash",
+    rejection: "spending",
+    rejectionText: /spending limit/,
+  },
+  {
     provider: "anthropic",
     providerName: "Anthropic",
     modelId: "claude-haiku-5-5",

@@ -125,10 +125,21 @@ export function isOfficialFireworksProbeModel(
   );
 }
 
-const vercelGatewayDeepSeekProbeIds = new Set([
+const vercelGatewayMessagesProbeIds = new Set([
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4.1-flash",
+  "google/gemini-2.5-flash",
+  "google/gemini-2.5-flash-lite",
+  "google/gemini-2.5-pro",
+  "google/gemini-3-flash",
+  "google/gemini-3.1-flash-lite",
+  "google/gemini-3.5-flash",
+  "google/gemini-3.5-flash-lite",
+  "google/gemini-3.6-flash",
+  "google/gemini-3.7-flash",
+  "google/gemini-3.8-flash",
+  "google/gemini-4-argon",
 ]);
 
 export function isOfficialVercelGatewayMessagesProbeModel(
@@ -139,7 +150,7 @@ export function isOfficialVercelGatewayMessagesProbeModel(
     model.api === "anthropic-messages" &&
     model.baseUrl === "https://ai-gateway.vercel.sh" &&
     (/^anthropic\/claude-(?:haiku|sonnet|opus)-\d+(?:\.\d+)?$/.test(model.id) ||
-      vercelGatewayDeepSeekProbeIds.has(model.id))
+      vercelGatewayMessagesProbeIds.has(model.id))
   );
 }
 
